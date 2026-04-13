@@ -53,6 +53,16 @@ mcp = FastMCP("Foresight")
 
 @mcp.tool()
 def store_memory(content: str, category: str = "fact", user_id: Optional[str] = None) -> str:
+    """Store a new memory fact for later retrieval.
+
+    Args:
+        content: The memory content to store
+        category: Category label (default: "fact")
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation with memory ID
+    """
     memory_id = hashlib.sha256(f"{content}{datetime.now().isoformat()}".encode()).hexdigest()[:16]
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -64,6 +74,17 @@ def store_memory(content: str, category: str = "fact", user_id: Optional[str] = 
 
 @mcp.tool()
 def query_memories(query: str, user_id: Optional[str] = None, limit: int = 5, offset: int = 0) -> str:
+    """Search memories by content using a query string.
+
+    Args:
+        query: Search term to match in memory content
+        user_id: Optional user ID override
+        limit: Maximum results to return (default: 5)
+        offset: Pagination offset (default: 0)
+
+    Returns:
+        List of matching memories
+    """
     uid = user_id or USER_ID
     conn = get_db_connection()
     rows = conn.execute("SELECT * FROM memories WHERE user_id = ? AND content LIKE ? LIMIT ? OFFSET ?",
@@ -75,6 +96,16 @@ def query_memories(query: str, user_id: Optional[str] = None, limit: int = 5, of
 
 @mcp.tool()
 def list_memories(user_id: Optional[str] = None, limit: int = 10, offset: int = 0) -> str:
+    """List all memories for a user, ordered by creation date.
+
+    Args:
+        user_id: Optional user ID override
+        limit: Maximum results to return (default: 10)
+        offset: Pagination offset (default: 0)
+
+    Returns:
+        List of memories with IDs and previews
+    """
     uid = user_id or USER_ID
     conn = get_db_connection()
     rows = conn.execute("SELECT * FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -86,6 +117,15 @@ def list_memories(user_id: Optional[str] = None, limit: int = 10, offset: int = 
 
 @mcp.tool()
 def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
+    """Retrieve a specific memory by its ID.
+
+    Args:
+        memory_id: The unique memory identifier
+        user_id: Optional user ID override
+
+    Returns:
+        Full memory content or not found message
+    """
     uid = user_id or USER_ID
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM memories WHERE id = ? AND user_id = ?", (memory_id, uid)).fetchone()
@@ -95,6 +135,17 @@ def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
 
 @mcp.tool()
 def update_memory(memory_id: str, content: Optional[str] = None, category: Optional[str] = None, user_id: Optional[str] = None) -> str:
+    """Update an existing memory's content or category.
+
+    Args:
+        memory_id: The unique memory identifier
+        content: New content (optional)
+        category: New category label (optional)
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation or not found message
+    """
     uid = user_id or USER_ID
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM memories WHERE id = ? AND user_id = ?", (memory_id, uid)).fetchone()
@@ -112,6 +163,15 @@ def update_memory(memory_id: str, content: Optional[str] = None, category: Optio
 
 @mcp.tool()
 def delete_memory(memory_id: str, user_id: Optional[str] = None) -> str:
+    """Delete a memory by its ID.
+
+    Args:
+        memory_id: The unique memory identifier
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation or not found message
+    """
     uid = user_id or USER_ID
     conn = get_db_connection()
     row = conn.execute("SELECT id FROM memories WHERE id = ? AND user_id = ?", (memory_id, uid)).fetchone()
@@ -123,6 +183,11 @@ def delete_memory(memory_id: str, user_id: Optional[str] = None) -> str:
 
 @mcp.tool()
 def memory_status() -> str:
+    """Get the current status of the memory system.
+
+    Returns:
+        JSON with database path, user ID, bank ID, and memory count
+    """
     conn = get_db_connection()
     count = conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ?", (USER_ID,)).fetchone()[0]
     conn.close()
