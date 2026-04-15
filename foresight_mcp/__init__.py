@@ -65,6 +65,11 @@ from .hooks import (
     register_hook,
     unregister_hook,
 )
+# WebSocket exports
+from .websocket.subscriptions import (
+    SubscriptionManager,
+    Subscription,
+)
 
 __version__ = "1.0.0"
 __all__ = [

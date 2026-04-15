@@ -26,6 +26,7 @@ from .memory_components import (
 from .crisis_detection import get_crisis_service
 from .subconscious import get_subconscious_agent
 from .event_bus import get_event_bus, memory_stored, memory_retrieved, memory_updated, memory_deleted
+from .websocket.subscriptions import SubscriptionManager
 
 # Configuration
 DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
@@ -703,6 +704,125 @@ def process_session_transcript(
     ))
 
     return f"Processed transcript for session {session_id}"
+
+
+# =============================================================================
+# WebSocket Subscription Tools
+# =============================================================================
+
+_subscription_manager: Optional[SubscriptionManager] = None
+
+
+def get_subscription_manager() -> SubscriptionManager:
+    """Get or create the global subscription manager."""
+    global _subscription_manager
+    if _subscription_manager is None:
+        _subscription_manager = SubscriptionManager()
+    return _subscription_manager
+
+
+@mcp.tool()
+def ws_subscribe(
+    subscription_id: str,
+    event_types: List[str],
+    entity_filter: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> str:
+    """
+    Subscribe to real-time events via WebSocket.
+
+    Args:
+        subscription_id: Unique subscription identifier
+        event_types: List of event types (e.g., ["memory.stored", "memory.updated"])
+        entity_filter: Optional filter (e.g., "memory:*" or "memory:123")
+        user_id: Optional user ID
+
+    Returns:
+        Subscription confirmation
+    """
+    manager = get_subscription_manager()
+    uid = user_id or USER_ID
+
+    import asyncio
+
+    asyncio.run(
+        manager.subscribe(
+            subscription_id=subscription_id,
+            connection_id=uid,
+            event_types=event_types,
+            entity_filter=entity_filter,
+        )
+    )
+
+    return f"Subscribed to {', '.join(event_types)} with filter '{entity_filter or '*'}"
+
+
+@mcp.tool()
+def ws_unsubscribe(subscription_id: str) -> str:
+    """
+    Unsubscribe from real-time events.
+
+    Args:
+        subscription_id: Subscription identifier to remove
+
+    Returns:
+        Unsubscription confirmation
+    """
+    manager = get_subscription_manager()
+
+    import asyncio
+
+    if asyncio.run(manager.unsubscribe(subscription_id)):
+        return f"Unsubscribed {subscription_id}"
+    return f"Subscription {subscription_id} not found"
+
+
+@mcp.tool()
+def ws_status() -> str:
+    """
+    Get WebSocket subscription status.
+
+    Returns:
+        JSON status of subscriptions
+    """
+    manager = get_subscription_manager()
+    stats = manager.get_stats()
+    return json.dumps(stats, indent=2)
+
+
+@mcp.tool()
+def ws_list_subscriptions(user_id: Optional[str] = None) -> str:
+    """
+    List active subscriptions for a user.
+
+    Args:
+        user_id: Optional user ID filter
+
+    Returns:
+        List of active subscriptions
+    """
+    manager = get_subscription_manager()
+    uid = user_id or USER_ID
+
+    # Filter subscriptions by connection
+    user_subs = [
+        sub for sub in manager._subscriptions.values()
+        if sub.connection_id == uid
+    ]
+
+    if not user_subs:
+        return "No active subscriptions"
+
+    lines = ["Active subscriptions:", ""]
+    for sub in user_subs:
+        lines.append(f"- {sub.id}")
+        lines.append(f"  Events: {', '.join(et.value for et in sub.event_types)}")
+        if sub.entity_filter:
+            lines.append(f"  Filter: {sub.entity_filter}")
+        lines.append(f"  Status: {sub.status.value}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def main():

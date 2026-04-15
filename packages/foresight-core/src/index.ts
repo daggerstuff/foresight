@@ -10,3 +10,4 @@ export * from './client';
 export * from './blocks';
 export * from './hooks';
 export * from './events';
+export * from './websocket';
