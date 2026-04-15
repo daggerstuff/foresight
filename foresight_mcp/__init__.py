@@ -34,6 +34,11 @@ from .server import (
     reset_subconscious_block,
     clear_subconscious_block,
     process_session_transcript,
+    # Audit tools
+    audit_build,
+    audit_list_reports,
+    audit_export,
+    audit_summary,
 )
 # Block registry exports
 from .block_registry import (
@@ -102,6 +107,11 @@ __all__ = [
     "reset_subconscious_block",
     "clear_subconscious_block",
     "process_session_transcript",
+    # Audit tools
+    "audit_build",
+    "audit_list_reports",
+    "audit_export",
+    "audit_summary",
     # Block registry
     "BlockRegistry",
     "MemoryBlockSchema",
