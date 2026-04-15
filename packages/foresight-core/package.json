@@ -1,0 +1,36 @@
+{
+  "name": "@foresight/core",
+  "version": "1.0.0",
+  "description": "TypeScript SDK for Foresight Memory Architecture",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "keywords": [
+    "foresight",
+    "memory",
+    "ai",
+    "mcp"
+  ],
+  "author": "Hindsight Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0",
+    "eslint": "^8.54.0",
+    "@typescript-eslint/eslint-plugin": "^6.10.0",
+    "@typescript-eslint/parser": "^6.10.0"
+  },
+  "dependencies": {
+    "zod": "^3.22.4"
+  },
+  "peerDependencies": {
+    "zod": "^3.22.0"
+  }
+}
