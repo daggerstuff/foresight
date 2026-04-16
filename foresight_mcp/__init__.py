@@ -162,6 +162,13 @@ from .websocket.server import (
     ConnectionState,
     Connection,
 )
+# CRDT exports
+from .crdt import (
+    VectorClock,
+    LWWRegister,
+    ORSet,
+    LWWMap,
+)
 # Projections exports
 from .projections.builder import ProjectionBuilder
 from .projections.reports import (
@@ -253,4 +260,9 @@ __all__ = [
     "Subscription",
     "get_subscription_manager",
     "reset_subscription_manager",
+    # CRDT
+    "VectorClock",
+    "LWWRegister",
+    "ORSet",
+    "LWWMap",
 ]
