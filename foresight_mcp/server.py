@@ -47,33 +47,51 @@ def get_db_connection():
 
 
 def init_db():
-    """Initialize the database schema with full memory support."""
+    """Initialize the database schema with full memory support including versioning."""
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = get_db_connection()
 
-    # Drop existing table if schema needs to change (migration)
+    # Drop existing tables for clean schema (migration)
+    conn.execute("DROP TABLE IF EXISTS memory_versions")
     conn.execute("DROP TABLE IF EXISTS memories")
 
-    # Main memories table with extended fields
+    # Main memories table with version tracking
     conn.execute("""
     CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        scope TEXT DEFAULT 'session',
-        retention TEXT DEFAULT 'short_term',
-        category TEXT DEFAULT 'fact',
-        user_id TEXT DEFAULT 'default',
-        bank_id TEXT DEFAULT 'default',
-        created_at TEXT NOT NULL,
-        updated_at TEXT,
-        tags TEXT DEFAULT '[]',
-        emotional_context TEXT DEFAULT '{}',
-        metrics TEXT DEFAULT '{}',
-        vector_id TEXT,
-        gist TEXT,
-        is_ghost INTEGER DEFAULT 0,
-        synthesized_from TEXT DEFAULT '[]'
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      scope TEXT DEFAULT 'session',
+      retention TEXT DEFAULT 'short_term',
+      category TEXT DEFAULT 'fact',
+      user_id TEXT DEFAULT 'default',
+      bank_id TEXT DEFAULT 'default',
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      tags TEXT DEFAULT '[]',
+      emotional_context TEXT DEFAULT '{}',
+      metrics TEXT DEFAULT '{}',
+      vector_id TEXT,
+      gist TEXT,
+      is_ghost INTEGER DEFAULT 0,
+      synthesized_from TEXT DEFAULT '[]',
+      version INTEGER DEFAULT 1
+    )
+    """)
+
+    # Version history table for point-in-time recovery
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS memory_versions (
+      id TEXT PRIMARY KEY,
+      memory_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      tags TEXT DEFAULT '[]',
+      emotional_context TEXT DEFAULT '{}',
+      metrics TEXT DEFAULT '{}',
+      rollback_of TEXT DEFAULT NULL,
+      FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
     )
     """)
 
@@ -82,15 +100,184 @@ def init_db():
     conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_content ON memories(content)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_created ON memory_versions(created_at)')
 
     conn.commit()
     conn.close()
-
 
 # Initialize database on module load
 init_db()
 
 # Initialize memory system components
+_memory_system_initialized = False
+
+
+# =============================================================================
+# Version Management Functions
+# =============================================================================
+
+def get_memory_versions(memory_id: str, user_id: Optional[str] = None) -> str:
+    """Get all versions of a memory."""
+    uid = user_id or USER_ID
+    conn = get_db_connection()
+
+    # Verify memory exists
+    row = conn.execute(
+        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
+        (memory_id, uid)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return f"Memory {memory_id} not found."
+
+    # Get current version
+    current_version = row['version'] if row else 1
+
+    # Get version history
+    versions = conn.execute(
+        "SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY version DESC",
+        (memory_id,)
+    ).fetchall()
+    conn.close()
+
+    if not versions:
+        return f"Memory {memory_id} (version {current_version}): No version history found."
+
+    result = [f"Memory {memory_id} - {len(versions)} versions:", ""]
+    for v in versions:
+        result.append(f"  v{v['version']}: {v['content'][:50]}...")
+        result.append(f"    Created: {v['created_at']}")
+        if v['rollback_of']:
+            result.append(f"    Rollback of: {v['rollback_of']}")
+
+    return "\n".join(result)
+
+
+def create_version_snapshot(memory_id: str, user_id: str, content: str,
+                             tags: str, emotional_context: dict, metrics: dict,
+                             version: int, rollback_of: Optional[str] = None) -> str:
+    """Create a version snapshot before updating memory."""
+    version_id = hashlib.sha256(
+        f"{memory_id}{version}{datetime.now(timezone.utc).isoformat()}".encode()
+    ).hexdigest()[:16]
+
+    conn = get_db_connection()
+    conn.execute("""
+    INSERT INTO memory_versions (
+        id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        version_id, memory_id, content, version,
+        datetime.now(timezone.utc).isoformat(), tags,
+        json.dumps(emotional_context), json.dumps(metrics), rollback_of
+    ))
+    conn.commit()
+    conn.close()
+    return version_id
+
+
+def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[str] = None) -> str:
+    """Rollback a memory to a specific version."""
+    uid = user_id or USER_ID
+    conn = get_db_connection()
+
+    # Get the version content
+    version_row = conn.execute(
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
+        (memory_id, target_version)
+    ).fetchone()
+
+    if not version_row:
+        conn.close()
+        return f"Version {target_version} not found for memory {memory_id}"
+
+    # Get current version to snapshot it
+    current = conn.execute(
+        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
+        (memory_id, uid)
+    ).fetchone()
+
+    if not current:
+        conn.close()
+        return f"Memory {memory_id} not found"
+
+    # Snapshot current state before rollback
+    create_version_snapshot(
+        memory_id=memory_id,
+        user_id=uid,
+        content=current['content'],
+        tags=current['tags'],
+        emotional_context=json.loads(current['emotional_context'] or '{}'),
+        metrics=json.loads(current['metrics'] or '{}'),
+        version=current['version'] or 1,
+        rollback_of=None
+    )
+
+    # Update to target version content
+    new_version = target_version + 1
+    conn.execute("""
+    UPDATE memories SET
+        content = ?, tags = ?, emotional_context = ?, metrics = ?,
+        version = ?, updated_at = ?
+    WHERE id = ? AND user_id = ?
+    """, (
+        version_row['content'], version_row['tags'],
+        version_row['emotional_context'], version_row['metrics'],
+        new_version, datetime.now(timezone.utc).isoformat(),
+        memory_id, uid
+    ))
+    conn.commit()
+    conn.close()
+
+    # Emit rollback event
+    from .event_bus import get_event_bus, memory_updated
+    event_bus = get_event_bus()
+    event_bus.publish(memory_updated(
+        memory_id=memory_id,
+        old_content=current['content'],
+        new_content=version_row['content'],
+        actor=uid
+    ))
+
+    return f"Rolled back memory {memory_id} to version {target_version}"
+
+
+def get_memory_diff(memory_id: str, version1: int, version2: int, user_id: Optional[str] = None) -> Dict[str, Any]:
+    """Get diff between two versions of a memory."""
+    uid = user_id or USER_ID
+    conn = get_db_connection()
+
+    v1 = conn.execute(
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
+        (memory_id, version1)
+    ).fetchone()
+
+    v2 = conn.execute(
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
+        (memory_id, version2)
+    ).fetchone()
+
+    conn.close()
+
+    if not v1 or not v2:
+        return {"error": "One or both versions not found"}
+
+    return {
+        "memory_id": memory_id,
+        "version1": {"version": version1, "content": v1['content']},
+        "version2": {"version": version2, "content": v2['content']},
+        "changed_fields": ["content"]
+    }
+
+
+# =============================================================================
+# Memory System Components
+# =============================================================================
+# Memory System Components
+# =============================================================================
+
 _memory_system_initialized = False
 
 
@@ -309,6 +496,20 @@ def update_memory(memory_id: str, content: Optional[str] = None,
     values = []
 
     if content:
+        # Create version snapshot before updating
+        current_version = row['version'] or 1
+        version_id = hashlib.sha256(
+            f"{memory_id}{current_version}{datetime.now(timezone.utc).isoformat()}".encode()
+        ).hexdigest()[:16]
+        conn.execute("""
+        INSERT INTO memory_versions (
+            id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            version_id, memory_id, row['content'], current_version,
+            datetime.now(timezone.utc).isoformat(),
+            row['tags'], row['emotional_context'], row['metrics'], None
+        ))
         updates.append("content = ?")
         values.append(content)
     if category:
@@ -327,6 +528,10 @@ def update_memory(memory_id: str, content: Optional[str] = None,
     if updates:
         updates.append("updated_at = ?")
         values.append(datetime.now(timezone.utc).isoformat())
+        if content:
+            current_version = row['version'] or 1
+            updates.append("version = ?")
+            values.append(current_version + 1)
         values.extend([memory_id, uid])
         conn.execute(
             f"UPDATE memories SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
@@ -484,6 +689,146 @@ def archive_memory(memory_id: str, user_id: Optional[str] = None) -> str:
     conn.close()
 
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
+
+
+# =============================================================================
+# Memory Versioning Tools
+# =============================================================================
+
+@mcp.tool()
+@mcp.tool()
+def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = None) -> str:
+    """
+    Rollback a memory to a previous version.
+
+    Args:
+        memory_id: The memory ID to rollback
+        to_version: Version number to rollback to
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation message
+    """
+    uid = user_id or USER_ID
+    conn = get_db_connection()
+
+    # Verify memory exists
+    row = conn.execute(
+        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
+        (memory_id, uid)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return f"Memory {memory_id} not found."
+
+    # Verify version exists
+    version_row = conn.execute(
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
+        (memory_id, to_version)
+    ).fetchone()
+
+    if not version_row:
+        conn.close()
+        return f"Version {to_version} not found for memory {memory_id}."
+
+    # Snapshot current state
+    version_id = hashlib.sha256(
+        f"{memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()
+    ).hexdigest()[:16]
+
+    conn.execute("""
+    INSERT INTO memory_versions (
+        id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        version_id, memory_id, row['content'], row['version'] or 1,
+        datetime.now(timezone.utc).isoformat(),
+        row['tags'], row['emotional_context'], row['metrics'], None
+    ))
+
+    # Update to target version content
+    new_version = to_version + 1
+    conn.execute("""
+    UPDATE memories SET
+        content = ?, tags = ?, emotional_context = ?, metrics = ?,
+        version = ?, updated_at = ?
+    WHERE id = ? AND user_id = ?
+    """, (
+        version_row['content'], version_row['tags'],
+        version_row['emotional_context'], version_row['metrics'],
+        new_version, datetime.now(timezone.utc).isoformat(),
+        memory_id, uid
+    ))
+    conn.commit()
+    conn.close()
+
+    # Emit event
+    from .event_bus import get_event_bus, memory_updated
+    event_bus = get_event_bus()
+    event_bus.publish(memory_updated(
+        memory_id=memory_id,
+        old_content=row['content'],
+        new_content=version_row['content'],
+        actor=uid
+    ))
+
+    return f"Rolled back memory {memory_id} to version {to_version} (now at version {new_version})"
+
+
+@mcp.tool()
+def diff_memories(memory_id: str, version1: int, version2: int, user_id: Optional[str] = None) -> str:
+    """
+    Compare two versions of a memory.
+
+    Args:
+        memory_id: The memory ID to compare
+        version1: First version number
+        version2: Second version number
+        user_id: Optional user ID override
+
+    Returns:
+        Diff output showing changes between versions
+    """
+    uid = user_id or USER_ID
+    conn = get_db_connection()
+
+    v1 = conn.execute(
+        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ?",
+        (memory_id, version1)
+    ).fetchone()
+
+    v2 = conn.execute(
+        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ?",
+        (memory_id, version2)
+    ).fetchone()
+
+    conn.close()
+
+    if not v1:
+        return f"Version {version1} not found for memory {memory_id}."
+    if not v2:
+        return f"Version {version2} not found for memory {memory_id}."
+
+    # Simple diff output
+    result = [
+        f"Comparing versions of {memory_id}:",
+        "",
+        f"Version {version1} ({v1['created_at']}):",
+        f"  {v1['content'][:100]}...",
+        "",
+        f"Version {version2} ({v2['created_at']}):",
+        f"  {v2['content'][:100]}...",
+    ]
+
+    if v1['content'] == v2['content']:
+        result.append("")
+        result.append("No changes between versions.")
+    else:
+        result.append("")
+        result.append("Content changed.")
+
+    return "\n".join(result)
 
 
 @mcp.tool()

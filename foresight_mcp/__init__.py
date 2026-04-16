@@ -12,6 +12,7 @@ Includes:
 - Subconscious memory blocks (guidance, pending_items, preferences, patterns)
 - Event bus with persistence and audit trail
 - Event hook system for extensibility (HTTP webhooks, callables, async)
+- Memory versioning with rollback capabilities
 """
 from .server import (
     mcp,
@@ -24,6 +25,10 @@ from .server import (
     memory_status,
     synthesize_memories,
     archive_memory,
+    # Versioning tools
+    get_memory_versions,
+    rollback_memory,
+    diff_memories,
     # Subconscious tools
     get_subconscious_blocks,
     get_subconscious_block,
@@ -97,6 +102,10 @@ __all__ = [
     "memory_status",
     "synthesize_memories",
     "archive_memory",
+    # Versioning tools
+    "get_memory_versions",
+    "rollback_memory",
+    "diff_memories",
     # Subconscious
     "get_subconscious_blocks",
     "get_subconscious_block",
