@@ -244,4 +244,13 @@ __all__ = [
     "ConsumerRecord",
     "ConsumerStats",
     "ConsumerState",
+    # WebSocket
+    "WebSocketServer",
+    "WebSocketHandler",
+    "ConnectionState",
+    "Connection",
+    "SubscriptionManager",
+    "Subscription",
+    "get_subscription_manager",
+    "reset_subscription_manager",
 ]
