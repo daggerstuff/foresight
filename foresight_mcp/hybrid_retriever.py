@@ -8,15 +8,37 @@ Fuses three retrieval signals:
 
 Result merging uses Reciprocal Rank Fusion (RRF) for score combination,
 which is robust across different score distributions without tuning.
+
+Weights rationale:
+  keyword=1.0 (primary relevance signal), graph=0.8 (entity expansion
+  is high-value but indirect), temporal=0.6 (recency is useful context
+  but not a relevance signal by itself).
 """
 from __future__ import annotations
 import sqlite3
+import threading
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set
 from datetime import datetime, timezone
 
 logger = logging.getLogger("foresight_hybrid_retriever")
+
+MAX_QUERY_LENGTH = 500
+MAX_USER_ID_LENGTH = 128
+
+
+def _escape_like(term: str) -> str:
+    """Escape SQL LIKE metacharacters to prevent wildcard injection."""
+    return term.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+
+
+def _validate_input(query: str, user_id: str) -> None:
+    """Validate search inputs."""
+    if not user_id or len(user_id) > MAX_USER_ID_LENGTH:
+        raise ValueError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
+    if len(query) > MAX_QUERY_LENGTH:
+        raise ValueError(f"query must be <= {MAX_QUERY_LENGTH} chars")
 
 
 @dataclass
@@ -80,7 +102,8 @@ class HybridRetriever:
 
     RRF_K = 60  # RRF smoothing constant
 
-    # Configurable weights per signal
+    # keyword=1.0 (primary relevance), graph=0.8 (indirect expansion),
+    # temporal=0.6 (recency context, not relevance by itself)
     DEFAULT_WEIGHTS = {
         'keyword': 1.0,
         'graph': 0.8,
@@ -94,6 +117,12 @@ class HybridRetriever:
     ):
         self.db_path = db_path
         self.weights = weights or self.DEFAULT_WEIGHTS.copy()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get a database connection with WAL mode for concurrent safety."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
 
     def search(
         self,
@@ -122,51 +151,55 @@ class HybridRetriever:
         Returns:
             HybridSearchResult with merged, ranked results
         """
-        # Collect ranked lists from each signal
+        _validate_input(query, user_id)
+
         keyword_ranking: Dict[str, int] = {}
         graph_ranking: Dict[str, int] = {}
         temporal_ranking: Dict[str, int] = {}
-
-        # Track all candidate memory IDs
         all_ids: Set[str] = set()
 
-        if use_keyword:
-            keyword_ranking = self._keyword_search(
-                query, user_id, tenant_id, limit * 3
+        # Single connection for all sub-searches
+        conn = self._get_connection()
+        try:
+            if use_keyword:
+                keyword_ranking = self._keyword_search(
+                    conn, query, user_id, tenant_id, limit * 3
+                )
+                all_ids.update(keyword_ranking.keys())
+
+            if use_graph:
+                graph_ranking = self._graph_search(
+                    conn, query, user_id, tenant_id, limit * 3
+                )
+                all_ids.update(graph_ranking.keys())
+
+            if use_temporal:
+                temporal_ranking = self._temporal_search(
+                    conn, user_id, tenant_id, limit * 3, min_importance
+                )
+                all_ids.update(temporal_ranking.keys())
+
+            if not all_ids:
+                return HybridSearchResult(
+                    results=[],
+                    total_candidates=0,
+                    signal_counts={
+                        'keyword': len(keyword_ranking),
+                        'graph': len(graph_ranking),
+                        'temporal': len(temporal_ranking),
+                    },
+                )
+
+            # Merge using RRF
+            merged = self._reciprocal_rank_fusion(
+                keyword_ranking, graph_ranking, temporal_ranking
             )
-            all_ids.update(keyword_ranking.keys())
 
-        if use_graph:
-            graph_ranking = self._graph_search(
-                query, user_id, tenant_id, limit * 3
-            )
-            all_ids.update(graph_ranking.keys())
-
-        if use_temporal:
-            temporal_ranking = self._temporal_search(
-                user_id, tenant_id, limit * 3, min_importance
-            )
-            all_ids.update(temporal_ranking.keys())
-
-        if not all_ids:
-            return HybridSearchResult(
-                results=[],
-                total_candidates=0,
-                signal_counts={
-                    'keyword': len(keyword_ranking),
-                    'graph': len(graph_ranking),
-                    'temporal': len(temporal_ranking),
-                },
-            )
-
-        # Merge using RRF
-        merged = self._reciprocal_rank_fusion(
-            keyword_ranking, graph_ranking, temporal_ranking
-        )
-
-        # Fetch full memory data for top candidates
-        top_ids = [mid for mid, _ in merged[:limit]]
-        memories = self._fetch_memories(top_ids, user_id, tenant_id)
+            # Fetch full memory data for top candidates (same connection)
+            top_ids = [mid for mid, _ in merged[:limit]]
+            memories = self._fetch_memories(conn, top_ids, user_id, tenant_id)
+        finally:
+            conn.close()
 
         # Build results with scores
         results = []
@@ -186,7 +219,6 @@ class HybridRetriever:
                 source_signals=[],
             )
 
-            # Track which signals contributed
             if memory_id in keyword_ranking:
                 result.keyword_score = self._rank_to_score(
                     keyword_ranking[memory_id], len(keyword_ranking)
@@ -217,6 +249,7 @@ class HybridRetriever:
 
     def _keyword_search(
         self,
+        conn: sqlite3.Connection,
         query: str,
         user_id: str,
         tenant_id: str,
@@ -227,49 +260,48 @@ class HybridRetriever:
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
-        conn = sqlite3.connect(self.db_path)
-        try:
-            terms = query.lower().split()
-            if not terms:
-                return {}
+        terms = query.lower().split()
+        if not terms:
+            return {}
 
-            # Build WHERE clause matching any term
-            like_clauses = " OR ".join(["content LIKE ?" for _ in terms])
-            params = [user_id, tenant_id] + [f"%{t}%" for t in terms]
+        # Escape LIKE metacharacters to prevent wildcard injection
+        escaped_terms = [_escape_like(t) for t in terms]
 
-            cursor = conn.execute(f"""
-                SELECT id, content
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND ({like_clauses})
-                ORDER BY importance DESC, created_at DESC
-                LIMIT ?
-            """, params + [limit])
+        like_clauses = " OR ".join(
+            ["content LIKE ? ESCAPE '!'" for _ in terms]
+        )
+        params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
-            rows = cursor.fetchall()
+        cursor = conn.execute(f"""
+            SELECT id, content
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND ({like_clauses})
+            ORDER BY importance DESC, created_at DESC
+            LIMIT ?
+        """, params + [limit])
 
-            # Score by term frequency
-            scored = []
-            for row in rows:
-                mid, content = row
-                content_lower = content.lower()
-                tf = sum(content_lower.count(t) for t in terms)
-                doc_len = max(len(content_lower.split()), 1)
-                # Normalized term frequency
-                score = tf / doc_len
-                scored.append((mid, score))
+        rows = cursor.fetchall()
 
-            # Sort by score descending, assign ranks
-            scored.sort(key=lambda x: x[1], reverse=True)
-            return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
-        finally:
-            conn.close()
+        # Score by term frequency
+        scored = []
+        for row in rows:
+            mid, content = row
+            content_lower = content.lower()
+            tf = sum(content_lower.count(t) for t in terms)
+            doc_len = max(len(content_lower.split()), 1)
+            score = tf / doc_len
+            scored.append((mid, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
 
     def _graph_search(
         self,
+        conn: sqlite3.Connection,
         query: str,
         user_id: str,
-        tenant_id: str,  # noqa: ARG - reserved for future graph-level tenant isolation
+        tenant_id: str,
         limit: int,
     ) -> Dict[str, int]:
         """
@@ -278,49 +310,51 @@ class HybridRetriever:
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
-        _ = tenant_id  # Graph entities are user-scoped; tenant used at memory level
-        conn = sqlite3.connect(self.db_path)
-        try:
-            terms = query.lower().split()
-            if not terms:
-                return {}
+        terms = query.lower().split()
+        if not terms:
+            return {}
 
-            # Find entities whose name matches query terms
-            like_clauses = " OR ".join(["e.name LIKE ?" for _ in terms])
-            params = [user_id] + [f"%{t}%" for t in terms]
+        escaped_terms = [_escape_like(t) for t in terms]
 
-            cursor = conn.execute(f"""
-                SELECT DISTINCT e.id
-                FROM memory_entities e
-                WHERE e.user_id = ?
-                AND ({like_clauses})
-            """, params)
+        # Find entities whose name matches query terms
+        like_clauses = " OR ".join(
+            ["e.name LIKE ? ESCAPE '!'" for _ in terms]
+        )
+        params = [user_id] + [f"%{t}%" for t in escaped_terms]
 
-            entity_ids = [row[0] for row in cursor.fetchall()]
+        cursor = conn.execute(f"""
+            SELECT DISTINCT e.id
+            FROM memory_entities e
+            WHERE e.user_id = ?
+            AND ({like_clauses})
+        """, params)
 
-            if not entity_ids:
-                return {}
+        entity_ids = [row[0] for row in cursor.fetchall()]
 
-            # Find memories linked to these entities, with graph depth bonus
-            # Memories linked to more query-matching entities rank higher
-            entity_placeholders = ','.join('?' * len(entity_ids))
-            cursor = conn.execute(f"""
-                SELECT mel.memory_id, COUNT(DISTINCT mel.entity_id) as entity_hits
-                FROM memory_entity_links mel
-                WHERE mel.entity_id IN ({entity_placeholders})
-                AND mel.user_id = ?
-                GROUP BY mel.memory_id
-                ORDER BY entity_hits DESC
-                LIMIT ?
-            """, entity_ids + [user_id, limit])
+        if not entity_ids:
+            return {}
 
-            rows = cursor.fetchall()
-            return {mid: rank + 1 for rank, (mid, _) in enumerate(rows)}
-        finally:
-            conn.close()
+        # Find memories linked to these entities
+        # Filter by tenant via memories table join
+        entity_placeholders = ','.join('?' * len(entity_ids))
+        cursor = conn.execute(f"""
+            SELECT mel.memory_id, COUNT(DISTINCT mel.entity_id) as entity_hits
+            FROM memory_entity_links mel
+            INNER JOIN memories m ON m.id = mel.memory_id
+                AND m.tenant_id = ? AND m.user_id = ?
+            WHERE mel.entity_id IN ({entity_placeholders})
+            AND mel.user_id = ?
+            GROUP BY mel.memory_id
+            ORDER BY entity_hits DESC
+            LIMIT ?
+        """, [tenant_id, user_id] + entity_ids + [user_id, limit])
+
+        rows = cursor.fetchall()
+        return {mid: rank + 1 for rank, (mid, _) in enumerate(rows)}
 
     def _temporal_search(
         self,
+        conn: sqlite3.Connection,
         user_id: str,
         tenant_id: str,
         limit: int,
@@ -329,63 +363,55 @@ class HybridRetriever:
         """
         Temporal search: rank memories by recency and importance.
 
-        Uses exponential decay for time scoring plus activation boost.
+        Query-independent signal — returns most important/recent memories
+        to provide recency context to the fusion.
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
-        conn = sqlite3.connect(self.db_path)
-        try:
-            cursor = conn.execute("""
-                SELECT id, importance, created_at, activation_count,
-                       COALESCE(strength_trend, 'stable')
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND importance >= ?
-                ORDER BY importance DESC, created_at DESC
-                LIMIT ?
-            """, (user_id, tenant_id, min_importance, limit * 2))
+        cursor = conn.execute("""
+            SELECT id, importance, created_at, activation_count,
+                   COALESCE(strength_trend, 'stable')
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND importance >= ?
+            ORDER BY importance DESC, created_at DESC
+            LIMIT ?
+        """, (user_id, tenant_id, min_importance, limit))
 
-            rows = cursor.fetchall()
-            if not rows:
-                return {}
+        rows = cursor.fetchall()
+        if not rows:
+            return {}
 
-            now = datetime.now(timezone.utc)
-            scored = []
+        now = datetime.now(timezone.utc)
+        scored = []
 
-            for row in rows:
-                mid, importance, created_at, activation_count, trend = row
+        for row in rows:
+            mid, importance, created_at, activation_count, trend = row
 
-                try:
-                    created = datetime.fromisoformat(
-                        created_at.replace('Z', '+00:00')
-                    )
-                    hours_old = max(
-                        (now - created).total_seconds() / 3600, 0.01
-                    )
-                except (ValueError, AttributeError):
-                    hours_old = 168.0  # Default to 1 week
+            try:
+                created = datetime.fromisoformat(
+                    created_at.replace('Z', '+00:00')
+                )
+                hours_old = max(
+                    (now - created).total_seconds() / 3600, 0.01
+                )
+            except (ValueError, AttributeError):
+                hours_old = 168.0
 
-                # Exponential decay (168h half-life)
-                time_score = pow(0.5, hours_old / 168.0)
+            time_score = pow(0.5, hours_old / 168.0)
+            activation_boost = 1 + ((activation_count or 0) * 0.05)
+            trend_mod = {
+                'strengthening': 1.2,
+                'stable': 1.0,
+                'weakening': 0.8,
+                'stale': 0.5,
+            }.get(trend, 1.0)
 
-                # Activation boost
-                activation_boost = 1 + ((activation_count or 0) * 0.05)
+            score = min(1.0, importance * time_score * activation_boost * trend_mod)
+            scored.append((mid, score))
 
-                # Trend modifier
-                trend_mod = {
-                    'strengthening': 1.2,
-                    'stable': 1.0,
-                    'weakening': 0.8,
-                    'stale': 0.5,
-                }.get(trend, 1.0)
-
-                score = min(1.0, importance * time_score * activation_boost * trend_mod)
-                scored.append((mid, score))
-
-            scored.sort(key=lambda x: x[1], reverse=True)
-            return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
-        finally:
-            conn.close()
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
 
     def _reciprocal_rank_fusion(
         self,
@@ -435,6 +461,7 @@ class HybridRetriever:
 
     def _fetch_memories(
         self,
+        conn: sqlite3.Connection,
         memory_ids: List[str],
         user_id: str,
         tenant_id: str,
@@ -443,50 +470,49 @@ class HybridRetriever:
         if not memory_ids:
             return {}
 
-        conn = sqlite3.connect(self.db_path)
-        try:
-            placeholders = ','.join('?' * len(memory_ids))
-            cursor = conn.execute(f"""
-                SELECT id, content, category, importance,
-                       strength_trend, created_at
-                FROM memories
-                WHERE id IN ({placeholders})
-                AND user_id = ? AND tenant_id = ?
-            """, memory_ids + [user_id, tenant_id])
+        placeholders = ','.join('?' * len(memory_ids))
+        cursor = conn.execute(f"""
+            SELECT id, content, category, importance,
+                   strength_trend, created_at
+            FROM memories
+            WHERE id IN ({placeholders})
+            AND user_id = ? AND tenant_id = ?
+        """, memory_ids + [user_id, tenant_id])
 
-            return {
-                row[0]: {
-                    'content': row[1],
-                    'category': row[2],
-                    'importance': row[3] or 0.5,
-                    'strength_trend': row[4],
-                    'created_at': row[5],
-                }
-                for row in cursor.fetchall()
+        return {
+            row[0]: {
+                'content': row[1],
+                'category': row[2],
+                'importance': row[3] or 0.5,
+                'strength_trend': row[4],
+                'created_at': row[5],
             }
-        finally:
-            conn.close()
+            for row in cursor.fetchall()
+        }
 
 
-# Global instance management
+# Global instance management (thread-safe)
 _hybrid_retriever: Optional[HybridRetriever] = None
+_retriever_lock = threading.Lock()
 
 
 def get_hybrid_retriever(
     db_path: Optional[str] = None,
     weights: Optional[Dict[str, float]] = None,
 ) -> HybridRetriever:
-    """Get or create global hybrid retriever instance."""
+    """Get or create global hybrid retriever instance (thread-safe)."""
     global _hybrid_retriever
-    if _hybrid_retriever is None:
-        if db_path is None:
-            from .server import DB_PATH
-            db_path = DB_PATH
-        _hybrid_retriever = HybridRetriever(db_path, weights)
+    with _retriever_lock:
+        if _hybrid_retriever is None:
+            if db_path is None:
+                from .server import DB_PATH
+                db_path = DB_PATH
+            _hybrid_retriever = HybridRetriever(db_path, weights)
     return _hybrid_retriever
 
 
 def reset_hybrid_retriever() -> None:
     """Reset global hybrid retriever (for testing)."""
     global _hybrid_retriever
-    _hybrid_retriever = None
+    with _retriever_lock:
+        _hybrid_retriever = None

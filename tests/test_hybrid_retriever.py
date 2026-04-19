@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from foresight_mcp.hybrid_retriever import (
     HybridRetriever,
     reset_hybrid_retriever,
+    _escape_like,
+    _validate_input,
 )
 
 
@@ -295,6 +297,42 @@ class TestRRF:
         retriever = HybridRetriever(":memory:")
         result = retriever._reciprocal_rank_fusion({}, {}, {})
         assert result == []
+
+
+class TestSecurityFixes:
+    """Test security fixes from code review."""
+
+    def test_escape_like_metacharacters(self):
+        """LIKE wildcards should be escaped to prevent injection."""
+        assert _escape_like("test%value") == "test!%value"
+        assert _escape_like("test_value") == "test!_value"
+        assert _escape_like("test!mark") == "test!!mark"
+        assert _escape_like("normal") == "normal"
+
+    def test_validate_input_rejects_empty_user_id(self):
+        with pytest.raises(ValueError, match="user_id"):
+            _validate_input("query", "")
+
+    def test_validate_input_rejects_long_user_id(self):
+        with pytest.raises(ValueError, match="user_id"):
+            _validate_input("query", "x" * 200)
+
+    def test_validate_input_rejects_long_query(self):
+        with pytest.raises(ValueError, match="query"):
+            _validate_input("x" * 600, "user")
+
+    def test_validate_input_accepts_valid(self):
+        _validate_input("anxiety management", "test_user")
+
+    def test_like_injection_safe(self, test_db):
+        """Query with LIKE metacharacters should not match everything."""
+        retriever = HybridRetriever(test_db)
+        result = retriever.search("%", "test_user", limit=5, use_graph=False, use_temporal=False)
+
+        # Should not return all memories (literal % is escaped)
+        # Either 0 results or only those with literal % in content
+        for r in result.results:
+            assert "%" in r.content
 
 
 if __name__ == '__main__':

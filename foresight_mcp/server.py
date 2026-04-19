@@ -2245,7 +2245,7 @@ def enhanced_synthesize(
     conn.close()
 
     if len(rows) < min_memories:
-        return f"Need at least {min_memories} memories for synthesis. Found {len(rows)}."
+        return f"Need at least {min_memories} memories for synthesis. Insufficient data available."
 
     # Convert rows to MemoryObjects
     memories = []
