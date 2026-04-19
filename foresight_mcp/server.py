@@ -2321,3 +2321,41 @@ def hybrid_search(
     )
 
     return json.dumps(result.to_dict(), indent=2)
+
+
+# =============================================================================
+# Reflection Engine Tools
+# =============================================================================
+
+@mcp.tool()
+def run_reflection(
+    user_id: Optional[str] = None,
+    period: str = 'weekly',
+) -> str:
+    """
+    Run a reflection analysis over user memories.
+
+    Generates structured insights by analyzing temporal trends,
+    entity patterns, and contradictions across a time period.
+
+    Args:
+        user_id: Optional user ID override
+        period: Analysis period - 'weekly' or 'monthly' (default: weekly)
+
+    Returns:
+        JSON reflection report with insights and trend summary
+    """
+    from .reflection_engine import get_reflection_engine
+
+    if period not in ('weekly', 'monthly'):
+        return "Invalid period. Must be 'weekly' or 'monthly'."
+
+    uid = user_id or USER_ID
+    engine = get_reflection_engine()
+
+    report = engine.reflect(uid, tenant_id=TENANT_ID, period=period)
+
+    if report is None:
+        return "Insufficient memories for reflection analysis."
+
+    return json.dumps(report.to_dict(), indent=2)

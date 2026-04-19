@@ -116,6 +116,14 @@ HybridSearchResult,
 get_hybrid_retriever,
 reset_hybrid_retriever,
 )
+# Reflection engine exports
+from .reflection_engine import (
+ReflectionEngine,
+ReflectionReport,
+ReflectionInsight,
+get_reflection_engine,
+reset_reflection_engine,
+)
 # Block registry exports
 from .block_registry import (
     BlockRegistry,
@@ -191,17 +199,6 @@ except ImportError:
     class ConsumerStats: pass  # type: ignore
     class ConsumerState: pass  # type: ignore
 # Hook system exports
-from .hooks import (
-    get_hook_executor,
-    HookExecutor,
-    HookRegistry,
-    HookRegistration,
-    HookType,
-    list_hooks,
-    register_hook,
-    unregister_hook,
-)
-# WebSocket exports
 from .websocket.subscriptions import (
     SubscriptionManager,
     Subscription,
@@ -343,4 +340,10 @@ __all__ = [
     "HybridSearchResult",
     "get_hybrid_retriever",
     "reset_hybrid_retriever",
+    # Reflection engine
+    "ReflectionEngine",
+    "ReflectionReport",
+    "ReflectionInsight",
+    "get_reflection_engine",
+    "reset_reflection_engine",
 ]
