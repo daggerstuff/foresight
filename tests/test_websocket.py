@@ -1,16 +1,17 @@
 """Tests for WebSocket server and subscriptions."""
-import pytest
 import asyncio
+
+import pytest
+from foresight_mcp.event_bus import EventType
 from foresight_mcp.websocket.server import (
-    WebSocketServer,
-    WebSocketHandler,
     ConnectionState,
+    WebSocketHandler,
+    WebSocketServer,
 )
 from foresight_mcp.websocket.subscriptions import (
     get_subscription_manager,
     reset_subscription_manager,
 )
-from foresight_mcp.event_bus import EventType
 
 
 @pytest.fixture

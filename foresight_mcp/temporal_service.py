@@ -7,17 +7,17 @@ Implements:
 - Batch decay update service for periodic recalculation
 """
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Literal, Optional
-from datetime import datetime, timezone
-import sqlite3
-import threading
 
 import logging
+import sqlite3
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Literal
 
 logger = logging.getLogger("foresight_temporal")
 
-FreshnessTrend = Literal['stable', 'strengthening', 'weakening', 'stale']
+FreshnessTrend = Literal["stable", "strengthening", "weakening", "stale"]
 
 
 @dataclass
@@ -57,7 +57,7 @@ class TemporalService:
         """Initialize temporal service."""
         self.db_path = db_path
 
-    def _get_decay_config(self, user_id: str, category: str = 'general') -> DecayConfig:
+    def _get_decay_config(self, user_id: str, category: str = "general") -> DecayConfig:
         """Get decay configuration for user/category."""
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -83,8 +83,8 @@ class TemporalService:
         importance: float,
         created_at: str,
         activation_count: int,
-        category: str = 'general',
-        user_id: str = 'default'
+        category: str = "general",
+        user_id: str = "default"
     ) -> tuple[float, FreshnessTrend]:
         """
         Calculate decay for a memory.
@@ -105,7 +105,7 @@ class TemporalService:
         config = self._get_decay_config(user_id, category)
 
         # Calculate hours elapsed
-        created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
         hours_elapsed = (now - created).total_seconds() / 3600
 
@@ -144,25 +144,25 @@ class TemporalService:
         """
         # Stale: Below threshold
         if importance <= config.stale_threshold:
-            return 'stale'
+            return "stale"
 
         # Strengthening: Frequent activation
         if activation_count >= config.strengthening_threshold:
-            return 'strengthening'
+            return "strengthening"
 
         # Weakening: Not accessed recently (use half-life as reference)
         # If memory hasn't been activated much and is decaying normally
         if activation_count < 2 and hours_since_creation > config.half_life_hours * 0.5:
-            return 'weakening'
+            return "weakening"
 
-        return 'stable'
+        return "stable"
 
     def on_memory_retrieved(
         self,
         memory_id: str,
         user_id: str,
         importance: float = 1.0,
-        activation_boost: Optional[float] = None
+        activation_boost: float | None = None
     ) -> tuple[float, FreshnessTrend]:
         """
         Call when a memory is retrieved/accessed.
@@ -195,12 +195,12 @@ class TemporalService:
             row = cursor.fetchone()
             if not row:
                 logger.warning(f"Memory {memory_id} not found for retrieval update")
-                return importance, 'stable'
+                return importance, "stable"
 
             current_importance, activation_count, created_at, category = row
 
             # Get config for boost
-            config = self._get_decay_config(user_id, category or 'general')
+            config = self._get_decay_config(user_id, category or "general")
             boost = activation_boost or config.activation_boost
 
             # Boost importance
@@ -210,7 +210,7 @@ class TemporalService:
             new_activation_count = activation_count + 1
 
             # Calculate trend
-            created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             now = datetime.now(timezone.utc)
             hours_elapsed = (now - created).total_seconds() / 3600
 
@@ -339,24 +339,24 @@ class TemporalService:
 
             row = cursor.fetchone()
             return {
-                'total_memories': row[0],
-                'avg_importance': row[1] or 0,
-                'stable_count': row[2] or 0,
-                'strengthening_count': row[3] or 0,
-                'weakening_count': row[4] or 0,
-                'stale_count': row[5] or 0,
-                'total_activations': row[6] or 0,
+                "total_memories": row[0],
+                "avg_importance": row[1] or 0,
+                "stable_count": row[2] or 0,
+                "strengthening_count": row[3] or 0,
+                "weakening_count": row[4] or 0,
+                "stale_count": row[5] or 0,
+                "total_activations": row[6] or 0,
             }
         finally:
             conn.close()
 
 
 # Global instance management (thread-safe)
-_temporal_service: Optional[TemporalService] = None
+_temporal_service: TemporalService | None = None
 _temporal_service_lock = threading.Lock()
 
 
-def get_temporal_service(db_path: Optional[str] = None) -> TemporalService:
+def get_temporal_service(db_path: str | None = None) -> TemporalService:
     """Get or create global temporal service instance (thread-safe)."""
     global _temporal_service
     with _temporal_service_lock:

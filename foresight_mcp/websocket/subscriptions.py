@@ -8,9 +8,8 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Set
 from enum import Enum
-import json
+from typing import Any, Callable
 
 from ..event_bus import EventType
 
@@ -38,12 +37,12 @@ class Subscription:
     """
     id: str
     connection_id: str
-    event_types: Set[EventType] = field(default_factory=set)
-    entity_filter: Optional[str] = None
+    event_types: set[EventType] = field(default_factory=set)
+    entity_filter: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     status: SubscriptionStatus = SubscriptionStatus.ACTIVE
 
-    def matches_event(self, event_type: EventType, entity_id: Optional[str] = None) -> bool:
+    def matches_event(self, event_type: EventType, entity_id: str | None = None) -> bool:
         """Check if an event matches this subscription."""
         if self.status != SubscriptionStatus.ACTIVE:
             return False
@@ -80,20 +79,20 @@ class SubscriptionManager:
     """
 
     def __init__(self):
-        self._subscriptions: Dict[str, Subscription] = {}
-        self._connection_subscriptions: Dict[str, Set[str]] = {}
+        self._subscriptions: dict[str, Subscription] = {}
+        self._connection_subscriptions: dict[str, set[str]] = {}
         self._lock = asyncio.Lock()
 
     async def subscribe(
         self,
         subscription_id: str,
         connection_id: str,
-        event_types: List[str],
-        entity_filter: Optional[str] = None,
+        event_types: list[str],
+        entity_filter: str | None = None,
     ) -> Subscription:
         """Create a new subscription."""
         # Parse event types
-        parsed_types: Set[EventType] = set()
+        parsed_types: set[EventType] = set()
         for et in event_types:
             try:
                 parsed_types.add(EventType(et))
@@ -136,7 +135,7 @@ class SubscriptionManager:
         logger.info(f"Removed subscription {subscription_id}")
         return True
 
-    async def unsubscribe_all(self, connection_id: str) -> List[str]:
+    async def unsubscribe_all(self, connection_id: str) -> list[str]:
         """Remove all subscriptions for a connection."""
         removed = []
 
@@ -153,7 +152,7 @@ class SubscriptionManager:
         logger.info(f"Removed {len(removed)} subscriptions for connection {connection_id}")
         return removed
 
-    def get_matching_subscriptions(self, event_type: EventType, entity_id: Optional[str] = None) -> List[Subscription]:
+    def get_matching_subscriptions(self, event_type: EventType, entity_id: str | None = None) -> list[Subscription]:
         """Get all subscriptions matching an event."""
         return [
             sub for sub in self._subscriptions.values()
@@ -163,9 +162,9 @@ class SubscriptionManager:
     async def send_to_subscribers(
         self,
         event_type: EventType,
-        payload: Dict[str, Any],
-        entity_id: Optional[str] = None,
-        send_func: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+        payload: dict[str, Any],
+        entity_id: str | None = None,
+        send_func: Callable[[str, dict[str, Any]], Any] | None = None,
     ) -> int:
         """
         Send event to all matching subscriptions.
@@ -201,9 +200,9 @@ class SubscriptionManager:
 
         return sent_count
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get subscription statistics."""
-        by_status: Dict[str, int] = {}
+        by_status: dict[str, int] = {}
         for sub in self._subscriptions.values():
             status = sub.status.value
             by_status[status] = by_status.get(status, 0) + 1
@@ -219,7 +218,7 @@ class SubscriptionManager:
 # Global Subscription Manager
 # =============================================================================
 
-_subscription_manager: Optional[SubscriptionManager] = None
+_subscription_manager: SubscriptionManager | None = None
 
 
 def get_subscription_manager() -> SubscriptionManager:

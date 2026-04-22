@@ -9,12 +9,12 @@ Supports:
 - Dead letter queue processing
 """
 from __future__ import annotations
+
 import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
-from enum import Enum
+from typing import Any, Callable
 
 
 @dataclass
@@ -23,10 +23,10 @@ class ConsumerRecord:
     topic: str
     partition: int
     offset: int
-    key: Optional[str]
-    value: Dict[str, Any]
+    key: str | None
+    value: dict[str, Any]
     timestamp: datetime
-    headers: Dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -34,7 +34,7 @@ class ConsumerStats:
     """Statistics for consumer processing."""
     records_processed: int = 0
     records_failed: int = 0
-    last_offset: Dict[int, int] = field(default_factory=dict)  # partition -> offset
+    last_offset: dict[int, int] = field(default_factory=dict)  # partition -> offset
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -54,7 +54,7 @@ class ConsumerStats:
 class ConsumerState:
     """Manages consumer state (offsets, etc.)."""
 
-    def __init__(self, state_file: Optional[str] = None):
+    def __init__(self, state_file: str | None = None):
         """Initialize consumer state.
 
         Args:
@@ -64,18 +64,18 @@ class ConsumerState:
             state_file = str(Path.home() / ".foresight" / "consumer_state.json")
 
         self.state_file = state_file
-        self._offsets: Dict[str, Dict[int, int]] = {}  # topic -> {partition -> offset}
+        self._offsets: dict[str, dict[int, int]] = {}  # topic -> {partition -> offset}
         self._load_state()
 
     def _load_state(self) -> None:
         """Load state from file."""
         try:
             if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
+                with open(self.state_file, "r") as f:
                     data = json.load(f)
                     self._offsets = {
                         topic: {int(k): v for k, v in partitions.items()}
-                        for topic, partitions in data.get('offsets', {}).items()
+                        for topic, partitions in data.get("offsets", {}).items()
                     }
         except Exception:
             self._offsets = {}
@@ -84,12 +84,12 @@ class ConsumerState:
         """Save state to file."""
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            with open(self.state_file, 'w') as f:
-                json.dump({'offsets': self._offsets}, f, indent=2)
+            with open(self.state_file, "w") as f:
+                json.dump({"offsets": self._offsets}, f, indent=2)
         except Exception:
             pass
 
-    def get_offset(self, topic: str, partition: int) -> Optional[int]:
+    def get_offset(self, topic: str, partition: int) -> int | None:
         """Get last committed offset for topic/partition."""
         return self._offsets.get(topic, {}).get(partition)
 
@@ -99,7 +99,7 @@ class ConsumerState:
             self._offsets[topic] = {}
         self._offsets[topic][partition] = offset
 
-    def get_all_offsets(self) -> Dict[str, Dict[int, int]]:
+    def get_all_offsets(self) -> dict[str, dict[int, int]]:
         """Get all offsets."""
         return self._offsets.copy()
 
@@ -115,7 +115,7 @@ class KafkaConsumerGroup:
         self,
         bootstrap_servers: str = "localhost:9092",
         group_id: str = "foresight-consumer",
-        topics: List[str] = None,
+        topics: list[str] = None,
         auto_commit: bool = True,
         auto_commit_interval: int = 5000,  # ms
         max_poll_records: int = 500,
@@ -147,8 +147,8 @@ class KafkaConsumerGroup:
         self._running = False
         self._state = ConsumerState()
         self._stats = ConsumerStats()
-        self._handlers: List[Callable[[ConsumerRecord], None]] = []
-        self._error_handlers: List[Callable[[Exception, ConsumerRecord], None]] = []
+        self._handlers: list[Callable[[ConsumerRecord], None]] = []
+        self._error_handlers: list[Callable[[Exception, ConsumerRecord], None]] = []
 
     def _get_consumer(self):
         """Lazy-load Kafka consumer."""
@@ -157,16 +157,16 @@ class KafkaConsumerGroup:
                 from kafka import KafkaConsumer
                 self._consumer = KafkaConsumer(
                     *self.topics,
-                    bootstrap_servers=self.bootstrap_servers.split(','),
+                    bootstrap_servers=self.bootstrap_servers.split(","),
                     group_id=self.group_id,
-                    auto_offset_reset='earliest',
+                    auto_offset_reset="earliest",
                     enable_auto_commit=self.auto_commit,
                     auto_commit_interval_ms=self.auto_commit_interval,
                     max_poll_records=self.max_poll_records,
                     session_timeout_ms=self.session_timeout,
                     heartbeat_interval_ms=self.heartbeat_interval,
-                    value_deserializer=lambda v: json.loads(v.decode('utf-8')) if v else None,
-                    key_deserializer=lambda k: k.decode('utf-8') if k else None,
+                    value_deserializer=lambda v: json.loads(v.decode("utf-8")) if v else None,
+                    key_deserializer=lambda k: k.decode("utf-8") if k else None,
                 )
             except ImportError:
                 raise ImportError(
@@ -182,7 +182,7 @@ class KafkaConsumerGroup:
         """Add error handler."""
         self._error_handlers.append(handler)
 
-    def start(self, topics: Optional[List[str]] = None) -> None:
+    def start(self, topics: list[str] | None = None) -> None:
         """
         Start consuming from topics.
 

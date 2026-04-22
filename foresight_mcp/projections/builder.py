@@ -3,19 +3,18 @@ Projection Builder - Builds and materializes audit trail projections
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import BaseProjection
 from .reports import (
-    MemoryTimeline,
-    UserActivityReport,
-    BlockChangeLog,
     AccessLog,
     AnomalyReport,
+    BlockChangeLog,
+    MemoryTimeline,
+    UserActivityReport,
 )
 
 
@@ -27,7 +26,7 @@ class ProjectionBuilder:
     Each projection serves a specific compliance use case.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         """Initialize projection builder.
 
         Args:
@@ -72,11 +71,11 @@ class ProjectionBuilder:
 
     def build_all(
         self,
-        events: List[Dict[str, Any]],
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        user_filter: Optional[str] = None
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        events: list[dict[str, Any]],
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        user_filter: str | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
         """Build all projections from events.
 
         Args:
@@ -104,14 +103,14 @@ class ProjectionBuilder:
 
         return results
 
-    def get_report(self, name: str) -> Optional[BaseProjection]:
+    def get_report(self, name: str) -> BaseProjection | None:
         """Get a report by name."""
         return self._reports.get(name)
 
     def export_csv(
         self,
         name: str,
-        events: List[Dict[str, Any]],
+        events: list[dict[str, Any]],
         output_path: str
     ) -> str:
         """Build and export a projection to CSV.
@@ -139,7 +138,7 @@ class ProjectionBuilder:
     def export_json(
         self,
         name: str,
-        events: List[Dict[str, Any]],
+        events: list[dict[str, Any]],
         output_path: str,
         indent: int = 2
     ) -> str:
@@ -166,11 +165,11 @@ class ProjectionBuilder:
 
         return output_path
 
-    def list_reports(self) -> List[str]:
+    def list_reports(self) -> list[str]:
         """List available report names."""
         return list(self._reports.keys())
 
-    def get_report_summary(self, events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def get_report_summary(self, events: list[dict[str, Any]]) -> dict[str, Any]:
         """Get summary statistics for all reports.
 
         Args:

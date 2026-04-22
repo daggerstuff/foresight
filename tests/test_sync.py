@@ -1,17 +1,16 @@
 """Tests for offline-first synchronization."""
-import pytest
 import os
 import tempfile
 from datetime import datetime, timezone
 
+import pytest
 from foresight_mcp.sync import (
-    SyncManager,
-    SyncStatus,
-    OperationType,
     Operation,
     OperationQueue,
+    OperationType,
+    SyncManager,
     SyncProgress,
-    get_sync_manager,
+    SyncStatus,
     reset_sync_manager,
 )
 
@@ -19,7 +18,7 @@ from foresight_mcp.sync import (
 @pytest.fixture
 def temp_db():
     """Create temporary database file."""
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
     yield db_path
     if os.path.exists(db_path):

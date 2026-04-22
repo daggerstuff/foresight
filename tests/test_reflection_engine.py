@@ -1,12 +1,13 @@
 """
 Tests for reflection engine.
 """
-import pytest
 import sqlite3
-import tempfile
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
 import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -26,7 +27,7 @@ def cleanup():
 
 def create_test_db():
     """Create a temp DB with schema and test data."""
-    fd, path = tempfile.mkstemp(suffix='.db')
+    fd, path = tempfile.mkstemp(suffix=".db")
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
 
@@ -137,7 +138,7 @@ def create_test_db():
     )
     conn.execute(
         "INSERT INTO entity_relationships (source_entity_id, target_entity_id, relationship_type, user_id) VALUES (?, ?, ?, ?)",
-        ("entity_stress", "entity_therapy", 'supports', uid),
+        ("entity_stress", "entity_therapy", "supports", uid),
     )
 
     conn.commit()
@@ -161,59 +162,59 @@ class TestReflectionEngine:
 
     def test_reflect_returns_report(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         assert report is not None
         assert isinstance(report, ReflectionReport)
-        assert report.period == 'weekly'
+        assert report.period == "weekly"
         assert report.memories_analyzed >= 5
 
     def test_reflect_insufficient_data(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("nonexistent_user", period='weekly')
+        report = engine.reflect("nonexistent_user", period="weekly")
 
         assert report is None
 
     def test_reflect_generates_insights(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         assert len(report.insights) > 0
         # All insights should have evidence
         for insight in report.insights:
             assert len(insight.evidence_ids) > 0
             assert insight.confidence > 0
-            assert insight.insight_type in ('trend', 'pattern', 'warning', 'breakthrough', 'contradiction')
+            assert insight.insight_type in ("trend", "pattern", "warning", "breakthrough", "contradiction")
 
     def test_trend_summary_structure(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         ts = report.trend_summary
-        assert 'overall' in ts
-        assert 'trend_counts' in ts
-        assert 'total_memories' in ts
-        assert ts['overall'] in ('improving', 'declining', 'stable')
+        assert "overall" in ts
+        assert "trend_counts" in ts
+        assert "total_memories" in ts
+        assert ts["overall"] in ("improving", "declining", "stable")
 
     def test_improving_trend_detected(self, test_db):
         """With 3 strengthening memories out of 6, should detect improving."""
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         # 3/6 = 50% strengthening, should be 'improving'
-        assert report.trend_summary['overall'] == 'improving'
+        assert report.trend_summary["overall"] == "improving"
 
     def test_entity_summary_structure(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         es = report.entity_summary
-        assert 'entity_type_counts' in es
-        assert 'top_connected_entities' in es
+        assert "entity_type_counts" in es
+        assert "top_connected_entities" in es
 
     def test_report_stored_as_memory(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         # Verify the report was stored
         conn = sqlite3.connect(test_db)
@@ -224,41 +225,41 @@ class TestReflectionEngine:
         conn.close()
 
         assert row is not None
-        assert row[2] == 'reflection'
-        assert 'Reflection' in row[1]
+        assert row[2] == "reflection"
+        assert "Reflection" in row[1]
 
     def test_report_to_dict(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         d = report.to_dict()
-        assert 'report_id' in d
-        assert 'insights' in d
-        assert 'trend_summary' in d
-        assert 'entity_summary' in d
-        assert len(d['insights']) > 0
+        assert "report_id" in d
+        assert "insights" in d
+        assert "trend_summary" in d
+        assert "entity_summary" in d
+        assert len(d["insights"]) > 0
 
     def test_monthly_reflect(self, test_db):
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='monthly')
+        report = engine.reflect("test_user", period="monthly")
 
         assert report is not None
-        assert report.period == 'monthly'
+        assert report.period == "monthly"
 
     def test_content_anchored_insights(self, test_db):
         """Insights should reference actual memory content, not just counts."""
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         # At least one insight should contain content from actual memories
         has_content_evidence = False
         for insight in report.insights:
-            if insight.insight_type == 'trend':
+            if insight.insight_type == "trend":
                 # Content-anchored insights should have "Progress in" prefix
-                if insight.summary.startswith('Progress in'):
+                if insight.summary.startswith("Progress in"):
                     has_content_evidence = True
                     # The summary should contain an excerpt from actual memory content
-                    assert len(insight.summary) > len('Progress in general: ')
+                    assert len(insight.summary) > len("Progress in general: ")
                     # evidence_ids should reference specific memories, not generic first-5
                     assert len(insight.evidence_ids) >= 1
 
@@ -267,22 +268,22 @@ class TestReflectionEngine:
     def test_insights_have_specific_evidence_ids(self, test_db):
         """Content-anchored insights should point to specific memory IDs, not generic slices."""
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         # Strengthening/decline insights should have evidence_ids pointing to actual memories
         for insight in report.insights:
-            if insight.metadata.get('trend') in ('strengthening', 'weakening'):
+            if insight.metadata.get("trend") in ("strengthening", "weakening"):
                 # Should reference a single specific memory, not a slice of first N
                 assert len(insight.evidence_ids) >= 1
                 # The referenced ID should be one of the actual memory IDs
-                all_ids = {'mem_1', 'mem_2', 'mem_3', 'mem_4', 'mem_5', 'mem_6'}
+                all_ids = {"mem_1", "mem_2", "mem_3", "mem_4", "mem_5", "mem_6"}
                 for eid in insight.evidence_ids:
                     assert eid in all_ids
 
     def test_gist_contains_insight_summaries(self, test_db):
         """Stored reflection memory gist should contain insight summaries."""
         engine = ReflectionEngine(test_db)
-        report = engine.reflect("test_user", period='weekly')
+        report = engine.reflect("test_user", period="weekly")
 
         conn = sqlite3.connect(test_db)
         row = conn.execute(
@@ -297,8 +298,8 @@ class TestReflectionEngine:
         assert len(gist) > 20  # More than just 'improving' or 'unknown'
         # Should contain semicolons if multiple insights
         if len(report.insights) > 1:
-            assert ';' in gist
+            assert ";" in gist
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

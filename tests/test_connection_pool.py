@@ -1,12 +1,8 @@
 """Tests for the SQLite ConnectionPool."""
-import sqlite3
-import tempfile
 import threading
 import time
-from pathlib import Path
 
 import pytest
-
 from foresight_mcp.connection_pool import (
     ConnectionPool,
     PooledConnection,

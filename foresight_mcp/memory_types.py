@@ -3,17 +3,17 @@ Foresight Memory Types - Rich memory objects with psychological safety features.
 Restored from src/lib/ai/memory/types.ts
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import List, Optional, Literal
-from datetime import datetime
-import uuid
 
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Literal
 
 # Memory Scope: Defines the logical boundary of the memory
-MemoryScope = Literal['session', 'arc', 'trait', 'fact']
+MemoryScope = Literal["session", "arc", "trait", "fact"]
 
 # Retention Policy: Defines how long the memory is kept in active vector space
-RetentionPolicy = Literal['ephemeral', 'short_term', 'long_term', 'permanent']
+RetentionPolicy = Literal["ephemeral", "short_term", "long_term", "permanent"]
 
 
 @dataclass
@@ -79,13 +79,13 @@ class MemoryObject:
     scope: MemoryScope
     retention: RetentionPolicy
     content: str
-    tags: List[str] = field(default_factory=list)
-    synthesized_from: List[str] = field(default_factory=list)  # IDs of source memories
+    tags: list[str] = field(default_factory=list)
+    synthesized_from: list[str] = field(default_factory=list)  # IDs of source memories
     is_ghost: bool = False
-    emotional_context: Optional[EmotionalMetadata] = None
-    metrics: Optional[EmpathyMetrics] = None
-    vector_id: Optional[str] = None  # ID in the vector database
-    gist: Optional[str] = None  # 10-word summary for Ghost Nodes
+    emotional_context: EmotionalMetadata | None = None
+    metrics: EmpathyMetrics | None = None
+    vector_id: str | None = None  # ID in the vector database
+    gist: str | None = None  # 10-word summary for Ghost Nodes
 
     def to_dict(self) -> dict:
         result = {
@@ -136,8 +136,8 @@ class MemoryObject:
     @classmethod
     def create(cls, content: str, scope: MemoryScope = "session",
                retention: RetentionPolicy = "short_term",
-               emotional_context: Optional[EmotionalMetadata] = None,
-               metrics: Optional[EmpathyMetrics] = None) -> MemoryObject:
+               emotional_context: EmotionalMetadata | None = None,
+               metrics: EmpathyMetrics | None = None) -> MemoryObject:
         """Factory method to create a new memory with auto-generated ID and timestamp."""
         return cls(
             id=str(uuid.uuid4()),
@@ -160,7 +160,7 @@ class StanceShift:
     old_value: float
     new_value: float
     delta: float
-    evidence_ids: List[str]  # IDs of memories showing the shift
+    evidence_ids: list[str]  # IDs of memories showing the shift
     confidence: float
 
     def to_dict(self) -> dict:
@@ -180,9 +180,9 @@ class SynthesisResult:
     Synthesis Result: The output of a reconciliation pass.
     Restored from src/lib/ai/memory/types.ts
     """
-    merged_ids: List[str]
+    merged_ids: list[str]
     new_memory_id: str
-    stance_shifts: List[StanceShift]
+    stance_shifts: list[StanceShift]
     compression_ratio: float
 
     def to_dict(self) -> dict:
@@ -195,7 +195,7 @@ class SynthesisResult:
 
 
 # Gate Decision Levels
-GateDecision = Literal['auto', 'passive', 'active', 'block']
+GateDecision = Literal["auto", "passive", "active", "block"]
 
 
 @dataclass
@@ -206,7 +206,7 @@ class GateResult:
     """
     decision: GateDecision
     reason: str
-    suggested_tags: List[str]
+    suggested_tags: list[str]
     anomaly_detected: bool = False  # Renamed from crisis_detected for domain-agnostic naming
 
     def to_dict(self) -> dict:

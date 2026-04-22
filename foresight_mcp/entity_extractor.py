@@ -23,21 +23,22 @@ Relationship Types:
 - created: Entity created another entity
 """
 from __future__ import annotations
+
+import hashlib
 import json
 import logging
 import os
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Literal
-import hashlib
+from typing import Any, Literal
 
 logger = logging.getLogger("foresight_entity_extractor")
 
-EntityType = Literal['person', 'place', 'concept', 'event', 'emotion', 'object']
+EntityType = Literal["person", "place", "concept", "event", "emotion", "object"]
 RelationshipType = Literal[
-    'mentions', 'located_at', 'experienced', 'caused',
-    'relates_to', 'contradicts', 'supports', 'part_of', 'created'
+    "mentions", "located_at", "experienced", "caused",
+    "relates_to", "contradicts", "supports", "part_of", "created"
 ]
 
 
@@ -47,31 +48,31 @@ class Entity:
     id: str
     name: str
     entity_type: EntityType
-    description: Optional[str] = None
-    properties: Dict[str, Any] = field(default_factory=dict)
+    description: str | None = None
+    properties: dict[str, Any] = field(default_factory=dict)
     confidence: float = 1.0
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            'id': self.id,
-            'name': self.name,
-            'entity_type': self.entity_type,
-            'description': self.description,
-            'properties': self.properties,
-            'confidence': self.confidence,
+            "id": self.id,
+            "name": self.name,
+            "entity_type": self.entity_type,
+            "description": self.description,
+            "properties": self.properties,
+            "confidence": self.confidence,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Entity':
         """Create from dictionary."""
         return cls(
-            id=data['id'],
-            name=data['name'],
-            entity_type=data['entity_type'],  # type: ignore
-            description=data.get('description'),
-            properties=data.get('properties', {}),
-            confidence=data.get('confidence', 1.0),
+            id=data["id"],
+            name=data["name"],
+            entity_type=data["entity_type"],  # type: ignore
+            description=data.get("description"),
+            properties=data.get("properties", {}),
+            confidence=data.get("confidence", 1.0),
         )
 
 
@@ -82,41 +83,41 @@ class Relationship:
     target_entity_id: str
     relationship_type: RelationshipType
     confidence: float = 1.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            'source_entity_id': self.source_entity_id,
-            'target_entity_id': self.target_entity_id,
-            'relationship_type': self.relationship_type,
-            'confidence': self.confidence,
-            'metadata': self.metadata,
+            "source_entity_id": self.source_entity_id,
+            "target_entity_id": self.target_entity_id,
+            "relationship_type": self.relationship_type,
+            "confidence": self.confidence,
+            "metadata": self.metadata,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Relationship':
         """Create from dictionary."""
         return cls(
-            source_entity_id=data['source_entity_id'],
-            target_entity_id=data['target_entity_id'],
-            relationship_type=data['relationship_type'],  # type: ignore
-            confidence=data.get('confidence', 1.0),
-            metadata=data.get('metadata', {}),
+            source_entity_id=data["source_entity_id"],
+            target_entity_id=data["target_entity_id"],
+            relationship_type=data["relationship_type"],  # type: ignore
+            confidence=data.get("confidence", 1.0),
+            metadata=data.get("metadata", {}),
         )
 
 
 @dataclass
 class ExtractionResult:
     """Result of entity and relationship extraction."""
-    entities: List[Entity]
-    relationships: List[Relationship]
+    entities: list[Entity]
+    relationships: list[Relationship]
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            'entities': [e.to_dict() for e in self.entities],
-            'relationships': [r.to_dict() for r in self.relationships],
+            "entities": [e.to_dict() for e in self.entities],
+            "relationships": [r.to_dict() for r in self.relationships],
         }
 
 
@@ -169,7 +170,7 @@ Output (raw JSON only, no markdown):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         model: str = "claude-3-haiku-20240307",
         max_tokens: int = 1024,
         temperature: float = 0.1,
@@ -210,7 +211,7 @@ Output (raw JSON only, no markdown):
         if not content.strip():
             return ExtractionResult(entities=[], relationships=[])
 
-        api_key = self.api_key or os.environ.get('OPENAI_API_KEY') or os.environ.get('ANTHROPIC_API_KEY')
+        api_key = self.api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
         if api_key:
             try:
                 return await self.extract_with_llm(content)
@@ -229,28 +230,28 @@ Output (raw JSON only, no markdown):
 
         In production, replace with actual LLM-based extraction.
         """
-        entities: List[Entity] = []
-        relationships: List[Relationship] = []
+        entities: list[Entity] = []
+        relationships: list[Relationship] = []
 
         # Common emotion patterns
         emotion_patterns = {
-            'anxiety': {'intensity': 'moderate'},
-            'anxious': {'intensity': 'moderate'},
-            'stress': {'intensity': 'moderate'},
-            'depression': {'intensity': 'high'},
-            'happy': {'intensity': 'positive'},
-            'sad': {'intensity': 'negative'},
-            'angry': {'intensity': 'negative'},
-            'fear': {'intensity': 'high'},
-            'joy': {'intensity': 'positive'},
-            'anger': {'intensity': 'negative'},
-            'excitement': {'intensity': 'positive'},
+            "anxiety": {"intensity": "moderate"},
+            "anxious": {"intensity": "moderate"},
+            "stress": {"intensity": "moderate"},
+            "depression": {"intensity": "high"},
+            "happy": {"intensity": "positive"},
+            "sad": {"intensity": "negative"},
+            "angry": {"intensity": "negative"},
+            "fear": {"intensity": "high"},
+            "joy": {"intensity": "positive"},
+            "anger": {"intensity": "negative"},
+            "excitement": {"intensity": "positive"},
         }
 
         content_lower = content.lower()
 
         # Tokenize for negation detection
-        negation_words = {'not', "n't", 'no', 'never', 'neither', 'nor', 'without', 'hardly', 'barely'}
+        negation_words = {"not", "n't", "no", "never", "neither", "nor", "without", "hardly", "barely"}
         tokens = re.findall(r"\w+|\w+'\w+|[^\w\s]", content_lower)
 
         def _is_negated(idx: int) -> bool:
@@ -259,17 +260,17 @@ Output (raw JSON only, no markdown):
 
         # Extract emotion entities (with negation handling)
         for emotion, props in emotion_patterns.items():
-            match = re.search(rf'\b{re.escape(emotion)}\b', content_lower)
+            match = re.search(rf"\b{re.escape(emotion)}\b", content_lower)
             if not match:
                 continue
             token_idx = next((i for i, t in enumerate(tokens) if t == emotion), None)
             negated = token_idx is not None and _is_negated(token_idx)
             effective_name = f"not_{emotion}" if negated else emotion
-            effective_props = {'intensity': 'negated', 'negates': emotion} if negated else props
+            effective_props = {"intensity": "negated", "negates": emotion} if negated else props
             entity = Entity(
-                id=self._generate_entity_id(effective_name, 'emotion'),
+                id=self._generate_entity_id(effective_name, "emotion"),
                 name=effective_name,
-                entity_type='emotion',
+                entity_type="emotion",
                 description=f"{'Negated ' if negated else ''}Emotion mentioned in text",
                 properties=effective_props,
                 confidence=0.6 if negated else 0.7,
@@ -278,22 +279,22 @@ Output (raw JSON only, no markdown):
 
         # Extract concept entities (common therapeutic concepts)
         concept_patterns = {
-            'therapy': {'category': 'treatment'},
-            'CBT': {'category': 'technique'},
-            'meditation': {'category': 'practice'},
-            'mindfulness': {'category': 'practice'},
-            'sleep': {'category': 'health'},
-            'work': {'category': 'life_area'},
-            'family': {'category': 'relationship'},
-            'health': {'category': 'life_area'},
+            "therapy": {"category": "treatment"},
+            "CBT": {"category": "technique"},
+            "meditation": {"category": "practice"},
+            "mindfulness": {"category": "practice"},
+            "sleep": {"category": "health"},
+            "work": {"category": "life_area"},
+            "family": {"category": "relationship"},
+            "health": {"category": "life_area"},
         }
 
         for concept, props in concept_patterns.items():
-            if re.search(rf'\b{re.escape(concept.lower())}\b', content_lower):
+            if re.search(rf"\b{re.escape(concept.lower())}\b", content_lower):
                 entity = Entity(
-                    id=self._generate_entity_id(concept, 'concept'),
+                    id=self._generate_entity_id(concept, "concept"),
                     name=concept,
-                    entity_type='concept',
+                    entity_type="concept",
                     description="Concept mentioned in text",
                     properties=props,
                     confidence=0.6,
@@ -407,12 +408,12 @@ Output (raw JSON only, no markdown):
 
 
 # Global instance management
-_entity_extractor: Optional[EntityExtractor] = None
+_entity_extractor: EntityExtractor | None = None
 _entity_extractor_lock = threading.Lock()
 
 
 def get_entity_extractor(
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     model: str = "claude-3-haiku-20240307",
 ) -> EntityExtractor:
     """Get or create global entity extractor instance (thread-safe)."""

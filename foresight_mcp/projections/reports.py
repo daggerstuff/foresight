@@ -6,9 +6,8 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from .base import BaseProjection
 
@@ -28,7 +27,7 @@ class MemoryTimeline(BaseProjection):
     name: str = "Memory Timeline"
     description: str = "Chronological view of all memory operations"
 
-    def build(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Build timeline from events."""
         timeline = []
 
@@ -56,7 +55,7 @@ class MemoryTimeline(BaseProjection):
             return text[:max_len] + "..."
         return text
 
-    def to_csv(self, data: List[Dict[str, Any]]) -> str:
+    def to_csv(self, data: list[dict[str, Any]]) -> str:
         """Convert timeline to CSV."""
         output = io.StringIO()
         fieldnames = ["event_id", "event_type", "timestamp", "actor", "entity_id", "content_preview"]
@@ -78,9 +77,9 @@ class UserActivityReport(BaseProjection):
     name: str = "User Activity Report"
     description: str = "Per-user memory operations"
 
-    def build(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Build user activity report."""
-        by_user: Dict[str, List[Dict[str, Any]]] = {}
+        by_user: dict[str, list[dict[str, Any]]] = {}
 
         for event in events:
             if not event.get("event_type", "").startswith("memory."):
@@ -113,7 +112,7 @@ class UserActivityReport(BaseProjection):
         report.sort(key=lambda x: x["total_events"], reverse=True)
         return report
 
-    def to_csv(self, data: List[Dict[str, Any]]) -> str:
+    def to_csv(self, data: list[dict[str, Any]]) -> str:
         """Convert to CSV."""
         output = io.StringIO()
         fieldnames = ["user_id", "total_events", "first_activity", "last_activity"]
@@ -143,7 +142,7 @@ class BlockChangeLog(BaseProjection):
     name: str = "Block Change Log"
     description: str = "All changes to memory blocks"
 
-    def build(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Build block change log."""
         changes = []
 
@@ -165,7 +164,7 @@ class BlockChangeLog(BaseProjection):
         changes.sort(key=lambda x: x.get("timestamp", ""))
         return changes
 
-    def to_csv(self, data: List[Dict[str, Any]]) -> str:
+    def to_csv(self, data: list[dict[str, Any]]) -> str:
         """Convert to CSV."""
         output = io.StringIO()
         fieldnames = ["event_id", "event_type", "timestamp", "actor", "block_label", "change_summary"]
@@ -195,7 +194,7 @@ class AccessLog(BaseProjection):
     name: str = "Access Log"
     description: str = "Memory access audit trail"
 
-    def build(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Build access log."""
         accesses = []
 
@@ -214,7 +213,7 @@ class AccessLog(BaseProjection):
         accesses.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return accesses
 
-    def to_csv(self, data: List[Dict[str, Any]]) -> str:
+    def to_csv(self, data: list[dict[str, Any]]) -> str:
         """Convert to CSV."""
         output = io.StringIO()
         fieldnames = ["event_id", "timestamp", "actor", "memory_id", "query_context"]
@@ -236,7 +235,7 @@ class AnomalyReport(BaseProjection):
     name: str = "Anomaly Report"
     description: str = "Detected anomalies and actions"
 
-    def build(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Build anomaly report."""
         anomalies = []
 
@@ -258,7 +257,7 @@ class AnomalyReport(BaseProjection):
         anomalies.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return anomalies
 
-    def to_csv(self, data: List[Dict[str, Any]]) -> str:
+    def to_csv(self, data: list[dict[str, Any]]) -> str:
         """Convert to CSV."""
         output = io.StringIO()
         fieldnames = ["event_id", "timestamp", "actor", "category", "risk_level", "entity_id"]

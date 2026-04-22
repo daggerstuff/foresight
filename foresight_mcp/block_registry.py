@@ -3,11 +3,11 @@ Memory Block Registry and Schema System
 Composable memory blocks with dynamic registration and validation.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Callable, Dict, List, Literal
 from enum import Enum
-
+from typing import Callable
 
 # =============================================================================
 # Enums
@@ -69,8 +69,8 @@ class MemoryBlockSchema:
     injection_point: InjectionPoint = InjectionPoint.PRE_PROMPT
     scope: BlockScope = BlockScope.SESSION
     char_limit: int = 0
-    validator: Optional[Callable[[str], bool]] = None
-    metadata: Dict = field(default_factory=dict)
+    validator: Callable[[str], bool] | None = None
+    metadata: dict = field(default_factory=dict)
 
     def validate_content(self, content: str) -> tuple[bool, str]:
         """
@@ -182,7 +182,7 @@ class BlockRegistry:
     Singleton pattern - use get_registry() to get instance.
     """
 
-    _instance: Optional["BlockRegistry"] = None
+    _instance: "BlockRegistry" | None = None
 
     def __new__(cls) -> "BlockRegistry":
         if cls._instance is None:
@@ -193,8 +193,8 @@ class BlockRegistry:
     def __init__(self):
         if self._initialized:
             return
-        self._schemas: Dict[str, MemoryBlockSchema] = {}
-        self._blocks: Dict[str, MemoryBlock] = {}
+        self._schemas: dict[str, MemoryBlockSchema] = {}
+        self._blocks: dict[str, MemoryBlock] = {}
         self._initialized = True
 
     def register(self, schema: MemoryBlockSchema) -> None:
@@ -203,11 +203,11 @@ class BlockRegistry:
             raise ValueError(f"Block schema '{schema.label}' already registered")
         self._schemas[schema.label] = schema
 
-    def get_schema(self, label: str) -> Optional[MemoryBlockSchema]:
+    def get_schema(self, label: str) -> MemoryBlockSchema | None:
         """Get schema by label."""
         return self._schemas.get(label)
 
-    def list_schemas(self) -> List[MemoryBlockSchema]:
+    def list_schemas(self) -> list[MemoryBlockSchema]:
         """List all registered schemas."""
         return list(self._schemas.values())
 
@@ -218,7 +218,7 @@ class BlockRegistry:
             raise ValueError(f"Block schema '{label}' not found")
         return MemoryBlock(schema=schema, content=content)
 
-    def get_block(self, label: str) -> Optional[MemoryBlock]:
+    def get_block(self, label: str) -> MemoryBlock | None:
         """Get block instance by label."""
         return self._blocks.get(label)
 
@@ -226,7 +226,7 @@ class BlockRegistry:
         """Set a block instance."""
         self._blocks[label] = block
 
-    def list_blocks(self) -> List[MemoryBlock]:
+    def list_blocks(self) -> list[MemoryBlock]:
         """List all block instances."""
         return list(self._blocks.values())
 

@@ -12,12 +12,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union, Coroutine
 from enum import Enum
-import sqlite3
+from pathlib import Path
+from typing import Any, Callable, Coroutine, Union
+
 import httpx
 
 from .event_bus import Event, EventType, get_event_bus
@@ -59,10 +60,10 @@ class HookRegistration:
     event_type: EventType
     hook_type: HookType
     handler: Union[Callable, str]  # str = URL
-    condition: Optional[Callable[[Event], bool]] = None
+    condition: Callable[[Event], bool] | None = None
     retry_count: int = 3
     timeout: int = 30
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -94,7 +95,7 @@ class HookRegistry:
     Stores hook registrations in SQLite for durability across sessions.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         """Initialize hook registry.
 
         Args:
@@ -163,7 +164,7 @@ class HookRegistry:
         conn.close()
         return cursor.rowcount > 0
 
-    def get_by_event_type(self, event_type: EventType) -> List[HookRegistration]:
+    def get_by_event_type(self, event_type: EventType) -> list[HookRegistration]:
         """Get all registered hooks for an event type."""
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute(
@@ -173,7 +174,7 @@ class HookRegistry:
         conn.close()
         return [self._row_to_hook(row) for row in rows]
 
-    def get_all(self) -> List[HookRegistration]:
+    def get_all(self) -> list[HookRegistration]:
         """Get all registered hooks."""
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute("SELECT * FROM hooks").fetchall()
@@ -213,15 +214,15 @@ class HookExecutor:
     - Error handling with retries
     """
 
-    def __init__(self, registry: Optional[HookRegistry] = None):
+    def __init__(self, registry: HookRegistry | None = None):
         """Initialize hook executor.
 
         Args:
             registry: Hook registry for persistence (default: global registry)
         """
         self._registry = registry or HookRegistry()
-        self._callable_handlers: Dict[EventType, List[Callable[[Event], None]]] = {}
-        self._async_handlers: Dict[EventType, List[Callable[[Event], Coroutine[Any, Any, Any]]]] = {}
+        self._callable_handlers: dict[EventType, list[Callable[[Event], None]]] = {}
+        self._async_handlers: dict[EventType, list[Callable[[Event], Coroutine[Any, Any, Any]]]] = {}
 
         # Subscribe to event bus
         self._event_bus = get_event_bus()
@@ -328,7 +329,7 @@ class HookExecutor:
         url: str,
         retry_count: int = 3,
         timeout: int = 30,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: dict[str, Any] | None = None
     ) -> HookRegistration:
         """Register an HTTP webhook hook."""
         hook_id = hashlib.sha256(f"{name}:{url}".encode()).hexdigest()[:16]
@@ -350,7 +351,7 @@ class HookExecutor:
 # Global Hook Executor
 # =============================================================================
 
-_hook_executor: Optional[HookExecutor] = None
+_hook_executor: HookExecutor | None = None
 
 
 def get_hook_executor() -> HookExecutor:
@@ -403,7 +404,7 @@ def register_hook(
     name: str,
     event_type: str,
     hook_type: str = "http",
-    url: Optional[str] = None,
+    url: str | None = None,
     retry_count: int = 3,
     timeout: int = 30
 ) -> str:

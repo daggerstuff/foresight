@@ -4,12 +4,10 @@ Base projection class for audit trail reports
 from __future__ import annotations
 
 import json
-import sqlite3
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -25,25 +23,25 @@ class BaseProjection(ABC):
     description: str
 
     @abstractmethod
-    def build(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Build projection from events."""
         pass
 
     @abstractmethod
-    def to_csv(self, data: List[Dict[str, Any]]) -> str:
+    def to_csv(self, data: list[dict[str, Any]]) -> str:
         """Convert projection data to CSV."""
         pass
 
-    def to_json(self, data: List[Dict[str, Any]], indent: int = 2) -> str:
+    def to_json(self, data: list[dict[str, Any]], indent: int = 2) -> str:
         """Convert projection data to JSON."""
         return json.dumps(data, indent=indent)
 
     def filter_by_date(
         self,
-        data: List[Dict[str, Any]],
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None
-    ) -> List[Dict[str, Any]]:
+        data: list[dict[str, Any]],
+        start: datetime | None = None,
+        end: datetime | None = None
+    ) -> list[dict[str, Any]]:
         """Filter data by date range."""
         if not start and not end:
             return data
@@ -63,9 +61,9 @@ class BaseProjection(ABC):
 
     def filter_by_user(
         self,
-        data: List[Dict[str, Any]],
-        user_id: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        data: list[dict[str, Any]],
+        user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Filter data by user ID."""
         if not user_id:
             return data

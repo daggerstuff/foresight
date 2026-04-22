@@ -1,22 +1,22 @@
 """
 Tests for entity extraction and graph store.
 """
-import pytest
-import sqlite3
+import sys
 import tempfile
 from pathlib import Path
-import sys
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.entity_extractor import Entity, Relationship, EntityExtractor, ExtractionResult
+from foresight_mcp.entity_extractor import Entity, EntityExtractor, Relationship
 from foresight_mcp.graph_store import GraphStore
 
 
 @pytest.fixture
 def temp_db():
     """Create a temporary database for testing."""
-    fd, path = tempfile.mkstemp(suffix='.db')
+    fd, path = tempfile.mkstemp(suffix=".db")
     yield path
     import os
     os.close(fd)
@@ -45,18 +45,18 @@ class TestEntityExtractor:
         result = extractor._extract_rules_based("I feel very anxious today")
 
         assert len(result.entities) > 0
-        emotion_entities = [e for e in result.entities if e.entity_type == 'emotion']
+        emotion_entities = [e for e in result.entities if e.entity_type == "emotion"]
         assert len(emotion_entities) > 0
         # Should find either "anxiety" or "anxious" as emotion
         emotion_names = [e.name for e in emotion_entities]
-        assert 'anxiety' in emotion_names or 'anxious' in emotion_names
+        assert "anxiety" in emotion_names or "anxious" in emotion_names
 
     def test_extract_rules_based_concepts(self):
         """Rule-based extraction should find concept entities."""
         extractor = EntityExtractor()
         result = extractor._extract_rules_based("I do CBT and meditation for stress")
 
-        concept_entities = [e for e in result.entities if e.entity_type == 'concept']
+        concept_entities = [e for e in result.entities if e.entity_type == "concept"]
         assert len(concept_entities) >= 2  # Should find CBT and meditation
 
     def test_extract_negation(self):
@@ -64,11 +64,11 @@ class TestEntityExtractor:
         extractor = EntityExtractor()
         result = extractor._extract_rules_based("I am not anxious about this")
 
-        emotion_entities = [e for e in result.entities if e.entity_type == 'emotion']
+        emotion_entities = [e for e in result.entities if e.entity_type == "emotion"]
         names = [e.name for e in emotion_entities]
-        assert 'not_anxious' in names
-        negated = [e for e in emotion_entities if e.name == 'not_anxious']
-        assert negated[0].properties.get('negates') == 'anxious'
+        assert "not_anxious" in names
+        negated = [e for e in emotion_entities if e.name == "not_anxious"]
+        assert negated[0].properties.get("negates") == "anxious"
 
     def test_extract_generates_relationships(self):
         """Relationships should link concepts to emotions."""
@@ -78,7 +78,7 @@ class TestEntityExtractor:
         assert len(result.relationships) > 0
         # Should have a concept-emotion relationship
         rel_types = set(r.relationship_type for r in result.relationships)
-        assert 'relates_to' in rel_types
+        assert "relates_to" in rel_types
 
     def test_extract_empty_content(self):
         """Empty content should return empty result."""
@@ -244,5 +244,5 @@ class TestGraphStore:
         assert "mem_2" in related  # Should find via relationship
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

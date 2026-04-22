@@ -7,19 +7,21 @@ Tests:
 - Temporal queries
 - Batch decay updates
 """
-import pytest
 import sqlite3
-import tempfile
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
 # Add parent directory to path for imports
 import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.temporal_service import TemporalService, DecayConfig
 from foresight_mcp.temporal_queries import TemporalQueryBuilder
 from foresight_mcp.temporal_schema import run_temporal_migrations
+from foresight_mcp.temporal_service import TemporalService
 
 
 def create_minimal_schema(db_path: str) -> None:
@@ -56,7 +58,7 @@ def create_minimal_schema(db_path: str) -> None:
 @pytest.fixture
 def temp_db():
     """Create a temporary database for testing."""
-    fd, path = tempfile.mkstemp(suffix='.db')
+    fd, path = tempfile.mkstemp(suffix=".db")
     # Create minimal schema first
     create_minimal_schema(path)
     yield path
@@ -89,11 +91,11 @@ class TestDecayCalculations:
             importance=1.0,
             created_at=now,
             activation_count=0,
-            category='general',
-            user_id='test'
+            category="general",
+            user_id="test"
         )
         assert importance >= 0.95  # Allow small floating point variance
-        assert trend == 'stable'
+        assert trend == "stable"
 
     def test_exponential_decay_after_one_half_life(self, temporal_service):
         """After one half-life (168 hours), importance should be ~50%."""
@@ -102,8 +104,8 @@ class TestDecayCalculations:
             importance=1.0,
             created_at=one_week_ago,
             activation_count=0,
-            category='general',
-            user_id='test'
+            category="general",
+            user_id="test"
         )
         assert 0.45 <= importance <= 0.55  # ~50% with variance
 
@@ -116,8 +118,8 @@ class TestDecayCalculations:
             importance=1.0,
             created_at=two_weeks_ago,
             activation_count=0,
-            category='preference',
-            user_id='test'
+            category="preference",
+            user_id="test"
         )
 
         # Conversation (0.5x half-life = 3.5 days)
@@ -125,8 +127,8 @@ class TestDecayCalculations:
             importance=1.0,
             created_at=two_weeks_ago,
             activation_count=0,
-            category='conversation',
-            user_id='test'
+            category="conversation",
+            user_id="test"
         )
 
         # Preference should have higher importance
@@ -139,10 +141,10 @@ class TestDecayCalculations:
             importance=1.0,
             created_at=one_month_ago,
             activation_count=0,
-            category='general',
-            user_id='test'
+            category="general",
+            user_id="test"
         )
-        assert trend == 'stale'
+        assert trend == "stale"
         assert importance <= 0.2  # Below stale threshold
 
 
@@ -156,10 +158,10 @@ class TestFreshnessTrends:
             importance=0.8,
             created_at=now,
             activation_count=10,  # Above threshold of 5
-            category='general',
-            user_id='test'
+            category="general",
+            user_id="test"
         )
-        assert trend == 'strengthening'
+        assert trend == "strengthening"
 
     def test_stable_for_normal_decay(self, temporal_service):
         """Recent memories with some activations should be stable."""
@@ -168,10 +170,10 @@ class TestFreshnessTrends:
             importance=0.9,
             created_at=one_day_ago,
             activation_count=2,
-            category='general',
-            user_id='test'
+            category="general",
+            user_id="test"
         )
-        assert trend == 'stable'
+        assert trend == "stable"
 
 
 class TestTemporalQueries:
@@ -186,18 +188,18 @@ class TestTemporalQueries:
         conn.execute("""
             INSERT INTO memories (id, user_id, content, created_at, importance)
             VALUES (?, ?, ?, ?, ?)
-        """, ('mem1', 'test', 'Test memory', now, 0.8))
+        """, ("mem1", "test", "Test memory", now, 0.8))
 
         conn.commit()
         conn.close()
 
         results = query_builder.get_memories_from_window(
-            user_id='test',
-            window='today'
+            user_id="test",
+            window="today"
         )
 
         assert len(results) == 1
-        assert results[0].memory_id == 'mem1'
+        assert results[0].memory_id == "mem1"
 
     def test_analyze_trends(self, query_builder, temp_db):
         """Get trend analysis for user."""
@@ -208,16 +210,16 @@ class TestTemporalQueries:
         conn.execute("""
             INSERT INTO memories (id, user_id, content, created_at, importance, category)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, ('mem1', 'test', 'Test memory', now, 0.8, 'preference'))
+        """, ("mem1", "test", "Test memory", now, 0.8, "preference"))
 
         conn.commit()
         conn.close()
 
-        analysis = query_builder.analyze_trends(user_id='test', timeframe='30 days')
+        analysis = query_builder.analyze_trends(user_id="test", timeframe="30 days")
 
-        assert 'daily_stats' in analysis
-        assert 'category_breakdown' in analysis
-        assert 'overall_trend' in analysis
+        assert "daily_stats" in analysis
+        assert "category_breakdown" in analysis
+        assert "overall_trend" in analysis
 
 
 class TestBatchDecayUpdate:
@@ -232,19 +234,19 @@ class TestBatchDecayUpdate:
         conn.execute("""
             INSERT INTO memories (id, user_id, content, created_at, importance)
             VALUES (?, ?, ?, ?, ?)
-        """, ('mem1', 'test', 'Test 1', now, 0.8))
+        """, ("mem1", "test", "Test 1", now, 0.8))
         conn.execute("""
             INSERT INTO memories (id, user_id, content, created_at, importance)
             VALUES (?, ?, ?, ?, ?)
-        """, ('mem2', 'test', 'Test 2', now, 0.6))
+        """, ("mem2", "test", "Test 2", now, 0.6))
 
         conn.commit()
         conn.close()
 
-        count = temporal_service.batch_update_decay(user_id='test')
+        count = temporal_service.batch_update_decay(user_id="test")
 
         assert count == 2
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

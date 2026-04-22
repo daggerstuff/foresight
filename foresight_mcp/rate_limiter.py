@@ -3,11 +3,10 @@ Rate Limiter for Multi-Tenant Isolation
 Token bucket algorithm for per-tenant rate limiting.
 """
 from __future__ import annotations
-import time
+
 import threading
+import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional
-from collections import defaultdict
 
 
 class RateLimitExceeded(Exception):
@@ -39,14 +38,14 @@ class RateLimiter:
     """
     rate_limit: int = 100  # requests per minute
     burst_limit: int = 20  # burst requests
-    _buckets: Dict[str, TokenBucket] = field(default_factory=dict)
+    _buckets: dict[str, TokenBucket] = field(default_factory=dict)
 
     def __post_init__(self):
-        if not hasattr(self, '_buckets'):
+        if not hasattr(self, "_buckets"):
             self._buckets = {}
         self._lock = threading.Lock()
 
-    def _get_bucket(self, tenant_id: str, rate_limit: Optional[int] = None, burst_limit: Optional[int] = None) -> TokenBucket:
+    def _get_bucket(self, tenant_id: str, rate_limit: int | None = None, burst_limit: int | None = None) -> TokenBucket:
         """Get or create token bucket for tenant."""
         if tenant_id not in self._buckets:
             rl = rate_limit if rate_limit is not None else self.rate_limit
@@ -59,7 +58,7 @@ class RateLimiter:
             )
         return self._buckets[tenant_id]
 
-    def acquire(self, tenant_id: str, tokens: int = 1, rate_limit: Optional[int] = None, burst_limit: Optional[int] = None) -> bool:
+    def acquire(self, tenant_id: str, tokens: int = 1, rate_limit: int | None = None, burst_limit: int | None = None) -> bool:
         """
         Acquire tokens from tenant's bucket.
 
@@ -105,7 +104,7 @@ class RateLimiter:
 
 
 # Global rate limiter instance (thread-safe)
-_rate_limiter: Optional[RateLimiter] = None
+_rate_limiter: RateLimiter | None = None
 _rate_limiter_lock = threading.Lock()
 
 

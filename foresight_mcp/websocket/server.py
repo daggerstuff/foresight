@@ -10,13 +10,12 @@ Handles WebSocket connections with:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Set
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
+from typing import Any, Callable
 
 logger = logging.getLogger("foresight_websocket")
 
@@ -38,10 +37,10 @@ class Connection:
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_heartbeat: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     state: ConnectionState = ConnectionState.CONNECTING
-    user_id: Optional[str] = None
-    tenant_id: Optional[str] = None
-    last_event_id: Optional[str] = None
-    subscriptions: Set[str] = field(default_factory=set)
+    user_id: str | None = None
+    tenant_id: str | None = None
+    last_event_id: str | None = None
+    subscriptions: set[str] = field(default_factory=set)
 
 
 class WebSocketHandler:
@@ -55,17 +54,17 @@ class WebSocketHandler:
     - Reconnection support
     """
 
-    def __init__(self, auth_callback: Optional[Callable[[str], bool]] = None):
-        self._connections: Dict[str, Connection] = {}
+    def __init__(self, auth_callback: Callable[[str], bool] | None = None):
+        self._connections: dict[str, Connection] = {}
         self._auth_callback = auth_callback
 
     async def connect(
         self,
-        connection_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        tenant_id: Optional[str] = None,
-        last_event_id: Optional[str] = None,
-    ) -> tuple[str, Dict[str, Any]]:
+        connection_id: str | None = None,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        last_event_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         """
         Handle new WebSocket connection.
 
@@ -123,7 +122,7 @@ class WebSocketHandler:
             # Don't remove - keep for potential reconnection
             logger.info(f"WebSocket disconnect: {connection_id}")
 
-    async def authenticate(self, connection_id: str, token: str) -> Dict[str, Any]:
+    async def authenticate(self, connection_id: str, token: str) -> dict[str, Any]:
         """
         Authenticate a connection.
 
@@ -157,7 +156,7 @@ class WebSocketHandler:
 
         return {"type": "error", "message": "Authentication failed"}
 
-    async def receive(self, connection_id: str, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def receive(self, connection_id: str, message: dict[str, Any]) -> dict[str, Any] | None:
         """
         Handle incoming message from client.
 
@@ -222,7 +221,7 @@ class WebSocketHandler:
 
         return {"type": "error", "message": f"Unknown action: {action}"}
 
-    async def cleanup_stale_connections(self, timeout_seconds: int = 300) -> List[str]:
+    async def cleanup_stale_connections(self, timeout_seconds: int = 300) -> list[str]:
         """Remove connections that haven't sent heartbeat."""
         removed = []
         now = datetime.now(timezone.utc)
@@ -237,11 +236,11 @@ class WebSocketHandler:
 
         return removed
 
-    def get_connection(self, connection_id: str) -> Optional[Connection]:
+    def get_connection(self, connection_id: str) -> Connection | None:
         """Get connection by ID."""
         return self._connections.get(connection_id)
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get connection statistics."""
         states = {}
         for conn in self._connections.values():
@@ -266,7 +265,7 @@ class WebSocketServer:
     def __init__(
         self,
         event_bus=None,
-        auth_callback: Optional[Callable[[str], bool]] = None,
+        auth_callback: Callable[[str], bool] | None = None,
         heartbeat_interval: float = 30.0,
         heartbeat_timeout: float = 90.0,
     ):
@@ -283,8 +282,8 @@ class WebSocketServer:
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_timeout = heartbeat_timeout
         self._running = False
-        self._task: Optional[asyncio.Task] = None
-        self._event_buffer: List[Dict[str, Any]] = []
+        self._task: asyncio.Task | None = None
+        self._event_buffer: list[dict[str, Any]] = []
         self._max_buffer_size = 1000
 
     async def start(self, host: str = "0.0.0.0", port: int = 8765) -> None:
@@ -347,13 +346,13 @@ class WebSocketServer:
         for event_type in EventType:
             self._event_bus.subscribe(event_type, on_event)
 
-    def _broadcast_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+    def _broadcast_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Broadcast event to all subscribed connections."""
         # This would send to all connected WebSocket clients
         # Implementation depends on the WebSocket server framework
         pass
 
-    def get_buffered_events(self, since_event_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_buffered_events(self, since_event_id: str | None = None) -> list[dict[str, Any]]:
         """Get buffered events for reconnection sync."""
         if not since_event_id:
             return self._event_buffer[-100:]  # Last 100 events

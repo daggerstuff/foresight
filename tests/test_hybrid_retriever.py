@@ -1,21 +1,21 @@
 """
 Tests for hybrid retriever.
 """
-import math
-import pytest
 import sqlite3
-import tempfile
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
 import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from foresight_mcp.hybrid_retriever import (
     HybridRetriever,
-    reset_hybrid_retriever,
     _escape_like,
     _validate_input,
+    reset_hybrid_retriever,
 )
 
 
@@ -28,7 +28,7 @@ def cleanup():
 
 def create_test_db():
     """Create a temp DB with schema and test data."""
-    fd, path = tempfile.mkstemp(suffix='.db')
+    fd, path = tempfile.mkstemp(suffix=".db")
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
 
@@ -375,17 +375,17 @@ class TestHybridFusion:
         retriever = HybridRetriever(test_db)
         result = retriever.search("anxiety", "test_user", limit=5)
 
-        assert 'keyword' in result.signal_counts
-        assert 'semantic' in result.signal_counts
-        assert 'graph' in result.signal_counts
-        assert 'temporal' in result.signal_counts
+        assert "keyword" in result.signal_counts
+        assert "semantic" in result.signal_counts
+        assert "graph" in result.signal_counts
+        assert "temporal" in result.signal_counts
 
     def test_semantic_score_populated(self, test_db):
         """Results found via semantic search should have a semantic_score."""
         retriever = HybridRetriever(test_db)
         result = retriever.search("anxiety therapy", "test_user", limit=5)
 
-        semantic_results = [r for r in result.results if 'semantic' in r.source_signals]
+        semantic_results = [r for r in result.results if "semantic" in r.source_signals]
         assert len(semantic_results) > 0
         for r in semantic_results:
             assert r.semantic_score > 0.0
@@ -414,7 +414,7 @@ class TestHybridFusion:
         assert len(ids) > 0
         # All results should only have 'semantic' as source signal
         for r in result.results:
-            assert r.source_signals == ['semantic']
+            assert r.source_signals == ["semantic"]
 
     def test_result_format(self, test_db):
         retriever = HybridRetriever(test_db)
@@ -422,16 +422,16 @@ class TestHybridFusion:
 
         # Check result has to_dict
         d = result.to_dict()
-        assert 'results' in d
-        assert 'total_candidates' in d
-        assert 'signal_counts' in d
+        assert "results" in d
+        assert "total_candidates" in d
+        assert "signal_counts" in d
 
-        if d['results']:
-            r = d['results'][0]
-            assert 'memory_id' in r
-            assert 'combined_score' in r
-            assert 'source_signals' in r
-            assert 'semantic_score' in r
+        if d["results"]:
+            r = d["results"][0]
+            assert "memory_id" in r
+            assert "combined_score" in r
+            assert "source_signals" in r
+            assert "semantic_score" in r
 
 
 class TestRRF:
@@ -477,13 +477,13 @@ class TestDefaultWeights:
     """Test that default weights include semantic."""
 
     def test_semantic_weight_present(self):
-        assert 'semantic' in HybridRetriever.DEFAULT_WEIGHTS
-        assert HybridRetriever.DEFAULT_WEIGHTS['semantic'] == 0.7
+        assert "semantic" in HybridRetriever.DEFAULT_WEIGHTS
+        assert HybridRetriever.DEFAULT_WEIGHTS["semantic"] == 0.7
 
     def test_all_four_weights_present(self):
         assert len(HybridRetriever.DEFAULT_WEIGHTS) == 4
         assert set(HybridRetriever.DEFAULT_WEIGHTS.keys()) == {
-            'keyword', 'semantic', 'graph', 'temporal'
+            "keyword", "semantic", "graph", "temporal"
         }
 
 
@@ -523,5 +523,5 @@ class TestSecurityFixes:
             assert "%" in r.content
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

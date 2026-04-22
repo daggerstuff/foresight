@@ -8,15 +8,16 @@ Extends the existing MemorySynthesizer with:
 - Evidence-anchored insights (prevents hallucination)
 """
 from __future__ import annotations
-from typing import List, Optional, Dict, Any, Tuple
-from dataclasses import dataclass, field
-from datetime import datetime
+
 import logging
 import re
 import threading
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
 
-from .memory_types import MemoryObject, StanceShift
 from .memory_components import MemorySynthesizer
+from .memory_types import MemoryObject, StanceShift
 
 logger = logging.getLogger("foresight_enhanced_synthesizer")
 
@@ -37,20 +38,20 @@ class Contradiction:
     new_value: str
     delta: float
     temporal_distance_days: int
-    evidence_ids: List[str]
+    evidence_ids: list[str]
     confidence: float
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            'type': self.type,
-            'attribute': self.attribute,
-            'old_value': self.old_value,
-            'new_value': self.new_value,
-            'delta': self.delta,
-            'temporal_distance_days': self.temporal_distance_days,
-            'evidence_ids': self.evidence_ids,
-            'confidence': self.confidence,
+            "type": self.type,
+            "attribute": self.attribute,
+            "old_value": self.old_value,
+            "new_value": self.new_value,
+            "delta": self.delta,
+            "temporal_distance_days": self.temporal_distance_days,
+            "evidence_ids": self.evidence_ids,
+            "confidence": self.confidence,
         }
 
 
@@ -68,20 +69,20 @@ class TemporalTrend:
     direction: str  # 'improving' | 'worsening' | 'stable'
     slope: float  # Rate of change
     r_squared: float  # Goodness of fit
-    evidence_ids: List[str]
+    evidence_ids: list[str]
     start_value: float
     end_value: float
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            'topic': self.topic,
-            'direction': self.direction,
-            'slope': self.slope,
-            'r_squared': self.r_squared,
-            'evidence_ids': self.evidence_ids,
-            'start_value': self.start_value,
-            'end_value': self.end_value,
+            "topic": self.topic,
+            "direction": self.direction,
+            "slope": self.slope,
+            "r_squared": self.r_squared,
+            "evidence_ids": self.evidence_ids,
+            "start_value": self.start_value,
+            "end_value": self.end_value,
         }
 
 
@@ -95,19 +96,19 @@ class Insight:
     statement: str
     insight_type: str  # 'trend' | 'pattern' | 'contradiction' | 'breakthrough'
     confidence: float
-    evidence_ids: List[str]
+    evidence_ids: list[str]
     recommended_action: str  # 'preserve' | 'consolidate' | 'review'
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            'statement': self.statement,
-            'insight_type': self.insight_type,
-            'confidence': self.confidence,
-            'evidence_ids': self.evidence_ids,
-            'recommended_action': self.recommended_action,
-            'metadata': self.metadata,
+            "statement": self.statement,
+            "insight_type": self.insight_type,
+            "confidence": self.confidence,
+            "evidence_ids": self.evidence_ids,
+            "recommended_action": self.recommended_action,
+            "metadata": self.metadata,
         }
 
 
@@ -121,26 +122,26 @@ class EnhancedSynthesisResult:
     - Temporal trends
     - Generated insights
     """
-    merged_ids: List[str]
+    merged_ids: list[str]
     new_memory_id: str
-    stance_shifts: List[StanceShift]
+    stance_shifts: list[StanceShift]
     compression_ratio: float
 
     # New fields
-    contradictions: List[Contradiction] = field(default_factory=list)
-    temporal_trends: List[TemporalTrend] = field(default_factory=list)
-    insights: List[Insight] = field(default_factory=list)
+    contradictions: list[Contradiction] = field(default_factory=list)
+    temporal_trends: list[TemporalTrend] = field(default_factory=list)
+    insights: list[Insight] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            'merged_ids': self.merged_ids,
-            'new_memory_id': self.new_memory_id,
-            'stance_shifts': [ss.to_dict() for ss in self.stance_shifts],
-            'compression_ratio': self.compression_ratio,
-            'contradictions': [c.to_dict() for c in self.contradictions],
-            'temporal_trends': [t.to_dict() for t in self.temporal_trends],
-            'insights': [i.to_dict() for i in self.insights],
+            "merged_ids": self.merged_ids,
+            "new_memory_id": self.new_memory_id,
+            "stance_shifts": [ss.to_dict() for ss in self.stance_shifts],
+            "compression_ratio": self.compression_ratio,
+            "contradictions": [c.to_dict() for c in self.contradictions],
+            "temporal_trends": [t.to_dict() for t in self.temporal_trends],
+            "insights": [i.to_dict() for i in self.insights],
         }
 
 
@@ -154,7 +155,7 @@ class EnhancedMemorySynthesizer:
     - Evidence-anchored insight generation
     """
 
-    SENTIMENT_OPPOSITES: List[Tuple[str, str]] = [
+    SENTIMENT_OPPOSITES: list[tuple[str, str]] = [
         ("love", "hate"),
         ("good", "bad"),
         ("happy", "sad"),
@@ -186,7 +187,7 @@ class EnhancedMemorySynthesizer:
 
     def __init__(
         self,
-        base_synthesizer: Optional[MemorySynthesizer] = None,
+        base_synthesizer: MemorySynthesizer | None = None,
         contradiction_threshold: float = 0.25,
         trend_significance_threshold: float = 0.15,
         min_memories_for_trend: int = 5,
@@ -209,9 +210,9 @@ class EnhancedMemorySynthesizer:
 
     async def synthesize(
         self,
-        memories: List[MemoryObject],
-        user_id: str = 'default',  # noqa: ARG002 - part of public API
-    ) -> Optional[EnhancedSynthesisResult]:
+        memories: list[MemoryObject],
+        user_id: str = "default",  # noqa: ARG002 - part of public API
+    ) -> EnhancedSynthesisResult | None:
         """
         Perform enhanced synthesis over memories.
 
@@ -260,15 +261,15 @@ class EnhancedMemorySynthesizer:
 
     def _detect_contradictions(
         self,
-        memories: List[MemoryObject]
-    ) -> List[Contradiction]:
+        memories: list[MemoryObject]
+    ) -> list[Contradiction]:
         """
         Detect contradictions between memories using content overlap + sentiment.
 
         Finds pairs of memories with high content overlap but opposing sentiment
         words (e.g., "happy" vs "sad" in same topic).
         """
-        contradictions: List[Contradiction] = []
+        contradictions: list[Contradiction] = []
         seen_pairs: set = set()
 
         topic_clusters = self._cluster_by_topic(memories)
@@ -298,15 +299,15 @@ class EnhancedMemorySynthesizer:
 
                         # Calculate temporal distance
                         time_a = datetime.fromisoformat(
-                            mem_a.timestamp.replace('Z', '+00:00')
+                            mem_a.timestamp.replace("Z", "+00:00")
                         )
                         time_b = datetime.fromisoformat(
-                            mem_b.timestamp.replace('Z', '+00:00')
+                            mem_b.timestamp.replace("Z", "+00:00")
                         )
                         days_diff = abs((time_b - time_a).days)
 
                         contradictions.append(Contradiction(
-                            type='direct_conflict',
+                            type="direct_conflict",
                             attribute=topic,
                             old_value=pos_word,
                             new_value=neg_word,
@@ -320,14 +321,14 @@ class EnhancedMemorySynthesizer:
 
     def _analyze_temporal_trends(
         self,
-        memories: List[MemoryObject]
-    ) -> List[TemporalTrend]:
+        memories: list[MemoryObject]
+    ) -> list[TemporalTrend]:
         """
         Analyze temporal trends in memories.
 
         Identifies improving/worsening/stable patterns over time.
         """
-        trends: List[TemporalTrend] = []
+        trends: list[TemporalTrend] = []
 
         # Group by topic
         topic_clusters = self._cluster_by_topic(memories)
@@ -340,7 +341,7 @@ class EnhancedMemorySynthesizer:
             sorted_cluster = sorted(
                 cluster,
                 key=lambda m: datetime.fromisoformat(
-                    m.timestamp.replace('Z', '+00:00')
+                    m.timestamp.replace("Z", "+00:00")
                 ).timestamp()
             )
 
@@ -349,7 +350,7 @@ class EnhancedMemorySynthesizer:
             slope, r_squared = self._calculate_slope(values)
 
             if abs(slope) > self.trend_significance_threshold:
-                direction = 'improving' if slope > 0 else 'worsening'
+                direction = "improving" if slope > 0 else "worsening"
 
                 trends.append(TemporalTrend(
                     topic=topic,
@@ -365,27 +366,27 @@ class EnhancedMemorySynthesizer:
 
     def _generate_insights(
         self,
-        memories: List[MemoryObject],  # noqa: ARG002 - reserved for future use
-        contradictions: List[Contradiction],
-        temporal_trends: List[TemporalTrend]
-    ) -> List[Insight]:
+        memories: list[MemoryObject],  # noqa: ARG002 - reserved for future use
+        contradictions: list[Contradiction],
+        temporal_trends: list[TemporalTrend]
+    ) -> list[Insight]:
         """
         Generate evidence-anchored insights.
 
         All insights must cite source memory IDs to prevent hallucination.
         """
-        insights: List[Insight] = []
+        insights: list[Insight] = []
 
         # Generate insights from contradictions
         for contradiction in contradictions:
             if contradiction.confidence >= 0.7:
                 insights.append(Insight(
                     statement=self._format_contradiction_insight(contradiction),
-                    insight_type='contradiction',
+                    insight_type="contradiction",
                     confidence=contradiction.confidence,
                     evidence_ids=contradiction.evidence_ids,
-                    recommended_action='review',
-                    metadata={'contradiction_type': contradiction.type},
+                    recommended_action="review",
+                    metadata={"contradiction_type": contradiction.type},
                 ))
 
         # Generate insights from trends
@@ -393,14 +394,14 @@ class EnhancedMemorySynthesizer:
             if trend.r_squared >= 0.5:  # Good fit
                 insights.append(Insight(
                     statement=self._format_trend_insight(trend),
-                    insight_type='trend',
+                    insight_type="trend",
                     confidence=trend.r_squared,
                     evidence_ids=trend.evidence_ids,
-                    recommended_action='preserve' if trend.direction == 'improving' else 'review',
+                    recommended_action="preserve" if trend.direction == "improving" else "review",
                     metadata={
-                        'slope': trend.slope,
-                        'start_value': trend.start_value,
-                        'end_value': trend.end_value,
+                        "slope": trend.slope,
+                        "start_value": trend.start_value,
+                        "end_value": trend.end_value,
                     },
                 ))
 
@@ -408,21 +409,21 @@ class EnhancedMemorySynthesizer:
 
     def _cluster_by_topic(
         self,
-        memories: List[MemoryObject]
-    ) -> Dict[str, List[MemoryObject]]:
+        memories: list[MemoryObject]
+    ) -> dict[str, list[MemoryObject]]:
         """
         Cluster memories by topic.
 
         Simplified clustering based on tags and content keywords.
         In production, this would use semantic similarity.
         """
-        clusters: Dict[str, List[MemoryObject]] = {}
+        clusters: dict[str, list[MemoryObject]] = {}
 
         # Common topics to look for
         topics = [
-            'anxiety', 'stress', 'therapy', 'mood',
-            'sleep', 'work', 'family', 'health',
-            'coping', 'progress', 'challenge'
+            "anxiety", "stress", "therapy", "mood",
+            "sleep", "work", "family", "health",
+            "coping", "progress", "challenge"
         ]
 
         for memory in memories:
@@ -430,7 +431,7 @@ class EnhancedMemorySynthesizer:
             tags_lower = [t.lower() for t in memory.tags]
 
             for topic in topics:
-                if re.search(rf'\b{re.escape(topic)}\b', content_lower) or topic in tags_lower:
+                if re.search(rf"\b{re.escape(topic)}\b", content_lower) or topic in tags_lower:
                     if topic not in clusters:
                         clusters[topic] = []
                     clusters[topic].append(memory)
@@ -446,8 +447,8 @@ class EnhancedMemorySynthesizer:
 
         This gives content-based similarity without requiring embeddings.
         """
-        words_a = set(re.findall(r'\b\w+\b', content_a.lower()))
-        words_b = set(re.findall(r'\b\w+\b', content_b.lower()))
+        words_a = set(re.findall(r"\b\w+\b", content_a.lower()))
+        words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
 
         if not words_a or not words_b:
             return 0.0
@@ -459,15 +460,15 @@ class EnhancedMemorySynthesizer:
 
     def _find_sentiment_conflict(
         self, content_a: str, content_b: str
-    ) -> Optional[Tuple[str, str]]:
+    ) -> tuple[str, str] | None:
         """
         Check if two contents contain opposite sentiment words.
 
         Returns a tuple of (positive_word, negative_word) if a conflicting
         pair is found, or None otherwise.
         """
-        words_a = set(re.findall(r'\b\w+\b', content_a.lower()))
-        words_b = set(re.findall(r'\b\w+\b', content_b.lower()))
+        words_a = set(re.findall(r"\b\w+\b", content_a.lower()))
+        words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
 
         for pos_word, neg_word in self.SENTIMENT_OPPOSITES:
             if (pos_word in words_a and neg_word in words_b) or \
@@ -476,7 +477,7 @@ class EnhancedMemorySynthesizer:
 
         return None
 
-    def _extract_metric_value(self, memories: List[MemoryObject]) -> float:
+    def _extract_metric_value(self, memories: list[MemoryObject]) -> float:
         """
         Extract a numeric metric value from memories.
 
@@ -499,7 +500,7 @@ class EnhancedMemorySynthesizer:
 
         return sum(values) / len(values) if values else 0.5
 
-    def _calculate_slope(self, values: List[float]) -> Tuple[float, float]:
+    def _calculate_slope(self, values: list[float]) -> tuple[float, float]:
         """
         Calculate linear regression slope and R-squared.
 
@@ -536,13 +537,13 @@ class EnhancedMemorySynthesizer:
 
     def _format_contradiction_insight(self, contradiction: Contradiction) -> str:
         """Format a contradiction as an insight statement."""
-        if contradiction.type == 'direct_conflict':
+        if contradiction.type == "direct_conflict":
             return (
                 f"Direct conflict detected in {contradiction.attribute}: "
                 f"changed from '{contradiction.old_value}' to '{contradiction.new_value}' "
                 f"over {contradiction.temporal_distance_days} days"
             )
-        elif contradiction.type == 'evolution':
+        elif contradiction.type == "evolution":
             return (
                 f"Improvement in {contradiction.attribute}: "
                 f"increased from {contradiction.old_value} to {contradiction.new_value} "
@@ -565,7 +566,7 @@ class EnhancedMemorySynthesizer:
 
 
 # Global instance management
-_enhanced_synthesizer: Optional[EnhancedMemorySynthesizer] = None
+_enhanced_synthesizer: EnhancedMemorySynthesizer | None = None
 _enhanced_synthesizer_lock = threading.Lock()
 
 

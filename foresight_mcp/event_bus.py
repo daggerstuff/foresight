@@ -3,15 +3,14 @@ Event Bus for Memory Operations
 Event sourcing with full audit trail for all memory operations.
 """
 from __future__ import annotations
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+
 import json
 import sqlite3
-from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
-
+from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 # =============================================================================
 # Event Types
@@ -60,8 +59,8 @@ class Event:
     timestamp: datetime
     actor: str
     entity_id: str
-    payload: Dict[str, Any]
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
@@ -108,7 +107,7 @@ class EventStore:
     Supports temporal queries and event replay.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         """Initialize event store.
 
         Args:
@@ -161,7 +160,7 @@ class EventStore:
         conn.commit()
         conn.close()
 
-    def get_by_entity(self, entity_id: str, limit: int = 100, offset: int = 0) -> List[Event]:
+    def get_by_entity(self, entity_id: str, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get events by entity ID."""
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute(
@@ -171,7 +170,7 @@ class EventStore:
         conn.close()
         return [self._row_to_event(row) for row in rows]
 
-    def get_by_type(self, event_type: EventType, limit: int = 100, offset: int = 0) -> List[Event]:
+    def get_by_type(self, event_type: EventType, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get events by type."""
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute(
@@ -187,7 +186,7 @@ class EventStore:
         end: datetime,
         limit: int = 100,
         offset: int = 0
-    ) -> List[Event]:
+    ) -> list[Event]:
         """Get events by time range."""
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute(
@@ -197,7 +196,7 @@ class EventStore:
         conn.close()
         return [self._row_to_event(row) for row in rows]
 
-    def get_all(self, limit: int = 100, offset: int = 0) -> List[Event]:
+    def get_all(self, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get all events (paginated)."""
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute(
@@ -224,7 +223,7 @@ class EventStore:
 # Event Bus
 # =============================================================================
 
-T = TypeVar('T', bound=Event)
+T = TypeVar("T", bound=Event)
 
 
 class EventBus:
@@ -241,8 +240,8 @@ class EventBus:
 
     def __init__(
         self,
-        store: Optional[EventStore] = None,
-        stream_publisher: Optional[Any] = None,
+        store: EventStore | None = None,
+        stream_publisher: Any | None = None,
     ):
         """Initialize event bus.
 
@@ -250,7 +249,7 @@ class EventBus:
             store: Event store for persistence (default: in-memory store)
             stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
         """
-        self._handlers: Dict[EventType, List[EventHandler]] = {}
+        self._handlers: dict[EventType, list[EventHandler]] = {}
         self._store = store
         self._stream_publisher = stream_publisher
 
@@ -308,11 +307,11 @@ class EventBus:
 # Global Event Bus
 # =============================================================================
 
-_event_bus: Optional[EventBus] = None
-_event_store: Optional[EventStore] = None
+_event_bus: EventBus | None = None
+_event_store: EventStore | None = None
 
 
-def get_event_bus(stream_publisher: Optional[Any] = None) -> EventBus:
+def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
     """Get the global event bus instance.
 
     Args:
@@ -340,8 +339,8 @@ def _make_event(
     event_type: EventType,
     actor: str,
     entity_id: str,
-    payload: Dict[str, Any],
-    metadata: Optional[Dict[str, Any]] = None
+    payload: dict[str, Any],
+    metadata: dict[str, Any] | None = None
 ) -> Event:
     """Create a new event with standard metadata."""
     import uuid

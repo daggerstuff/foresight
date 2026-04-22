@@ -8,15 +8,15 @@ SQLite-backed graph storage with:
 - Memory-to-entity linking
 """
 from __future__ import annotations
-import sqlite3
+
 import json
-
 import logging
+import sqlite3
 import threading
-from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
+from typing import Any
 
-from .entity_extractor import Entity, Relationship, ExtractionResult
+from .entity_extractor import Entity, ExtractionResult, Relationship
 
 logger = logging.getLogger("foresight_graph_store")
 
@@ -25,7 +25,7 @@ MAX_USER_ID_LENGTH = 128
 
 def _escape_like(term: str) -> str:
     """Escape SQL LIKE metacharacters to prevent wildcard injection."""
-    return term.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+    return term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
 def _validate_input(user_id: str) -> None:
@@ -37,9 +37,9 @@ def _validate_input(user_id: str) -> None:
 @dataclass
 class GraphTraversalResult:
     """Result of graph traversal."""
-    nodes: List[Entity]
-    edges: List[Relationship]
-    paths: List[Dict[str, Any]] = field(default_factory=list)
+    nodes: list[Entity]
+    edges: list[Relationship]
+    paths: list[dict[str, Any]] = field(default_factory=list)
 
 
 class GraphStore:
@@ -182,7 +182,7 @@ class GraphStore:
         finally:
             conn.close()
 
-    def get_entity(self, entity_id: str, user_id: str) -> Optional[Entity]:
+    def get_entity(self, entity_id: str, user_id: str) -> Entity | None:
         """
         Get an entity by ID.
 
@@ -212,7 +212,7 @@ class GraphStore:
                 name=row[2],
                 entity_type=row[3],  # type: ignore
                 description=row[4],
-                properties=json.loads(row[5] or '{}'),
+                properties=json.loads(row[5] or "{}"),
             )
 
         finally:
@@ -223,7 +223,7 @@ class GraphStore:
         user_id: str,
         entity_type: str,
         limit: int = 100
-    ) -> List[Entity]:
+    ) -> list[Entity]:
         """
         Get all entities of a type for a user.
 
@@ -253,7 +253,7 @@ class GraphStore:
                     name=row[2],
                     entity_type=row[3],  # type: ignore
                     description=row[4],
-                    properties=json.loads(row[5] or '{}'),
+                    properties=json.loads(row[5] or "{}"),
                 )
                 for row in cursor.fetchall()
             ]
@@ -266,7 +266,7 @@ class GraphStore:
         user_id: str,
         name: str,
         limit: int = 10
-    ) -> List[Entity]:
+    ) -> list[Entity]:
         """
         Find entities by name (partial match).
 
@@ -288,7 +288,7 @@ class GraphStore:
                 FROM memory_entities
                 WHERE user_id = ? AND name LIKE ? ESCAPE '!'
                 LIMIT ?
-            """, (user_id, f'%{escaped}%', limit))
+            """, (user_id, f"%{escaped}%", limit))
 
             return [
                 Entity(
@@ -296,7 +296,7 @@ class GraphStore:
                     name=row[2],
                     entity_type=row[3],  # type: ignore
                     description=row[4],
-                    properties=json.loads(row[5] or '{}'),
+                    properties=json.loads(row[5] or "{}"),
                 )
                 for row in cursor.fetchall()
             ]
@@ -342,8 +342,8 @@ class GraphStore:
         self,
         entity_id: str,
         user_id: str,
-        direction: str = 'both'
-    ) -> List[Relationship]:
+        direction: str = "both"
+    ) -> list[Relationship]:
         """
         Get relationships for an entity.
 
@@ -359,13 +359,13 @@ class GraphStore:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            if direction == 'out':
+            if direction == "out":
                 cursor = conn.execute("""
                     SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                     FROM entity_relationships
                     WHERE source_entity_id = ? AND user_id = ?
                 """, (entity_id, user_id))
-            elif direction == 'in':
+            elif direction == "in":
                 cursor = conn.execute("""
                     SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                     FROM entity_relationships
@@ -384,7 +384,7 @@ class GraphStore:
                     target_entity_id=row[1],
                     relationship_type=row[2],  # type: ignore
                     confidence=row[3],
-                    metadata=json.loads(row[4] or '{}'),
+                    metadata=json.loads(row[4] or "{}"),
                 )
                 for row in cursor.fetchall()
             ]
@@ -402,7 +402,7 @@ class GraphStore:
         user_id: str,
         max_depth: int = 2,
         max_results: int = 50,
-        relationship_types: Optional[List[str]] = None
+        relationship_types: list[str] | None = None
     ) -> GraphTraversalResult:
         """
         Traverse graph from a starting entity.
@@ -426,7 +426,7 @@ class GraphStore:
             type_filter = ""
             type_params = []
             if relationship_types:
-                placeholders = ','.join('?' * len(relationship_types))
+                placeholders = ",".join("?" * len(relationship_types))
                 type_filter = f"AND r.relationship_type IN ({placeholders})"
                 type_params = relationship_types
 
@@ -481,7 +481,7 @@ class GraphStore:
                     name=row[2],
                     entity_type=row[1],  # type: ignore
                     description=row[3],
-                    properties=json.loads(row[4] or '{}'),
+                    properties=json.loads(row[4] or "{}"),
                 )
                 for row in cursor.fetchall()
             ]
@@ -489,7 +489,7 @@ class GraphStore:
             # Get relationships between traversed nodes
             node_ids = [n.id for n in nodes]
             if node_ids:
-                placeholders = ','.join('?' * len(node_ids))
+                placeholders = ",".join("?" * len(node_ids))
                 cursor = conn.execute(f"""
                     SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                     FROM entity_relationships
@@ -504,7 +504,7 @@ class GraphStore:
                         target_entity_id=row[1],
                         relationship_type=row[2],  # type: ignore
                         confidence=row[3],
-                        metadata=json.loads(row[4] or '{}'),
+                        metadata=json.loads(row[4] or "{}"),
                     )
                     for row in cursor.fetchall()
                 ]
@@ -523,9 +523,9 @@ class GraphStore:
     def link_memory_to_entities(
         self,
         memory_id: str,
-        entity_ids: List[str],
+        entity_ids: list[str],
         user_id: str,
-        scores: Optional[Dict[str, float]] = None
+        scores: dict[str, float] | None = None
     ) -> None:
         """
         Link a memory to entities.
@@ -558,7 +558,7 @@ class GraphStore:
         entity_id: str,
         user_id: str,
         limit: int = 50
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Get memory IDs linked to an entity.
 
@@ -592,7 +592,7 @@ class GraphStore:
         user_id: str,
         depth: int = 2,
         limit: int = 20
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Find memories related to an entity via graph traversal.
 
@@ -667,11 +667,11 @@ class GraphStore:
 
 
 # Global instance management
-_graph_store: Optional[GraphStore] = None
+_graph_store: GraphStore | None = None
 _lock = threading.Lock()
 
 
-def get_graph_store(db_path: Optional[str] = None) -> GraphStore:
+def get_graph_store(db_path: str | None = None) -> GraphStore:
     """Get or create global graph store instance."""
     global _graph_store
     with _lock:

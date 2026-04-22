@@ -7,51 +7,45 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import logging
-import os
-import sqlite3
 import hashlib
 import json
+import logging
 import re
+import sqlite3
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Optional, List, Any, Dict
+from typing import Any
 
 from fastmcp import FastMCP
-
-# Import restored memory system components
-from .memory_types import (
-    MemoryObject, EmotionalMetadata,
-    EmpathyMetrics
-)
-from .memory_components import (
-    MemoryCrisisTagger, SocraticGate, MemorySynthesizer, MemoryLinker
-)
-from .crisis_detection import get_crisis_service
-from .subconscious import get_subconscious_agent, USER_PREFERENCES, PENDING_ITEMS, SESSION_PATTERNS
-from .event_bus import get_event_bus, memory_stored, memory_retrieved, memory_updated, memory_deleted
-from .websocket.subscriptions import SubscriptionManager
-from .projections.builder import ProjectionBuilder
-from .rate_limiter import RateLimitExceeded, get_rate_limiter
-from .connection_pool import get_pool, PooledConnection
 
 # Configuration - canonical source is now .config; re-exported here for
 # backward compatibility so that existing `from .server import DB_PATH`
 # still works during the transition.
 from .config import (  # noqa: F401 - re-exports
-    DB_PATH,
-    USER_ID,
     BANK_ID,
-    TENANT_ID,
-    DEFAULT_DB_PATH,
-    DEFAULT_USER_ID,
+    DB_PATH,
     DEFAULT_BANK_ID,
-    DEFAULT_TENANT_ID,
-    DEFAULT_RATE_LIMIT,
     DEFAULT_BURST_LIMIT,
+    DEFAULT_DB_PATH,
+    DEFAULT_RATE_LIMIT,
+    DEFAULT_TENANT_ID,
+    DEFAULT_USER_ID,
+    TENANT_ID,
+    USER_ID,
 )
+from .connection_pool import PooledConnection, get_pool
+from .crisis_detection import get_crisis_service
+from .event_bus import get_event_bus, memory_deleted, memory_retrieved, memory_stored, memory_updated
+from .memory_components import MemoryCrisisTagger, MemoryLinker, MemorySynthesizer, SocraticGate
+
+# Import restored memory system components
+from .memory_types import EmotionalMetadata, EmpathyMetrics, MemoryObject
+from .projections.builder import ProjectionBuilder
+from .rate_limiter import RateLimitExceeded, get_rate_limiter
+from .subconscious import PENDING_ITEMS, SESSION_PATTERNS, USER_PREFERENCES, get_subconscious_agent
+from .websocket.subscriptions import SubscriptionManager
 
 
 def _run_async(coro):
@@ -85,8 +79,8 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
         ).fetchone()
         conn.close()
         if row:
-            rate_limit = row['rate_limit'] or DEFAULT_RATE_LIMIT
-            burst_limit = row['burst_limit'] or DEFAULT_BURST_LIMIT
+            rate_limit = row["rate_limit"] or DEFAULT_RATE_LIMIT
+            burst_limit = row["burst_limit"] or DEFAULT_BURST_LIMIT
     except Exception:
         pass  # Fall back to defaults if DB unavailable
 
@@ -154,30 +148,30 @@ _SCHEMA_MIGRATIONS = {
             rollback_of TEXT DEFAULT NULL,
             FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
         )""",
-        'CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_content ON memories(content)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags)',
-        'CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id)',
-        'CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id)',
-        'CREATE INDEX IF NOT EXISTS idx_versions_created ON memory_versions(created_at)',
-        'CREATE INDEX IF NOT EXISTS idx_tenants_id ON tenants(id)',
+        "CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_content ON memories(content)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags)",
+        "CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id)",
+        "CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_versions_created ON memory_versions(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_tenants_id ON tenants(id)",
     ],
     2: [
-        'ALTER TABLE memories ADD COLUMN accessed_at TEXT DEFAULT CURRENT_TIMESTAMP',
-        'ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 1.0',
-        'ALTER TABLE memories ADD COLUMN decay_rate REAL DEFAULT 0.01',
-        'ALTER TABLE memories ADD COLUMN activation_count INTEGER DEFAULT 0',
-        'ALTER TABLE memories ADD COLUMN retrieval_count INTEGER DEFAULT 0',
+        "ALTER TABLE memories ADD COLUMN accessed_at TEXT DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 1.0",
+        "ALTER TABLE memories ADD COLUMN decay_rate REAL DEFAULT 0.01",
+        "ALTER TABLE memories ADD COLUMN activation_count INTEGER DEFAULT 0",
+        "ALTER TABLE memories ADD COLUMN retrieval_count INTEGER DEFAULT 0",
         "ALTER TABLE memories ADD COLUMN strength_trend TEXT DEFAULT 'stable'",
-        'ALTER TABLE memories ADD COLUMN last_retrieved_at TEXT',
+        "ALTER TABLE memories ADD COLUMN last_retrieved_at TEXT",
         "ALTER TABLE memories ADD COLUMN category TEXT DEFAULT 'general'",
-        'CREATE INDEX IF NOT EXISTS idx_memories_user_created ON memories(user_id, created_at DESC)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_user_accessed ON memories(user_id, accessed_at DESC)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(user_id, importance DESC, created_at)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_strength_trend ON memories(user_id, strength_trend, created_at)',
-        'CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category, created_at DESC)',
+        "CREATE INDEX IF NOT EXISTS idx_memories_user_created ON memories(user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_user_accessed ON memories(user_id, accessed_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(user_id, importance DESC, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_strength_trend ON memories(user_id, strength_trend, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category, created_at DESC)",
         """CREATE TABLE IF NOT EXISTS decay_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT NOT NULL,
@@ -207,7 +201,7 @@ def init_db():
     """)
 
     applied = {
-        row['version'] for row in
+        row["version"] for row in
         conn.execute("SELECT version FROM schema_migrations").fetchall()
     }
 
@@ -219,7 +213,7 @@ def init_db():
                 conn.execute(stmt)
             except sqlite3.OperationalError as e:
                 err = str(e).lower()
-                if 'duplicate column' in err or 'already exists' in err:
+                if "duplicate column" in err or "already exists" in err:
                     continue
                 raise
         conn.execute(
@@ -241,7 +235,7 @@ _memory_system_initialized = False
 # Version Management Functions
 # =============================================================================
 
-def get_memory_versions(memory_id: str, user_id: Optional[str] = None) -> str:
+def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     """Get all versions of a memory."""
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -257,7 +251,7 @@ def get_memory_versions(memory_id: str, user_id: Optional[str] = None) -> str:
         return f"Memory {memory_id} not found."
 
     # Get current version
-    current_version = row['version'] if row else 1
+    current_version = row["version"] if row else 1
 
     # Get version history
     versions = conn.execute(
@@ -273,7 +267,7 @@ def get_memory_versions(memory_id: str, user_id: Optional[str] = None) -> str:
     for v in versions:
         result.append(f"  v{v['version']}: {v['content'][:50]}...")
         result.append(f"    Created: {v['created_at']}")
-        if v['rollback_of']:
+        if v["rollback_of"]:
             result.append(f"    Rollback of: {v['rollback_of']}")
 
     return "\n".join(result)
@@ -281,7 +275,7 @@ def get_memory_versions(memory_id: str, user_id: Optional[str] = None) -> str:
 
 def create_version_snapshot(memory_id: str, user_id: str, content: str,
                              tags: str, emotional_context: dict, metrics: dict,
-                             version: int, rollback_of: Optional[str] = None) -> str:
+                             version: int, rollback_of: str | None = None) -> str:
     """Create a version snapshot before updating memory."""
     version_id = hashlib.sha256(
         f"{memory_id}{version}{datetime.now(timezone.utc).isoformat()}".encode()
@@ -302,7 +296,7 @@ def create_version_snapshot(memory_id: str, user_id: str, content: str,
     return version_id
 
 
-def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[str] = None) -> str:
+def rollback_to_version(memory_id: str, target_version: int, user_id: str | None = None) -> str:
     """Rollback a memory to a specific version."""
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -331,11 +325,11 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[s
     create_version_snapshot(
         memory_id=memory_id,
         user_id=uid,
-        content=current['content'],
-        tags=current['tags'],
-        emotional_context=json.loads(current['emotional_context'] or '{}'),
-        metrics=json.loads(current['metrics'] or '{}'),
-        version=current['version'] or 1,
+        content=current["content"],
+        tags=current["tags"],
+        emotional_context=json.loads(current["emotional_context"] or "{}"),
+        metrics=json.loads(current["metrics"] or "{}"),
+        version=current["version"] or 1,
         rollback_of=None
     )
 
@@ -347,8 +341,8 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[s
         version = ?, updated_at = ?
     WHERE id = ? AND user_id = ?
     """, (
-        version_row['content'], version_row['tags'],
-        version_row['emotional_context'], version_row['metrics'],
+        version_row["content"], version_row["tags"],
+        version_row["emotional_context"], version_row["metrics"],
         new_version, datetime.now(timezone.utc).isoformat(),
         memory_id, uid
     ))
@@ -360,15 +354,15 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[s
     event_bus = get_event_bus()
     event_bus.publish(memory_updated(
         memory_id=memory_id,
-        old_content=current['content'],
-        new_content=version_row['content'],
+        old_content=current["content"],
+        new_content=version_row["content"],
         actor=uid
     ))
 
     return f"Rolled back memory {memory_id} to version {target_version}"
 
 
-def get_memory_diff(memory_id: str, version1: int, version2: int, user_id: Optional[str] = None) -> Dict[str, Any]:
+def get_memory_diff(memory_id: str, version1: int, version2: int, user_id: str | None = None) -> dict[str, Any]:
     """Get diff between two versions of a memory."""
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -390,8 +384,8 @@ def get_memory_diff(memory_id: str, version1: int, version2: int, user_id: Optio
 
     return {
         "memory_id": memory_id,
-        "version1": {"version": version1, "content": v1['content']},
-        "version2": {"version": version2, "content": v2['content']},
+        "version1": {"version": version1, "content": v1["content"]},
+        "version2": {"version": version2, "content": v2["content"]},
         "changed_fields": ["content"]
     }
 
@@ -411,10 +405,10 @@ def get_memory_system():
     if not _memory_system_initialized:
         _memory_system_initialized = True
     return {
-        'tagger': MemoryCrisisTagger(get_crisis_service('high')),
-        'gate': None,  # Created per-evaluate to get fresh tagger
-        'synthesizer': MemorySynthesizer(),
-        'linker': MemoryLinker(),
+        "tagger": MemoryCrisisTagger(get_crisis_service("high")),
+        "gate": None,  # Created per-evaluate to get fresh tagger
+        "synthesizer": MemorySynthesizer(),
+        "linker": MemoryLinker(),
     }
 
 
@@ -444,9 +438,9 @@ logger = logging.getLogger("foresight_server")
 @mcp.tool()
 def store_memory(content: str, category: str = "fact",
                  scope: str = "session", retention: str = "short_term",
-                 emotional_context: Optional[dict] = None,
-                 metrics: Optional[dict] = None,
-                 user_id: Optional[str] = None) -> str:
+                 emotional_context: dict | None = None,
+                 metrics: dict | None = None,
+                 user_id: str | None = None) -> str:
     """
     Store a new memory with full psychological safety features.
 
@@ -482,7 +476,7 @@ def store_memory(content: str, category: str = "fact",
         conn.execute(
             "UPDATE memories SET activation_count = activation_count + 1, "
             "updated_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), existing['id'])
+            (datetime.now(timezone.utc).isoformat(), existing["id"])
         )
         conn.commit()
         conn.close()
@@ -512,7 +506,7 @@ def store_memory(content: str, category: str = "fact",
 
     # Run through Socratic Gate
     ms = get_memory_system()
-    gate = SocraticGate(ms['tagger'])
+    gate = SocraticGate(ms["tagger"])
 
     gate_result = _run_async(gate.evaluate(memory, uid))
 
@@ -555,11 +549,11 @@ def store_memory(content: str, category: str = "fact",
 
 
 @mcp.tool()
-def query_memories(query: str, user_id: Optional[str] = None,
+def query_memories(query: str, user_id: str | None = None,
                    limit: int = 5, offset: int = 0) -> str:
     """Search memories by content using a query string."""
     uid = user_id or USER_ID
-    escaped = query.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+    escaped = query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
     conn = get_db_connection()
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?",
@@ -578,7 +572,7 @@ def query_memories(query: str, user_id: Optional[str] = None,
             if hybrid_result.results:
                 results = []
                 for r in hybrid_result.results:
-                    signals = ', '.join(r.source_signals) if r.source_signals else 'hybrid'
+                    signals = ", ".join(r.source_signals) if r.source_signals else "hybrid"
                     results.append(
                         f"- [{r.memory_id}] {r.content} "
                         f"(score={r.combined_score:.3f}, signals={signals})"
@@ -592,14 +586,14 @@ def query_memories(query: str, user_id: Optional[str] = None,
     # Emit events for retrieved memories
     event_bus = get_event_bus()
     for r in rows:
-        event_bus.publish(memory_retrieved(memory_id=r['id'], query_context=query, actor=uid))
+        event_bus.publish(memory_retrieved(memory_id=r["id"], query_context=query, actor=uid))
 
     results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content']}" for r in rows]
     return f"Found {len(results)} memories:\n" + "\n".join(results)
 
 
 @mcp.tool()
-def list_memories(user_id: Optional[str] = None,
+def list_memories(user_id: str | None = None,
                   limit: int = 10, offset: int = 0) -> str:
     """List all memories for a user, ordered by creation date."""
     uid = user_id or USER_ID
@@ -618,7 +612,7 @@ def list_memories(user_id: Optional[str] = None,
 
 
 @mcp.tool()
-def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
+def get_memory(memory_id: str, user_id: str | None = None) -> str:
     """Retrieve a specific memory by its ID with full metadata."""
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -636,10 +630,10 @@ def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
     event_bus.publish(memory_retrieved(memory_id=memory_id, query_context="", actor=uid))
 
     # Parse JSON fields
-    tags = json.loads(row['tags'])
-    emotional_context = json.loads(row['emotional_context'])
-    metrics = json.loads(row['metrics'])
-    synthesized_from = json.loads(row['synthesized_from'])
+    tags = json.loads(row["tags"])
+    emotional_context = json.loads(row["emotional_context"])
+    metrics = json.loads(row["metrics"])
+    synthesized_from = json.loads(row["synthesized_from"])
 
     result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
     result += f"Content: {row['content']}\n"
@@ -648,23 +642,23 @@ def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
         result += f"Emotional Context: {emotional_context}\n"
     if metrics:
         result += f"Metrics: {metrics}\n"
-    if row['vector_id']:
+    if row["vector_id"]:
         result += f"Vector ID: {row['vector_id']}\n"
-    if row['gist']:
+    if row["gist"]:
         result += f"Gist: {row['gist']}\n"
-    if row['is_ghost']:
+    if row["is_ghost"]:
         result += "[GHOST NODE - Content archived]"
 
     return result
 
 
 @mcp.tool()
-def update_memory(memory_id: str, content: Optional[str] = None,
-                  category: Optional[str] = None,
-                  scope: Optional[str] = None,
-                  retention: Optional[str] = None,
-                  tags: Optional[List[str]] = None,
-                  user_id: Optional[str] = None) -> str:
+def update_memory(memory_id: str, content: str | None = None,
+                  category: str | None = None,
+                  scope: str | None = None,
+                  retention: str | None = None,
+                  tags: list[str] | None = None,
+                  user_id: str | None = None) -> str:
     """Update an existing memory's content or metadata."""
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -682,7 +676,7 @@ def update_memory(memory_id: str, content: Optional[str] = None,
 
     if content:
         # Create version snapshot before updating
-        current_version = row['version'] or 1
+        current_version = row["version"] or 1
         version_id = hashlib.sha256(
             f"{memory_id}{current_version}{datetime.now(timezone.utc).isoformat()}".encode()
         ).hexdigest()[:16]
@@ -691,9 +685,9 @@ def update_memory(memory_id: str, content: Optional[str] = None,
             id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            version_id, memory_id, row['content'], current_version,
+            version_id, memory_id, row["content"], current_version,
             datetime.now(timezone.utc).isoformat(),
-            row['tags'], row['emotional_context'], row['metrics'], None
+            row["tags"], row["emotional_context"], row["metrics"], None
         ))
         updates.append("content = ?")
         values.append(content)
@@ -714,7 +708,7 @@ def update_memory(memory_id: str, content: Optional[str] = None,
         updates.append("updated_at = ?")
         values.append(datetime.now(timezone.utc).isoformat())
         if content:
-            current_version = row['version'] or 1
+            current_version = row["version"] or 1
             updates.append("version = ?")
             values.append(current_version + 1)
         values.extend([memory_id, uid])
@@ -728,13 +722,13 @@ def update_memory(memory_id: str, content: Optional[str] = None,
 
     # Emit event
     event_bus = get_event_bus()
-    event_bus.publish(memory_updated(memory_id=memory_id, old_content=row['content'], new_content=content or row['content'], actor=uid))
+    event_bus.publish(memory_updated(memory_id=memory_id, old_content=row["content"], new_content=content or row["content"], actor=uid))
 
     return f"Updated memory {memory_id}"
 
 
 @mcp.tool()
-def delete_memory(memory_id: str, user_id: Optional[str] = None) -> str:
+def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     """Delete a memory by its ID."""
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -758,7 +752,7 @@ def delete_memory(memory_id: str, user_id: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def synthesize_memories(user_id: Optional[str] = None) -> str:
+def synthesize_memories(user_id: str | None = None) -> str:
     """
     Run synthesis on all memories to detect stance shifts and merge candidates.
 
@@ -779,30 +773,30 @@ def synthesize_memories(user_id: Optional[str] = None) -> str:
     # Convert to MemoryObject list
     memories = []
     for row in rows:
-        emo = json.loads(row['emotional_context']) if row['emotional_context'] else None
-        met = json.loads(row['metrics']) if row['metrics'] else None
+        emo = json.loads(row["emotional_context"]) if row["emotional_context"] else None
+        met = json.loads(row["metrics"]) if row["metrics"] else None
         emo_obj = EmotionalMetadata(**emo) if emo else None
         met_obj = EmpathyMetrics(**met) if met else None
 
         mem = MemoryObject(
-            id=row['id'],
-            timestamp=row['created_at'],
-            scope=row['scope'],
-            retention=row['retention'],
-            content=row['content'],
-            tags=json.loads(row['tags']) or [],
-            synthesized_from=json.loads(row['synthesized_from']) or [],
-            is_ghost=bool(row.get('is_ghost', 0)),
+            id=row["id"],
+            timestamp=row["created_at"],
+            scope=row["scope"],
+            retention=row["retention"],
+            content=row["content"],
+            tags=json.loads(row["tags"]) or [],
+            synthesized_from=json.loads(row["synthesized_from"]) or [],
+            is_ghost=bool(row.get("is_ghost", 0)),
             emotional_context=emo_obj,
             metrics=met_obj,
-            vector_id=row.get('vector_id'),
-            gist=row.get('gist')
+            vector_id=row.get("vector_id"),
+            gist=row.get("gist")
         )
         memories.append(mem)
 
     # Run synthesis
     ms = get_memory_system()
-    result = _run_async(ms['synthesizer'].synthesize(memories))
+    result = _run_async(ms["synthesizer"].synthesize(memories))
 
     if not result:
         return "Synthesis returned no results."
@@ -827,7 +821,7 @@ def synthesize_memories(user_id: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def archive_memory(memory_id: str, user_id: Optional[str] = None) -> str:
+def archive_memory(memory_id: str, user_id: str | None = None) -> str:
     """
     Archive a memory to a ghost node.
     Requires the memory to have a vector_id.
@@ -843,24 +837,24 @@ def archive_memory(memory_id: str, user_id: Optional[str] = None) -> str:
         conn.close()
         return f"Memory {memory_id} not found."
 
-    if not row.get('vector_id'):
+    if not row.get("vector_id"):
         conn.close()
         return f"Cannot archive memory without vector_id. Embed first."
 
     # Create ghost node
     ms = get_memory_system()
-    ghost = ms['linker'].to_ghost(
+    ghost = ms["linker"].to_ghost(
         MemoryObject(
-            id=row['id'],
-            timestamp=row['created_at'],
-            scope=row['scope'],
-            retention=row['retention'],
-            content=row['content'],
-            tags=json.loads(row['tags']) or [],
-            synthesized_from=json.loads(row['synthesized_from']) or [],
-            is_ghost=bool(row.get('is_ghost', 0)),
-            vector_id=row['vector_id'],
-            gist=row.get('gist')
+            id=row["id"],
+            timestamp=row["created_at"],
+            scope=row["scope"],
+            retention=row["retention"],
+            content=row["content"],
+            tags=json.loads(row["tags"]) or [],
+            synthesized_from=json.loads(row["synthesized_from"]) or [],
+            is_ghost=bool(row.get("is_ghost", 0)),
+            vector_id=row["vector_id"],
+            gist=row.get("gist")
         )
     )
 
@@ -880,7 +874,7 @@ def archive_memory(memory_id: str, user_id: Optional[str] = None) -> str:
 # =============================================================================
 
 @mcp.tool()
-def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = None) -> str:
+def rollback_memory(memory_id: str, to_version: int, user_id: str | None = None) -> str:
     """
     Rollback a memory to a previous version.
 
@@ -925,9 +919,9 @@ def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = No
         id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        version_id, memory_id, row['content'], row['version'] or 1,
+        version_id, memory_id, row["content"], row["version"] or 1,
         datetime.now(timezone.utc).isoformat(),
-        row['tags'], row['emotional_context'], row['metrics'], None
+        row["tags"], row["emotional_context"], row["metrics"], None
     ))
 
     # Update to target version content
@@ -938,8 +932,8 @@ def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = No
         version = ?, updated_at = ?
     WHERE id = ? AND user_id = ?
     """, (
-        version_row['content'], version_row['tags'],
-        version_row['emotional_context'], version_row['metrics'],
+        version_row["content"], version_row["tags"],
+        version_row["emotional_context"], version_row["metrics"],
         new_version, datetime.now(timezone.utc).isoformat(),
         memory_id, uid
     ))
@@ -951,8 +945,8 @@ def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = No
     event_bus = get_event_bus()
     event_bus.publish(memory_updated(
         memory_id=memory_id,
-        old_content=row['content'],
-        new_content=version_row['content'],
+        old_content=row["content"],
+        new_content=version_row["content"],
         actor=uid
     ))
 
@@ -960,7 +954,7 @@ def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = No
 
 
 @mcp.tool()
-def diff_memories(memory_id: str, version1: int, version2: int, user_id: Optional[str] = None) -> str:
+def diff_memories(memory_id: str, version1: int, version2: int, user_id: str | None = None) -> str:
     """
     Compare two versions of a memory.
 
@@ -1014,7 +1008,7 @@ def diff_memories(memory_id: str, version1: int, version2: int, user_id: Optiona
         f"  {v2['content'][:100]}...",
     ]
 
-    if v1['content'] == v2['content']:
+    if v1["content"] == v2["content"]:
         result.append("")
         result.append("No changes between versions.")
     else:
@@ -1065,7 +1059,7 @@ def memory_status() -> str:
 # =============================================================================
 
 @mcp.tool()
-def get_subconscious_blocks(user_id: Optional[str] = None) -> str:
+def get_subconscious_blocks(user_id: str | None = None) -> str:
     """
     Get all subconscious memory blocks.
 
@@ -1079,7 +1073,7 @@ def get_subconscious_blocks(user_id: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def get_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
+def get_subconscious_block(label: str, user_id: str | None = None) -> str:
     """
     Get a specific subconscious memory block.
 
@@ -1103,7 +1097,7 @@ def get_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
 def update_subconscious_block(
     label: str,
     content: str,
-    user_id: Optional[str] = None
+    user_id: str | None = None
 ) -> str:
     """
     Update a subconscious memory block.
@@ -1125,7 +1119,7 @@ def update_subconscious_block(
 
 
 @mcp.tool()
-def add_subconscious_guidance(line: str, user_id: Optional[str] = None) -> str:
+def add_subconscious_guidance(line: str, user_id: str | None = None) -> str:
     """
     Add a line to the guidance block.
 
@@ -1143,7 +1137,7 @@ def add_subconscious_guidance(line: str, user_id: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def get_subconscious_whisper(user_id: Optional[str] = None) -> str:
+def get_subconscious_whisper(user_id: str | None = None) -> str:
     """
     Get the current whisper injection (guidance in XML format).
 
@@ -1162,7 +1156,7 @@ def get_subconscious_whisper(user_id: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def get_subconscious_context(user_id: Optional[str] = None) -> str:
+def get_subconscious_context(user_id: str | None = None) -> str:
     """
     Get all subconscious memory blocks as XML context.
 
@@ -1178,7 +1172,7 @@ def get_subconscious_context(user_id: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def reset_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
+def reset_subconscious_block(label: str, user_id: str | None = None) -> str:
     """
     Reset a subconscious memory block to default.
 
@@ -1196,7 +1190,7 @@ def reset_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def clear_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
+def clear_subconscious_block(label: str, user_id: str | None = None) -> str:
     """
     Clear a subconscious memory block.
 
@@ -1277,7 +1271,7 @@ def _bridge_subconscious_to_memories(agent, uid: str) -> int:
     return stored
 
 
-def _bridge_transcript_entities(messages: List[dict], uid: str) -> int:
+def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
     """Run entity extraction on transcript content and persist found entities.
 
     Returns the number of entities stored.
@@ -1310,9 +1304,9 @@ def _bridge_transcript_entities(messages: List[dict], uid: str) -> int:
 @mcp.tool()
 def process_session_transcript(
     session_id: str,
-    messages: List[dict],
-    project_path: Optional[str] = None,
-    user_id: Optional[str] = None
+    messages: list[dict],
+    project_path: str | None = None,
+    user_id: str | None = None
 ) -> str:
     """
     Process a session transcript and extract memories.
@@ -1348,7 +1342,7 @@ def process_session_transcript(
 # WebSocket Subscription Tools
 # =============================================================================
 
-_subscription_manager: Optional[SubscriptionManager] = None
+_subscription_manager: SubscriptionManager | None = None
 
 
 def get_subscription_manager() -> SubscriptionManager:
@@ -1362,9 +1356,9 @@ def get_subscription_manager() -> SubscriptionManager:
 @mcp.tool()
 def ws_subscribe(
     subscription_id: str,
-    event_types: List[str],
-    entity_filter: Optional[str] = None,
-    user_id: Optional[str] = None,
+    event_types: list[str],
+    entity_filter: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     """
     Subscribe to real-time events via WebSocket.
@@ -1425,7 +1419,7 @@ def ws_status() -> str:
 
 
 @mcp.tool()
-def ws_list_subscriptions(user_id: Optional[str] = None) -> str:
+def ws_list_subscriptions(user_id: str | None = None) -> str:
     """
     List active subscriptions for a user.
 
@@ -1463,7 +1457,7 @@ def ws_list_subscriptions(user_id: Optional[str] = None) -> str:
 # Audit Trail Projections Tools
 # =============================================================================
 
-_projection_builder: Optional[ProjectionBuilder] = None
+_projection_builder: ProjectionBuilder | None = None
 
 
 def get_projection_builder() -> ProjectionBuilder:
@@ -1477,9 +1471,9 @@ def get_projection_builder() -> ProjectionBuilder:
 @mcp.tool()
 def audit_build(
     report_name: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    user_filter: Optional[str] = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    user_filter: str | None = None,
 ) -> str:
     """
     Build an audit trail projection report.
@@ -1544,7 +1538,7 @@ def audit_list_reports() -> str:
 def audit_export(
     report_name: str,
     format: str = "json",
-    output_path: Optional[str] = None,
+    output_path: str | None = None,
 ) -> str:
     """
     Export an audit trail report to file.
@@ -1557,7 +1551,6 @@ def audit_export(
     Returns:
         Path to generated file
     """
-    import os
     from datetime import datetime
 
     builder = get_projection_builder()
@@ -1650,7 +1643,7 @@ def _score_memory_relevance(
     # Term overlap: count how many distinct search terms appear in content
     # Use word-boundary regex to prevent substring matches (e.g. "work" in "networking")
     overlap = sum(
-        1 for t in terms if re.search(rf'\b{re.escape(t)}\b', content_lower)
+        1 for t in terms if re.search(rf"\b{re.escape(t)}\b", content_lower)
     )
 
     # Normalize overlap to 0-1 range so min_relevance threshold is meaningful
@@ -1677,7 +1670,7 @@ def _score_memory_relevance(
 @mcp.tool()
 def inject_context(
     conversation_text: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     max_memories: int = 5,
     min_relevance: float = 0.3,
 ) -> str:
@@ -1801,12 +1794,12 @@ def _subconscious_context_for_terms(
         content = block.content
         # Check if any term appears in the block content
         content_lower = content.lower()
-        if terms and any(re.search(rf'\b{re.escape(t)}\b', content_lower) for t in terms):
+        if terms and any(re.search(rf"\b{re.escape(t)}\b", content_lower) for t in terms):
             # Include relevant lines from the block
             matching = []
             for line in content.splitlines():
                 line_lower = line.lower().strip()
-                if line_lower and any(re.search(rf'\b{re.escape(t)}\b', line_lower) for t in terms):
+                if line_lower and any(re.search(rf"\b{re.escape(t)}\b", line_lower) for t in terms):
                     matching.append(line.strip())
             if matching:
                 lines.append(f"[{label}]")
@@ -2031,13 +2024,14 @@ def get_tenant_isolation_status() -> str:
 # Compliance Export Tools (HIPAA, SOC2, GDPR)
 # =============================================================================
 
-from .compliance import ComplianceExporter, ComplianceExport
+from .compliance import ComplianceExporter
+
 
 @mcp.tool()
-def compliance_hipaa_access_log(start_date: Optional[str] = None,
-                                end_date: Optional[str] = None,
-                                user_id: Optional[str] = None,
-                                format: str = 'json') -> str:
+def compliance_hipaa_access_log(start_date: str | None = None,
+                                end_date: str | None = None,
+                                user_id: str | None = None,
+                                format: str = "json") -> str:
     """
     Generate HIPAA-compliant access log.
     
@@ -2053,20 +2047,20 @@ def compliance_hipaa_access_log(start_date: Optional[str] = None,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
     export = exporter.hipaa_access_log(start_date, end_date, user_id)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
 
 @mcp.tool()
-def compliance_hipaa_modification_log(start_date: Optional[str] = None,
-                                       end_date: Optional[str] = None,
-                                       user_id: Optional[str] = None,
-                                       format: str = 'json') -> str:
+def compliance_hipaa_modification_log(start_date: str | None = None,
+                                       end_date: str | None = None,
+                                       user_id: str | None = None,
+                                       format: str = "json") -> str:
     """
     Generate HIPAA-compliant modification log.
     
@@ -2082,20 +2076,20 @@ def compliance_hipaa_modification_log(start_date: Optional[str] = None,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
     export = exporter.hipaa_modification_log(start_date, end_date, user_id)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
 
 @mcp.tool()
 def compliance_hipaa_user_activity(user_id: str,
-                                    start_date: Optional[str] = None,
-                                    end_date: Optional[str] = None,
-                                    format: str = 'json') -> str:
+                                    start_date: str | None = None,
+                                    end_date: str | None = None,
+                                    format: str = "json") -> str:
     """
     Generate HIPAA user activity report.
     
@@ -2111,19 +2105,19 @@ def compliance_hipaa_user_activity(user_id: str,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
     export = exporter.hipaa_user_activity(user_id, start_date, end_date)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
 
 @mcp.tool()
-def compliance_soc2_change_history(start_date: Optional[str] = None,
-                                    end_date: Optional[str] = None,
-                                    format: str = 'json') -> str:
+def compliance_soc2_change_history(start_date: str | None = None,
+                                    end_date: str | None = None,
+                                    format: str = "json") -> str:
     """
     Generate SOC2 change history report.
     
@@ -2138,18 +2132,18 @@ def compliance_soc2_change_history(start_date: Optional[str] = None,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
     export = exporter.soc2_change_history(start_date, end_date)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
 
 @mcp.tool()
-def compliance_soc2_access_review(user_ids: Optional[str] = None,
-                                   format: str = 'json') -> str:
+def compliance_soc2_access_review(user_ids: str | None = None,
+                                   format: str = "json") -> str:
     """
     Generate SOC2 access control review report.
     
@@ -2163,20 +2157,20 @@ def compliance_soc2_access_review(user_ids: Optional[str] = None,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
-    user_id_list = user_ids.split(',') if user_ids else None
+
+    user_id_list = user_ids.split(",") if user_ids else None
     exporter = ComplianceExporter(events)
     export = exporter.soc2_access_review(user_id_list)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
 
 @mcp.tool()
-def compliance_soc2_monitoring(start_date: Optional[str] = None,
-                                end_date: Optional[str] = None,
-                                format: str = 'json') -> str:
+def compliance_soc2_monitoring(start_date: str | None = None,
+                                end_date: str | None = None,
+                                format: str = "json") -> str:
     """
     Generate SOC2 monitoring report.
     
@@ -2191,11 +2185,11 @@ def compliance_soc2_monitoring(start_date: Optional[str] = None,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
     export = exporter.soc2_monitoring_report(start_date, end_date)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
@@ -2203,7 +2197,7 @@ def compliance_soc2_monitoring(start_date: Optional[str] = None,
 @mcp.tool()
 def compliance_gdpr_data_export(user_id: str,
                                 include_deleted: bool = False,
-                                format: str = 'json') -> str:
+                                format: str = "json") -> str:
     """
     Generate GDPR data portability export.
     
@@ -2218,19 +2212,19 @@ def compliance_gdpr_data_export(user_id: str,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
     export = exporter.gdpr_data_export(user_id, include_deleted)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
 
 @mcp.tool()
 def compliance_gdpr_erasure_certification(user_id: str,
-                                          deletion_date: Optional[str] = None,
-                                          format: str = 'json') -> str:
+                                          deletion_date: str | None = None,
+                                          format: str = "json") -> str:
     """
     Generate GDPR erasure certification.
     
@@ -2245,18 +2239,18 @@ def compliance_gdpr_erasure_certification(user_id: str,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
     export = exporter.gdpr_erasure_certification(user_id, deletion_date)
-    
-    if format == 'csv':
+
+    if format == "csv":
         return exporter.to_csv(export)
     return exporter.to_json(export)
 
 
 @mcp.tool()
 def compliance_save_report(report_name: str, output_path: str, 
-                           format: str = 'json') -> str:
+                           format: str = "json") -> str:
     """
     Save a compliance report to file.
     
@@ -2271,23 +2265,23 @@ def compliance_save_report(report_name: str, output_path: str,
     from .event_bus import get_event_bus
     event_bus = get_event_bus()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-    
+
     exporter = ComplianceExporter(events)
-    
+
     # Map report names to functions
     report_funcs = {
-        'hipaa_access_log': lambda: exporter.hipaa_access_log(),
-        'hipaa_modification_log': lambda: exporter.hipaa_modification_log(),
-        'soc2_change_history': lambda: exporter.soc2_change_history(),
-        'soc2_access_review': lambda: exporter.soc2_access_review(),
-        'soc2_monitoring': lambda: exporter.soc2_monitoring_report(),
-        'gdpr_data_export': lambda: exporter.gdpr_data_export('default'),
-        'gdpr_erasure_certification': lambda: exporter.gdpr_erasure_certification('default'),
+        "hipaa_access_log": lambda: exporter.hipaa_access_log(),
+        "hipaa_modification_log": lambda: exporter.hipaa_modification_log(),
+        "soc2_change_history": lambda: exporter.soc2_change_history(),
+        "soc2_access_review": lambda: exporter.soc2_access_review(),
+        "soc2_monitoring": lambda: exporter.soc2_monitoring_report(),
+        "gdpr_data_export": lambda: exporter.gdpr_data_export("default"),
+        "gdpr_erasure_certification": lambda: exporter.gdpr_erasure_certification("default"),
     }
-    
+
     if report_name not in report_funcs:
         return f"Unknown report: {report_name}. Available: {list(report_funcs.keys())}"
-    
+
     export = report_funcs[report_name]()
     return exporter.save_to_file(export, output_path, format)
 
@@ -2299,10 +2293,10 @@ def compliance_save_report(report_name: str, output_path: str,
 @mcp.tool()
 def get_memories_from_window(
     window: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     limit: int = 50,
     min_importance: float = 0.1,
-    category: Optional[str] = None
+    category: str | None = None
 ) -> str:
     """
     Get memories from a time window.
@@ -2319,7 +2313,7 @@ def get_memories_from_window(
     """
     from .temporal_queries import get_temporal_query_builder
 
-    valid_windows = ['today', 'week', 'month', 'year']
+    valid_windows = ["today", "week", "month", "year"]
     if window not in valid_windows:
         return f"Invalid window. Must be one of: {', '.join(valid_windows)}"
 
@@ -2336,14 +2330,14 @@ def get_memories_from_window(
 
     return json.dumps([
         {
-            'memory_id': r.memory_id,
-            'content': r.content,
-            'importance': r.importance,
-            'strength_trend': r.strength_trend,
-            'activation_count': r.activation_count,
-            'created_at': r.created_at,
-            'accessed_at': r.accessed_at,
-            'category': r.category,
+            "memory_id": r.memory_id,
+            "content": r.content,
+            "importance": r.importance,
+            "strength_trend": r.strength_trend,
+            "activation_count": r.activation_count,
+            "created_at": r.created_at,
+            "accessed_at": r.accessed_at,
+            "category": r.category,
         }
         for r in results
     ], indent=2)
@@ -2352,9 +2346,9 @@ def get_memories_from_window(
 @mcp.tool()
 def get_memories_by_trend(
     trend: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     limit: int = 50,
-    category: Optional[str] = None
+    category: str | None = None
 ) -> str:
     """
     Get memories by freshness trend.
@@ -2370,7 +2364,7 @@ def get_memories_by_trend(
     """
     from .temporal_queries import get_temporal_query_builder
 
-    valid_trends = ['stable', 'strengthening', 'weakening', 'stale']
+    valid_trends = ["stable", "strengthening", "weakening", "stale"]
     if trend not in valid_trends:
         return f"Invalid trend. Must be one of: {', '.join(valid_trends)}"
 
@@ -2386,12 +2380,12 @@ def get_memories_by_trend(
 
     return json.dumps([
         {
-            'memory_id': r.memory_id,
-            'content': r.content,
-            'importance': r.importance,
-            'strength_trend': r.strength_trend,
-            'activation_count': r.activation_count,
-            'created_at': r.created_at,
+            "memory_id": r.memory_id,
+            "content": r.content,
+            "importance": r.importance,
+            "strength_trend": r.strength_trend,
+            "activation_count": r.activation_count,
+            "created_at": r.created_at,
         }
         for r in results
     ], indent=2)
@@ -2399,8 +2393,8 @@ def get_memories_by_trend(
 
 @mcp.tool()
 def analyze_memory_trends(
-    user_id: Optional[str] = None,
-    timeframe: str = '30 days'
+    user_id: str | None = None,
+    timeframe: str = "30 days"
 ) -> str:
     """
     Analyze memory trends over time.
@@ -2426,9 +2420,9 @@ def analyze_memory_trends(
     stats = service.get_memory_stats(user_id=uid)
 
     result = {
-        'timeframe': timeframe,
-        'stats': stats,
-        'trend_analysis': trend_analysis,
+        "timeframe": timeframe,
+        "stats": stats,
+        "trend_analysis": trend_analysis,
     }
 
     return json.dumps(result, indent=2)
@@ -2436,7 +2430,7 @@ def analyze_memory_trends(
 
 @mcp.tool()
 def update_memory_decay(
-    user_id: Optional[str] = None
+    user_id: str | None = None
 ) -> str:
     """
     Trigger batch decay update for all user memories.
@@ -2460,7 +2454,7 @@ def update_memory_decay(
 
 @mcp.tool()
 def get_memory_stats(
-    user_id: Optional[str] = None
+    user_id: str | None = None
 ) -> str:
     """
     Get temporal statistics for user memories.
@@ -2506,7 +2500,7 @@ def run_temporal_migrations_tool() -> str:
 @mcp.tool()
 def extract_entities(
     content: str,
-    user_id: Optional[str] = None
+    user_id: str | None = None
 ) -> str:
     """
     Extract entities and relationships from text.
@@ -2526,16 +2520,16 @@ def extract_entities(
     result = _run_async(extractor.extract(content))
 
     return json.dumps({
-        'user_id': uid,
-        'entities': [e.to_dict() for e in result.entities],
-        'relationships': [r.to_dict() for r in result.relationships],
+        "user_id": uid,
+        "entities": [e.to_dict() for e in result.entities],
+        "relationships": [r.to_dict() for r in result.relationships],
     }, indent=2)
 
 
 @mcp.tool()
 def get_entities_by_type(
     entity_type: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     limit: int = 50
 ) -> str:
     """
@@ -2551,7 +2545,7 @@ def get_entities_by_type(
     """
     from .graph_store import get_graph_store
 
-    valid_types = ['person', 'place', 'concept', 'event', 'emotion', 'object']
+    valid_types = ["person", "place", "concept", "event", "emotion", "object"]
     if entity_type not in valid_types:
         return f"Invalid entity_type. Must be one of: {', '.join(valid_types)}"
 
@@ -2566,7 +2560,7 @@ def get_entities_by_type(
 @mcp.tool()
 def find_entities_by_name(
     name: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     limit: int = 10
 ) -> str:
     """
@@ -2593,8 +2587,8 @@ def find_entities_by_name(
 @mcp.tool()
 def get_relationships(
     entity_id: str,
-    user_id: Optional[str] = None,
-    direction: str = 'both'
+    user_id: str | None = None,
+    direction: str = "both"
 ) -> str:
     """
     Get relationships for an entity.
@@ -2609,7 +2603,7 @@ def get_relationships(
     """
     from .graph_store import get_graph_store
 
-    valid_directions = ['in', 'out', 'both']
+    valid_directions = ["in", "out", "both"]
     if direction not in valid_directions:
         return f"Invalid direction. Must be one of: {', '.join(valid_directions)}"
 
@@ -2624,7 +2618,7 @@ def get_relationships(
 @mcp.tool()
 def traverse_graph(
     start_entity_id: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     max_depth: int = 2,
     max_results: int = 50
 ) -> str:
@@ -2648,8 +2642,8 @@ def traverse_graph(
     result = store.traverse_graph(start_entity_id, uid, max_depth, max_results)
 
     return json.dumps({
-        'nodes': [e.to_dict() for e in result.nodes],
-        'edges': [r.to_dict() for r in result.edges],
+        "nodes": [e.to_dict() for e in result.nodes],
+        "edges": [r.to_dict() for r in result.edges],
     }, indent=2)
 
 
@@ -2657,7 +2651,7 @@ def traverse_graph(
 def link_memory_to_entities(
     memory_id: str,
     entity_ids: list,
-    user_id: Optional[str] = None
+    user_id: str | None = None
 ) -> str:
     """
     Link a memory to entities.
@@ -2686,7 +2680,7 @@ def link_memory_to_entities(
 
 @mcp.tool()
 def enhanced_synthesize(
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     limit: int = 50,
     min_memories: int = 5
 ) -> str:
@@ -2705,7 +2699,7 @@ def enhanced_synthesize(
         JSON with synthesis result including contradictions, trends, insights
     """
     from .enhanced_synthesizer import get_enhanced_synthesizer
-    from .memory_types import MemoryObject, EmotionalMetadata
+    from .memory_types import EmotionalMetadata, MemoryObject
 
     uid = user_id or USER_ID
     conn = get_db_connection()
@@ -2723,15 +2717,15 @@ def enhanced_synthesize(
     memories = []
     for r in rows:
         memories.append(MemoryObject(
-            id=r['id'],
-            timestamp=r['created_at'],
-            scope=r['scope'],
-            retention=r['retention'],
-            content=r['content'],
-            tags=json.loads(r['tags']),
+            id=r["id"],
+            timestamp=r["created_at"],
+            scope=r["scope"],
+            retention=r["retention"],
+            content=r["content"],
+            tags=json.loads(r["tags"]),
             emotional_context=EmotionalMetadata(
-                intensity=json.loads(r['emotional_context']).get('intensity', 0.5)
-            ) if r['emotional_context'] else None,
+                intensity=json.loads(r["emotional_context"]).get("intensity", 0.5)
+            ) if r["emotional_context"] else None,
         ))
 
     synthesizer = get_enhanced_synthesizer()
@@ -2751,7 +2745,7 @@ def enhanced_synthesize(
 @mcp.tool()
 def hybrid_search(
     query: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     limit: int = 10,
     min_importance: float = 0.1,
     use_keyword: bool = True,
@@ -2801,8 +2795,8 @@ def hybrid_search(
 
 @mcp.tool()
 def run_reflection(
-    user_id: Optional[str] = None,
-    period: str = 'weekly',
+    user_id: str | None = None,
+    period: str = "weekly",
 ) -> str:
     """
     Run a reflection analysis over user memories.
@@ -2819,7 +2813,7 @@ def run_reflection(
     """
     from .reflection_engine import get_reflection_engine
 
-    if period not in ('weekly', 'monthly'):
+    if period not in ("weekly", "monthly"):
         return "Invalid period. Must be 'weekly' or 'monthly'."
 
     uid = user_id or USER_ID

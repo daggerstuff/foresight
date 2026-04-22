@@ -9,13 +9,14 @@ Supports:
 - Consumer group coordination
 """
 from __future__ import annotations
+
 import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
 from enum import Enum
+from typing import Any
 
 
 class StreamType(str, Enum):
@@ -30,13 +31,13 @@ class StreamEvent:
     """Event for stream publishing."""
     event_type: str
     entity_id: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     timestamp: str
-    metadata: Dict[str, Any] = None
+    metadata: dict[str, Any] = None
 
     def __post_init__(self):
         if self.metadata is None:
-            self.metadata: Dict[str, Any] = {}
+            self.metadata: dict[str, Any] = {}
 
     def to_dict(self) -> dict:
         return {
@@ -57,7 +58,7 @@ class StreamProducer(ABC):
         pass
 
     @abstractmethod
-    def publish_batch(self, events: List[tuple[str, StreamEvent]]) -> int:
+    def publish_batch(self, events: list[tuple[str, StreamEvent]]) -> int:
         """Publish batch of events. Returns count of successful publishes."""
         pass
 
@@ -71,14 +72,14 @@ class MockProducer(StreamProducer):
     """Mock producer for testing - logs events but doesn't publish."""
 
     def __init__(self):
-        self.published: List[tuple[str, StreamEvent]] = []
-        self.failures: List[tuple[str, StreamEvent]] = []
+        self.published: list[tuple[str, StreamEvent]] = []
+        self.failures: list[tuple[str, StreamEvent]] = []
 
     def publish(self, topic: str, event: StreamEvent) -> bool:
         self.published.append((topic, event))
         return True
 
-    def publish_batch(self, events: List[tuple[str, StreamEvent]]) -> int:
+    def publish_batch(self, events: list[tuple[str, StreamEvent]]) -> int:
         self.published.extend(events)
         return len(events)
 
@@ -114,7 +115,7 @@ class KafkaProducer(StreamProducer):
         self.dlq_topic = dlq_topic
         self.enable_schema_validation = enable_schema_validation
         self._producer = None
-        self._failed_messages: List[Dict[str, Any]] = []
+        self._failed_messages: list[dict[str, Any]] = []
 
         # Lazy import to avoid requiring kafka-python when not used
         self._kafka = None
@@ -126,9 +127,9 @@ class KafkaProducer(StreamProducer):
                 from kafka import KafkaProducer
                 self._kafka = KafkaProducer
                 self._producer = KafkaProducer(
-                    bootstrap_servers=self.bootstrap_servers.split(','),
-                    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                    key_serializer=lambda k: k.encode('utf-8') if k else None,
+                    bootstrap_servers=self.bootstrap_servers.split(","),
+                    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                    key_serializer=lambda k: k.encode("utf-8") if k else None,
                     retries=3,
                     retry_backoff_ms=100,
                 )
@@ -141,13 +142,13 @@ class KafkaProducer(StreamProducer):
     def _get_topic(self, entity: str, event: str) -> str:
         """Generate topic name with naming convention."""
         # Normalize entity and event for topic naming
-        entity_clean = entity.replace('.', '_').replace(' ', '_').lower()
-        event_clean = event.replace('.', '_').replace(' ', '_').lower()
+        entity_clean = entity.replace(".", "_").replace(" ", "_").lower()
+        event_clean = event.replace(".", "_").replace(" ", "_").lower()
         return f"foresight.{self.environment}.{entity_clean}.{event_clean}"
 
     def _validate_event(self, event: StreamEvent) -> bool:
         """Validate event against schema."""
-        required_fields = ['event_type', 'entity_id', 'payload', 'timestamp']
+        required_fields = ["event_type", "entity_id", "payload", "timestamp"]
         event_dict = event.to_dict()
         return all(field in event_dict for field in required_fields)
 
@@ -209,7 +210,7 @@ class KafkaProducer(StreamProducer):
             self._send_to_dlq(topic, event, str(e))
             return False
 
-    def publish_batch(self, events: List[tuple[str, StreamEvent]]) -> int:
+    def publish_batch(self, events: list[tuple[str, StreamEvent]]) -> int:
         """
         Publish batch of events to Kafka.
 
@@ -293,14 +294,14 @@ class KinesisProducer(StreamProducer):
         self.region = region
         self.environment = environment
         self._client = None
-        self._failed_messages: List[Dict[str, Any]] = []
+        self._failed_messages: list[dict[str, Any]] = []
 
     def _get_client(self):
         """Lazy-load Kinesis client."""
         if self._client is None:
             try:
                 import boto3
-                self._client = boto3.client('kinesis', region_name=self.region)
+                self._client = boto3.client("kinesis", region_name=self.region)
             except ImportError:
                 raise ImportError(
                     "boto3 not installed. Install with: pip install boto3"
@@ -322,11 +323,11 @@ class KinesisProducer(StreamProducer):
             # Put record
             response = client.put_record(
                 StreamName=self.stream_name,
-                Data=json.dumps(event_dict).encode('utf-8'),
+                Data=json.dumps(event_dict).encode("utf-8"),
                 PartitionKey=partition_key,
             )
 
-            return response['ResponseMetadata']['HTTPStatusCode'] == 200
+            return response["ResponseMetadata"]["HTTPStatusCode"] == 200
 
         except Exception:
             self._failed_messages.append({
@@ -335,7 +336,7 @@ class KinesisProducer(StreamProducer):
             })
             return False
 
-    def publish_batch(self, events: List[tuple[str, StreamEvent]]) -> int:
+    def publish_batch(self, events: list[tuple[str, StreamEvent]]) -> int:
         """Publish batch of events to Kinesis."""
         if not events:
             return 0
@@ -353,8 +354,8 @@ class KinesisProducer(StreamProducer):
 
                 for topic, event in batch:
                     records.append({
-                        'Data': json.dumps(event.to_dict()).encode('utf-8'),
-                        'PartitionKey': self._get_partition_key(event),
+                        "Data": json.dumps(event.to_dict()).encode("utf-8"),
+                        "PartitionKey": self._get_partition_key(event),
                     })
 
                 # Send batch
@@ -385,7 +386,7 @@ class KinesisProducer(StreamProducer):
 # =============================================================================
 
 def create_stream_producer(
-    stream_type: Optional[StreamType] = None,
+    stream_type: StreamType | None = None,
     environment: str = "dev",
 ) -> StreamProducer:
     """
@@ -400,8 +401,8 @@ def create_stream_producer(
     """
     if stream_type is None:
         # Auto-detect from environment
-        kafka_servers = os.environ.get('KAFKA_BOOTSTRAP_SERVERS')
-        kinesis_stream = os.environ.get('KINESIS_STREAM_NAME')
+        kafka_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
+        kinesis_stream = os.environ.get("KINESIS_STREAM_NAME")
 
         if kafka_servers:
             stream_type = StreamType.KAFKA
@@ -411,14 +412,14 @@ def create_stream_producer(
             stream_type = StreamType.MOCK
 
     if stream_type == StreamType.KAFKA:
-        bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+        bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         return KafkaProducer(
             bootstrap_servers=bootstrap_servers,
             environment=environment,
         )
     elif stream_type == StreamType.KINESIS:
-        stream_name = os.environ.get('KINESIS_STREAM_NAME', 'foresight-events')
-        region = os.environ.get('AWS_REGION', 'us-east-1')
+        stream_name = os.environ.get("KINESIS_STREAM_NAME", "foresight-events")
+        region = os.environ.get("AWS_REGION", "us-east-1")
         return KinesisProducer(
             stream_name=stream_name,
             region=region,
