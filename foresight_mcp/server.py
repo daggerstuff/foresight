@@ -46,7 +46,13 @@ from .projections.builder import ProjectionBuilder
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .subconscious import PENDING_ITEMS, SESSION_PATTERNS, USER_PREFERENCES, get_subconscious_agent
 from .websocket.subscriptions import SubscriptionManager
-from .stream_producer import create_stream_producer, StreamType, StreamPublisher
+from .stream_producer import (
+    create_stream_producer,
+    StreamType,
+    StreamPublisher,
+    KafkaProducer,
+    KinesisProducer,
+)
 from .consumer_group import KafkaConsumerGroup
 
 
@@ -353,7 +359,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
 
     # Emit rollback event
     from .event_bus import get_event_bus, memory_updated
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_updated(
         memory_id=memory_id,
         old_content=current["content"],
@@ -435,6 +441,50 @@ class RateLimitMiddleware(_Middleware):
 mcp = FastMCP("Foresight", middleware=[RateLimitMiddleware()])
 
 logger = logging.getLogger("foresight_server")
+
+# =============================================================================
+# Stream Producer Initialization
+# =============================================================================
+
+_stream_publisher: StreamPublisher | None = None
+
+
+def initialize_stream_producer():
+    """Initialize stream producer for Kafka/Kinesis event publishing."""
+    global _stream_publisher
+
+    try:
+        # Create stream producer based on environment configuration
+        producer = create_stream_producer(environment=TENANT_ID or "dev")
+
+        # Create stream publisher
+        _stream_publisher = StreamPublisher(producer, environment=TENANT_ID or "dev")
+
+        logger.info("Stream publisher initialized successfully")
+
+        # Log which stream type is being used
+        if isinstance(producer, KafkaProducer):
+            logger.info(f"Using Kafka stream producer: {producer.bootstrap_servers}")
+        elif isinstance(producer, KinesisProducer):
+            logger.info(f"Using Kinesis stream producer: {producer.stream_name}")
+        else:
+            logger.info("Using mock stream producer (no Kafka/Kinesis configured)")
+
+        return _stream_publisher
+
+    except Exception as e:
+        logger.warning(f"Failed to initialize stream producer: {e}. Events will not be published to stream.")
+        return None
+
+
+def get_stream_publisher() -> StreamPublisher | None:
+    """Get the stream publisher instance."""
+    return _stream_publisher
+
+
+def get_event_bus_with_stream():
+    """Get event bus with stream publisher automatically wired up."""
+    return get_event_bus(stream_publisher=_stream_publisher)
 
 
 @mcp.tool()
@@ -535,7 +585,7 @@ def store_memory(content: str, category: str = "fact",
     conn.close()
 
     # Emit event
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_stored(memory_id=memory_id, content=content, actor=uid))
 
     # Build response
@@ -586,7 +636,7 @@ def query_memories(query: str, user_id: str | None = None,
         return f"No memories found matching '{query}'"
 
     # Emit events for retrieved memories
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     for r in rows:
         event_bus.publish(memory_retrieved(memory_id=r["id"], query_context=query, actor=uid))
 
@@ -628,7 +678,7 @@ def get_memory(memory_id: str, user_id: str | None = None) -> str:
         return f"Memory {memory_id} not found."
 
     # Emit event
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_retrieved(memory_id=memory_id, query_context="", actor=uid))
 
     # Parse JSON fields
@@ -723,7 +773,7 @@ def update_memory(memory_id: str, content: str | None = None,
     conn.close()
 
     # Emit event
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_updated(memory_id=memory_id, old_content=row["content"], new_content=content or row["content"], actor=uid))
 
     return f"Updated memory {memory_id}"
@@ -744,7 +794,7 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
         return f"Memory {memory_id} not found."
 
     # Emit event before deletion
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_deleted(memory_id=memory_id, actor=uid))
 
     conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, TENANT_ID))
@@ -944,7 +994,7 @@ def rollback_memory(memory_id: str, to_version: int, user_id: str | None = None)
 
     # Emit event
     from .event_bus import get_event_bus, memory_updated
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_updated(
         memory_id=memory_id,
         old_content=row["content"],
@@ -1497,7 +1547,7 @@ def audit_build(
 
     # Get events from event store
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     # Build report
@@ -1559,7 +1609,7 @@ def audit_export(
 
     # Get events
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     # Default output path
@@ -1593,7 +1643,7 @@ def audit_summary() -> str:
 
     # Get events
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     summary = builder.get_report_summary(events)
@@ -1812,6 +1862,8 @@ def _subconscious_context_for_terms(
 
 
 def main():
+    # Initialize stream producer for Kafka/Kinesis event publishing
+    initialize_stream_producer()
     mcp.run()
 
 
@@ -2047,7 +2099,7 @@ def compliance_hipaa_access_log(start_date: str | None = None,
         HIPAA access log in specified format
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
@@ -2076,7 +2128,7 @@ def compliance_hipaa_modification_log(start_date: str | None = None,
         HIPAA modification log in specified format
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
@@ -2105,7 +2157,7 @@ def compliance_hipaa_user_activity(user_id: str,
         HIPAA user activity report
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
@@ -2132,7 +2184,7 @@ def compliance_soc2_change_history(start_date: str | None = None,
         SOC2 change history report
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
@@ -2157,7 +2209,7 @@ def compliance_soc2_access_review(user_ids: str | None = None,
         SOC2 access review report
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     user_id_list = user_ids.split(",") if user_ids else None
@@ -2185,7 +2237,7 @@ def compliance_soc2_monitoring(start_date: str | None = None,
         SOC2 monitoring report
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
@@ -2212,7 +2264,7 @@ def compliance_gdpr_data_export(user_id: str,
         GDPR data export
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
@@ -2239,7 +2291,7 @@ def compliance_gdpr_erasure_certification(user_id: str,
         GDPR erasure certification
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
@@ -2265,7 +2317,7 @@ def compliance_save_report(report_name: str, output_path: str,
         Path to saved file
     """
     from .event_bus import get_event_bus
-    event_bus = get_event_bus()
+    event_bus = get_event_bus_with_stream()
     events = event_bus._store.get_all(limit=1000) if event_bus._store else []
 
     exporter = ComplianceExporter(events)
