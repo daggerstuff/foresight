@@ -8,7 +8,6 @@ Adds temporal fields to existing memories table for:
 """
 import sqlite3
 
-
 TEMPORAL_SCHEMA_SQL = """
 -- Temporal fields for memory decay and tracking
 ALTER TABLE memories ADD COLUMN accessed_at TEXT DEFAULT CURRENT_TIMESTAMP;
@@ -66,25 +65,25 @@ def run_temporal_migrations(db_path: str) -> None:
 
     try:
         # Run schema alterations (ignore errors for existing columns)
-        for statement in TEMPORAL_SCHEMA_SQL.split(';'):
+        for statement in TEMPORAL_SCHEMA_SQL.split(";"):
             statement = statement.strip()
             if statement:
                 try:
                     cursor.execute(statement)
                 except sqlite3.OperationalError as e:
                     # Ignore "duplicate column" errors - column already exists
-                    if 'duplicate column' not in str(e).lower():
+                    if "duplicate column" not in str(e).lower():
                         raise
 
         # Run decay config schema
-        for statement in DECAY_CONFIG_SCHEMA.split(';'):
+        for statement in DECAY_CONFIG_SCHEMA.split(";"):
             statement = statement.strip()
             if statement:
                 try:
                     cursor.execute(statement)
                 except sqlite3.OperationalError as e:
                     # Ignore errors for existing tables
-                    if 'already exists' not in str(e).lower():
+                    if "already exists" not in str(e).lower():
                         raise
 
         conn.commit()

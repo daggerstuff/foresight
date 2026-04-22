@@ -11,9 +11,9 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Optional, Set, TypeVar
+from typing import Any, Generic, TypeVar
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 # =============================================================================
@@ -31,7 +31,7 @@ class VectorClock:
     Attributes:
         clock: Dict mapping node_id to counter
     """
-    clock: Dict[str, int] = field(default_factory=dict)
+    clock: dict[str, int] = field(default_factory=dict)
 
     def increment(self, node_id: str) -> None:
         """Increment clock for a node."""
@@ -78,12 +78,12 @@ class VectorClock:
         new_clock.clock = self.clock.copy()
         return new_clock
 
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> dict[str, int]:
         """Convert to dictionary."""
         return self.clock.copy()
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int]) -> 'VectorClock':
+    def from_dict(cls, data: dict[str, int]) -> 'VectorClock':
         """Create from dictionary."""
         clock = VectorClock()
         clock.clock = data
@@ -108,12 +108,12 @@ class LWWRegister(Generic[T]):
         node_id: ID of the node that wrote the value
         vector_clock: Causal ordering
     """
-    value: Optional[T] = None
+    value: T | None = None
     timestamp: float = 0.0
     node_id: str = ""
     vector_clock: VectorClock = field(default_factory=VectorClock)
 
-    def set(self, new_value: T, node_id: str, timestamp: Optional[float] = None) -> None:
+    def set(self, new_value: T, node_id: str, timestamp: float | None = None) -> None:
         """
         Set a new value.
 
@@ -146,11 +146,11 @@ class LWWRegister(Generic[T]):
         else:
             self.vector_clock.merge(other.vector_clock)
 
-    def get(self) -> Optional[T]:
+    def get(self) -> T | None:
         """Get the current value."""
         return self.value
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "value": self.value,
@@ -160,7 +160,7 @@ class LWWRegister(Generic[T]):
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'LWWRegister':
+    def from_dict(cls, data: dict[str, Any]) -> 'LWWRegister':
         """Create from dictionary."""
         register = cls()
         register.value = data.get("value")
@@ -188,9 +188,9 @@ class ORSet(Generic[T]):
         _removes: Dict mapping element hash to set of (timestamp, node_id) pairs
         _cache: Cache of current set contents
     """
-    _adds: Dict[str, Set[tuple]] = field(default_factory=dict)
-    _removes: Dict[str, Set[tuple]] = field(default_factory=dict)
-    _cache: Optional[Set[T]] = None
+    _adds: dict[str, set[tuple]] = field(default_factory=dict)
+    _removes: dict[str, set[tuple]] = field(default_factory=dict)
+    _cache: set[T] | None = None
     _node_id: str = "default"
     vector_clock: VectorClock = field(default_factory=VectorClock)
 
@@ -251,7 +251,7 @@ class ORSet(Generic[T]):
 
         return len(adds - removes) > 0
 
-    def get_elements(self) -> Set[T]:
+    def get_elements(self) -> set[T]:
         """Get all elements in the set."""
         # This is a simplified implementation
         # A full implementation would track element values separately
@@ -280,7 +280,7 @@ class ORSet(Generic[T]):
         self.vector_clock.merge(other.vector_clock)
         self._cache = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "adds": {k: list(v) for k, v in self._adds.items()},
@@ -290,7 +290,7 @@ class ORSet(Generic[T]):
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ORSet':
+    def from_dict(cls, data: dict[str, Any]) -> 'ORSet':
         """Create from dictionary."""
         orset = cls()
         orset._adds = {k: set(v) for k, v in data.get("adds", {}).items()}
@@ -316,7 +316,7 @@ class LWWMap(Generic[T]):
     Attributes:
         _entries: Dict mapping keys to LWW-Registers
     """
-    _entries: Dict[str, LWWRegister] = field(default_factory=dict)
+    _entries: dict[str, LWWRegister] = field(default_factory=dict)
     _node_id: str = "default"
     vector_clock: VectorClock = field(default_factory=VectorClock)
 
@@ -331,7 +331,7 @@ class LWWMap(Generic[T]):
         self._entries[key].set(value, self._node_id)
         self.vector_clock.increment(self._node_id)
 
-    def get(self, key: str) -> Optional[T]:
+    def get(self, key: str) -> T | None:
         """Get value for a key."""
         if key not in self._entries:
             return None
@@ -344,7 +344,7 @@ class LWWMap(Generic[T]):
             self._entries[key].set(None, self._node_id)
             self.vector_clock.increment(self._node_id)
 
-    def keys(self) -> List[str]:
+    def keys(self) -> list[str]:
         """Get all keys."""
         return list(self._entries.keys())
 
@@ -357,7 +357,7 @@ class LWWMap(Generic[T]):
                 self._entries[key].merge(other_register)
         self.vector_clock.merge(other.vector_clock)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "entries": {k: v.to_dict() for k, v in self._entries.items()},
@@ -366,7 +366,7 @@ class LWWMap(Generic[T]):
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'LWWMap':
+    def from_dict(cls, data: dict[str, Any]) -> 'LWWMap':
         """Create from dictionary."""
         lww_map = cls()
         entries = data.get("entries", {})

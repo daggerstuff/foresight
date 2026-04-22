@@ -1,21 +1,21 @@
 """
 Tests for enhanced memory synthesizer.
 """
-import pytest
-from datetime import datetime, timezone, timedelta
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from foresight_mcp.enhanced_synthesizer import (
-    EnhancedMemorySynthesizer,
-    EnhancedSynthesisResult,
     Contradiction,
-    TemporalTrend,
+    EnhancedMemorySynthesizer,
     Insight,
+    TemporalTrend,
 )
-from foresight_mcp.memory_types import MemoryObject, EmotionalMetadata, SynthesisResult
+from foresight_mcp.memory_types import EmotionalMetadata, MemoryObject
 
 
 def create_memory(
@@ -78,15 +78,15 @@ class TestTemporalTrendAnalysis:
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [
-            create_memory("Feeling anxious", datetime.now(timezone.utc), intensity=0.8, tags=['anxiety']),
-            create_memory("High stress", datetime.now(timezone.utc), intensity=0.7, tags=['stress']),
-            create_memory("Less anxiety", datetime.now(timezone.utc), intensity=0.4, tags=['anxiety']),
+            create_memory("Feeling anxious", datetime.now(timezone.utc), intensity=0.8, tags=["anxiety"]),
+            create_memory("High stress", datetime.now(timezone.utc), intensity=0.7, tags=["stress"]),
+            create_memory("Less anxiety", datetime.now(timezone.utc), intensity=0.4, tags=["anxiety"]),
         ]
 
         clusters = synthesizer._cluster_by_topic(memories)
 
-        assert 'anxiety' in clusters
-        assert len(clusters['anxiety']) == 2
+        assert "anxiety" in clusters
+        assert len(clusters["anxiety"]) == 2
 
     def test_cluster_by_topic_multi_topic(self):
         """Memories about 'work anxiety' should appear in both 'work' and 'anxiety' clusters."""
@@ -101,10 +101,10 @@ class TestTemporalTrendAnalysis:
         clusters = synthesizer._cluster_by_topic(memories)
 
         # "Work anxiety is increasing" contains both 'work' and 'anxiety'
-        assert 'work' in clusters
-        assert 'anxiety' in clusters
-        work_ids = [m.id for m in clusters['work']]
-        anxiety_ids = [m.id for m in clusters['anxiety']]
+        assert "work" in clusters
+        assert "anxiety" in clusters
+        work_ids = [m.id for m in clusters["work"]]
+        anxiety_ids = [m.id for m in clusters["anxiety"]]
         # The first memory should be in both clusters
         assert memories[0].id in work_ids
         assert memories[0].id in anxiety_ids
@@ -155,8 +155,8 @@ class TestTemporalTrendAnalysis:
 
         assert result is not None
         pos, neg = result
-        assert pos == 'love'
-        assert neg == 'hate'
+        assert pos == "love"
+        assert neg == "hate"
 
     def test_find_sentiment_conflict_none(self):
         """Should return None when no sentiment conflict exists."""
@@ -180,8 +180,8 @@ class TestTemporalTrendAnalysis:
 
         assert result is not None
         pos, neg = result
-        assert pos == 'better'
-        assert neg == 'worse'
+        assert pos == "better"
+        assert neg == "worse"
 
     def test_detect_contradictions_sentiment_overlap(self):
         """Should detect direct_conflict via keyword overlap + opposite sentiment."""
@@ -198,20 +198,20 @@ class TestTemporalTrendAnalysis:
         contradictions = synthesizer._detect_contradictions(historic + recent)
 
         # Should find at least one direct_conflict from sentiment overlap
-        sentiment_conflicts = [c for c in contradictions if c.type == 'direct_conflict']
+        sentiment_conflicts = [c for c in contradictions if c.type == "direct_conflict"]
         assert len(sentiment_conflicts) >= 1
         # The conflict should reference the specific sentiment words
         conflict = sentiment_conflicts[0]
-        assert conflict.old_value in ('love', 'hate')
-        assert conflict.new_value in ('love', 'hate')
+        assert conflict.old_value in ("love", "hate")
+        assert conflict.new_value in ("love", "hate")
 
     def test_sentiment_opposites_class_constant(self):
         """SENTIMENT_OPPOSITES should contain the expected word pairs."""
         assert len(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES) >= 20
         pairs = set(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES)
-        assert ('love', 'hate') in pairs
-        assert ('good', 'bad') in pairs
-        assert ('happy', 'sad') in pairs
+        assert ("love", "hate") in pairs
+        assert ("good", "bad") in pairs
+        assert ("happy", "sad") in pairs
 
 
 class TestInsightGeneration:
@@ -222,51 +222,51 @@ class TestInsightGeneration:
         synthesizer = EnhancedMemorySynthesizer()
 
         contradiction = Contradiction(
-            type='evolution',
-            attribute='anxiety',
-            old_value='0.80',
-            new_value='0.30',
+            type="evolution",
+            attribute="anxiety",
+            old_value="0.80",
+            new_value="0.30",
             delta=-0.5,
             temporal_distance_days=30,
-            evidence_ids=['mem1', 'mem2'],
+            evidence_ids=["mem1", "mem2"],
             confidence=0.9,
         )
 
         insight = synthesizer._format_contradiction_insight(contradiction)
 
-        assert 'anxiety' in insight
+        assert "anxiety" in insight
 
     def test_generate_trend_insight(self):
         """Should format trend as insight."""
         synthesizer = EnhancedMemorySynthesizer()
 
         trend = TemporalTrend(
-            topic='stress',
-            direction='improving',
+            topic="stress",
+            direction="improving",
             slope=-0.1,
             r_squared=0.85,
-            evidence_ids=['mem1', 'mem2', 'mem3'],
+            evidence_ids=["mem1", "mem2", "mem3"],
             start_value=0.9,
             end_value=0.4,
         )
 
         insight = synthesizer._format_trend_insight(trend)
 
-        assert 'stress' in insight.lower() or 'stress' in insight
-        assert 'improving' in insight.lower()
+        assert "stress" in insight.lower() or "stress" in insight
+        assert "improving" in insight.lower()
 
     def test_insight_requires_evidence(self):
         """All insights must have evidence IDs."""
         synthesizer = EnhancedMemorySynthesizer()
 
         contradiction = Contradiction(
-            type='evolution',
-            attribute='anxiety',
-            old_value='0.80',
-            new_value='0.30',
+            type="evolution",
+            attribute="anxiety",
+            old_value="0.80",
+            new_value="0.30",
             delta=-0.5,
             temporal_distance_days=30,
-            evidence_ids=['mem1', 'mem2'],
+            evidence_ids=["mem1", "mem2"],
             confidence=0.9,
         )
 
@@ -274,10 +274,10 @@ class TestInsightGeneration:
         if contradiction.confidence >= 0.7:
             insights.append(Insight(
                 statement=synthesizer._format_contradiction_insight(contradiction),
-                insight_type='contradiction',
+                insight_type="contradiction",
                 confidence=contradiction.confidence,
                 evidence_ids=contradiction.evidence_ids,
-                recommended_action='review',
+                recommended_action="review",
             ))
 
         for insight in insights:
@@ -306,5 +306,5 @@ class TestEnhancedSynthesis:
         assert result is None
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

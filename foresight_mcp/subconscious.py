@@ -9,15 +9,13 @@ This module provides:
 - Background processing of transcripts
 """
 from __future__ import annotations
-import json
+
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional, List, Dict
+from typing import Any
 
-from .memory_types import MemoryObject, GateDecision
 from .memory_components import MemoryCrisisTagger, SocraticGate
-from .crisis_detection import get_anomaly_detector
 
 logger = logging.getLogger("foresight_subconscious")
 
@@ -134,7 +132,7 @@ class MemoryBlock:
     description: str = ""
     char_limit: int = 5000
     chars_current: int = 0
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
     def __post_init__(self):
         self.chars_current = len(self.content)
@@ -166,8 +164,8 @@ class MemoryBlock:
 @dataclass
 class SubconsciousState:
     """State container for Subconscious agent."""
-    blocks: Dict[str, MemoryBlock] = field(default_factory=dict)
-    last_sync: Optional[datetime] = None
+    blocks: dict[str, MemoryBlock] = field(default_factory=dict)
+    last_sync: datetime | None = None
     session_count: int = 0
     user_id: str = "default"
 
@@ -180,7 +178,7 @@ class SubconsciousState:
                 description=f"Memory block for {label}",
             )
 
-    def get_block(self, label: str) -> Optional[MemoryBlock]:
+    def get_block(self, label: str) -> MemoryBlock | None:
         """Get a memory block by label."""
         return self.blocks.get(label)
 
@@ -232,7 +230,7 @@ class SubconsciousState:
         parts.append("</foresight_memory_blocks>")
         return "\n".join(parts)
 
-    def get_all_blocks(self) -> List[dict]:
+    def get_all_blocks(self) -> list[dict]:
         """Get all non-empty blocks as dictionaries."""
         return [
             block.to_dict()
@@ -267,8 +265,8 @@ class SubconsciousAgent:
     async def process_transcript(
         self,
         session_id: str,
-        messages: List[Dict[str, Any]],
-        project_path: Optional[str] = None,
+        messages: list[dict[str, Any]],
+        project_path: str | None = None,
     ) -> None:
         """
         Process a session transcript.
@@ -346,12 +344,12 @@ class SubconsciousAgent:
         else:
             self.state.update_block(GUIDANCE, line)
 
-    def get_block(self, label: str) -> Optional[str]:
+    def get_block(self, label: str) -> str | None:
         """Get a specific block's content."""
         block = self.state.get_block(label)
         return block.content if block else None
 
-    def get_all_blocks(self) -> List[dict]:
+    def get_all_blocks(self) -> list[dict]:
         """Get all non-empty blocks."""
         return self.state.get_all_blocks()
 
@@ -368,7 +366,7 @@ class SubconsciousAgent:
 
 
 # Global instance for convenience
-_subconscious_agent: Optional[SubconsciousAgent] = None
+_subconscious_agent: SubconsciousAgent | None = None
 
 
 def get_subconscious_agent(user_id: str = "default") -> SubconsciousAgent:

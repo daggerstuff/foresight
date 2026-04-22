@@ -6,7 +6,6 @@ and automatic cleanup of stale connections.
 import sqlite3
 import threading
 import time
-from typing import Optional
 
 from .config import DB_PATH
 
@@ -109,11 +108,11 @@ class ConnectionPool:
 
 
 # Global pool instance
-_pool: Optional[ConnectionPool] = None
+_pool: ConnectionPool | None = None
 _pool_lock = threading.Lock()
 
 
-def get_pool(db_path: Optional[str] = None) -> ConnectionPool:
+def get_pool(db_path: str | None = None) -> ConnectionPool:
     """Get or create the global connection pool (thread-safe)."""
     global _pool
     with _pool_lock:

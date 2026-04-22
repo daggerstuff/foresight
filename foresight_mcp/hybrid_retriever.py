@@ -17,14 +17,13 @@ beyond exact term match), temporal=0.6 (recency is useful context
 but not a relevance signal by itself).
 """
 from __future__ import annotations
+
+import logging
 import math
 import sqlite3
 import threading
-import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Set
 from datetime import datetime, timezone
-
 
 logger = logging.getLogger("foresight_hybrid_retriever")
 
@@ -34,7 +33,7 @@ MAX_USER_ID_LENGTH = 128
 
 def _escape_like(term: str) -> str:
     """Escape SQL LIKE metacharacters to prevent wildcard injection."""
-    return term.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+    return term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
 def _validate_input(query: str, user_id: str) -> None:
@@ -50,9 +49,9 @@ class HybridResult:
     """A single result from hybrid retrieval."""
     memory_id: str
     content: str
-    category: Optional[str]
+    category: str | None
     importance: float
-    strength_trend: Optional[str]
+    strength_trend: str | None
     created_at: str
 
     keyword_score: float = 0.0
@@ -61,37 +60,37 @@ class HybridResult:
     temporal_score: float = 0.0
     combined_score: float = 0.0
 
-    source_signals: List[str] = field(default_factory=list)
+    source_signals: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
-            'memory_id': self.memory_id,
-            'content': self.content,
-            'category': self.category,
-            'importance': self.importance,
-            'strength_trend': self.strength_trend,
-            'created_at': self.created_at,
-            'keyword_score': round(self.keyword_score, 4),
-            'semantic_score': round(self.semantic_score, 4),
-            'graph_score': round(self.graph_score, 4),
-            'temporal_score': round(self.temporal_score, 4),
-            'combined_score': round(self.combined_score, 4),
-            'source_signals': self.source_signals,
+            "memory_id": self.memory_id,
+            "content": self.content,
+            "category": self.category,
+            "importance": self.importance,
+            "strength_trend": self.strength_trend,
+            "created_at": self.created_at,
+            "keyword_score": round(self.keyword_score, 4),
+            "semantic_score": round(self.semantic_score, 4),
+            "graph_score": round(self.graph_score, 4),
+            "temporal_score": round(self.temporal_score, 4),
+            "combined_score": round(self.combined_score, 4),
+            "source_signals": self.source_signals,
         }
 
 
 @dataclass
 class HybridSearchResult:
     """Complete result from a hybrid search."""
-    results: List[HybridResult]
+    results: list[HybridResult]
     total_candidates: int
-    signal_counts: Dict[str, int] = field(default_factory=dict)
+    signal_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
-            'total_candidates': self.total_candidates,
-            'signal_counts': self.signal_counts,
-            'results': [r.to_dict() for r in self.results],
+            "total_candidates": self.total_candidates,
+            "signal_counts": self.signal_counts,
+            "results": [r.to_dict() for r in self.results],
         }
 
 
@@ -112,16 +111,16 @@ class HybridRetriever:
     # semantic=0.7 (topical similarity beyond exact match),
     # temporal=0.6 (recency context, not relevance by itself)
     DEFAULT_WEIGHTS = {
-        'keyword': 1.0,
-        'semantic': 0.7,
-        'graph': 0.8,
-        'temporal': 0.6,
+        "keyword": 1.0,
+        "semantic": 0.7,
+        "graph": 0.8,
+        "temporal": 0.6,
     }
 
     def __init__(
         self,
         db_path: str,
-        weights: Optional[Dict[str, float]] = None,
+        weights: dict[str, float] | None = None,
     ):
         self.db_path = db_path
         self.weights = weights or self.DEFAULT_WEIGHTS.copy()
@@ -136,7 +135,7 @@ class HybridRetriever:
         self,
         query: str,
         user_id: str,
-        tenant_id: str = 'default',
+        tenant_id: str = "default",
         limit: int = 10,
         min_importance: float = 0.1,
         use_keyword: bool = True,
@@ -163,11 +162,11 @@ class HybridRetriever:
         """
         _validate_input(query, user_id)
 
-        keyword_ranking: Dict[str, int] = {}
-        semantic_ranking: Dict[str, int] = {}
-        graph_ranking: Dict[str, int] = {}
-        temporal_ranking: Dict[str, int] = {}
-        all_ids: Set[str] = set()
+        keyword_ranking: dict[str, int] = {}
+        semantic_ranking: dict[str, int] = {}
+        graph_ranking: dict[str, int] = {}
+        temporal_ranking: dict[str, int] = {}
+        all_ids: set[str] = set()
 
         # Single connection for all sub-searches
         conn = self._get_connection()
@@ -201,10 +200,10 @@ class HybridRetriever:
                     results=[],
                     total_candidates=0,
                     signal_counts={
-                        'keyword': len(keyword_ranking),
-                        'semantic': len(semantic_ranking),
-                        'graph': len(graph_ranking),
-                        'temporal': len(temporal_ranking),
+                        "keyword": len(keyword_ranking),
+                        "semantic": len(semantic_ranking),
+                        "graph": len(graph_ranking),
+                        "temporal": len(temporal_ranking),
                     },
                 )
 
@@ -228,11 +227,11 @@ class HybridRetriever:
 
             result = HybridResult(
                 memory_id=memory_id,
-                content=mem['content'],
-                category=mem.get('category'),
-                importance=mem.get('importance', 0.5),
-                strength_trend=mem.get('strength_trend'),
-                created_at=mem['created_at'],
+                content=mem["content"],
+                category=mem.get("category"),
+                importance=mem.get("importance", 0.5),
+                strength_trend=mem.get("strength_trend"),
+                created_at=mem["created_at"],
                 combined_score=rrf_score,
                 source_signals=[],
             )
@@ -241,22 +240,22 @@ class HybridRetriever:
                 result.keyword_score = self._rank_to_score(
                     keyword_ranking[memory_id], len(keyword_ranking)
                 )
-                result.source_signals.append('keyword')
+                result.source_signals.append("keyword")
             if memory_id in semantic_ranking:
                 result.semantic_score = self._rank_to_score(
                     semantic_ranking[memory_id], len(semantic_ranking)
                 )
-                result.source_signals.append('semantic')
+                result.source_signals.append("semantic")
             if memory_id in graph_ranking:
                 result.graph_score = self._rank_to_score(
                     graph_ranking[memory_id], len(graph_ranking)
                 )
-                result.source_signals.append('graph')
+                result.source_signals.append("graph")
             if memory_id in temporal_ranking:
                 result.temporal_score = self._rank_to_score(
                     temporal_ranking[memory_id], len(temporal_ranking)
                 )
-                result.source_signals.append('temporal')
+                result.source_signals.append("temporal")
 
             results.append(result)
 
@@ -264,10 +263,10 @@ class HybridRetriever:
             results=results,
             total_candidates=len(all_ids),
             signal_counts={
-                'keyword': len(keyword_ranking),
-                'semantic': len(semantic_ranking),
-                'graph': len(graph_ranking),
-                'temporal': len(temporal_ranking),
+                "keyword": len(keyword_ranking),
+                "semantic": len(semantic_ranking),
+                "graph": len(graph_ranking),
+                "temporal": len(temporal_ranking),
             },
         )
 
@@ -278,7 +277,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Keyword search with simple tf-idf-like scoring.
 
@@ -327,7 +326,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Semantic search using TF-IDF cosine similarity.
 
@@ -353,7 +352,7 @@ class HybridRetriever:
             return {}
 
         # Tokenize all documents
-        docs: Dict[str, List[str]] = {}
+        docs: dict[str, list[str]] = {}
         for row in rows:
             mid, content = row
             docs[mid] = content.lower().split()
@@ -363,31 +362,31 @@ class HybridRetriever:
             return {}
 
         # Build document frequency map (how many docs contain each term)
-        doc_freq: Dict[str, int] = {}
+        doc_freq: dict[str, int] = {}
         for tokens in docs.values():
-            seen: Set[str] = set(tokens)
+            seen: set[str] = set(tokens)
             for token in seen:
                 doc_freq[token] = doc_freq.get(token, 0) + 1
 
         # Compute IDF for each term: log(N / df)
-        idf: Dict[str, float] = {}
+        idf: dict[str, float] = {}
         for term, df in doc_freq.items():
             idf[term] = math.log(n_docs / df) if df > 0 else 0.0
 
-        def _tfidf_vector(tokens: List[str]) -> Dict[str, float]:
+        def _tfidf_vector(tokens: list[str]) -> dict[str, float]:
             """Build a TF-IDF vector (sparse dict) for a token list."""
-            tf_counts: Dict[str, int] = {}
+            tf_counts: dict[str, int] = {}
             for token in tokens:
                 tf_counts[token] = tf_counts.get(token, 0) + 1
             total = len(tokens) if tokens else 1
-            vec: Dict[str, float] = {}
+            vec: dict[str, float] = {}
             for term, count in tf_counts.items():
                 tf = count / total
                 vec[term] = tf * idf.get(term, 0.0)
             return vec
 
         def _cosine_similarity(
-            vec_a: Dict[str, float], vec_b: Dict[str, float]
+            vec_a: dict[str, float], vec_b: dict[str, float]
         ) -> float:
             """Compute cosine similarity between two sparse vectors."""
             common = set(vec_a.keys()) & set(vec_b.keys())
@@ -404,7 +403,7 @@ class HybridRetriever:
         query_vector = _tfidf_vector(terms)
 
         # Score each document by cosine similarity to query
-        scored: List[tuple] = []
+        scored: list[tuple] = []
         for mid, tokens in docs.items():
             doc_vector = _tfidf_vector(tokens)
             sim = _cosine_similarity(query_vector, doc_vector)
@@ -426,7 +425,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Graph-based search: find entities matching query, traverse to
         find related memories.
@@ -459,7 +458,7 @@ class HybridRetriever:
 
         # Find memories linked to these entities
         # Filter by tenant via memories table join
-        entity_placeholders = ','.join('?' * len(entity_ids))
+        entity_placeholders = ",".join("?" * len(entity_ids))
         cursor = conn.execute(f"""
             SELECT mel.memory_id, COUNT(DISTINCT mel.entity_id) as entity_hits
             FROM memory_entity_links mel
@@ -482,7 +481,7 @@ class HybridRetriever:
         tenant_id: str,
         limit: int,
         min_importance: float,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Temporal search: rank memories by recency and importance.
 
@@ -513,7 +512,7 @@ class HybridRetriever:
 
             try:
                 created = datetime.fromisoformat(
-                    created_at.replace('Z', '+00:00')
+                    created_at.replace("Z", "+00:00")
                 )
                 hours_old = max(
                     (now - created).total_seconds() / 3600, 0.01
@@ -524,10 +523,10 @@ class HybridRetriever:
             time_score = pow(0.5, hours_old / 168.0)
             activation_boost = 1 + ((activation_count or 0) * 0.05)
             trend_mod = {
-                'strengthening': 1.2,
-                'stable': 1.0,
-                'weakening': 0.8,
-                'stale': 0.5,
+                "strengthening": 1.2,
+                "stable": 1.0,
+                "weakening": 0.8,
+                "stale": 0.5,
             }.get(trend, 1.0)
 
             score = min(1.0, importance * time_score * activation_boost * trend_mod)
@@ -538,11 +537,11 @@ class HybridRetriever:
 
     def _reciprocal_rank_fusion(
         self,
-        keyword: Dict[str, int],
-        semantic: Dict[str, int],
-        graph: Dict[str, int],
-        temporal: Dict[str, int],
-    ) -> List[tuple]:
+        keyword: dict[str, int],
+        semantic: dict[str, int],
+        graph: dict[str, int],
+        temporal: dict[str, int],
+    ) -> list[tuple]:
         """
         Merge ranked lists using Reciprocal Rank Fusion.
 
@@ -556,25 +555,25 @@ class HybridRetriever:
         all_ids.update(graph.keys())
         all_ids.update(temporal.keys())
 
-        scores: Dict[str, float] = {}
+        scores: dict[str, float] = {}
 
         for mid in all_ids:
             score = 0.0
 
             if mid in keyword:
-                score += self.weights['keyword'] / (
+                score += self.weights["keyword"] / (
                     self.RRF_K + keyword[mid]
                 )
             if mid in semantic:
-                score += self.weights['semantic'] / (
+                score += self.weights["semantic"] / (
                     self.RRF_K + semantic[mid]
                 )
             if mid in graph:
-                score += self.weights['graph'] / (
+                score += self.weights["graph"] / (
                     self.RRF_K + graph[mid]
                 )
             if mid in temporal:
-                score += self.weights['temporal'] / (
+                score += self.weights["temporal"] / (
                     self.RRF_K + temporal[mid]
                 )
 
@@ -591,15 +590,15 @@ class HybridRetriever:
     def _fetch_memories(
         self,
         conn: sqlite3.Connection,
-        memory_ids: List[str],
+        memory_ids: list[str],
         user_id: str,
         tenant_id: str,
-    ) -> Dict[str, dict]:
+    ) -> dict[str, dict]:
         """Fetch memory data for given IDs."""
         if not memory_ids:
             return {}
 
-        placeholders = ','.join('?' * len(memory_ids))
+        placeholders = ",".join("?" * len(memory_ids))
         cursor = conn.execute(f"""
             SELECT id, content, category, importance,
                    strength_trend, created_at
@@ -610,24 +609,24 @@ class HybridRetriever:
 
         return {
             row[0]: {
-                'content': row[1],
-                'category': row[2],
-                'importance': row[3] or 0.5,
-                'strength_trend': row[4],
-                'created_at': row[5],
+                "content": row[1],
+                "category": row[2],
+                "importance": row[3] or 0.5,
+                "strength_trend": row[4],
+                "created_at": row[5],
             }
             for row in cursor.fetchall()
         }
 
 
 # Global instance management (thread-safe)
-_hybrid_retriever: Optional[HybridRetriever] = None
+_hybrid_retriever: HybridRetriever | None = None
 _retriever_lock = threading.Lock()
 
 
 def get_hybrid_retriever(
-    db_path: Optional[str] = None,
-    weights: Optional[Dict[str, float]] = None,
+    db_path: str | None = None,
+    weights: dict[str, float] | None = None,
 ) -> HybridRetriever:
     """Get or create global hybrid retriever instance (thread-safe)."""
     global _hybrid_retriever

@@ -13,14 +13,13 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable
 
-from .crdt import VectorClock, LWWRegister, ORSet, LWWMap
+from .crdt import LWWRegister, ORSet, VectorClock
 
 logger = logging.getLogger("foresight_sync")
 
@@ -47,13 +46,13 @@ class Operation:
     type: OperationType
     entity_type: str
     entity_id: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     retry_count: int = 0
-    last_attempt: Optional[datetime] = None
+    last_attempt: datetime | None = None
     vector_clock: VectorClock = field(default_factory=VectorClock)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "type": self.type.value,
@@ -67,7 +66,7 @@ class Operation:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Operation:
+    def from_dict(cls, data: dict[str, Any]) -> Operation:
         op = cls(
             id=data["id"],
             type=OperationType(data["type"]),
@@ -92,10 +91,10 @@ class SyncProgress:
     total_operations: int
     pending_operations: int
     synced_operations: int
-    errors: List[str] = field(default_factory=list)
-    last_sync: Optional[datetime] = None
+    errors: list[str] = field(default_factory=list)
+    last_sync: datetime | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status.value,
             "total_operations": self.total_operations,
@@ -113,7 +112,7 @@ class OperationQueue:
     Stores operations that need to be synced when online.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         """Initialize operation queue.
 
         Args:
@@ -170,7 +169,7 @@ class OperationQueue:
         conn.commit()
         conn.close()
 
-    def dequeue(self) -> Optional[Operation]:
+    def dequeue(self) -> Operation | None:
         """Get next operation from queue."""
         conn = sqlite3.connect(self.db_path)
         row = conn.execute(
@@ -199,7 +198,7 @@ class OperationQueue:
         conn.commit()
         conn.close()
 
-    def peek(self) -> List[Operation]:
+    def peek(self) -> list[Operation]:
         """Get all pending operations."""
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute("SELECT * FROM operations ORDER BY created_at").fetchall()
@@ -244,7 +243,7 @@ class SyncManager:
         node_id: str = "default",
         max_retries: int = 3,
         retry_delay: float = 1.0,
-        sync_callback: Optional[Callable[[Operation], bool]] = None,
+        sync_callback: Callable[[Operation], bool] | None = None,
     ):
         """Initialize sync manager.
 
@@ -261,13 +260,13 @@ class SyncManager:
 
         self._queue = OperationQueue()
         self._status = SyncStatus.IDLE
-        self._errors: List[str] = []
-        self._last_sync: Optional[datetime] = None
-        self._progress_callbacks: List[Callable[[SyncProgress], None]] = []
+        self._errors: list[str] = []
+        self._last_sync: datetime | None = None
+        self._progress_callbacks: list[Callable[[SyncProgress], None]] = []
 
         # CRDT stores for local state
-        self._local_data: Dict[str, LWWRegister] = {}
-        self._local_tags: Dict[str, ORSet] = {}
+        self._local_data: dict[str, LWWRegister] = {}
+        self._local_tags: dict[str, ORSet] = {}
 
     def set_online(self, online: bool) -> None:
         """Set online/offline status."""
@@ -282,7 +281,7 @@ class SyncManager:
         type: OperationType,
         entity_type: str,
         entity_id: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
     ) -> str:
         """
         Queue an operation for sync.
@@ -328,7 +327,7 @@ class SyncManager:
 
         pending = self._queue.peek()
         synced = 0
-        errors: List[str] = []
+        errors: list[str] = []
 
         for operation in pending:
             if operation.retry_count >= self.max_retries:
@@ -391,7 +390,7 @@ class SyncManager:
             except Exception as e:
                 logger.error(f"Progress callback error: {e}")
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Get sync status."""
         return self._get_progress().to_dict()
 
@@ -400,7 +399,7 @@ class SyncManager:
 # Global Sync Manager
 # =============================================================================
 
-_sync_manager: Optional[SyncManager] = None
+_sync_manager: SyncManager | None = None
 
 
 def get_sync_manager(node_id: str = "default") -> SyncManager:

@@ -1,15 +1,13 @@
 """Tests for stream producer integration."""
 import pytest
+from foresight_mcp.event_bus import memory_stored
 from foresight_mcp.stream_producer import (
-    StreamEvent,
-    StreamType,
     MockProducer,
-    KafkaProducer,
-    KinesisProducer,
-    create_stream_producer,
+    StreamEvent,
     StreamPublisher,
+    StreamType,
+    create_stream_producer,
 )
-from foresight_mcp.event_bus import Event, EventType, memory_stored
 
 
 class TestStreamEvent:

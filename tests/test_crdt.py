@@ -1,11 +1,12 @@
 """Tests for CRDT implementations."""
-import pytest
 import time
+
+import pytest
 from foresight_mcp.crdt import (
-    VectorClock,
+    LWWMap,
     LWWRegister,
     ORSet,
-    LWWMap,
+    VectorClock,
 )
 
 

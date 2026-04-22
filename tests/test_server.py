@@ -2,14 +2,14 @@
 import hashlib
 import sqlite3
 import tempfile
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
-from foresight_mcp import store_memory, memory_status
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+from foresight_mcp import memory_status, store_memory
 from foresight_mcp.server import (
-    inject_context,
     _extract_terms,
     _score_memory_relevance,
-    _STOP_WORDS,
+    inject_context,
 )
 
 
@@ -67,10 +67,10 @@ def _mock_db_connection(db_path):
 
 def test_bridge_subconscious_to_memories():
     """_bridge_subconscious_to_memories stores extracted blocks as memories."""
-    from foresight_mcp.subconscious import (
-        SubconsciousAgent, USER_PREFERENCES, PENDING_ITEMS, SESSION_PATTERNS,
-    )
     from foresight_mcp.server import _bridge_subconscious_to_memories
+    from foresight_mcp.subconscious import (
+        SubconsciousAgent,
+    )
 
     agent = SubconsciousAgent(user_id="bridge_test_user")
     # Populate some blocks via the agent's normal extraction
@@ -98,8 +98,8 @@ def test_bridge_subconscious_to_memories():
 
 def test_bridge_subconscious_dedup():
     """Bridging the same agent state twice should bump, not duplicate."""
-    from foresight_mcp.subconscious import SubconsciousAgent
     from foresight_mcp.server import _bridge_subconscious_to_memories
+    from foresight_mcp.subconscious import SubconsciousAgent
 
     agent = SubconsciousAgent(user_id="dedup_bridge_user")
     agent._extract_preference("I prefer explicit returns")
@@ -122,9 +122,9 @@ def test_bridge_subconscious_dedup():
 
 def test_bridge_transcript_entities():
     """_bridge_transcript_entities runs extraction and stores entities."""
-    from foresight_mcp.server import _bridge_transcript_entities
     from foresight_mcp.entity_extractor import reset_entity_extractor
-    from foresight_mcp.graph_store import reset_graph_store, GraphStore
+    from foresight_mcp.graph_store import GraphStore, reset_graph_store
+    from foresight_mcp.server import _bridge_transcript_entities
 
     reset_entity_extractor()
     reset_graph_store()

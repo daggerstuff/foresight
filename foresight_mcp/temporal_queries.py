@@ -7,16 +7,17 @@ Implements:
 - Trend analysis
 """
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Optional, Literal
-from datetime import datetime, timezone, timedelta
+
+import logging
 import sqlite3
 import threading
-import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 logger = logging.getLogger("foresight_temporal_queries")
 
-TimeWindow = Literal['today', 'week', 'month', 'year']
+TimeWindow = Literal["today", "week", "month", "year"]
 
 
 @dataclass
@@ -29,7 +30,7 @@ class TemporalQueryResult:
     activation_count: int
     created_at: str
     accessed_at: str
-    category: Optional[str]
+    category: str | None
     time_score: float = 0.0  # Recency score (0-1)
     combined_score: float = 0.0  # Vector + time combined
 
@@ -48,10 +49,10 @@ class TemporalQueryBuilder:
     def _get_window_hours(self, window: TimeWindow) -> int:
         """Get hours for time window."""
         return {
-            'today': 24,
-            'week': 168,
-            'month': 720,
-            'year': 8760,
+            "today": 24,
+            "week": 168,
+            "month": 720,
+            "year": 8760,
         }[window]
 
     def get_memories_from_window(
@@ -60,8 +61,8 @@ class TemporalQueryBuilder:
         window: TimeWindow,
         limit: int = 50,
         min_importance: float = 0.1,
-        category: Optional[str] = None
-    ) -> List[TemporalQueryResult]:
+        category: str | None = None
+    ) -> list[TemporalQueryResult]:
         """
         Get memories from a time window.
 
@@ -119,9 +120,9 @@ class TemporalQueryBuilder:
         self,
         user_id: str,
         target_date: datetime,
-        category: Optional[str] = None,
+        category: str | None = None,
         min_importance: float = 0.1
-    ) -> List[TemporalQueryResult]:
+    ) -> list[TemporalQueryResult]:
         """
         Get memories as they existed at a specific time.
 
@@ -177,8 +178,8 @@ class TemporalQueryBuilder:
         user_id: str,
         trend: str,
         limit: int = 50,
-        category: Optional[str] = None
-    ) -> List[TemporalQueryResult]:
+        category: str | None = None
+    ) -> list[TemporalQueryResult]:
         """
         Get memories by freshness trend.
 
@@ -230,7 +231,7 @@ class TemporalQueryBuilder:
     def analyze_trends(
         self,
         user_id: str,
-        timeframe: str = '30 days'
+        timeframe: str = "30 days"
     ) -> dict:
         """
         Analyze memory trends over time.
@@ -262,11 +263,11 @@ class TemporalQueryBuilder:
 
             daily_stats = [
                 {
-                    'date': row[0],
-                    'count': row[1],
-                    'avg_importance': row[2] or 0,
-                    'strengthening': row[3] or 0,
-                    'stale': row[4] or 0,
+                    "date": row[0],
+                    "count": row[1],
+                    "avg_importance": row[2] or 0,
+                    "strengthening": row[3] or 0,
+                    "stale": row[4] or 0,
                 }
                 for row in cursor.fetchall()
             ]
@@ -287,31 +288,31 @@ class TemporalQueryBuilder:
 
             category_breakdown = [
                 {
-                    'category': row[0],
-                    'count': row[1],
-                    'avg_importance': row[2] or 0,
-                    'total_activations': row[3] or 0,
+                    "category": row[0],
+                    "count": row[1],
+                    "avg_importance": row[2] or 0,
+                    "total_activations": row[3] or 0,
                 }
                 for row in cursor.fetchall()
             ]
 
             return {
-                'daily_stats': daily_stats,
-                'category_breakdown': category_breakdown,
-                'overall_trend': self._calculate_overall_trend(daily_stats),
+                "daily_stats": daily_stats,
+                "category_breakdown": category_breakdown,
+                "overall_trend": self._calculate_overall_trend(daily_stats),
             }
         finally:
             conn.close()
 
-    def _calculate_overall_trend(self, daily_stats: List[dict]) -> str:
+    def _calculate_overall_trend(self, daily_stats: list[dict]) -> str:
         """Calculate overall trend from daily stats."""
         if len(daily_stats) < 3:
-            return 'insufficient_data'
+            return "insufficient_data"
 
         # Simple trend: compare first half avg to second half avg
         mid = len(daily_stats) // 2
-        first_half = [d['avg_importance'] for d in daily_stats[:mid]]
-        second_half = [d['avg_importance'] for d in daily_stats[mid:]]
+        first_half = [d["avg_importance"] for d in daily_stats[:mid]]
+        second_half = [d["avg_importance"] for d in daily_stats[mid:]]
 
         first_avg = sum(first_half) / len(first_half)
         second_avg = sum(second_half) / len(second_half)
@@ -319,14 +320,14 @@ class TemporalQueryBuilder:
         delta = second_avg - first_avg
 
         if delta > 0.1:
-            return 'improving'
+            return "improving"
         elif delta < -0.1:
-            return 'declining'
-        return 'stable'
+            return "declining"
+        return "stable"
 
     def get_time_weighted_scores(
         self,
-        memory_ids: List[str],
+        memory_ids: list[str],
         user_id: str
     ) -> dict:
         """
@@ -344,7 +345,7 @@ class TemporalQueryBuilder:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            placeholders = ','.join('?' * len(memory_ids))
+            placeholders = ",".join("?" * len(memory_ids))
             cursor = conn.execute(f"""
                 SELECT id, created_at, activation_count
                 FROM memories
@@ -356,7 +357,7 @@ class TemporalQueryBuilder:
 
             for row in cursor:
                 memory_id, created_at, activation_count = row
-                created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                 hours_old = (now - created).total_seconds() / 3600
 
                 # Exponential decay for recency score (1 = very recent, 0 = very old)
@@ -375,11 +376,11 @@ class TemporalQueryBuilder:
 
 
 # Global instance management (thread-safe)
-_temporal_query_builder: Optional[TemporalQueryBuilder] = None
+_temporal_query_builder: TemporalQueryBuilder | None = None
 _temporal_query_lock = threading.Lock()
 
 
-def get_temporal_query_builder(db_path: Optional[str] = None) -> TemporalQueryBuilder:
+def get_temporal_query_builder(db_path: str | None = None) -> TemporalQueryBuilder:
     """Get or create global temporal query builder instance (thread-safe)."""
     global _temporal_query_builder
     with _temporal_query_lock:

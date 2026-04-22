@@ -4,11 +4,11 @@ Materialized views of event data for reporting
 """
 from .builder import ProjectionBuilder
 from .reports import (
-    MemoryTimeline,
-    UserActivityReport,
-    BlockChangeLog,
     AccessLog,
     AnomalyReport,
+    BlockChangeLog,
+    MemoryTimeline,
+    UserActivityReport,
 )
 
 __all__ = [

@@ -5,33 +5,31 @@ Foresight CLI - Command-line interface for memory operations.
 Provides rich terminal output, JSON mode, and shell completion.
 """
 import json
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import typer
-from rich.console import Console
-from rich.table import Table
-from rich.json import JSON
-from rich.text import Text
 
 # Import Foresight MCP components
 from foresight_mcp import (
-    store_memory,
-    query_memories,
-    list_memories as list_memories_api,
-    get_memory as get_memory_api,
-    update_memory,
     delete_memory,
+    get_memory as get_memory_api,
+    list_memories as list_memories_api,
     memory_status,
+    query_memories,
+    store_memory,
+    update_memory,
 )
+from foresight_mcp.block_registry import get_registry
+from foresight_mcp.hooks import list_hooks, register_hook, unregister_hook
 from foresight_mcp.server import (
-    synthesize_memories,
     archive_memory,
     get_subconscious_block,
+    synthesize_memories,
 )
-from foresight_mcp.hooks import list_hooks, register_hook, unregister_hook
-from foresight_mcp.block_registry import get_registry
+from rich.console import Console
+from rich.json import JSON
+from rich.table import Table
+from rich.text import Text
 
 app = typer.Typer(
     name="foresight",
@@ -76,7 +74,7 @@ def cmd_store(
     scope: str = typer.Option("session", "--scope", "-s", help="Memory scope: session, arc, trait, fact"),
     retention: str = typer.Option("short_term", "--retention", "-r", help="Retention: ephemeral, short_term, long_term, permanent"),
     category: str = typer.Option("fact", "--category", "-c", help="Category label"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Store a new memory."""
@@ -97,7 +95,7 @@ def cmd_store(
 @app.command("get")
 def cmd_get(
     memory_id: str = typer.Argument(..., help="Memory ID"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Retrieve a specific memory by ID."""
@@ -113,7 +111,7 @@ def cmd_get(
 def cmd_list(
     limit: int = typer.Option(10, "--limit", "-l", help="Number of memories"),
     offset: int = typer.Option(0, "--offset", "-o", help="Offset"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """List all memories."""
@@ -129,7 +127,7 @@ def cmd_list(
 def cmd_query(
     query: str = typer.Argument(..., help="Search query"),
     limit: int = typer.Option(5, "--limit", "-l", help="Number of results"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Search memories by content."""
@@ -144,11 +142,11 @@ def cmd_query(
 @app.command("update")
 def cmd_update(
     memory_id: str = typer.Argument(..., help="Memory ID"),
-    content: Optional[str] = typer.Option(None, "--content", "-c", help="New content"),
-    category: Optional[str] = typer.Option(None, "--category", help="New category"),
-    scope: Optional[str] = typer.Option(None, "--scope", help="New scope"),
-    retention: Optional[str] = typer.Option(None, "--retention", help="New retention"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    content: str | None = typer.Option(None, "--content", "-c", help="New content"),
+    category: str | None = typer.Option(None, "--category", help="New category"),
+    scope: str | None = typer.Option(None, "--scope", help="New scope"),
+    retention: str | None = typer.Option(None, "--retention", help="New retention"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Update an existing memory."""
@@ -170,7 +168,7 @@ def cmd_update(
 @app.command("delete")
 def cmd_delete(
     memory_id: str = typer.Argument(..., help="Memory ID"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Delete a memory by ID."""
@@ -184,7 +182,7 @@ def cmd_delete(
 
 @app.command("synthesize")
 def cmd_synthesize(
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Run synthesis on all memories to detect stance shifts and merge candidates."""
@@ -199,7 +197,7 @@ def cmd_synthesize(
 @app.command("archive")
 def cmd_archive(
     memory_id: str = typer.Argument(..., help="Memory ID"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Archive a memory to a ghost node."""
@@ -254,7 +252,7 @@ def cmd_block_list(
 def cmd_block_create(
     label: str = typer.Argument(..., help="Block label"),
     content: str = typer.Option("", "--content", "-c", help="Block content"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Create a new memory block."""
@@ -270,7 +268,7 @@ def cmd_block_create(
 @block_app.command("get")
 def cmd_block_get(
     label: str = typer.Argument(..., help="Block label"),
-    user_id: Optional[str] = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Get a specific memory block."""
@@ -355,7 +353,7 @@ app.add_typer(event_app, name="event")
 @event_app.command("log")
 def cmd_event_log(
     since: str = typer.Option("1h", "--since", "-s", help="Time range (e.g., 1h, 30m, 2d)"),
-    entity: Optional[str] = typer.Option(None, "--entity", "-e", help="Entity filter (e.g., memory:*)"),
+    entity: str | None = typer.Option(None, "--entity", "-e", help="Entity filter (e.g., memory:*)"),
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """View event log."""

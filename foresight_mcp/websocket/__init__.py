@@ -2,8 +2,8 @@
 WebSocket Server for Foresight Memory Architecture
 Real-time subscriptions for memory events
 """
-from .server import WebSocketServer, WebSocketHandler
-from .subscriptions import SubscriptionManager, Subscription
+from .server import WebSocketHandler, WebSocketServer
+from .subscriptions import Subscription, SubscriptionManager
 
 __all__ = [
     "WebSocketServer",
