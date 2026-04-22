@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set
 from datetime import datetime, timezone
 
+
 logger = logging.getLogger("foresight_hybrid_retriever")
 
 MAX_QUERY_LENGTH = 500

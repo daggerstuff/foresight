@@ -53,7 +53,7 @@ class ProjectionBuilder:
         db_path = Path(self.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(self.db_path)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS projections (
                 id TEXT PRIMARY KEY,

@@ -10,6 +10,7 @@ SQLite-backed graph storage with:
 from __future__ import annotations
 import sqlite3
 import json
+
 import logging
 import threading
 from typing import List, Optional, Dict, Any
