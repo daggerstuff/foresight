@@ -61,7 +61,7 @@ VALUES
 
 def run_temporal_migrations(db_path: str) -> None:
     """Run temporal schema migrations on existing database."""
-    conn = sqlite3.connect(self.db_path)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     try:
@@ -99,7 +99,7 @@ def run_temporal_migrations(db_path: str) -> None:
 
 def initialize_decay_config(db_path: str, user_id: str) -> None:
     """Initialize decay configuration for a new user."""
-    conn = sqlite3.connect(self.db_path)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     try:
