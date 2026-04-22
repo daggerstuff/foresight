@@ -12,6 +12,7 @@ from typing import Literal, Optional
 from datetime import datetime, timezone
 import sqlite3
 import threading
+
 import logging
 
 logger = logging.getLogger("foresight_temporal")
@@ -58,7 +59,7 @@ class TemporalService:
 
     def _get_decay_config(self, user_id: str, category: str = 'general') -> DecayConfig:
         """Get decay configuration for user/category."""
-        conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -182,7 +183,7 @@ class TemporalService:
         Returns:
             Tuple of (new_importance, new_trend)
         """
-        conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Get current memory data
@@ -260,7 +261,7 @@ class TemporalService:
         Returns:
             Number of memories updated
         """
-        conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             conn.execute("BEGIN")
@@ -320,7 +321,7 @@ class TemporalService:
         Returns:
             Dictionary with temporal stats
         """
-        conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""

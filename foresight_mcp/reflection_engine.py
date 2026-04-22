@@ -84,10 +84,8 @@ class ReflectionEngine:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+    def _get_connection(self):
+        return get_db_connection()
 
     def reflect(
         self,
