@@ -249,18 +249,32 @@ Output (raw JSON only, no markdown):
 
         content_lower = content.lower()
 
-        # Extract emotion entities
+        # Tokenize for negation detection
+        negation_words = {'not', "n't", 'no', 'never', 'neither', 'nor', 'without', 'hardly', 'barely'}
+        tokens = re.findall(r"\w+|\w+'\w+|[^\w\s]", content_lower)
+
+        def _is_negated(idx: int) -> bool:
+            start = max(0, idx - 3)
+            return any(t in negation_words for t in tokens[start:idx])
+
+        # Extract emotion entities (with negation handling)
         for emotion, props in emotion_patterns.items():
-            if re.search(rf'\b{re.escape(emotion)}\b', content_lower):
-                entity = Entity(
-                    id=self._generate_entity_id(emotion, 'emotion'),
-                    name=emotion,
-                    entity_type='emotion',
-                    description=f"Emotion mentioned in text",
-                    properties=props,
-                    confidence=0.7,
-                )
-                entities.append(entity)
+            match = re.search(rf'\b{re.escape(emotion)}\b', content_lower)
+            if not match:
+                continue
+            token_idx = next((i for i, t in enumerate(tokens) if t == emotion), None)
+            negated = token_idx is not None and _is_negated(token_idx)
+            effective_name = f"not_{emotion}" if negated else emotion
+            effective_props = {'intensity': 'negated', 'negates': emotion} if negated else props
+            entity = Entity(
+                id=self._generate_entity_id(effective_name, 'emotion'),
+                name=effective_name,
+                entity_type='emotion',
+                description=f"{'Negated ' if negated else ''}Emotion mentioned in text",
+                properties=effective_props,
+                confidence=0.6 if negated else 0.7,
+            )
+            entities.append(entity)
 
         # Extract concept entities (common therapeutic concepts)
         concept_patterns = {
@@ -280,20 +294,35 @@ Output (raw JSON only, no markdown):
                     id=self._generate_entity_id(concept, 'concept'),
                     name=concept,
                     entity_type='concept',
-                    description=f"Concept mentioned in text",
+                    description="Concept mentioned in text",
                     properties=props,
                     confidence=0.6,
                 )
                 entities.append(entity)
 
-        # Create simple relationships (person experienced emotion)
-        # This would be more sophisticated with LLM extraction
-        if len(entities) >= 2:
-            # Link first person-like entity to emotions
-            for entity in entities:
-                if entity.entity_type == 'emotion':
-                    # Create a generic "relates_to" relationship
-                    pass  # Would need a person entity to link to
+        # Generate relationships between co-occurring entities
+        concept_entities = [e for e in entities if e.entity_type == "concept"]
+        emotion_entities = [e for e in entities if e.entity_type == "emotion"]
+        for ce in concept_entities:
+            for ee in emotion_entities:
+                relationships.append(
+                    Relationship(
+                        source_entity_id=ce.id,
+                        target_entity_id=ee.id,
+                        relationship_type="relates_to",
+                        confidence=0.5,
+                    )
+                )
+        for i, ea in enumerate(emotion_entities):
+            for eb in emotion_entities[i + 1:]:
+                relationships.append(
+                    Relationship(
+                        source_entity_id=ea.id,
+                        target_entity_id=eb.id,
+                        relationship_type="relates_to",
+                        confidence=0.4,
+                    )
+                )
 
         return ExtractionResult(entities=entities, relationships=relationships)
 
@@ -352,15 +381,23 @@ Output (raw JSON only, no markdown):
                     for e in parsed.get("entities", [])
                 ]
 
-                relationships = [
-                    Relationship(
-                        source_entity_id=self._generate_entity_id(r["source"], "temp"),
-                        target_entity_id=self._generate_entity_id(r["target"], "temp"),
-                        relationship_type=r["type"],  # type: ignore
-                        confidence=r.get("confidence", 1.0),
+                # Build name->id map from extracted entities for correct relationship IDs
+                entity_name_to_id = {e.name.lower(): e.id for e in entities}
+
+                relationships = []
+                for r in parsed.get("relationships", []):
+                    src_name = r["source"].lower()
+                    tgt_name = r["target"].lower()
+                    src_id = entity_name_to_id.get(src_name) or self._generate_entity_id(r["source"], "concept")
+                    tgt_id = entity_name_to_id.get(tgt_name) or self._generate_entity_id(r["target"], "concept")
+                    relationships.append(
+                        Relationship(
+                            source_entity_id=src_id,
+                            target_entity_id=tgt_id,
+                            relationship_type=r["type"],  # type: ignore
+                            confidence=r.get("confidence", 1.0),
+                        )
                     )
-                    for r in parsed.get("relationships", [])
-                ]
 
                 return ExtractionResult(entities=entities, relationships=relationships)
 

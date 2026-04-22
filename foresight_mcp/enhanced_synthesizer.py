@@ -163,6 +163,25 @@ class EnhancedMemorySynthesizer:
         ("easy", "hard"),
         ("improve", "worsen"),
         ("like", "dislike"),
+        ("hope", "despair"),
+        ("calm", "anxious"),
+        ("confident", "doubtful"),
+        ("safe", "afraid"),
+        ("trust", "distrust"),
+        ("accept", "reject"),
+        ("satisfied", "frustrated"),
+        ("optimistic", "pessimistic"),
+        ("grateful", "resentful"),
+        ("comfortable", "uncomfortable"),
+        ("peaceful", "distressed"),
+        ("motivated", "discouraged"),
+        ("supported", "abandoned"),
+        ("connected", "isolated"),
+        ("valued", "worthless"),
+        ("strong", "weak"),
+        ("progress", "regress"),
+        ("healing", "hurting"),
+        ("joy", "sorrow"),
     ]
 
     def __init__(
@@ -212,14 +231,8 @@ class EnhancedMemorySynthesizer:
             if base_result is None:
                 return None
 
-            # Split recent and historic
-            splits = self._split_recent_and_historic(memories)
-
             # Detect contradictions
-            contradictions = self._detect_contradictions(
-                splits['historic'],
-                splits['recent']
-            )
+            contradictions = self._detect_contradictions(memories)
 
             # Analyze temporal trends
             temporal_trends = self._analyze_temporal_trends(memories)
@@ -245,91 +258,26 @@ class EnhancedMemorySynthesizer:
             logger.error(f"Enhanced synthesis failed: {e}")
             return None
 
-    def _split_recent_and_historic(
-        self,
-        memories: List[MemoryObject]
-    ) -> Dict[str, List[MemoryObject]]:
-        """Split memories into historic (80%) and recent (20%)."""
-        sorted_memories = sorted(
-            memories,
-            key=lambda m: datetime.fromisoformat(
-                m.timestamp.replace('Z', '+00:00')
-            ).timestamp()
-        )
-
-        split_idx = int(len(sorted_memories) * 0.8)
-        return {
-            'historic': sorted_memories[:split_idx],
-            'recent': sorted_memories[split_idx:],
-        }
-
     def _detect_contradictions(
         self,
-        historic: List[MemoryObject],
-        recent: List[MemoryObject]
+        memories: List[MemoryObject]
     ) -> List[Contradiction]:
         """
-        Detect contradictions between historic and recent memories.
+        Detect contradictions between memories using content overlap + sentiment.
 
-        Types:
-        - direct_conflict: Opposite values (>0.5 delta) or opposite sentiment
-        - evolution: Gradual improvement (positive delta)
-        - regression: Setback (negative delta)
+        Finds pairs of memories with high content overlap but opposing sentiment
+        words (e.g., "happy" vs "sad" in same topic).
         """
         contradictions: List[Contradiction] = []
         seen_pairs: set = set()
 
-        # Group memories by topic (simplified: by tags or content similarity)
-        topic_clusters = self._cluster_by_topic(historic + recent)
+        topic_clusters = self._cluster_by_topic(memories)
 
         for topic, cluster in topic_clusters.items():
             if len(cluster) < 2:
                 continue
 
-            # Split cluster into historic and recent
-            historic_cluster = [m for m in cluster if m in historic]
-            recent_cluster = [m for m in cluster if m in recent]
-
-            if not historic_cluster or not recent_cluster:
-                continue
-
-            # Calculate average values
-            historic_avg = self._extract_metric_value(historic_cluster)
-            recent_avg = self._extract_metric_value(recent_cluster)
-
-            delta = recent_avg - historic_avg
-
-            if abs(delta) > self.contradiction_threshold:
-                # Determine type
-                if abs(delta) > 0.5:
-                    contradiction_type = 'direct_conflict'
-                elif delta > 0:
-                    contradiction_type = 'evolution'
-                else:
-                    contradiction_type = 'regression'
-
-                # Calculate temporal distance
-                historic_time = datetime.fromisoformat(
-                    historic_cluster[0].timestamp.replace('Z', '+00:00')
-                )
-                recent_time = datetime.fromisoformat(
-                    recent_cluster[0].timestamp.replace('Z', '+00:00')
-                )
-                days_diff = (recent_time - historic_time).days
-
-                contradictions.append(Contradiction(
-                    type=contradiction_type,
-                    attribute=topic,
-                    old_value=f"{historic_avg:.2f}",
-                    new_value=f"{recent_avg:.2f}",
-                    delta=delta,
-                    temporal_distance_days=days_diff,
-                    evidence_ids=[m.id for m in cluster],
-                    confidence=min(abs(delta) / 0.5, 1.0),
-                ))
-
             # Keyword overlap contradiction detection
-            # Check pairs within the cluster for high overlap with opposite sentiment
             for i, mem_a in enumerate(cluster):
                 for mem_b in cluster[i + 1:]:
                     pair_key = tuple(sorted([mem_a.id, mem_b.id]))

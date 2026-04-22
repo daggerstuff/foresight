@@ -59,6 +59,27 @@ class TestEntityExtractor:
         concept_entities = [e for e in result.entities if e.entity_type == 'concept']
         assert len(concept_entities) >= 2  # Should find CBT and meditation
 
+    def test_extract_negation(self):
+        """Negated emotions should produce 'not_X' entities."""
+        extractor = EntityExtractor()
+        result = extractor._extract_rules_based("I am not anxious about this")
+
+        emotion_entities = [e for e in result.entities if e.entity_type == 'emotion']
+        names = [e.name for e in emotion_entities]
+        assert 'not_anxious' in names
+        negated = [e for e in emotion_entities if e.name == 'not_anxious']
+        assert negated[0].properties.get('negates') == 'anxious'
+
+    def test_extract_generates_relationships(self):
+        """Relationships should link concepts to emotions."""
+        extractor = EntityExtractor()
+        result = extractor._extract_rules_based("My work causes me a lot of stress")
+
+        assert len(result.relationships) > 0
+        # Should have a concept-emotion relationship
+        rel_types = set(r.relationship_type for r in result.relationships)
+        assert 'relates_to' in rel_types
+
     def test_extract_empty_content(self):
         """Empty content should return empty result."""
         extractor = EntityExtractor()
