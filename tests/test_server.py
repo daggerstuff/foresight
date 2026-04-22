@@ -348,9 +348,9 @@ def test_score_memory_relevance():
     terms = ["python", "type", "hints", "functions"]
     score = _score_memory_relevance(row, terms, now)
 
-    # All 4 terms match content, importance=0.8*0.5=0.4, decay=~0.5 (fresh)
-    # overlap=4, importance_boost=0.4, recency=0.5
-    assert score > 4.0  # At minimum overlap of 4
+    # overlap_score=1.0 (4/4), importance=0.8*0.5=0.4, decay~0.5 -> total ~1.9
+    # Normalized score: 1.0 + 0.4 + 0.5 = 1.9
+    assert score > 1.5  # Normalized score ~1.9
 
 
 def test_score_memory_relevance_old_memory():

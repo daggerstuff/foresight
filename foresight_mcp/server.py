@@ -1801,12 +1801,12 @@ def _subconscious_context_for_terms(
         content = block.content
         # Check if any term appears in the block content
         content_lower = content.lower()
-        if terms and any(t in content_lower for t in terms):
+        if terms and any(re.search(rf'\b{re.escape(t)}\b', content_lower) for t in terms):
             # Include relevant lines from the block
             matching = []
             for line in content.splitlines():
                 line_lower = line.lower().strip()
-                if line_lower and any(t in line_lower for t in terms):
+                if line_lower and any(re.search(rf'\b{re.escape(t)}\b', line_lower) for t in terms):
                     matching.append(line.strip())
             if matching:
                 lines.append(f"[{label}]")

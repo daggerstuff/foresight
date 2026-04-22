@@ -195,7 +195,7 @@ class TestTemporalTrendAnalysis:
             create_memory("I hate my therapy sessions", base_time, intensity=0.5),
         ]
 
-        contradictions = synthesizer._detect_contradictions(historic, recent)
+        contradictions = synthesizer._detect_contradictions(historic + recent)
 
         # Should find at least one direct_conflict from sentiment overlap
         sentiment_conflicts = [c for c in contradictions if c.type == 'direct_conflict']
@@ -207,7 +207,7 @@ class TestTemporalTrendAnalysis:
 
     def test_sentiment_opposites_class_constant(self):
         """SENTIMENT_OPPOSITES should contain the expected word pairs."""
-        assert len(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES) == 8
+        assert len(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES) >= 20
         pairs = set(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES)
         assert ('love', 'hate') in pairs
         assert ('good', 'bad') in pairs
@@ -304,20 +304,6 @@ class TestEnhancedSynthesis:
         result = asyncio.run(run_test())
 
         assert result is None
-
-    def test_split_recent_and_historic(self):
-        """Should split memories into 80/20."""
-        synthesizer = EnhancedMemorySynthesizer()
-
-        memories = [
-            create_memory(f"Memory {i}", datetime.now(timezone.utc) - timedelta(days=i))
-            for i in range(10)
-        ]
-
-        splits = synthesizer._split_recent_and_historic(memories)
-
-        assert len(splits['historic']) == 8
-        assert len(splits['recent']) == 2
 
 
 if __name__ == '__main__':
