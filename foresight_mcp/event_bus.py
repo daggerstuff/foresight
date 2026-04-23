@@ -122,65 +122,77 @@ class EventStore:
         self.db_path = db_path
         self._init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Get a new database connection."""
+        return sqlite3.connect(self.db_path)
+
     def _init_db(self) -> None:
         """Initialize database schema."""
         db_path = Path(self.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS events (
-                id TEXT PRIMARY KEY,
-                event_type TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                entity_id TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                metadata TEXT DEFAULT '{}'
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
-        conn.commit()
-        conn.close()
+        conn = self._connect()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    metadata TEXT DEFAULT '{}'
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
+            conn.commit()
+        finally:
+            conn.close()
 
     def append(self, event: Event) -> None:
         """Append event to store."""
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            "INSERT INTO events (id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                event.id,
-                event.event_type.value,
-                event.timestamp.isoformat(),
-                event.actor,
-                event.entity_id,
-                json.dumps(event.payload),
-                json.dumps(event.metadata),
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO events (id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event.id,
+                    event.event_type.value,
+                    event.timestamp.isoformat(),
+                    event.actor,
+                    event.entity_id,
+                    json.dumps(event.payload),
+                    json.dumps(event.metadata),
+                )
             )
-        )
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
 
     def get_by_entity(self, entity_id: str, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get events by entity ID."""
-        conn = sqlite3.connect(self.db_path)
-        rows = conn.execute(
-            "SELECT * FROM events WHERE entity_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (entity_id, limit, offset)
-        ).fetchall()
-        conn.close()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE entity_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (entity_id, limit, offset)
+            ).fetchall()
+        finally:
+            conn.close()
         return [self._row_to_event(row) for row in rows]
 
     def get_by_type(self, event_type: EventType, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get events by type."""
-        conn = sqlite3.connect(self.db_path)
-        rows = conn.execute(
-            "SELECT * FROM events WHERE event_type = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (event_type.value, limit, offset)
-        ).fetchall()
-        conn.close()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE event_type = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (event_type.value, limit, offset)
+            ).fetchall()
+        finally:
+            conn.close()
         return [self._row_to_event(row) for row in rows]
 
     def get_by_time_range(
@@ -191,22 +203,26 @@ class EventStore:
         offset: int = 0
     ) -> list[Event]:
         """Get events by time range."""
-        conn = sqlite3.connect(self.db_path)
-        rows = conn.execute(
-            "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (start.isoformat(), end.isoformat(), limit, offset)
-        ).fetchall()
-        conn.close()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (start.isoformat(), end.isoformat(), limit, offset)
+            ).fetchall()
+        finally:
+            conn.close()
         return [self._row_to_event(row) for row in rows]
 
     def get_all(self, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get all events (paginated)."""
-        conn = sqlite3.connect(self.db_path)
-        rows = conn.execute(
-            "SELECT * FROM events ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (limit, offset)
-        ).fetchall()
-        conn.close()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (limit, offset)
+            ).fetchall()
+        finally:
+            conn.close()
         return [self._row_to_event(row) for row in rows]
 
     def _row_to_event(self, row: tuple) -> Event:

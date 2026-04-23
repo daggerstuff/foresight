@@ -33,7 +33,7 @@ class StreamEvent:
     entity_id: str
     payload: dict[str, Any]
     timestamp: str
-    metadata: dict[str, Any] = None
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.metadata is None:
@@ -118,6 +118,7 @@ class KafkaProducer(StreamProducer):
         self.send_timeout = send_timeout
         self._producer = None
         self._failed_messages: list[dict[str, Any]] = []
+        self._max_failed_messages = 1000
 
         # Lazy import to avoid requiring kafka-python when not used
         self._kafka = None
@@ -198,6 +199,8 @@ class KafkaProducer(StreamProducer):
                 "event": dlq_event.to_dict(),
                 "error": error,
             })
+            if len(self._failed_messages) > self._max_failed_messages:
+                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
 
     def publish(self, topic: str, event: StreamEvent) -> bool:
         """
@@ -278,6 +281,8 @@ class KafkaProducer(StreamProducer):
                     "topic": topic,
                     "event": event.to_dict(),
                 })
+            if len(self._failed_messages) > self._max_failed_messages:
+                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
             return 0
 
     def flush(self) -> None:
@@ -317,6 +322,7 @@ class KinesisProducer(StreamProducer):
         self.environment = environment
         self._client = None
         self._failed_messages: list[dict[str, Any]] = []
+        self._max_failed_messages = 1000
 
     def _get_client(self):
         """Lazy-load Kinesis client."""
@@ -356,6 +362,8 @@ class KinesisProducer(StreamProducer):
                 "stream": self.stream_name,
                 "event": event.to_dict(),
             })
+            if len(self._failed_messages) > self._max_failed_messages:
+                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
             return False
 
     def publish_batch(self, events: list[tuple[str, StreamEvent]]) -> int:
@@ -396,6 +404,8 @@ class KinesisProducer(StreamProducer):
                     "stream": self.stream_name,
                     "event": event.to_dict(),
                 })
+            if len(self._failed_messages) > self._max_failed_messages:
+                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
             return 0
 
     def close(self) -> None:
