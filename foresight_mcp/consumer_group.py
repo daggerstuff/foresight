@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -208,7 +211,7 @@ class KafkaConsumerGroup:
                             key=message.key,
                             value=message.value,
                             timestamp=datetime.fromtimestamp(message.timestamp / 1000),
-                            headers={k: v.decode() for k, v in message.headers},
+                            headers={k: v.decode() for k, v in message.headers} if message.headers else {},
                         )
                         self._process_record(record)
                         self._stats.records_processed += 1
@@ -275,6 +278,3 @@ class KafkaConsumerGroup:
         consumer.assign([tp])
         consumer.seek(tp, offset)
 
-
-# Import Path for ConsumerState
-from pathlib import Path  # noqa: E402
