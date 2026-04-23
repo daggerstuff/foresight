@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
+from .connection_pool import get_pool, PooledConnection
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -123,9 +123,10 @@ class EventStore:
         self.db_path = db_path
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        """Get a new database connection."""
-        return sqlite3.connect(self.db_path)
+    def _connect(self) -> PooledConnection:
+        """Get a pooled connection."""
+        pool = get_pool(self.db_path)
+        return PooledConnection(pool.acquire(), pool)
 
     def _init_db(self) -> None:
         """Initialize database schema."""

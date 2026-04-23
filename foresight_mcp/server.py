@@ -438,7 +438,102 @@ class RateLimitMiddleware(_Middleware):
         return await call_next(context)
 
 
-mcp = FastMCP("Foresight", middleware=[RateLimitMiddleware()])
+# Input validation constants
+_MAX_CONTENT_LENGTH = 100_000     # 100KB max for text inputs
+_MAX_QUERY_LENGTH = 10_000       # 10KB max for query strings
+_MAX_LIMIT = 1000                # Max rows for pagination
+_MAX_TENANT_ID_LENGTH = 64
+_MAX_USER_ID_LENGTH = 128
+_SAFE_PATH_PREFIXES = None       # Initialized lazily
+
+
+def _validate_tool_inputs(name: str, arguments: dict) -> str | None:
+    """Validate tool inputs. Returns error message or None if valid."""
+    import os
+    global _SAFE_PATH_PREFIXES
+    if _SAFE_PATH_PREFIXES is None:
+        _SAFE_PATH_PREFIXES = [
+            str(Path.home()),
+            os.getcwd(),
+            "/tmp",
+        ]
+
+    # Validate text content fields
+    for key in ("content", "conversation_text", "transcript"):
+        val = arguments.get(key)
+        if isinstance(val, str) and len(val) > _MAX_CONTENT_LENGTH:
+            return f"{key} exceeds maximum length of {_MAX_CONTENT_LENGTH} characters"
+
+    # Validate query fields
+    for key in ("query",):
+        val = arguments.get(key)
+        if isinstance(val, str) and len(val) > _MAX_QUERY_LENGTH:
+            return f"{key} exceeds maximum length of {_MAX_QUERY_LENGTH} characters"
+
+    # Validate limit/offset
+    for key in ("limit",):
+        val = arguments.get(key)
+        if val is not None:
+            try:
+                if int(val) > _MAX_LIMIT:
+                    return f"{key} exceeds maximum of {_MAX_LIMIT}"
+                if int(val) < 1:
+                    return f"{key} must be at least 1"
+            except (ValueError, TypeError):
+                return f"{key} must be a positive integer"
+
+    for key in ("offset",):
+        val = arguments.get(key)
+        if val is not None:
+            try:
+                if int(val) < 0:
+                    return f"{key} must be non-negative"
+            except (ValueError, TypeError):
+                return f"{key} must be a non-negative integer"
+
+    # Validate user_id/tenant_id format
+    for key in ("user_id", "tenant_id"):
+        val = arguments.get(key)
+        if val is not None and isinstance(val, str):
+            if len(val) == 0:
+                return f"{key} cannot be empty"
+            if key == "tenant_id" and len(val) > _MAX_TENANT_ID_LENGTH:
+                return f"{key} exceeds maximum length of {_MAX_TENANT_ID_LENGTH}"
+            if key == "user_id" and len(val) > _MAX_USER_ID_LENGTH:
+                return f"{key} exceeds maximum length of {_MAX_USER_ID_LENGTH}"
+
+    # Validate file paths — prevent path traversal
+    for key in ("output_path", "path", "file_path"):
+        val = arguments.get(key)
+        if val is not None and isinstance(val, str):
+            resolved = str(Path(val).expanduser().resolve())
+            if not any(resolved.startswith(p) for p in _SAFE_PATH_PREFIXES):
+                return f"{key} must be under home directory, current directory, or /tmp"
+
+    return None
+
+
+class InputValidationMiddleware(_Middleware):
+    """FastMCP middleware that validates tool inputs before execution."""
+
+    async def on_call_tool(self, context, call_next):
+        # Extract tool name and arguments from context
+        try:
+            name = getattr(context, 'name', None) or getattr(context, 'tool_name', None) or ''
+            arguments = getattr(context, 'arguments', {}) or {}
+            error = _validate_tool_inputs(name, arguments)
+            if error:
+                from mcp.types import CallToolResult, TextContent
+                return CallToolResult(
+                    content=[TextContent(type="text", text=f"Validation error: {error}")],
+                    isError=True,
+                )
+        except Exception:
+            pass  # Don't block on validation failures
+        return await call_next(context)
+
+
+mcp = FastMCP("Foresight", middleware=[InputValidationMiddleware(), RateLimitMiddleware()])
 
 logger = logging.getLogger("foresight_server")
 
