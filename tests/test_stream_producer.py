@@ -2,6 +2,8 @@
 import pytest
 from foresight_mcp.event_bus import memory_stored
 from foresight_mcp.stream_producer import (
+    KafkaProducer,
+    KinesisProducer,
     MockProducer,
     StreamEvent,
     StreamPublisher,
@@ -138,6 +140,100 @@ class TestEventBusIntegration:
 
         # Should persist to SQLite AND publish to stream
         assert len(mock_producer.published) == 1
+
+
+
+class TestKafkaProducer:
+ """Test KafkaProducer with mocked kafka client."""
+
+ def test_kafka_producer_init(self):
+  """Test KafkaProducer initialization."""
+  producer = KafkaProducer(
+   bootstrap_servers="localhost:9092",
+   environment="test",
+   send_timeout=60,
+  )
+  assert producer.bootstrap_servers == "localhost:9092"
+  assert producer.environment == "test"
+  assert producer.send_timeout == 60
+  assert producer._producer is None  # Lazy loading
+
+ def test_kafka_producer_topic_naming(self):
+  """Test topic name generation."""
+  producer = KafkaProducer(environment="test")
+  assert producer._get_topic("memory", "stored") == "foresight.test.memory.stored"
+  # Dots are valid in Kafka topic names, spaces become underscores
+  assert producer._get_topic("my.entity", "my.event") == "foresight.test.my.entity.my.event"
+  assert producer._get_topic("entity/with/slashes", "event") == "foresight.test.entity_with_slashes.event"
+
+ def test_kafka_producer_schema_validation(self):
+  """Test event schema validation."""
+  producer = KafkaProducer()
+  valid_event = StreamEvent(
+   event_type="memory.stored",
+   entity_id="test-123",
+   payload={"key": "value"},
+   timestamp="2026-04-16T00:00:00Z",
+  )
+  assert producer._validate_event(valid_event) is True
+  bad_payload_event = StreamEvent(
+   event_type="memory.stored",
+   entity_id="test-123",
+   payload="not a dict",
+   timestamp="2026-04-16T00:00:00Z",
+  )
+  assert producer._validate_event(bad_payload_event) is False
+  empty_type_event = StreamEvent(
+   event_type="",
+   entity_id="test-123",
+   payload={},
+   timestamp="2026-04-16T00:00:00Z",
+  )
+  assert producer._validate_event(empty_type_event) is False
+
+ def test_kafka_producer_send_to_dlq(self):
+  """Test DLQ send on failure."""
+  producer = KafkaProducer()
+  event = StreamEvent(
+   event_type="memory.stored",
+   entity_id="test",
+   payload={},
+   timestamp="2026-04-16T00:00:00Z",
+  )
+  producer._send_to_dlq("test-topic", event, "test error")
+
+
+class TestKinesisProducer:
+ """Test KinesisProducer with mocked boto3 client."""
+
+ def test_kinesis_producer_init(self):
+  """Test KinesisProducer initialization."""
+  producer = KinesisProducer(
+   stream_name="test-stream",
+   region="us-west-2",
+   environment="test",
+  )
+  assert producer.stream_name == "test-stream"
+  assert producer.region == "us-west-2"
+  assert producer.environment == "test"
+
+ def test_kinesis_producer_partition_key(self):
+  """Test partition key generation."""
+  producer = KinesisProducer()
+  event = StreamEvent(
+   event_type="memory.stored",
+   entity_id="test-123",
+   payload={},
+   timestamp="2026-04-16T00:00:00Z",
+  )
+  assert producer._get_partition_key(event) == "test-123"
+  event_no_id = StreamEvent(
+   event_type="memory.stored",
+   entity_id=None,
+   payload={},
+   timestamp="2026-04-16T00:00:00Z",
+  )
+  assert producer._get_partition_key(event_no_id) == "default"
 
 
 if __name__ == "__main__":

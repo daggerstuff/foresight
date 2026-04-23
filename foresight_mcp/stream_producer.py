@@ -101,6 +101,7 @@ class KafkaProducer(StreamProducer):
         environment: str = "dev",
         dlq_topic: str = "foresight.dlq",
         enable_schema_validation: bool = True,
+        send_timeout: int = 30,
     ):
         """Initialize Kafka producer.
 
@@ -114,6 +115,7 @@ class KafkaProducer(StreamProducer):
         self.environment = environment
         self.dlq_topic = dlq_topic
         self.enable_schema_validation = enable_schema_validation
+        self.send_timeout = send_timeout
         self._producer = None
         self._failed_messages: list[dict[str, Any]] = []
 
@@ -141,16 +143,36 @@ class KafkaProducer(StreamProducer):
 
     def _get_topic(self, entity: str, event: str) -> str:
         """Generate topic name with naming convention."""
+        import re
         # Normalize entity and event for topic naming
-        entity_clean = entity.replace(".", "_").replace(" ", "_").lower()
-        event_clean = event.replace(".", "_").replace(" ", "_").lower()
-        return f"foresight.{self.environment}.{entity_clean}.{event_clean}"
+        entity_clean = re.sub(r'[^a-zA-Z0-9._-]', '_', entity)
+        entity_clean = re.sub(r'_+', '_', entity_clean).lower().strip('_')
+        event_clean = re.sub(r'[^a-zA-Z0-9._-]', '_', event)
+        event_clean = re.sub(r'_+', '_', event_clean).lower().strip('_')
+        # Validate environment is safe
+        env_clean = re.sub(r'[^a-zA-Z0-9_-]', '', self.environment).lower()
+        return f"foresight.{env_clean}.{entity_clean}.{event_clean}"
 
     def _validate_event(self, event: StreamEvent) -> bool:
         """Validate event against schema."""
-        required_fields = ["event_type", "entity_id", "payload", "timestamp"]
         event_dict = event.to_dict()
-        return all(field in event_dict for field in required_fields)
+        
+        # Check required fields exist
+        required_fields = ["event_type", "entity_id", "payload", "timestamp"]
+        if not all(field in event_dict for field in required_fields):
+            return False
+        
+        # Validate field types
+        if not isinstance(event_dict["event_type"], str) or not event_dict["event_type"]:
+            return False
+        if not isinstance(event_dict["entity_id"], str) or not event_dict["entity_id"]:
+            return False
+        if not isinstance(event_dict["payload"], dict):
+            return False
+        if not isinstance(event_dict["timestamp"], str):
+            return False
+        
+        return True
 
     def _send_to_dlq(self, topic: str, event: StreamEvent, error: str) -> None:
         """Send failed message to dead letter queue."""
@@ -202,7 +224,7 @@ class KafkaProducer(StreamProducer):
             future = producer.send(topic, value=event_dict, key=key)
 
             # Wait for send to complete (with timeout)
-            future.get(timeout=10)
+            future.get(timeout=self.send_timeout)
             return True
 
         except Exception as e:
