@@ -280,8 +280,7 @@ class EventBus:
             try:
                 handler(event)
             except Exception as e:
-                # Continue on error - don't let one handler break others
-                pass  # Could log error here
+                logger.error(f"Event handler failed for {event.event_type}: {e}", exc_info=True)
 
     def subscribe(self, event_type: EventType, handler: EventHandler) -> None:
         """Subscribe to an event type."""
