@@ -5,12 +5,15 @@ Event sourcing with full audit trail for all memory operations.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, TypeVar
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Event Types
@@ -267,9 +270,9 @@ class EventBus:
         if self._stream_publisher:
             try:
                 self._stream_publisher.publish_event(event)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Stream publishing failed: {e}")
                 # Don't let stream publishing failures block the event
-                pass
 
         # Call handlers
         handlers = self._handlers.get(event.event_type, [])

@@ -482,6 +482,25 @@ def get_stream_publisher() -> StreamPublisher | None:
     return _stream_publisher
 
 
+def cleanup_stream_producer():
+    """Clean up stream producer on shutdown."""
+    global _stream_publisher
+    if _stream_publisher:
+        try:
+            _stream_publisher.close()
+            logger.info("Stream publisher closed successfully")
+        except Exception as e:
+            logger.warning(f"Error closing stream publisher: {e}")
+        finally:
+            _stream_publisher = None
+
+
+# Register cleanup on exit
+import atexit
+
+atexit.register(cleanup_stream_producer)
+
+
 def get_event_bus_with_stream():
     """Get event bus with stream publisher automatically wired up."""
     return get_event_bus(stream_publisher=_stream_publisher)
