@@ -201,6 +201,10 @@ class HookRegistry:
         # Columns: 0=id, 1=tenant_id, 2=name, 3=event_type, 4=hook_type,
         # 5=handler, 6=condition_name, 7=retry_count, 8=timeout,
         # 9=metadata, 10=enabled, 11=created_at
+        if len(row) >= 12:
+            o = 1  # tenant_id at row[1]
+        else:
+            o = 0
         return HookRegistration(
             id=row[0],
             name=row[1 + o],
