@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .entity_extractor import Entity, ExtractionResult, Relationship
+from .sql_helpers import build_type_filter
 from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_graph_store")
@@ -469,14 +470,9 @@ class GraphStore:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            type_filter = ""
-            type_params = []
-            if relationship_types:
-                placeholders = ",".join("?" * len(relationship_types))
-                type_filter = f"AND r.relationship_type IN ({placeholders})"
-                type_params = relationship_types
+            type_filter, type_params = build_type_filter(relationship_types)
 
-            cursor = conn.execute(f"""
+            cursor = conn.execute("""
             WITH RECURSIVE graph_traversal AS (
                 SELECT
                     id as entity_id,
