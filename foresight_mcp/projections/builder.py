@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import BaseProjection
+from ..tenant_context import get_current_tenant_id
 from .reports import (
     AccessLog,
     AnomalyReport,
@@ -56,6 +57,7 @@ class ProjectionBuilder:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS projections (
                 id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
                 name TEXT NOT NULL,
                 data TEXT NOT NULL,
                 built_at TEXT NOT NULL,
@@ -66,6 +68,14 @@ class ProjectionBuilder:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_projections_name ON projections(name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_projections_built ON projections(built_at)")
+        # Migration: add tenant_id if table exists without it
+        try:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(projections)").fetchall()]
+            if cols and "tenant_id" not in cols:
+                conn.execute("ALTER TABLE projections ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_projections_tenant ON projections(tenant_id)")
         conn.commit()
         conn.close()
 

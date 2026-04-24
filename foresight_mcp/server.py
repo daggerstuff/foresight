@@ -35,6 +35,7 @@ from .config import (  # noqa: F401 - re-exports
     TENANT_ID,
     USER_ID,
 )
+from .tenant_context import get_current_tenant_id
 from .connection_pool import PooledConnection, get_pool
 from .crisis_detection import get_crisis_service
 from .event_bus import get_event_bus, memory_deleted, memory_retrieved, memory_stored, memory_updated
@@ -75,7 +76,7 @@ def _run_async(coro):
 
 def _check_rate_limit(tenant_id: str | None = None) -> None:
     """Check rate limit for tenant, raising RateLimitExceeded if exceeded."""
-    tid = tenant_id or TENANT_ID
+    tid = tenant_id or get_current_tenant_id()
     # Look up tenant-specific limits from DB
     rate_limit = DEFAULT_RATE_LIMIT
     burst_limit = DEFAULT_BURST_LIMIT
@@ -182,6 +183,7 @@ _SCHEMA_MIGRATIONS = {
         "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category, created_at DESC)",
         """CREATE TABLE IF NOT EXISTS decay_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
             user_id TEXT NOT NULL,
             category TEXT NOT NULL DEFAULT 'general',
             half_life_hours REAL DEFAULT 168.0,
@@ -189,8 +191,9 @@ _SCHEMA_MIGRATIONS = {
             activation_boost REAL DEFAULT 1.2,
             strengthening_threshold INTEGER DEFAULT 5,
             stale_threshold REAL DEFAULT 0.2,
-            UNIQUE(user_id, category)
+            UNIQUE(tenant_id, user_id, category)
         )""",
+        "CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)",
     ],
 }
 
@@ -230,6 +233,16 @@ def init_db():
         )
         conn.commit()
 
+    # Migrate decay_config: add tenant_id if table exists without it
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(decay_config)").fetchall()]
+        if cols and "tenant_id" not in cols:
+            conn.execute("ALTER TABLE decay_config ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)")
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Table doesn't exist yet; will be created by migrations
+
     conn.close()
 
 # Initialize database on module load
@@ -251,7 +264,7 @@ def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     # Verify memory exists
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
 
     if not row:
@@ -264,7 +277,7 @@ def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     # Get version history
     versions = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND tenant_id = ? ORDER BY version DESC",
-        (memory_id, TENANT_ID)
+        (memory_id, get_current_tenant_id())
     ).fetchall()
     conn.close()
 
@@ -312,7 +325,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     # Verify memory ownership first
     current = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
 
     if not current:
@@ -322,7 +335,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     # Get the version content (tenant enforced via memory ownership above)
     version_row = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, target_version, TENANT_ID)
+        (memory_id, target_version, get_current_tenant_id())
     ).fetchone()
 
     if not version_row:
@@ -550,10 +563,10 @@ def initialize_stream_producer():
 
     try:
         # Create stream producer based on environment configuration
-        producer = create_stream_producer(environment=TENANT_ID or "dev")
+        producer = create_stream_producer(environment=get_current_tenant_id() or "dev")
 
         # Create stream publisher
-        _stream_publisher = StreamPublisher(producer, environment=TENANT_ID or "dev")
+        _stream_publisher = StreamPublisher(producer, environment=get_current_tenant_id() or "dev")
 
         logger.info("Stream publisher initialized successfully")
 
@@ -634,7 +647,7 @@ def store_memory(content: str, category: str = "fact",
         "SELECT id, importance, activation_count FROM memories "
         "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
         "ORDER BY created_at DESC LIMIT 1",
-        (uid, TENANT_ID, content.strip())
+        (uid, get_current_tenant_id(), content.strip())
     ).fetchone()
     if existing:
         # Bump activation count instead of creating duplicate
@@ -722,7 +735,7 @@ def query_memories(query: str, user_id: str | None = None,
     conn = get_db_connection()
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?",
-        (uid, TENANT_ID, f"%{escaped}%", limit, offset)
+        (uid, get_current_tenant_id(), f"%{escaped}%", limit, offset)
     ).fetchall()
     conn.close()
 
@@ -732,7 +745,7 @@ def query_memories(query: str, user_id: str | None = None,
             from .hybrid_retriever import get_hybrid_retriever
             retriever = get_hybrid_retriever()
             hybrid_result = retriever.search(
-                query, uid, tenant_id=TENANT_ID, limit=limit
+                query, uid, tenant_id=get_current_tenant_id(), limit=limit
             )
             if hybrid_result.results:
                 results = []
@@ -765,7 +778,7 @@ def list_memories(user_id: str | None = None,
     conn = get_db_connection()
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (uid, TENANT_ID, limit, offset)
+        (uid, get_current_tenant_id(), limit, offset)
     ).fetchall()
     conn.close()
 
@@ -783,7 +796,7 @@ def get_memory(memory_id: str, user_id: str | None = None) -> str:
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
     conn.close()
 
@@ -829,7 +842,7 @@ def update_memory(memory_id: str, content: str | None = None,
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
 
     if not row:
@@ -899,7 +912,7 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     conn = get_db_connection()
     row = conn.execute(
         "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
 
     if not row:
@@ -910,7 +923,7 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_deleted(memory_id=memory_id, actor=uid))
 
-    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, TENANT_ID))
+    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, get_current_tenant_id()))
     conn.commit()
     conn.close()
     return f"Deleted memory {memory_id}"
@@ -928,7 +941,7 @@ def synthesize_memories(user_id: str | None = None) -> str:
     conn = get_db_connection()
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at LIMIT 500",
-        (uid, TENANT_ID)
+        (uid, get_current_tenant_id())
     ).fetchall()
     conn.close()
 
@@ -995,7 +1008,7 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
 
     if not row:
@@ -1057,7 +1070,7 @@ def rollback_memory(memory_id: str, to_version: int, user_id: str | None = None)
     # Verify memory exists
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
 
     if not row:
@@ -1067,7 +1080,7 @@ def rollback_memory(memory_id: str, to_version: int, user_id: str | None = None)
     # Verify version exists (tenant enforced via memory ownership above)
     version_row = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, to_version, TENANT_ID)
+        (memory_id, to_version, get_current_tenant_id())
     ).fetchone()
 
     if not version_row:
@@ -1138,7 +1151,7 @@ def diff_memories(memory_id: str, version1: int, version2: int, user_id: str | N
     # Verify memory ownership first
     mem = conn.execute(
         "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, TENANT_ID)
+        (memory_id, uid, get_current_tenant_id())
     ).fetchone()
 
     if not mem:
@@ -1147,12 +1160,12 @@ def diff_memories(memory_id: str, version1: int, version2: int, user_id: str | N
 
     v1 = conn.execute(
         "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, version1, TENANT_ID)
+        (memory_id, version1, get_current_tenant_id())
     ).fetchone()
 
     v2 = conn.execute(
         "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, version2, TENANT_ID)
+        (memory_id, version2, get_current_tenant_id())
     ).fetchone()
 
     conn.close()
@@ -1879,7 +1892,7 @@ def inject_context(
         )
         candidates = conn.execute(
             query,
-            [uid, TENANT_ID] + params,
+            [uid, get_current_tenant_id()] + params,
         ).fetchall()
 
     # Also fetch high-importance memories as fallback (even without term match)
@@ -1888,7 +1901,7 @@ def inject_context(
         "WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
         "AND importance >= ? "
         "ORDER BY importance DESC, created_at DESC LIMIT 20",
-        (uid, TENANT_ID, min_relevance),
+        (uid, get_current_tenant_id(), min_relevance),
     ).fetchall()
 
     conn.close()
@@ -2004,7 +2017,7 @@ def get_tenant_context() -> TenantContext:
     global _tenant_context
     if _tenant_context is None:
         _tenant_context = TenantContext(
-            tenant_id=TENANT_ID,
+            tenant_id=get_current_tenant_id(),
             rate_limit=DEFAULT_RATE_LIMIT,
             burst_limit=DEFAULT_BURST_LIMIT
         )
@@ -2180,7 +2193,7 @@ def get_tenant_isolation_status() -> str:
     conn.close()
 
     return json.dumps({
-        "current_tenant": TENANT_ID,
+        "current_tenant": get_current_tenant_id(),
         "total_tenants": tenant_count,
         "memories_by_tenant": [{"tenant_id": row[0], "count": row[1]} for row in tenant_memories],
         "isolation": "enabled"
@@ -2873,7 +2886,7 @@ def enhanced_synthesize(
 
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
-        (uid, TENANT_ID, limit)
+        (uid, get_current_tenant_id(), limit)
     ).fetchall()
     conn.close()
 
@@ -2945,7 +2958,7 @@ def hybrid_search(
     result = retriever.search(
         query=query,
         user_id=uid,
-        tenant_id=TENANT_ID,
+        tenant_id=get_current_tenant_id(),
         limit=limit,
         min_importance=min_importance,
         use_keyword=use_keyword,
@@ -2986,7 +2999,7 @@ def run_reflection(
     uid = user_id or USER_ID
     engine = get_reflection_engine()
 
-    report = engine.reflect(uid, tenant_id=TENANT_ID, period=period)
+    report = engine.reflect(uid, tenant_id=get_current_tenant_id(), period=period)
 
     if report is None:
         return "Insufficient memories for reflection analysis."
