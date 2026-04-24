@@ -531,7 +531,9 @@ class InputValidationMiddleware(_Middleware):
         return await call_next(context)
 
 
-mcp = FastMCP("Foresight", middleware=[InputValidationMiddleware(), RateLimitMiddleware()])
+from .tenant_middleware import TenantMiddleware
+
+mcp = FastMCP("Foresight", middleware=[TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()])
 
 logger = logging.getLogger("foresight_server")
 
