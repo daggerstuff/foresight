@@ -17,10 +17,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .entity_extractor import Entity, ExtractionResult, Relationship
+from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_graph_store")
 
 MAX_USER_ID_LENGTH = 128
+MAX_TENANT_ID_LENGTH = 64
 
 
 def _escape_like(term: str) -> str:
@@ -28,10 +30,13 @@ def _escape_like(term: str) -> str:
     return term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
-def _validate_input(user_id: str) -> None:
-    """Validate user_id input."""
+def _validate_input(user_id: str, tenant_id: str | None = None) -> None:
+    """Validate user_id and tenant_id input."""
     if not user_id or len(user_id) > MAX_USER_ID_LENGTH:
         raise ValueError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
+    tid = tenant_id or get_current_tenant_id()
+    if not tid or len(tid) > MAX_TENANT_ID_LENGTH:
+        raise ValueError(f"tenant_id must be 1-{MAX_TENANT_ID_LENGTH} chars")
 
 
 @dataclass
@@ -74,15 +79,16 @@ class GraphStore:
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS memory_entities (
                 id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
                 user_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 entity_type TEXT NOT NULL
-                    CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object')),
+                CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object')),
                 description TEXT,
                 properties TEXT DEFAULT '{}',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, name, entity_type)
+                UNIQUE(tenant_id, user_id, name, entity_type)
             )
             """)
 
@@ -90,18 +96,19 @@ class GraphStore:
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS entity_relationships (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
                 user_id TEXT NOT NULL,
                 source_entity_id TEXT NOT NULL,
                 target_entity_id TEXT NOT NULL,
                 relationship_type TEXT NOT NULL
-                    CHECK(relationship_type IN (
-                        'mentions', 'located_at', 'experienced', 'caused',
-                        'relates_to', 'contradicts', 'supports', 'part_of', 'created'
-                    )),
+                CHECK(relationship_type IN (
+                    'mentions', 'located_at', 'experienced', 'caused',
+                    'relates_to', 'contradicts', 'supports', 'part_of', 'created'
+                )),
                 confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
                 metadata TEXT DEFAULT '{}',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, source_entity_id, target_entity_id, relationship_type)
+                UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
             )
             """)
 
@@ -110,6 +117,7 @@ class GraphStore:
             CREATE TABLE IF NOT EXISTS memory_entity_links (
                 memory_id TEXT NOT NULL,
                 entity_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
                 user_id TEXT NOT NULL,
                 relevance_score REAL DEFAULT 1.0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -117,18 +125,26 @@ class GraphStore:
             )
             """)
 
-            # Indexes
+            # Migrate existing tables that lack tenant_id before creating indexes
+            self._migrate_add_tenant_id(conn)
+
+            conn.commit()
+
+            # Indexes (after migration ensures tenant_id column exists)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_user ON memory_entities(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_tenant ON memory_entities(tenant_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_type ON memory_entities(entity_type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_name ON memory_entities(name)")
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_rel_source ON entity_relationships(source_entity_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_rel_target ON entity_relationships(target_entity_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_rel_user ON entity_relationships(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_rel_tenant ON entity_relationships(tenant_id)")
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_memory ON memory_entity_links(memory_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_entity ON memory_entity_links(entity_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_user ON memory_entity_links(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_tenant ON memory_entity_links(tenant_id)")
 
             conn.commit()
             logger.info("Graph store schema initialized")
@@ -141,34 +157,112 @@ class GraphStore:
             conn.close()
 
     # =========================================================================
+    # Schema Migration
+    # =========================================================================
+
+    def _migrate_add_tenant_id(self, conn: sqlite3.Connection) -> None:
+        """Add tenant_id column to tables that lack it (for existing databases).
+
+        SQLite doesn't support ALTER TABLE to add/modify constraints, so we
+        recreate tables when the UNIQUE constraint needs updating.
+        """
+        for table in ("memory_entities", "entity_relationships", "memory_entity_links"):
+            try:
+                cursor = conn.execute(f"PRAGMA table_info({table})")
+                columns = [row[1] for row in cursor.fetchall()]
+            except sqlite3.OperationalError:
+                continue  # Table doesn't exist yet, CREATE TABLE IF NOT EXISTS will handle it
+
+            if "tenant_id" not in columns:
+                if table == "memory_entities":
+                    self._rebuild_entities_table(conn)
+                elif table == "entity_relationships":
+                    self._rebuild_relationships_table(conn)
+                else:
+                    conn.execute(
+                        "ALTER TABLE memory_entity_links ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+                    )
+                logger.info(f"Migration: added tenant_id to {table}")
+
+    @staticmethod
+    def _rebuild_entities_table(conn: sqlite3.Connection) -> None:
+        """Rebuild memory_entities table to add tenant_id in UNIQUE constraint."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_entities_new (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                entity_type TEXT NOT NULL
+                CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object')),
+                description TEXT,
+                properties TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, user_id, name, entity_type)
+            )
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO memory_entities_new
+            (id, tenant_id, user_id, name, entity_type, description, properties, created_at, updated_at)
+            SELECT id, 'default', user_id, name, entity_type, description, properties, created_at, updated_at
+            FROM memory_entities
+        """)
+        conn.execute("DROP TABLE memory_entities")
+        conn.execute("ALTER TABLE memory_entities_new RENAME TO memory_entities")
+
+    @staticmethod
+    def _rebuild_relationships_table(conn: sqlite3.Connection) -> None:
+        """Rebuild entity_relationships table to add tenant_id in UNIQUE constraint."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS entity_relationships_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                user_id TEXT NOT NULL,
+                source_entity_id TEXT NOT NULL,
+                target_entity_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL
+                CHECK(relationship_type IN (
+                    'mentions', 'located_at', 'experienced', 'caused',
+                    'relates_to', 'contradicts', 'supports', 'part_of', 'created'
+                )),
+                confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
+                metadata TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
+            )
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO entity_relationships_new
+            (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata, created_at)
+            SELECT 'default', user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata, created_at
+            FROM entity_relationships
+        """)
+        conn.execute("DROP TABLE entity_relationships")
+        conn.execute("ALTER TABLE entity_relationships_new RENAME TO entity_relationships")
+
+    # =========================================================================
     # Entity Operations
     # =========================================================================
 
-    def upsert_entity(self, entity: Entity, user_id: str) -> str:
-        """
-        Insert or update an entity.
-
-        Args:
-            entity: Entity to upsert
-            user_id: User ID for ownership
-
-        Returns:
-            Entity ID
-        """
-        _validate_input(user_id)
+    def upsert_entity(self, entity: Entity, user_id: str, tenant_id: str | None = None) -> str:
+        """Insert or update an entity."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
-                INSERT INTO memory_entities
-                (id, user_id, name, entity_type, description, properties, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id, name, entity_type) DO UPDATE SET
-                    description = excluded.description,
-                    properties = excluded.properties,
-                    updated_at = CURRENT_TIMESTAMP
+            INSERT INTO memory_entities
+            (id, tenant_id, user_id, name, entity_type, description, properties, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(tenant_id, user_id, name, entity_type) DO UPDATE SET
+                description = excluded.description,
+                properties = excluded.properties,
+                updated_at = CURRENT_TIMESTAMP
             """, (
                 entity.id,
+                tid,
                 user_id,
                 entity.name,
                 entity.entity_type,
@@ -182,26 +276,18 @@ class GraphStore:
         finally:
             conn.close()
 
-    def get_entity(self, entity_id: str, user_id: str) -> Entity | None:
-        """
-        Get an entity by ID.
-
-        Args:
-            entity_id: Entity ID
-            user_id: User ID
-
-        Returns:
-            Entity or None
-        """
-        _validate_input(user_id)
+    def get_entity(self, entity_id: str, user_id: str, tenant_id: str | None = None) -> Entity | None:
+        """Get an entity by ID, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
-                SELECT id, user_id, name, entity_type, description, properties
-                FROM memory_entities
-                WHERE id = ? AND user_id = ?
-            """, (entity_id, user_id))
+            SELECT id, user_id, name, entity_type, description, properties
+            FROM memory_entities
+            WHERE id = ? AND tenant_id = ? AND user_id = ?
+            """, (entity_id, tid, user_id))
 
             row = cursor.fetchone()
             if not row:
@@ -222,30 +308,22 @@ class GraphStore:
         self,
         user_id: str,
         entity_type: str,
-        limit: int = 100
+        limit: int = 100,
+        tenant_id: str | None = None,
     ) -> list[Entity]:
-        """
-        Get all entities of a type for a user.
-
-        Args:
-            user_id: User ID
-            entity_type: Entity type to filter by
-            limit: Max results
-
-        Returns:
-            List of entities
-        """
-        _validate_input(user_id)
+        """Get all entities of a type for a user, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
-                SELECT id, user_id, name, entity_type, description, properties
-                FROM memory_entities
-                WHERE user_id = ? AND entity_type = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-            """, (user_id, entity_type, limit))
+            SELECT id, user_id, name, entity_type, description, properties
+            FROM memory_entities
+            WHERE tenant_id = ? AND user_id = ? AND entity_type = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """, (tid, user_id, entity_type, limit))
 
             return [
                 Entity(
@@ -265,30 +343,22 @@ class GraphStore:
         self,
         user_id: str,
         name: str,
-        limit: int = 10
+        limit: int = 10,
+        tenant_id: str | None = None,
     ) -> list[Entity]:
-        """
-        Find entities by name (partial match).
-
-        Args:
-            user_id: User ID
-            name: Name to search for
-            limit: Max results
-
-        Returns:
-            List of matching entities
-        """
-        _validate_input(user_id)
+        """Find entities by name (partial match), scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             escaped = _escape_like(name)
             cursor = conn.execute("""
-                SELECT id, user_id, name, entity_type, description, properties
-                FROM memory_entities
-                WHERE user_id = ? AND name LIKE ? ESCAPE '!'
-                LIMIT ?
-            """, (user_id, f"%{escaped}%", limit))
+            SELECT id, user_id, name, entity_type, description, properties
+            FROM memory_entities
+            WHERE tenant_id = ? AND user_id = ? AND name LIKE ? ESCAPE '!'
+            LIMIT ?
+            """, (tid, user_id, f"%{escaped}%", limit))
 
             return [
                 Entity(
@@ -308,23 +378,19 @@ class GraphStore:
     # Relationship Operations
     # =========================================================================
 
-    def add_relationship(self, relationship: Relationship, user_id: str) -> None:
-        """
-        Add a relationship between entities.
-
-        Args:
-            relationship: Relationship to add
-            user_id: User ID for ownership
-        """
-        _validate_input(user_id)
+    def add_relationship(self, relationship: Relationship, user_id: str, tenant_id: str | None = None) -> None:
+        """Add a relationship between entities, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             conn.execute("""
-                INSERT OR IGNORE INTO entity_relationships
-                (user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO entity_relationships
+            (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
+                tid,
                 user_id,
                 relationship.source_entity_id,
                 relationship.target_entity_id,
@@ -342,41 +408,33 @@ class GraphStore:
         self,
         entity_id: str,
         user_id: str,
-        direction: str = "both"
+        direction: str = "both",
+        tenant_id: str | None = None,
     ) -> list[Relationship]:
-        """
-        Get relationships for an entity.
-
-        Args:
-            entity_id: Entity ID
-            user_id: User ID
-            direction: 'in', 'out', or 'both'
-
-        Returns:
-            List of relationships
-        """
-        _validate_input(user_id)
+        """Get relationships for an entity, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             if direction == "out":
                 cursor = conn.execute("""
-                    SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                    FROM entity_relationships
-                    WHERE source_entity_id = ? AND user_id = ?
-                """, (entity_id, user_id))
+                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+                FROM entity_relationships
+                WHERE source_entity_id = ? AND tenant_id = ? AND user_id = ?
+                """, (entity_id, tid, user_id))
             elif direction == "in":
                 cursor = conn.execute("""
-                    SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                    FROM entity_relationships
-                    WHERE target_entity_id = ? AND user_id = ?
-                """, (entity_id, user_id))
+                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+                FROM entity_relationships
+                WHERE target_entity_id = ? AND tenant_id = ? AND user_id = ?
+                """, (entity_id, tid, user_id))
             else:  # both
                 cursor = conn.execute("""
-                    SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                    FROM entity_relationships
-                    WHERE (source_entity_id = ? OR target_entity_id = ?) AND user_id = ?
-                """, (entity_id, entity_id, user_id))
+                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+                FROM entity_relationships
+                WHERE (source_entity_id = ? OR target_entity_id = ?) AND tenant_id = ? AND user_id = ?
+                """, (entity_id, entity_id, tid, user_id))
 
             return [
                 Relationship(
@@ -402,24 +460,12 @@ class GraphStore:
         user_id: str,
         max_depth: int = 2,
         max_results: int = 50,
-        relationship_types: list[str] | None = None
+        relationship_types: list[str] | None = None,
+        tenant_id: str | None = None,
     ) -> GraphTraversalResult:
-        """
-        Traverse graph from a starting entity.
-
-        Uses recursive CTE for graph traversal.
-
-        Args:
-            start_entity_id: Starting entity ID
-            user_id: User ID
-            max_depth: Maximum traversal depth
-            max_results: Maximum results
-            relationship_types: Optional filter for relationship types
-
-        Returns:
-            GraphTraversalResult with nodes and edges
-        """
-        _validate_input(user_id)
+        """Traverse graph from a starting entity, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
@@ -430,50 +476,49 @@ class GraphStore:
                 type_filter = f"AND r.relationship_type IN ({placeholders})"
                 type_params = relationship_types
 
-            # Recursive CTE for graph traversal
             cursor = conn.execute(f"""
-                WITH RECURSIVE graph_traversal AS (
-                    -- Base case: starting node
-                    SELECT
-                        id as entity_id,
-                        entity_type,
-                        name,
-                        description,
-                        properties,
-                        0 as depth
-                    FROM memory_entities
-                    WHERE id = ? AND user_id = ?
+            WITH RECURSIVE graph_traversal AS (
+                SELECT
+                    id as entity_id,
+                    entity_type,
+                    name,
+                    description,
+                    properties,
+                    0 as depth
+                FROM memory_entities
+                WHERE id = ? AND tenant_id = ? AND user_id = ?
 
-                    UNION ALL
+                UNION ALL
 
-                    -- Recursive case: traverse relationships
-                    SELECT
-                        CASE
-                            WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
-                            ELSE r.source_entity_id
-                        END as entity_id,
-                        e.entity_type,
-                        e.name,
-                        e.description,
-                        e.properties,
-                        gt.depth + 1
-                    FROM graph_traversal gt
-                    JOIN entity_relationships r ON (
-                        (gt.entity_id = r.source_entity_id OR gt.entity_id = r.target_entity_id)
-                        {type_filter}
-                    )
-                    JOIN memory_entities e ON e.id = CASE
+                SELECT
+                    CASE
                         WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
                         ELSE r.source_entity_id
-                    END
-                    WHERE gt.depth < ?
-                    AND e.user_id = ?
+                    END as entity_id,
+                    e.entity_type,
+                    e.name,
+                    e.description,
+                    e.properties,
+                    gt.depth + 1
+                FROM graph_traversal gt
+                JOIN entity_relationships r ON (
+                    (gt.entity_id = r.source_entity_id OR gt.entity_id = r.target_entity_id)
+                    AND r.tenant_id = ?
+                    {type_filter}
                 )
-                SELECT DISTINCT entity_id, entity_type, name, description, properties, depth
-                FROM graph_traversal
-                WHERE depth > 0
-                LIMIT ?
-            """, [start_entity_id, user_id, max_depth, user_id, max_results] + type_params)
+                JOIN memory_entities e ON e.id = CASE
+                    WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
+                    ELSE r.source_entity_id
+                END
+                WHERE gt.depth < ?
+                AND e.tenant_id = ?
+                AND e.user_id = ?
+            )
+            SELECT DISTINCT entity_id, entity_type, name, description, properties, depth
+            FROM graph_traversal
+            WHERE depth > 0
+            LIMIT ?
+            """, [start_entity_id, tid, user_id, tid] + type_params + [max_depth, tid, user_id, max_results])
 
             nodes = [
                 Entity(
@@ -486,17 +531,17 @@ class GraphStore:
                 for row in cursor.fetchall()
             ]
 
-            # Get relationships between traversed nodes
             node_ids = [n.id for n in nodes]
             if node_ids:
                 placeholders = ",".join("?" * len(node_ids))
                 cursor = conn.execute(f"""
-                    SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                    FROM entity_relationships
-                    WHERE source_entity_id IN ({placeholders})
-                    AND target_entity_id IN ({placeholders})
-                    AND user_id = ?
-                """, node_ids + node_ids + [user_id])
+                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+                FROM entity_relationships
+                WHERE source_entity_id IN ({placeholders})
+                AND target_entity_id IN ({placeholders})
+                AND tenant_id = ?
+                AND user_id = ?
+                """, node_ids + node_ids + [tid, user_id])
 
                 edges = [
                     Relationship(
@@ -525,28 +570,22 @@ class GraphStore:
         memory_id: str,
         entity_ids: list[str],
         user_id: str,
-        scores: dict[str, float] | None = None
+        scores: dict[str, float] | None = None,
+        tenant_id: str | None = None,
     ) -> None:
-        """
-        Link a memory to entities.
-
-        Args:
-            memory_id: Memory ID
-            entity_ids: Entity IDs to link
-            user_id: User ID
-            scores: Optional relevance scores per entity
-        """
-        _validate_input(user_id)
+        """Link a memory to entities, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             for entity_id in entity_ids:
                 score = scores.get(entity_id, 1.0) if scores else 1.0
                 conn.execute("""
-                    INSERT OR REPLACE INTO memory_entity_links
-                    (memory_id, entity_id, user_id, relevance_score, created_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (memory_id, entity_id, user_id, score))
+                INSERT OR REPLACE INTO memory_entity_links
+                (memory_id, entity_id, tenant_id, user_id, relevance_score, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (memory_id, entity_id, tid, user_id, score))
 
             conn.commit()
 
@@ -557,29 +596,21 @@ class GraphStore:
         self,
         entity_id: str,
         user_id: str,
-        limit: int = 50
+        limit: int = 50,
+        tenant_id: str | None = None,
     ) -> list[str]:
-        """
-        Get memory IDs linked to an entity.
-
-        Args:
-            entity_id: Entity ID
-            user_id: User ID
-            limit: Max results
-
-        Returns:
-            List of memory IDs
-        """
-        _validate_input(user_id)
+        """Get memory IDs linked to an entity, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
-                SELECT DISTINCT mel.memory_id
-                FROM memory_entity_links mel
-                WHERE mel.entity_id = ? AND mel.user_id = ?
-                LIMIT ?
-            """, (entity_id, user_id, limit))
+            SELECT DISTINCT mel.memory_id
+            FROM memory_entity_links mel
+            WHERE mel.entity_id = ? AND mel.tenant_id = ? AND mel.user_id = ?
+            LIMIT ?
+            """, (entity_id, tid, user_id, limit))
 
             return [row[0] for row in cursor.fetchall()]
 
@@ -591,52 +622,44 @@ class GraphStore:
         entity_id: str,
         user_id: str,
         depth: int = 2,
-        limit: int = 20
+        limit: int = 20,
+        tenant_id: str | None = None,
     ) -> list[str]:
-        """
-        Find memories related to an entity via graph traversal.
-
-        Args:
-            entity_id: Starting entity ID
-            user_id: User ID
-            depth: Traversal depth
-            limit: Max results
-
-        Returns:
-            List of memory IDs
-        """
-        _validate_input(user_id)
+        """Find memories related to an entity via graph traversal, scoped to tenant."""
+        tid = tenant_id or get_current_tenant_id()
+        _validate_input(user_id, tid)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            # Get connected entities up to specified depth
             cursor = conn.execute("""
-                WITH RECURSIVE connected AS (
-                    SELECT entity_id, 0 as depth
-                    FROM memory_entity_links
-                    WHERE entity_id = ? AND user_id = ?
+            WITH RECURSIVE connected AS (
+                SELECT entity_id, 0 as depth
+                FROM memory_entity_links
+                WHERE entity_id = ? AND tenant_id = ? AND user_id = ?
 
-                    UNION
+                UNION
 
-                    SELECT CASE
-                        WHEN c.entity_id = r.source_entity_id THEN r.target_entity_id
-                        ELSE r.source_entity_id
-                    END as entity_id,
-                    c.depth + 1
-                    FROM connected c
-                    JOIN entity_relationships r ON (
-                        c.entity_id = r.source_entity_id OR c.entity_id = r.target_entity_id
-                    )
-                    WHERE c.depth < ?
-                    AND r.user_id = ?
+                SELECT CASE
+                    WHEN c.entity_id = r.source_entity_id THEN r.target_entity_id
+                    ELSE r.source_entity_id
+                END as entity_id,
+                c.depth + 1
+                FROM connected c
+                JOIN entity_relationships r ON (
+                    c.entity_id = r.source_entity_id OR c.entity_id = r.target_entity_id
                 )
-                SELECT DISTINCT mel.memory_id
-                FROM memory_entity_links mel
-                JOIN connected c ON mel.entity_id = c.entity_id
-                WHERE c.depth > 0
-                AND mel.user_id = ?
-                LIMIT ?
-            """, (entity_id, user_id, depth, user_id, user_id, limit))
+                WHERE c.depth < ?
+                AND r.tenant_id = ?
+                AND r.user_id = ?
+            )
+            SELECT DISTINCT mel.memory_id
+            FROM memory_entity_links mel
+            JOIN connected c ON mel.entity_id = c.entity_id
+            WHERE c.depth > 0
+            AND mel.tenant_id = ?
+            AND mel.user_id = ?
+            LIMIT ?
+            """, (entity_id, tid, user_id, depth, tid, user_id, tid, user_id, limit))
 
             return [row[0] for row in cursor.fetchall()]
 
@@ -650,20 +673,15 @@ class GraphStore:
     def process_extraction_result(
         self,
         result: ExtractionResult,
-        user_id: str
+        user_id: str,
+        tenant_id: str | None = None,
     ) -> None:
-        """
-        Process an extraction result, storing all entities and relationships.
-
-        Args:
-            result: Extraction result to process
-            user_id: User ID for ownership
-        """
+        """Process an extraction result, storing all entities and relationships."""
         for entity in result.entities:
-            self.upsert_entity(entity, user_id)
+            self.upsert_entity(entity, user_id, tenant_id=tenant_id)
 
         for relationship in result.relationships:
-            self.add_relationship(relationship, user_id)
+            self.add_relationship(relationship, user_id, tenant_id=tenant_id)
 
 
 # Global instance management
