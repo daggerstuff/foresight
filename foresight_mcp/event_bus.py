@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from .connection_pool import get_pool, PooledConnection
+from .tenant_context import get_current_tenant_id
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -136,31 +137,42 @@ class EventStore:
         conn = self._connect()
         try:
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS events (
-                    id TEXT PRIMARY KEY,
-                    event_type TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    actor TEXT NOT NULL,
-                    entity_id TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    metadata TEXT DEFAULT '{}'
-                )
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                event_type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            )
             """)
+            # Migration: add tenant_id if table exists without it
+            try:
+                cols = [row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()]
+                if cols and "tenant_id" not in cols:
+                    conn.execute("ALTER TABLE events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+            except Exception:
+                pass
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id)")
             conn.commit()
         finally:
             conn.close()
 
-    def append(self, event: Event) -> None:
+    def append(self, event: Event, tenant_id: str | None = None) -> None:
         """Append event to store."""
+        tid = tenant_id or get_current_tenant_id()
         conn = self._connect()
         try:
             conn.execute(
-                "INSERT INTO events (id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.id,
+                    tid,
                     event.event_type.value,
                     event.timestamp.isoformat(),
                     event.actor,
@@ -173,13 +185,14 @@ class EventStore:
         finally:
             conn.close()
 
-    def get_by_entity(self, entity_id: str, limit: int = 100, offset: int = 0) -> list[Event]:
+    def get_by_entity(self, entity_id: str, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
         """Get events by entity ID."""
+        tid = tenant_id or get_current_tenant_id()
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM events WHERE entity_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (entity_id, limit, offset)
+                "SELECT * FROM events WHERE entity_id = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (entity_id, tid, limit, offset)
             ).fetchall()
         finally:
             conn.close()
@@ -190,13 +203,14 @@ class EventStore:
                 events.append(event)
         return events
 
-    def get_by_type(self, event_type: EventType, limit: int = 100, offset: int = 0) -> list[Event]:
+    def get_by_type(self, event_type: EventType, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
         """Get events by type."""
+        tid = tenant_id or get_current_tenant_id()
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM events WHERE event_type = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (event_type.value, limit, offset)
+                "SELECT * FROM events WHERE event_type = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (event_type.value, tid, limit, offset)
             ).fetchall()
         finally:
             conn.close()
@@ -212,14 +226,16 @@ class EventStore:
         start: datetime,
         end: datetime,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by time range."""
+        tid = tenant_id or get_current_tenant_id()
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (start.isoformat(), end.isoformat(), limit, offset)
+                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (start.isoformat(), end.isoformat(), tid, limit, offset)
             ).fetchall()
         finally:
             conn.close()
@@ -230,13 +246,14 @@ class EventStore:
                 events.append(event)
         return events
 
-    def get_all(self, limit: int = 100, offset: int = 0) -> list[Event]:
+    def get_all(self, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
         """Get all events (paginated)."""
+        tid = tenant_id or get_current_tenant_id()
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM events ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (limit, offset)
+                "SELECT * FROM events WHERE tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (tid, limit, offset)
             ).fetchall()
         finally:
             conn.close()
@@ -250,14 +267,20 @@ class EventStore:
     def _row_to_event(self, row: tuple) -> Event | None:
         """Convert database row to Event, returning None for corrupt rows."""
         try:
+            # row[1] is tenant_id (not stored in Event dataclass)
+            # Handle both old (7 cols) and new (8 cols) schema
+            if len(row) >= 8:
+                offset = 1  # tenant_id at row[1]
+            else:
+                offset = 0
             return Event(
                 id=row[0],
-                event_type=EventType(row[1]),
-                timestamp=datetime.fromisoformat(row[2]),
-                actor=row[3],
-                entity_id=row[4],
-                payload=json.loads(row[5]),
-                metadata=json.loads(row[6]),
+                event_type=EventType(row[1 + offset]),
+                timestamp=datetime.fromisoformat(row[2 + offset]),
+                actor=row[3 + offset],
+                entity_id=row[4 + offset],
+                payload=json.loads(row[5 + offset]),
+                metadata=json.loads(row[6 + offset]),
             )
         except (IndexError, ValueError, KeyError, json.JSONDecodeError) as e:
             logger.warning(f"Skipping corrupt event row: {e}")

@@ -22,6 +22,7 @@ from typing import Any, Callable, Coroutine, Union
 import httpx
 
 from .event_bus import Event, EventType, get_event_bus
+from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_hooks")
 
@@ -116,6 +117,7 @@ class HookRegistry:
         conn.execute("""
         CREATE TABLE IF NOT EXISTS hooks (
             id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
             name TEXT NOT NULL,
             event_type TEXT NOT NULL,
             hook_type TEXT NOT NULL,
@@ -130,18 +132,28 @@ class HookRegistry:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_event_type ON hooks(event_type)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_enabled ON hooks(enabled)")
+        # Migration: add tenant_id if table exists without it
+        try:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(hooks)").fetchall()]
+            if cols and "tenant_id" not in cols:
+                conn.execute("ALTER TABLE hooks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)")
         conn.commit()
         conn.close()
 
-    def register(self, hook: HookRegistration) -> None:
+    def register(self, hook: HookRegistration, tenant_id: str | None = None) -> None:
         """Register a new hook."""
+        tid = tenant_id or get_current_tenant_id()
         conn = sqlite3.connect(self.db_path)
         conn.execute("""
         INSERT OR REPLACE INTO hooks
-        (id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             hook.id,
+            tid,
             hook.name,
             hook.event_type.value,
             hook.hook_type.value,
@@ -156,45 +168,51 @@ class HookRegistry:
         conn.commit()
         conn.close()
 
-    def unregister(self, hook_id: str) -> bool:
+    def unregister(self, hook_id: str, tenant_id: str | None = None) -> bool:
         """Remove a hook registration."""
+        tid = tenant_id or get_current_tenant_id()
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.execute("DELETE FROM hooks WHERE id = ?", (hook_id,))
+        cursor = conn.execute("DELETE FROM hooks WHERE id = ? AND tenant_id = ?", (hook_id, tid))
         conn.commit()
         conn.close()
         return cursor.rowcount > 0
 
-    def get_by_event_type(self, event_type: EventType) -> list[HookRegistration]:
+    def get_by_event_type(self, event_type: EventType, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks for an event type."""
+        tid = tenant_id or get_current_tenant_id()
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute(
-            "SELECT * FROM hooks WHERE event_type = ? AND enabled = 1",
-            (event_type.value,)
+            "SELECT * FROM hooks WHERE event_type = ? AND enabled = 1 AND tenant_id = ?",
+            (event_type.value, tid)
         ).fetchall()
         conn.close()
         return [self._row_to_hook(row) for row in rows]
 
-    def get_all(self) -> list[HookRegistration]:
+    def get_all(self, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks."""
+        tid = tenant_id or get_current_tenant_id()
         conn = sqlite3.connect(self.db_path)
-        rows = conn.execute("SELECT * FROM hooks").fetchall()
+        rows = conn.execute("SELECT * FROM hooks WHERE tenant_id = ?", (tid,)).fetchall()
         conn.close()
         return [self._row_to_hook(row) for row in rows]
 
     def _row_to_hook(self, row: tuple) -> HookRegistration:
         """Convert database row to HookRegistration."""
+        # Columns: 0=id, 1=tenant_id, 2=name, 3=event_type, 4=hook_type,
+        # 5=handler, 6=condition_name, 7=retry_count, 8=timeout,
+        # 9=metadata, 10=enabled, 11=created_at
         return HookRegistration(
             id=row[0],
-            name=row[1],
-            event_type=EventType(row[2]),
-            hook_type=HookType(row[3]),
-            handler=row[4],
+            name=row[1 + o],
+            event_type=EventType(row[2 + o]),
+            hook_type=HookType(row[3 + o]),
+            handler=row[4 + o],
             condition=None,  # Conditions can't be serialized
-            retry_count=row[6],
-            timeout=row[7],
-            metadata=json.loads(row[8]),
-            enabled=bool(row[9]),
-            created_at=datetime.fromisoformat(row[10])
+            retry_count=row[6 + o],
+            timeout=row[7 + o],
+            metadata=json.loads(row[8 + o]),
+            enabled=bool(row[9 + o]),
+            created_at=datetime.fromisoformat(row[10 + o])
         )
 
 
