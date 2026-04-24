@@ -442,12 +442,12 @@ class HybridRetriever:
         like_clauses = " OR ".join(
             ["e.name LIKE ? ESCAPE '!'" for _ in terms]
         )
-        params = [user_id] + [f"%{t}%" for t in escaped_terms]
+        params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
         cursor = conn.execute(f"""
             SELECT DISTINCT e.id
             FROM memory_entities e
-            WHERE e.user_id = ?
+            WHERE e.user_id = ? AND e.tenant_id = ?
             AND ({like_clauses})
         """, params)
 

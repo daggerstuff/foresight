@@ -369,7 +369,7 @@ class SubconsciousAgent:
 _subconscious_agent: SubconsciousAgent | None = None
 
 
-def get_subconscious_agent(user_id: str = "default") -> SubconsciousAgent:
+def get_subconscious_agent(user_id: str, tenant_id: str = "default") -> SubconsciousAgent:
     """Get or create the global subconscious agent instance."""
     global _subconscious_agent
     if _subconscious_agent is None or _subconscious_agent.user_id != user_id:

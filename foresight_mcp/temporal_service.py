@@ -57,7 +57,7 @@ class TemporalService:
         """Initialize temporal service."""
         self.db_path = db_path
 
-    def _get_decay_config(self, user_id: str, category: str = "general") -> DecayConfig:
+    def _get_decay_config(self, user_id: str, category: str = "general", tenant_id: str = "default") -> DecayConfig:
         """Get decay configuration for user/category."""
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -66,8 +66,8 @@ class TemporalService:
                 SELECT user_id, category, half_life_hours, min_importance,
                        activation_boost, strengthening_threshold, stale_threshold
                 FROM decay_config
-                WHERE user_id = ? AND category = ?
-            """, (user_id, category))
+                WHERE user_id = ? AND category = ? AND tenant_id = ?
+            """, (user_id, category, tenant_id))
 
             row = cursor.fetchone()
             if row:
@@ -162,7 +162,8 @@ class TemporalService:
         memory_id: str,
         user_id: str,
         importance: float = 1.0,
-        activation_boost: float | None = None
+        activation_boost: float | None = None,
+        tenant_id: str = "default"
     ) -> tuple[float, FreshnessTrend]:
         """
         Call when a memory is retrieved/accessed.
@@ -189,8 +190,8 @@ class TemporalService:
             # Get current memory data
             cursor = conn.execute("""
                 SELECT importance, activation_count, created_at, category
-                FROM memories WHERE id = ? AND user_id = ?
-            """, (memory_id, user_id))
+                FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?
+            """, (memory_id, user_id, tenant_id))
 
             row = cursor.fetchone()
             if not row:
@@ -200,7 +201,7 @@ class TemporalService:
             current_importance, activation_count, created_at, category = row
 
             # Get config for boost
-            config = self._get_decay_config(user_id, category or "general")
+            config = self._get_decay_config(user_id, category or "general", tenant_id)
             boost = activation_boost or config.activation_boost
 
             # Boost importance
@@ -230,7 +231,7 @@ class TemporalService:
                     importance = MAX(?, ?),
                     strength_trend = ?,
                     last_retrieved_at = ?
-                WHERE id = ? AND user_id = ?
+                WHERE id = ? AND user_id = ? AND tenant_id = ?
             """, (
                 datetime.now(timezone.utc).isoformat(),
                 new_activation_count,
@@ -239,7 +240,8 @@ class TemporalService:
                 trend,
                 datetime.now(timezone.utc).isoformat(),
                 memory_id,
-                user_id
+                user_id,
+                tenant_id
             ))
 
             conn.commit()
@@ -248,7 +250,7 @@ class TemporalService:
         finally:
             conn.close()
 
-    def batch_update_decay(self, user_id: str) -> int:
+    def batch_update_decay(self, user_id: str, tenant_id: str = "default") -> int:
         """
         Batch update decay for all user memories.
 
@@ -291,13 +293,14 @@ class TemporalService:
                     SET importance = ?,
                         strength_trend = ?,
                         updated_at = ?
-                    WHERE id = ? AND user_id = ?
+                    WHERE id = ? AND user_id = ? AND tenant_id = ?
                 """, (
                     new_importance,
                     trend,
                     datetime.now(timezone.utc).isoformat(),
                     memory_id,
-                    user_id
+                    user_id,
+                    tenant_id
                 ))
                 updated_count += 1
 
@@ -311,7 +314,7 @@ class TemporalService:
         finally:
             conn.close()
 
-    def get_memory_stats(self, user_id: str) -> dict:
+    def get_memory_stats(self, user_id: str, tenant_id: str = "default") -> dict:
         """
         Get temporal statistics for user memories.
 

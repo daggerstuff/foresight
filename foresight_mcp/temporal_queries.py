@@ -61,7 +61,8 @@ class TemporalQueryBuilder:
         window: TimeWindow,
         limit: int = 50,
         min_importance: float = 0.1,
-        category: str | None = None
+        category: str | None = None,
+        tenant_id: str = "default"
     ) -> list[TemporalQueryResult]:
         """
         Get memories from a time window.
@@ -83,16 +84,16 @@ class TemporalQueryBuilder:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
 
             category_clause = "AND category = ?" if category else ""
-            params = [user_id, cutoff.isoformat(), min_importance, limit]
+            params = [user_id, tenant_id, cutoff.isoformat(), min_importance, limit]
             if category:
-                params = [user_id, category, cutoff.isoformat(), min_importance, limit]
+                params = [user_id, tenant_id, category, cutoff.isoformat(), min_importance, limit]
 
             cursor = conn.execute(f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
-                WHERE user_id = ?
+                WHERE user_id = ? AND tenant_id = ?
                 AND created_at >= ?
                 AND importance >= ?
                 {category_clause}
@@ -121,7 +122,8 @@ class TemporalQueryBuilder:
         user_id: str,
         target_date: datetime,
         category: str | None = None,
-        min_importance: float = 0.1
+        min_importance: float = 0.1,
+        tenant_id: str = "default"
     ) -> list[TemporalQueryResult]:
         """
         Get memories as they existed at a specific time.
@@ -141,16 +143,16 @@ class TemporalQueryBuilder:
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             category_clause = "AND category = ?" if category else ""
-            params = [user_id, target_date.isoformat(), min_importance]
+            params = [user_id, tenant_id, target_date.isoformat(), min_importance]
             if category:
-                params = [user_id, category, target_date.isoformat(), min_importance]
+                params = [user_id, tenant_id, category, target_date.isoformat(), min_importance]
 
             cursor = conn.execute(f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
-                WHERE user_id = ?
+                WHERE user_id = ? AND tenant_id = ?
                 AND created_at <= ?
                 AND importance > ?
                 {category_clause}
@@ -178,7 +180,8 @@ class TemporalQueryBuilder:
         user_id: str,
         trend: str,
         limit: int = 50,
-        category: str | None = None
+        category: str | None = None,
+        tenant_id: str = "default"
     ) -> list[TemporalQueryResult]:
         """
         Get memories by freshness trend.
@@ -196,16 +199,16 @@ class TemporalQueryBuilder:
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             category_clause = "AND category = ?" if category else ""
-            params = [user_id, trend, limit]
+            params = [user_id, tenant_id, trend, limit]
             if category:
-                params = [user_id, category, trend, limit]
+                params = [user_id, tenant_id, category, trend, limit]
 
             cursor = conn.execute(f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
-                WHERE user_id = ?
+                WHERE user_id = ? AND tenant_id = ?
                 AND strength_trend = ?
                 {category_clause}
                 ORDER BY created_at DESC
@@ -231,7 +234,8 @@ class TemporalQueryBuilder:
     def analyze_trends(
         self,
         user_id: str,
-        timeframe: str = "30 days"
+        timeframe: str = "30 days",
+        tenant_id: str = "default"
     ) -> dict:
         """
         Analyze memory trends over time.
@@ -255,11 +259,11 @@ class TemporalQueryBuilder:
                     SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
                     SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
                 FROM memories
-                WHERE user_id = ?
+                WHERE user_id = ? AND tenant_id = ?
                 AND created_at >= datetime('now', '-' || ?)
                 GROUP BY date
                 ORDER BY date
-            """, (user_id, timeframe))
+            """, (user_id, tenant_id, timeframe))
 
             daily_stats = [
                 {
@@ -280,11 +284,11 @@ class TemporalQueryBuilder:
                     AVG(importance) as avg_importance,
                     SUM(activation_count) as total_activations
                 FROM memories
-                WHERE user_id = ?
+                WHERE user_id = ? AND tenant_id = ?
                 AND created_at >= datetime('now', '-' || ?)
                 GROUP BY category
                 ORDER BY count DESC
-            """, (user_id, timeframe))
+            """, (user_id, tenant_id, timeframe))
 
             category_breakdown = [
                 {
@@ -328,7 +332,8 @@ class TemporalQueryBuilder:
     def get_time_weighted_scores(
         self,
         memory_ids: list[str],
-        user_id: str
+        user_id: str,
+        tenant_id: str = "default"
     ) -> dict:
         """
         Calculate time-weighted scores for memories.
@@ -349,8 +354,8 @@ class TemporalQueryBuilder:
             cursor = conn.execute(f"""
                 SELECT id, created_at, activation_count
                 FROM memories
-                WHERE id IN ({placeholders}) AND user_id = ?
-            """, memory_ids + [user_id])
+                WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?
+            """, memory_ids + [user_id, tenant_id])
 
             scores = {}
             now = datetime.now(timezone.utc)

@@ -364,7 +364,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
         version_row["content"], version_row["tags"],
         version_row["emotional_context"], version_row["metrics"],
         new_version, datetime.now(timezone.utc).isoformat(),
-        memory_id, uid
+        memory_id, uid, get_current_tenant_id()
     ))
     conn.commit()
     conn.close()
@@ -888,9 +888,9 @@ def update_memory(memory_id: str, content: str | None = None,
             current_version = row["version"] or 1
             updates.append("version = ?")
             values.append(current_version + 1)
-        values.extend([memory_id, uid])
+        values.extend([memory_id, uid, get_current_tenant_id()])
         conn.execute(
-            f"UPDATE memories SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+            f"UPDATE memories SET {', '.join(updates)} WHERE id = ? AND user_id = ? AND tenant_id = ?",
             values
         )
         conn.commit()
@@ -1112,7 +1112,7 @@ def rollback_memory(memory_id: str, to_version: int, user_id: str | None = None)
         version_row["content"], version_row["tags"],
         version_row["emotional_context"], version_row["metrics"],
         new_version, datetime.now(timezone.utc).isoformat(),
-        memory_id, uid
+        memory_id, uid, get_current_tenant_id()
     ))
     conn.commit()
     conn.close()
@@ -1201,19 +1201,19 @@ def memory_status() -> str:
     conn = get_db_connection()
     count = conn.execute(
         "SELECT COUNT(*) FROM memories WHERE user_id = ?",
-        (USER_ID,)
+        (USER_ID, get_current_tenant_id(),)
     ).fetchone()[0]
 
     # Count by scope
     scope_counts = conn.execute(
         "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? GROUP BY scope",
-        (USER_ID,)
+        (USER_ID, get_current_tenant_id(),)
     ).fetchall()
 
     # Count crisis signals
     crisis_count = conn.execute(
         "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tags LIKE '%CRISIS%'",
-        (USER_ID,)
+        (USER_ID, get_current_tenant_id(),)
     ).fetchone()[0]
 
     conn.close()
@@ -1416,7 +1416,7 @@ def _bridge_subconscious_to_memories(agent, uid: str) -> int:
             conn = get_db_connection()
             existing = conn.execute(
                 "SELECT id, activation_count FROM memories "
-                "WHERE user_id = ? AND content = ? AND is_ghost = 0 "
+                "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
                 "ORDER BY created_at DESC LIMIT 1",
                 (uid, content),
             ).fetchone()
@@ -1435,11 +1435,11 @@ def _bridge_subconscious_to_memories(agent, uid: str) -> int:
             ).hexdigest()[:16]
             conn.execute(
                 "INSERT OR IGNORE INTO memories "
-                "(id, content, scope, retention, category, user_id, bank_id, "
+                "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
                 "created_at, updated_at, tags, emotional_context, metrics, "
                 "is_ghost, synthesized_from) "
                 "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
-                (mid, content, category, uid, BANK_ID, now, now),
+                (mid, content, category, uid, BANK_ID, get_current_tenant_id(), now, now),
             )
             conn.commit()
             conn.close()
