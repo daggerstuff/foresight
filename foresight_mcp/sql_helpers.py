@@ -88,8 +88,15 @@ def build_in_clause(values: List[str], valid_set: frozenset = None) -> Tuple[str
     if not values:
         return ("", [])
 
-    placeholders = ",".join("?" * len(values))
-    return (placeholders, values)
+    # Validate each value if valid_set is provided
+    validated_values = []
+    for value in values:
+        if valid_set is not None:
+            validate_identifier(value, valid_set, "value")
+        validated_values.append(value)
+
+    placeholders = ",".join("?" * len(validated_values))
+    return (placeholders, validated_values)
 
 
 def is_valid_entity_type(entity_type: str) -> bool:

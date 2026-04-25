@@ -73,14 +73,26 @@ class CircuitBreaker:
                 if self._success_count >= self.config.half_open_max_calls:
                     pass  # Continue but track
 
-        # Execute outside lock
-        try:
-            result = func(*args, **kwargs)
-            self._on_success()
-            return result
-        except self.config.expected_exceptions as e:
-            self._on_failure()
-            raise
+            # Execute inside lock to prevent race conditions
+            try:
+                result = func(*args, **kwargs)
+                # Success - update state atomically
+                self._success_count += 1
+                if current_state == CircuitState.HALF_OPEN:
+                    if self._success_count >= self.config.half_open_max_calls:
+                        self._state = CircuitState.CLOSED
+                        self._failure_count = 0
+                        self._success_count = 0
+                return result
+            except self.config.expected_exceptions as e:
+                # Failure - update state atomically
+                self._failure_count += 1
+                self.total_failures += 1
+                self._last_failure_time = time.time()
+                if current_state == CircuitState.HALF_OPEN:
+                    self._state = CircuitState.OPEN
+                    self._success_count = 0
+                raise
 
     def _on_success(self):
         """Handle successful call."""

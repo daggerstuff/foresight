@@ -37,6 +37,7 @@ class ConnectionPool:
                 # Validate connection is still alive
                 try:
                     conn.execute("SELECT 1")
+                    # Add to _in_use INSIDE the lock to prevent race condition
                     self._in_use.add(conn)
                     return conn
                 except Exception:
@@ -47,12 +48,13 @@ class ConnectionPool:
                     continue
 
             # Create a new connection only if under the size limit
+            # Check AND add atomically within the lock
             if len(self._in_use) >= self.max_size:
                 raise RuntimeError(
                     f"Connection pool exhausted ({self.max_size} connections in use)"
                 )
             conn = self._new_connection()
-            self._in_use.add(conn)
+            self._in_use.add(conn)  # Still inside lock - atomic
             return conn
 
     def release(self, conn: sqlite3.Connection) -> None:

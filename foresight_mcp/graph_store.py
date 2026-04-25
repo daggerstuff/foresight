@@ -30,6 +30,7 @@ MAX_NODE_IDS_IN_CLAUSE = 1000  # Prevent excessively large IN clauses
 
 def _escape_like(term: str) -> str:
     """Escape SQL LIKE metacharacters to prevent wildcard injection."""
+    # Replace in order: ! first, then %, then _ to avoid double escaping
     return term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
@@ -515,6 +516,7 @@ class GraphStore:
                     (gt.entity_id = r.source_entity_id OR gt.entity_id = r.target_entity_id)
                     AND r.tenant_id = ?
                     {type_filter}
+                    AND r.confidence * r.decay_factor >= 0.1  # Minimum effective confidence threshold
                 )
                 JOIN memory_entities e ON e.id = CASE
                     WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
@@ -551,15 +553,24 @@ class GraphStore:
                     )
                     node_ids = node_ids[:MAX_NODE_IDS_IN_CLAUSE]
 
-                placeholders = ",".join("?" * len(node_ids))
-                cursor = conn.execute(f"""
-                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                FROM entity_relationships
-                WHERE source_entity_id IN ({placeholders})
-                AND target_entity_id IN ({placeholders})
-                AND tenant_id = ?
-                AND user_id = ?
-                """, node_ids + node_ids + [tid, user_id])
+                # CRITICAL FIX: Batch edge lookups to avoid O(n²) explosion
+                # Instead of large IN clause, process in batches
+                edges = []
+                batch_size = 100  # Process nodes in batches to prevent huge IN clauses
+                for i in range(0, len(node_ids), batch_size):
+                    batch = node_ids[i:i+batch_size]
+                    if not batch:
+                        continue
+                    placeholders = ",".join("?" * len(batch))
+                    cursor = conn.execute(f"""
+                    SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+                    FROM entity_relationships
+                    WHERE source_entity_id IN ({placeholders})
+                    AND target_entity_id IN ({placeholders})
+                    AND tenant_id = ?
+                    AND user_id = ?
+                    """, batch + batch + [tid, user_id])
+                    edges.extend(cursor.fetchall())
 
                 edges = [
                     Relationship(

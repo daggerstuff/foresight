@@ -153,7 +153,7 @@ class TemporalService:
 
         # Weakening: Not accessed recently (use half-life as reference)
         # If memory hasn't been activated much and is decaying normally
-        if activation_count < 2 and hours_since_creation > config.half_life_hours * 0.5:
+        if activation_count < 2 and hours_since_creation > config.half_life_hours * 1.0:
             return "weakening"
 
         return "stable"
