@@ -376,7 +376,7 @@ class TestHybridFusion:
         result = retriever.search("anxiety", "test_user", limit=5)
 
         assert "keyword" in result.signal_counts
-        assert "semantic" in result.signal_counts
+        assert "tfidf_cosine" in result.signal_counts
         assert "graph" in result.signal_counts
         assert "temporal" in result.signal_counts
 
@@ -385,10 +385,10 @@ class TestHybridFusion:
         retriever = HybridRetriever(test_db)
         result = retriever.search("anxiety therapy", "test_user", limit=5)
 
-        semantic_results = [r for r in result.results if "semantic" in r.source_signals]
+        tfidf_results = [r for r in result.results if "tfidf_cosine" in r.source_signals]
         assert len(semantic_results) > 0
-        for r in semantic_results:
-            assert r.semantic_score > 0.0
+        for r in tfidf_results:
+            assert r.tfidf_cosine_score > 0.0
 
     def test_multi_signal_memories_rank_higher(self, test_db):
         """Memories found by multiple signals should rank higher."""

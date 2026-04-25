@@ -214,7 +214,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
                 }
 
         # Determine if anomaly detected
-        is_anomaly = len(detected_terms) > 0
+        is_anomaly = len(detected_terms) >= 2  # Require 2+ terms to reduce false positives
         primary_category = None
         risk_level: RiskLevel = "none"
         urgency: Urgency = "routine"
