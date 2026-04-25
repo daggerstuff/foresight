@@ -16,6 +16,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from .connection_pool import get_pool
 from .entity_extractor import Entity, ExtractionResult, Relationship
 from .sql_helpers import build_type_filter
 from .tenant_context import get_current_tenant_id
@@ -71,7 +72,8 @@ class GraphStore:
 
     def _init_db(self) -> None:
         """Initialize database schema."""
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 
@@ -155,7 +157,7 @@ class GraphStore:
             logger.error(f"Failed to initialize graph store: {e}")
             raise
         finally:
-            conn.close()
+            pool.release(conn)
 
     # =========================================================================
     # Schema Migration
@@ -250,7 +252,8 @@ class GraphStore:
         """Insert or update an entity."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -275,13 +278,14 @@ class GraphStore:
             return entity.id
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     def get_entity(self, entity_id: str, user_id: str, tenant_id: str | None = None) -> Entity | None:
         """Get an entity by ID, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -303,7 +307,7 @@ class GraphStore:
             )
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     def get_entities_by_type(
         self,
@@ -315,7 +319,8 @@ class GraphStore:
         """Get all entities of a type for a user, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -338,7 +343,7 @@ class GraphStore:
             ]
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     def find_entities_by_name(
         self,
@@ -350,7 +355,8 @@ class GraphStore:
         """Find entities by name (partial match), scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             escaped = _escape_like(name)
@@ -373,7 +379,7 @@ class GraphStore:
             ]
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     # =========================================================================
     # Relationship Operations
@@ -383,7 +389,8 @@ class GraphStore:
         """Add a relationship between entities, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             conn.execute("""
@@ -403,7 +410,7 @@ class GraphStore:
             conn.commit()
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     def get_relationships(
         self,
@@ -415,7 +422,8 @@ class GraphStore:
         """Get relationships for an entity, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             if direction == "out":
@@ -449,7 +457,7 @@ class GraphStore:
             ]
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     # =========================================================================
     # Graph Traversal
@@ -467,7 +475,8 @@ class GraphStore:
         """Traverse graph from a starting entity, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             type_filter, type_params = build_type_filter(relationship_types)
@@ -555,7 +564,7 @@ class GraphStore:
             return GraphTraversalResult(nodes=nodes, edges=edges)
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     # =========================================================================
     # Memory Integration
@@ -572,7 +581,8 @@ class GraphStore:
         """Link a memory to entities, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             for entity_id in entity_ids:
@@ -586,7 +596,7 @@ class GraphStore:
             conn.commit()
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     def get_memories_for_entity(
         self,
@@ -598,7 +608,8 @@ class GraphStore:
         """Get memory IDs linked to an entity, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -611,7 +622,7 @@ class GraphStore:
             return [row[0] for row in cursor.fetchall()]
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     def find_related_memories(
         self,
@@ -624,7 +635,8 @@ class GraphStore:
         """Find memories related to an entity via graph traversal, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -660,7 +672,7 @@ class GraphStore:
             return [row[0] for row in cursor.fetchall()]
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     # =========================================================================
     # Batch Operations

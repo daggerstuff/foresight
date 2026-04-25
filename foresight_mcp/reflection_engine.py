@@ -10,7 +10,7 @@ Produces structured reflection reports with actionable insights,
 stored as memories themselves for continuity across sessions.
 """
 from __future__ import annotations
-import sqlite3
+
 import json
 import uuid
 import logging
@@ -88,7 +88,8 @@ class ReflectionEngine:
         self.db_path = db_path
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
@@ -163,7 +164,7 @@ class ReflectionEngine:
 
             return report
         finally:
-            conn.close()
+            pool.release(conn)
 
     def _build_trend_summary(self, rows: list) -> Dict[str, Any]:
         """Build summary of temporal trends from memory rows."""

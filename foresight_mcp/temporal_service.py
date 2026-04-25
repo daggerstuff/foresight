@@ -9,7 +9,7 @@ Implements:
 from __future__ import annotations
 
 import logging
-import sqlite3
+
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -59,7 +59,8 @@ class TemporalService:
 
     def _get_decay_config(self, user_id: str, category: str = "general", tenant_id: str = "default") -> DecayConfig:
         """Get decay configuration for user/category."""
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -76,7 +77,7 @@ class TemporalService:
             # Fall back to default
             return DecayConfig()
         finally:
-            conn.close()
+            pool.release(conn)
 
     def calculate_decay(
         self,
@@ -184,7 +185,8 @@ class TemporalService:
         Returns:
             Tuple of (new_importance, new_trend)
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Get current memory data
@@ -248,7 +250,7 @@ class TemporalService:
             return new_importance, trend
 
         finally:
-            conn.close()
+            pool.release(conn)
 
     def batch_update_decay(self, user_id: str, tenant_id: str = "default") -> int:
         """
@@ -263,7 +265,8 @@ class TemporalService:
         Returns:
             Number of memories updated
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             conn.execute("BEGIN")
@@ -312,7 +315,7 @@ class TemporalService:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            pool.release(conn)
 
     def get_memory_stats(self, user_id: str, tenant_id: str = "default") -> dict:
         """
@@ -324,7 +327,8 @@ class TemporalService:
         Returns:
             Dictionary with temporal stats
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
@@ -351,7 +355,7 @@ class TemporalService:
                 "total_activations": row[6] or 0,
             }
         finally:
-            conn.close()
+            pool.release(conn)
 
 
 # Global instance management (thread-safe)

@@ -9,7 +9,7 @@ Implements:
 from __future__ import annotations
 
 import logging
-import sqlite3
+
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -77,7 +77,8 @@ class TemporalQueryBuilder:
         Returns:
             List of TemporalQueryResult
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             window_hours = self._get_window_hours(window)
@@ -115,7 +116,7 @@ class TemporalQueryBuilder:
                 for row in cursor.fetchall()
             ]
         finally:
-            conn.close()
+            pool.release(conn)
 
     def get_memories_as_of_time(
         self,
@@ -139,7 +140,8 @@ class TemporalQueryBuilder:
         Returns:
             List of TemporalQueryResult
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             category_clause = "AND category = ?" if category else ""
@@ -173,7 +175,7 @@ class TemporalQueryBuilder:
                 for row in cursor.fetchall()
             ]
         finally:
-            conn.close()
+            pool.release(conn)
 
     def get_memories_by_trend(
         self,
@@ -195,7 +197,8 @@ class TemporalQueryBuilder:
         Returns:
             List of TemporalQueryResult
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             category_clause = "AND category = ?" if category else ""
@@ -229,7 +232,7 @@ class TemporalQueryBuilder:
                 for row in cursor.fetchall()
             ]
         finally:
-            conn.close()
+            pool.release(conn)
 
     def analyze_trends(
         self,
@@ -247,7 +250,8 @@ class TemporalQueryBuilder:
         Returns:
             Dictionary with trend analysis
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Daily stats
@@ -306,7 +310,7 @@ class TemporalQueryBuilder:
                 "overall_trend": self._calculate_overall_trend(daily_stats),
             }
         finally:
-            conn.close()
+            pool.release(conn)
 
     def _calculate_overall_trend(self, daily_stats: list[dict]) -> str:
         """Calculate overall trend from daily stats."""
@@ -347,7 +351,8 @@ class TemporalQueryBuilder:
         Returns:
             Dictionary mapping memory_id to time_score
         """
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             placeholders = ",".join("?" * len(memory_ids))
@@ -377,7 +382,7 @@ class TemporalQueryBuilder:
 
             return scores
         finally:
-            conn.close()
+            pool.release(conn)
 
 
 # Global instance management (thread-safe)
