@@ -108,6 +108,8 @@ class HybridRetriever:
 
     RRF formula: score(d) = sum(1 / (k + rank_i(d)))
     where k = 60 (standard RRF constant).
+
+    Query optimization: All sub-queries use batched IN clauses to avoid N+1 patterns.
     """
 
     RRF_K = 60  # RRF smoothing constant
