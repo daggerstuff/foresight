@@ -6,6 +6,7 @@ and automatic cleanup of stale connections.
 import sqlite3
 import threading
 import time
+from collections import deque
 
 from .config import DB_PATH
 
@@ -17,7 +18,7 @@ class ConnectionPool:
         self.db_path = db_path
         self.max_size = max_size
         self.max_idle_seconds = max_idle_seconds
-        self._pool: list[tuple[sqlite3.Connection, float]] = []  # (conn, last_used)
+        self._pool: deque[tuple[sqlite3.Connection, float]] = deque()  # (conn, last_used)
         self._in_use: set[sqlite3.Connection] = set()
         self._lock = threading.Lock()
 
@@ -26,7 +27,7 @@ class ConnectionPool:
         with self._lock:
             # Try to reuse an idle connection
             while self._pool:
-                conn, last_used = self._pool.pop()
+                conn, last_used = self._pool.popleft()
                 # Discard stale connections
                 if time.time() - last_used > self.max_idle_seconds:
                     try:
