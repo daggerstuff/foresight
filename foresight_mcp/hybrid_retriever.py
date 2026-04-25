@@ -1,9 +1,9 @@
 """
-Hybrid Retriever - Combined Vector + Graph + Temporal Search.
+Hybrid Retriever - Combined TF-IDF + Graph + Temporal Search.
 
 Fuses four retrieval signals:
-1. Keyword/BM25-style: Content matching with tf-idf-like scoring
-2. Semantic/TF-IDF: Cosine similarity between query and document vectors
+1. Keyword/BM25-style: Content matching with TF-IDF-like scoring
+2. TF-IDF Cosine: Bag-of-words cosine similarity (NOT neural embeddings)
 3. Graph: Entity-based expansion via graph traversal
 4. Temporal: Time-weighted importance scoring with decay
 
@@ -12,9 +12,14 @@ which is robust across different score distributions without tuning.
 
 Weights rationale:
 keyword=1.0 (primary relevance signal), graph=0.8 (entity expansion
-is high-value but indirect), semantic=0.7 (captures topical similarity
-beyond exact term match), temporal=0.6 (recency is useful context
-but not a relevance signal by itself).
+is high-value but indirect), tfidf_cosine=0.7 (topical similarity
+via TF-IDF vector cosine, NOT tfidf_cosine embeddings), temporal=0.6
+(recency is useful context but not a relevance signal by itself).
+
+NOTE: This implementation uses TF-IDF cosine similarity, NOT true
+tfidf_cosine search with neural embeddings. For actual tfidf_cosine search,
+implement an embedding service (see embedding_validation.py for
+dimension requirements when adding that capability).
 """
 from __future__ import annotations
 
@@ -55,7 +60,7 @@ class HybridResult:
     created_at: str
 
     keyword_score: float = 0.0
-    semantic_score: float = 0.0
+    tfidf_cosine_score: float = 0.0
     graph_score: float = 0.0
     temporal_score: float = 0.0
     combined_score: float = 0.0
@@ -71,7 +76,7 @@ class HybridResult:
             "strength_trend": self.strength_trend,
             "created_at": self.created_at,
             "keyword_score": round(self.keyword_score, 4),
-            "semantic_score": round(self.semantic_score, 4),
+            "tfidf_cosine_score": round(self.tfidf_cosine_score, 4),
             "graph_score": round(self.graph_score, 4),
             "temporal_score": round(self.temporal_score, 4),
             "combined_score": round(self.combined_score, 4),
@@ -96,7 +101,7 @@ class HybridSearchResult:
 
 class HybridRetriever:
     """
-    Combined retrieval using keyword, semantic, graph, and temporal signals.
+    Combined retrieval using keyword, tfidf_cosine, graph, and temporal signals.
 
     Uses Reciprocal Rank Fusion (RRF) to merge ranked lists from
     each signal into a single ordered result set.
@@ -108,11 +113,11 @@ class HybridRetriever:
     RRF_K = 60  # RRF smoothing constant
 
     # keyword=1.0 (primary relevance), graph=0.8 (indirect expansion),
-    # semantic=0.7 (topical similarity beyond exact match),
+    # tfidf_cosine=0.7 (topical similarity beyond exact match),
     # temporal=0.6 (recency context, not relevance by itself)
     DEFAULT_WEIGHTS = {
         "keyword": 1.0,
-        "semantic": 0.7,
+        "tfidf_cosine": 0.7,
         "graph": 0.8,
         "temporal": 0.6,
     }
@@ -140,7 +145,7 @@ class HybridRetriever:
         limit: int = 10,
         min_importance: float = 0.1,
         use_keyword: bool = True,
-        use_semantic: bool = True,
+        use_tfidf_cosine: bool = True,
         use_graph: bool = True,
         use_temporal: bool = True,
     ) -> HybridSearchResult:
@@ -154,7 +159,7 @@ class HybridRetriever:
             limit: Maximum results to return
             min_importance: Minimum importance filter
             use_keyword: Enable keyword signal
-            use_semantic: Enable semantic/TF-IDF cosine similarity signal
+            use_tfidf_cosine: Enable tfidf_cosine/TF-IDF cosine similarity signal
             use_graph: Enable graph signal
             use_temporal: Enable temporal signal
 
@@ -164,7 +169,7 @@ class HybridRetriever:
         _validate_input(query, user_id)
 
         keyword_ranking: dict[str, int] = {}
-        semantic_ranking: dict[str, int] = {}
+        tfidf_cosine_ranking: dict[str, int] = {}
         graph_ranking: dict[str, int] = {}
         temporal_ranking: dict[str, int] = {}
         all_ids: set[str] = set()
@@ -178,11 +183,11 @@ class HybridRetriever:
                 )
                 all_ids.update(keyword_ranking.keys())
 
-            if use_semantic:
-                semantic_ranking = self._semantic_search(
+            if use_tfidf_cosine:
+                tfidf_cosine_ranking = self._tfidf_cosine_search(
                     conn, query, user_id, tenant_id, limit * 3
                 )
-                all_ids.update(semantic_ranking.keys())
+                all_ids.update(tfidf_cosine_ranking.keys())
 
             if use_graph:
                 graph_ranking = self._graph_search(
@@ -202,7 +207,7 @@ class HybridRetriever:
                     total_candidates=0,
                     signal_counts={
                         "keyword": len(keyword_ranking),
-                        "semantic": len(semantic_ranking),
+                        "tfidf_cosine": len(tfidf_cosine_ranking),
                         "graph": len(graph_ranking),
                         "temporal": len(temporal_ranking),
                     },
@@ -210,7 +215,7 @@ class HybridRetriever:
 
             # Merge using RRF
             merged = self._reciprocal_rank_fusion(
-                keyword_ranking, semantic_ranking, graph_ranking, temporal_ranking
+                keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking
             )
 
             # Fetch full memory data for top candidates (same connection)
@@ -242,11 +247,11 @@ class HybridRetriever:
                     keyword_ranking[memory_id], len(keyword_ranking)
                 )
                 result.source_signals.append("keyword")
-            if memory_id in semantic_ranking:
-                result.semantic_score = self._rank_to_score(
-                    semantic_ranking[memory_id], len(semantic_ranking)
+            if memory_id in tfidf_cosine_ranking:
+                result.tfidf_cosine_score = self._rank_to_score(
+                    tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking)
                 )
-                result.source_signals.append("semantic")
+                result.source_signals.append("tfidf_cosine")
             if memory_id in graph_ranking:
                 result.graph_score = self._rank_to_score(
                     graph_ranking[memory_id], len(graph_ranking)
@@ -265,7 +270,7 @@ class HybridRetriever:
             total_candidates=len(all_ids),
             signal_counts={
                 "keyword": len(keyword_ranking),
-                "semantic": len(semantic_ranking),
+                "tfidf_cosine": len(tfidf_cosine_ranking),
                 "graph": len(graph_ranking),
                 "temporal": len(temporal_ranking),
             },
@@ -320,7 +325,7 @@ class HybridRetriever:
         scored.sort(key=lambda x: x[1], reverse=True)
         return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
 
-    def _semantic_search(
+    def _tfidf_cosine_search(
         self,
         conn: sqlite3.Connection,
         query: str,
@@ -539,7 +544,7 @@ class HybridRetriever:
     def _reciprocal_rank_fusion(
         self,
         keyword: dict[str, int],
-        semantic: dict[str, int],
+        tfidf_cosine: dict[str, int],
         graph: dict[str, int],
         temporal: dict[str, int],
     ) -> list[tuple]:
@@ -552,7 +557,7 @@ class HybridRetriever:
         """
         all_ids = set()
         all_ids.update(keyword.keys())
-        all_ids.update(semantic.keys())
+        all_ids.update(tfidf_cosine.keys())
         all_ids.update(graph.keys())
         all_ids.update(temporal.keys())
 
@@ -565,9 +570,9 @@ class HybridRetriever:
                 score += self.weights["keyword"] / (
                     self.RRF_K + keyword[mid]
                 )
-            if mid in semantic:
-                score += self.weights["semantic"] / (
-                    self.RRF_K + semantic[mid]
+            if mid in tfidf_cosine:
+                score += self.weights["tfidf_cosine"] / (
+                    self.RRF_K + tfidf_cosine[mid]
                 )
             if mid in graph:
                 score += self.weights["graph"] / (
