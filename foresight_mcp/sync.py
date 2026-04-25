@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .crdt import LWWRegister, ORSet, VectorClock
+from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_sync")
@@ -130,7 +131,8 @@ class OperationQueue:
         db_path = Path(self.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS operations (
                 id TEXT PRIMARY KEY,
@@ -156,12 +158,13 @@ class OperationQueue:
             pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ops_tenant ON operations(tenant_id)")
         conn.commit()
-        conn.close()
+        pool.release(conn)
 
     def enqueue(self, operation: Operation, tenant_id: str | None = None) -> None:
         """Add operation to queue."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("""
             INSERT OR REPLACE INTO operations
             (id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, last_attempt, vector_clock)
@@ -179,17 +182,18 @@ class OperationQueue:
             json.dumps(operation.vector_clock.to_dict()),
         ))
         conn.commit()
-        conn.close()
+        pool.release(conn)
 
     def dequeue(self, tenant_id: str | None = None) -> Operation | None:
         """Get next operation from queue."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         row = conn.execute(
             "SELECT * FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1",
             (tid,)
         ).fetchone()
-        conn.close()
+        pool.release(conn)
 
         if row:
             return Operation.from_dict({
@@ -208,17 +212,19 @@ class OperationQueue:
     def remove(self, operation_id: str, tenant_id: str | None = None) -> None:
         """Remove operation from queue."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("DELETE FROM operations WHERE id = ? AND tenant_id = ?", (operation_id, tid))
         conn.commit()
-        conn.close()
+        pool.release(conn)
 
     def peek(self, tenant_id: str | None = None) -> list[Operation]:
         """Get all pending operations."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         rows = conn.execute("SELECT * FROM operations WHERE tenant_id = ? ORDER BY created_at", (tid,)).fetchall()
-        conn.close()
+        pool.release(conn)
 
         operations = []
         for row in rows:
@@ -238,9 +244,10 @@ class OperationQueue:
     def count(self, tenant_id: str | None = None) -> int:
         """Get count of pending operations."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         count = conn.execute("SELECT COUNT(*) FROM operations WHERE tenant_id = ?", (tid,)).fetchone()[0]
-        conn.close()
+        pool.release(conn)
         return count
 
 

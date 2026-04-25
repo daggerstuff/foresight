@@ -12,7 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
-import sqlite3
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -22,6 +22,7 @@ from typing import Any, Callable, Coroutine, Union
 import httpx
 
 from .event_bus import Event, EventType, get_event_bus
+from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_hooks")
@@ -113,7 +114,8 @@ class HookRegistry:
         db_path = Path(self.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("""
         CREATE TABLE IF NOT EXISTS hooks (
             id TEXT PRIMARY KEY,
@@ -141,12 +143,13 @@ class HookRegistry:
             pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)")
         conn.commit()
-        conn.close()
+        pool.release(conn)
 
     def register(self, hook: HookRegistration, tenant_id: str | None = None) -> None:
         """Register a new hook."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("""
         INSERT OR REPLACE INTO hooks
         (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
@@ -166,34 +169,37 @@ class HookRegistry:
             hook.created_at.isoformat()
         ))
         conn.commit()
-        conn.close()
+        pool.release(conn)
 
     def unregister(self, hook_id: str, tenant_id: str | None = None) -> bool:
         """Remove a hook registration."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         cursor = conn.execute("DELETE FROM hooks WHERE id = ? AND tenant_id = ?", (hook_id, tid))
         conn.commit()
-        conn.close()
+        pool.release(conn)
         return cursor.rowcount > 0
 
     def get_by_event_type(self, event_type: EventType, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks for an event type."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         rows = conn.execute(
             "SELECT * FROM hooks WHERE event_type = ? AND enabled = 1 AND tenant_id = ?",
             (event_type.value, tid)
         ).fetchall()
-        conn.close()
+        pool.release(conn)
         return [self._row_to_hook(row) for row in rows]
 
     def get_all(self, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks."""
         tid = tenant_id or get_current_tenant_id()
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         rows = conn.execute("SELECT * FROM hooks WHERE tenant_id = ?", (tid,)).fetchall()
-        conn.close()
+        pool.release(conn)
         return [self._row_to_hook(row) for row in rows]
 
     def _row_to_hook(self, row: tuple) -> HookRegistration:

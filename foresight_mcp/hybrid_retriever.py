@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import math
-import sqlite3
+
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -127,7 +127,8 @@ class HybridRetriever:
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with WAL mode for concurrent safety."""
-        conn = sqlite3.connect(self.db_path)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
@@ -216,7 +217,7 @@ class HybridRetriever:
             top_ids = [mid for mid, _ in merged[:limit]]
             memories = self._fetch_memories(conn, top_ids, user_id, tenant_id)
         finally:
-            conn.close()
+            pool.release(conn)
 
         # Build results with scores
         results = []
