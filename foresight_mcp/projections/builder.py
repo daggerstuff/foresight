@@ -170,6 +170,12 @@ class ProjectionBuilder:
         data = report.build(events)
         json_content = report.to_json(data, indent)
 
+        # Validate output_path to prevent directory traversal
+        output_path_obj = Path(output_path).expanduser().resolve()
+        foresight_dir = Path.home() / ".foresight"
+        if not str(output_path_obj).startswith(str(foresight_dir)):
+            raise ValueError(f"output_path must be under {foresight_dir}")
+
         with open(output_path, "w") as f:
             f.write(json_content)
 

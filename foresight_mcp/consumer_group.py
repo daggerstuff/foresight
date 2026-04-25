@@ -67,6 +67,12 @@ class ConsumerState:
         if state_file is None:
             state_file = str(Path.home() / ".foresight" / "consumer_state.json")
 
+        # Validate state_file path to prevent directory traversal
+        state_path = Path(state_file).expanduser().resolve()
+        foresight_dir = Path.home() / ".foresight"
+        if not str(state_path).startswith(str(foresight_dir)):
+            raise ValueError(f"state_file must be under {foresight_dir}")
+
         self.state_file = state_file
         self._offsets: dict[str, dict[int, int]] = {}  # topic -> {partition -> offset}
         self._load_state()
