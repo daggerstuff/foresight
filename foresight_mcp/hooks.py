@@ -325,7 +325,7 @@ class HookExecutor:
             logger.error(f"Async hook {hook.name} failed: {e}")
 
     async def _execute_http(self, hook: HookRegistration, event: Event) -> None:
-        """Execute an HTTP webhook hook with retry."""
+        """Execute an HTTP webhook hook with retry and circuit breaker."""
         # hook.handler is a str (URL) for HTTP hooks
         url: str = hook.handler  # type: ignore
         payload = {
@@ -339,17 +339,28 @@ class HookExecutor:
         }
 
         last_error = None
+
+        # Check circuit breaker first
+        if self._http_circuit_breaker.state == CircuitState.OPEN:
+            logger.warning(f"Circuit breaker open, skipping HTTP hook {hook.name}")
+            return
         for attempt in range(hook.retry_count):
             try:
                 async with httpx.AsyncClient(timeout=hook.timeout) as client:
                     response = await client.post(url, json=payload)
                     response.raise_for_status()
+                    # Success - record in circuit breaker
+                    self._http_circuit_breaker._on_success()
                     return
-            except Exception as e:
+            except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
                 last_error = e
+                # Record failure in circuit breaker
+                self._http_circuit_breaker._on_failure()
                 if attempt < hook.retry_count - 1:
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
 
+        if self._http_circuit_breaker.state == CircuitState.OPEN:
+            logger.warning(f"Circuit breaker opened after failures on hook {hook.name}")
         logger.error(f"HTTP hook {hook.name} failed after {hook.retry_count} attempts: {last_error}")
 
     def register_callable(self, event_type: EventType, handler: Callable[[Event], None]) -> None:
