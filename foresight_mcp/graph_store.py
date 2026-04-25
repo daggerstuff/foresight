@@ -25,6 +25,7 @@ logger = logging.getLogger("foresight_graph_store")
 
 MAX_USER_ID_LENGTH = 128
 MAX_TENANT_ID_LENGTH = 64
+MAX_NODE_IDS_IN_CLAUSE = 1000  # Prevent excessively large IN clauses
 
 
 def _escape_like(term: str) -> str:
@@ -542,6 +543,14 @@ class GraphStore:
 
             node_ids = [n.id for n in nodes]
             if node_ids:
+                # Limit IN clause size to prevent SQL parser issues
+                if len(node_ids) > MAX_NODE_IDS_IN_CLAUSE:
+                    logger.warning(
+                        f"Truncating node_ids from {len(node_ids)} to {MAX_NODE_IDS_IN_CLAUSE} "
+                        "to prevent excessively large IN clause"
+                    )
+                    node_ids = node_ids[:MAX_NODE_IDS_IN_CLAUSE]
+
                 placeholders = ",".join("?" * len(node_ids))
                 cursor = conn.execute(f"""
                 SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata

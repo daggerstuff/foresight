@@ -12,6 +12,7 @@ Current default weights (subject to tuning):
 """
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -215,7 +216,7 @@ class ABTestConfig:
     def validate(self) -> bool:
         """Validate traffic split sums to 100."""
         total = sum(self.traffic_split.values())
-        return abs(total - 100.0) < 0.01
+        return math.isclose(total, 100.0, abs_tol=0.01)
 
 
 def select_variant(
