@@ -91,7 +91,7 @@ def run_temporal_migrations(db_path: str) -> None:
 
     except sqlite3.Error as e:
         conn.rollback()
-        raise RuntimeError(f"Migration failed: {e}")
+        raise RuntimeError("Migration failed: database error") from e
     finally:
         conn.close()
 
