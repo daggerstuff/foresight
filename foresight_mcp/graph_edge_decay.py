@@ -99,33 +99,22 @@ class GraphEdgeDecay:
         conn = pool.acquire()
 
         try:
-            while True:
-                # Update decay factors in batch
-                cursor = conn.execute(
-                    """
-                    UPDATE entity_relationships
-                    SET decay_factor = ?
-                    WHERE tenant_id = ?
-                    AND id IN (
-                        SELECT id FROM entity_relationships
-                        WHERE tenant_id = ?
-                        LIMIT ?
+            # Update decay factors using SQL calculation per row
+            # decay_factor = 0.5 ^ (hours_elapsed / half_life)
+            cursor = conn.execute(
+                """
+                UPDATE entity_relationships
+                SET decay_factor = MAX(0.0, MIN(1.0,
+                    POWER(0.5,
+                        (JULIANDAY('now') - JULIANDAY(last_accessed)) * 24.0 / ?
                     )
-                    """,
-                    (self.calculate_decay_factor(
-                        datetime.now(timezone.utc).isoformat()
-                    ), tenant_id, tenant_id, batch_size),
-                )
-
-                updated = cursor.rowcount
-                if updated == 0:
-                    break
-
-                stats.edges_processed += updated
-                stats.edges_updated += updated
-
-                if updated < batch_size:
-                    break
+                ))
+                WHERE tenant_id = ?
+                """,
+                (self.half_life_hours, tenant_id),
+            )
+            stats.edges_updated = cursor.rowcount
+            stats.edges_processed = stats.edges_updated
 
             conn.commit()
 

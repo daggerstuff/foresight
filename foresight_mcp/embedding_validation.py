@@ -10,6 +10,7 @@ Supported embedding models and their dimensions:
 - bge-large-en-v1.5: 1024
 - all-MiniLM-L6-v2: 384
 """
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -78,6 +79,13 @@ def validate_embedding_dimension(
         EmbeddingDimensionError: If validation fails
     """
     actual_dimension = len(vector)
+
+    # Check for NaN or infinity values
+    if any(math.isnan(v) or math.isinf(v) for v in vector):
+        raise EmbeddingDimensionError(
+            f"Vector contains NaN or Infinity values at position "
+            f"{next(i for i, v in enumerate(vector) if math.isnan(v) or math.isinf(v))}"
+        )
 
     # Determine expected dimension
     if model is not None:
