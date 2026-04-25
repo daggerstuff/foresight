@@ -350,7 +350,7 @@ class ReflectionEngine:
             stale = sum(1 for r in cat_rows if (r[4] or 'stable') == 'stale')
             total = len(cat_rows)
 
-            health_score = (strengthening * 1 + stale * 0 - weakening * 1) / max(total, 1)
+            health_score = (strengthening * 1 + stale * (-0.5) - weakening * 1) / max(total, 1)
 
             category_health[cat] = {
                 'score': health_score,

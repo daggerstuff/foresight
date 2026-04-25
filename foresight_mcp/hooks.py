@@ -291,9 +291,17 @@ class HookExecutor:
             if hook.hook_type == HookType.CALLABLE:
                 self._execute_callable(hook, event)
             elif hook.hook_type == HookType.ASYNC:
-                asyncio.create_task(self._execute_async(hook, event))
+                # Create task but ensure it's tracked for exceptions
+                task = asyncio.create_task(self._execute_async(hook, event))
+                task.add_done_callback(
+                    lambda t: t.exception() and logger.error(f"Async hook {hook.name} failed: {t.exception()}")
+                )
             elif hook.hook_type == HookType.HTTP:
-                asyncio.create_task(self._execute_http(hook, event))
+                # Create task but ensure it's tracked for exceptions
+                task = asyncio.create_task(self._execute_http(hook, event))
+                task.add_done_callback(
+                    lambda t: t.exception() and logger.error(f"HTTP hook {hook.name} failed: {t.exception()}")
+                )
 
         # Also execute in-memory handlers
         if event_type in self._callable_handlers:
