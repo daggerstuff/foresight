@@ -316,8 +316,7 @@ class AuthManager:
             (user_id, username, email, role_str, is_active, created_at_str,
              last_login_str, password_hash, api_key, tenant_access_json, expires_at_str) = row
 
-            if not self._verify_password("", password_hash):  # Just check if hash is valid format
-                return None
+            # Session hash validation handled elsewhere; no placeholder check needed
 
             import json
             from datetime import datetime
@@ -393,7 +392,7 @@ def initialize_default_users() -> None:
 
             # In a real system, you'd output this securely via separate channel
             # For now, we'll just note it was created without exposing password
-            print("[AUTH] Default admin user created: username='admin' (password generated securely)")
+            logger.info("Default admin user created (password generated securely)")
 
             # Create a default readonly user for testing
             readonly_password = secrets.token_urlsafe(32)
@@ -405,6 +404,49 @@ def initialize_default_users() -> None:
                 tenant_access=["default"]  # Only access to default tenant
             )
 
-            print(f"[AUTH] Default readonly user created: username='readonly', password='{readonly_password}' (SAVE THIS SECURELY)")
+            logger.info("Default readonly user created (password generated securely)")
     finally:
         pool_conn.release(conn)
+
+# FastMCP authentication middleware
+from fastmcp.server.middleware import Middleware as _Middleware
+
+
+_REQUIRE_API_KEY = os.environ.get("FORESIGHT_REQUIRE_API_KEY", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+class AuthMiddleware(_Middleware):
+    """FastMCP middleware that authenticates API calls via API key."""
+    async def on_call_tool(self, context, call_next):
+        # Keep local MCP clients compatible by default.
+        # Opt in to strict API-key enforcement only when explicitly enabled.
+        if not _REQUIRE_API_KEY:
+            return await call_next(context)
+
+        # Extract API key from request metadata
+        api_key = None
+        message = getattr(context, "message", None)
+        if message:
+            meta = getattr(message, "meta", None)
+            if meta and hasattr(meta, "model_extra") and meta.model_extra:
+                api_key = meta.model_extra.get("api_key")
+        if not api_key:
+            from mcp.types import CallToolResult, TextContent
+            return CallToolResult(
+                content=[TextContent(type="text", text="Authentication required: missing api_key")],
+                isError=True,
+            )
+        user = get_auth_manager().authenticate_api_key(api_key)
+        if not user:
+            from mcp.types import CallToolResult, TextContent
+            return CallToolResult(
+                content=[TextContent(type="text", text="Invalid API key")],
+                isError=True,
+            )
+        # Proceed to next middleware
+        return await call_next(context)

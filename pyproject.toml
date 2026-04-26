@@ -5,7 +5,7 @@ description = "Persistent memory for AI agents via MCP protocol"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "Hindsight Team", email = "team@vectorize.io" }]
+authors = [{ name = "Foresight Team", email = "team@vectorize.io" }]
 keywords = ["mcp", "claude", "memory", "ai", "foresight"]
 dependencies = ["fastmcp>=0.1.0"]
 

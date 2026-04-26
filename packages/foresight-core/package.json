@@ -17,7 +17,7 @@
     "ai",
     "mcp"
   ],
-  "author": "Hindsight Team",
+  "author": "Foresight Team",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",

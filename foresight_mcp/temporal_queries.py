@@ -85,9 +85,11 @@ class TemporalQueryBuilder:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
 
             category_clause = "AND category = ?" if category else ""
-            params = [user_id, tenant_id, cutoff.isoformat(), min_importance, limit]
+            # Build params in the correct order matching placeholders.
+            params = [user_id, tenant_id, cutoff.isoformat(), min_importance]
             if category:
-                params = [user_id, tenant_id, category, cutoff.isoformat(), min_importance, limit]
+                params.append(category)
+            params.append(limit)
 
             cursor = conn.execute(f"""
                 SELECT

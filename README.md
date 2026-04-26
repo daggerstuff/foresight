@@ -2,7 +2,7 @@
 
 **Persistent memory for AI agents with psychological safety features and subconscious memory blocks.**
 
-Restored from `src/lib/ai/memory/` and `ai/memory/hindsight_subconscious.py` - the heart and soul of Foresight.
+Restored from `src/lib/ai/memory/` and `ai/memory/foresight_subconscious.py` - the heart and soul of Foresight.
 
 Compatible with Claude Code, Goose, Cursor, and any MCP-compatible AI agent.
 

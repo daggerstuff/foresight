@@ -487,7 +487,7 @@ class GraphStore:
         try:
             type_filter, type_params = build_type_filter(relationship_types)
 
-            cursor = conn.execute("""
+            query = f"""
             WITH RECURSIVE graph_traversal AS (
                 SELECT
                     id as entity_id,
@@ -516,7 +516,7 @@ class GraphStore:
                     (gt.entity_id = r.source_entity_id OR gt.entity_id = r.target_entity_id)
                     AND r.tenant_id = ?
                     {type_filter}
-                    AND r.confidence * r.decay_factor >= 0.1  # Minimum effective confidence threshold
+                    AND r.confidence * r.decay_factor >= 0.1
                 )
                 JOIN memory_entities e ON e.id = CASE
                     WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
@@ -530,7 +530,8 @@ class GraphStore:
             FROM graph_traversal
             WHERE depth > 0
             LIMIT ?
-            """, [start_entity_id, tid, user_id, tid] + type_params + [max_depth, tid, user_id, max_results])
+            """
+            cursor = conn.execute(query, [start_entity_id, tid, user_id, tid] + type_params + [max_depth, tid, user_id, max_results])
 
             nodes = [
                 Entity(
