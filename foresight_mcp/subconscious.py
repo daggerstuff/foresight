@@ -1,10 +1,10 @@
 """
 Foresight Subconscious - Persistent memory blocks for Claude Code sessions.
-Restored from ai/memory/hindsight_subconscious.py
+Restored from ai/memory/foresight_subconscious.py
 
 This module provides:
 - Memory block architecture (guidance, pending_items, project_context, user_preferences, session_patterns)
-- Session transcript capture and delivery to Hindsight
+- Session transcript capture and delivery to Foresight
 - Whisper injection mechanism for pre-prompt context
 - Background processing of transcripts
 """
