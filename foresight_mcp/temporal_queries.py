@@ -18,6 +18,14 @@ from typing import Literal
 
 logger = logging.getLogger("foresight_temporal_queries")
 
+
+def _is_missing_tenant_column_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "no such column: tenant_id" in message
+        or "no column named tenant_id" in message
+    )
+
 TimeWindow = Literal["today", "week", "month", "year"]
 
 
@@ -96,7 +104,7 @@ class TemporalQueryBuilder:
             try:
                 cursor = conn.execute(sql, base_params)
             except Exception as e:
-                if "no column named tenant_id" in str(e):
+                if _is_missing_tenant_column_error(e):
                     # Retry without tenant filter
                     params = [user_id, cutoff.isoformat(), min_importance]
                     if category:
@@ -224,7 +232,7 @@ class TemporalQueryBuilder:
             try:
                 cursor = conn.execute(sql, base_params)
             except Exception as e:
-                if "no column named tenant_id" in str(e):
+                if _is_missing_tenant_column_error(e):
                     # Retry without tenant filter
                     params = [user_id, target_date.isoformat(), min_importance]
                     if category:
@@ -345,7 +353,7 @@ class TemporalQueryBuilder:
             try:
                 cursor = conn.execute(sql, base_params)
             except Exception as e:
-                if "no column named tenant_id" in str(e):
+                if _is_missing_tenant_column_error(e):
                     params = [user_id, trend, limit]
                     if category:
                         params = [user_id, category, trend, limit]
@@ -450,19 +458,37 @@ class TemporalQueryBuilder:
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Daily stats
-            cursor = conn.execute(f"""
-                SELECT
-                    strftime('%Y-%m-%d', created_at) as date,
-                    COUNT(*) as count,
-                    AVG(importance) as avg_importance,
-                    SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
-                    SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND created_at >= datetime('now', '-' || ?)
-                GROUP BY date
-                ORDER BY date
-            """, (user_id, tenant_id, timeframe))
+            try:
+                cursor = conn.execute(f"""
+                    SELECT
+                        strftime('%Y-%m-%d', created_at) as date,
+                        COUNT(*) as count,
+                        AVG(importance) as avg_importance,
+                        SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                        SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+                    FROM memories
+                    WHERE user_id = ? AND tenant_id = ?
+                    AND created_at >= datetime('now', '-' || ?)
+                    GROUP BY date
+                    ORDER BY date
+                """, (user_id, tenant_id, timeframe))
+            except Exception as e:
+                if _is_missing_tenant_column_error(e):
+                    cursor = conn.execute(f"""
+                        SELECT
+                            strftime('%Y-%m-%d', created_at) as date,
+                            COUNT(*) as count,
+                            AVG(importance) as avg_importance,
+                            SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                            SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+                        FROM memories
+                        WHERE user_id = ?
+                        AND created_at >= datetime('now', '-' || ?)
+                        GROUP BY date
+                        ORDER BY date
+                    """, (user_id, timeframe))
+                else:
+                    raise
 
             daily_stats = [
                 {
@@ -476,18 +502,35 @@ class TemporalQueryBuilder:
             ]
 
             # Category breakdown
-            cursor = conn.execute(f"""
-                SELECT
-                    COALESCE(category, 'general') as category,
-                    COUNT(*) as count,
-                    AVG(importance) as avg_importance,
-                    SUM(activation_count) as total_activations
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND created_at >= datetime('now', '-' || ?)
-                GROUP BY category
-                ORDER BY count DESC
-            """, (user_id, tenant_id, timeframe))
+            try:
+                cursor = conn.execute(f"""
+                    SELECT
+                        COALESCE(category, 'general') as category,
+                        COUNT(*) as count,
+                        AVG(importance) as avg_importance,
+                        SUM(activation_count) as total_activations
+                    FROM memories
+                    WHERE user_id = ? AND tenant_id = ?
+                    AND created_at >= datetime('now', '-' || ?)
+                    GROUP BY category
+                    ORDER BY count DESC
+                """, (user_id, tenant_id, timeframe))
+            except Exception as e:
+                if _is_missing_tenant_column_error(e):
+                    cursor = conn.execute(f"""
+                        SELECT
+                            COALESCE(category, 'general') as category,
+                            COUNT(*) as count,
+                            AVG(importance) as avg_importance,
+                            SUM(activation_count) as total_activations
+                        FROM memories
+                        WHERE user_id = ?
+                        AND created_at >= datetime('now', '-' || ?)
+                        GROUP BY category
+                        ORDER BY count DESC
+                    """, (user_id, timeframe))
+                else:
+                    raise
 
             category_breakdown = [
                 {
