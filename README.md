@@ -11,6 +11,7 @@ Compatible with Claude Code, Goose, Cursor, and any MCP-compatible AI agent.
 Foresight implements a sophisticated memory system with:
 
 ### Core Memory System
+
 - **Socratic Gate** - Psychological safety gating for memory ingestion
 - **Crisis Detection** - Automatic detection of crisis signals with risk assessment
 - **Memory Synthesizer** - Reconciliation and stance shift detection
@@ -18,6 +19,7 @@ Foresight implements a sophisticated memory system with:
 - **Rich Memory Types** - Emotional metadata, empathy metrics, retention policies
 
 ### Subconscious Memory Blocks
+
 - **Guidance** - Active guidance for next session
 - **Pending Items** - Unfinished work and TODOs
 - **Project Context** - Codebase details and architectural decisions
@@ -30,6 +32,38 @@ Foresight implements a sophisticated memory system with:
 
 ```bash
 uv run foresight-mcp
+```
+
+## Beginner Friendly Setup
+
+1. Install **uv** (fast Python package manager) if you don't have it:
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+2. Clone the repository and change into it:
+   ```bash
+   git clone https://github.com/yourorg/foresight-mcp.git
+   cd foresight-mcp
+   ```
+
+3. Run the provided setup script which will:
+   - Install Python dependencies
+   - Create the memory database directory with secure permissions
+   - Run an initial health check
+   ```bash
+   ./scripts/setup.sh
+   ```
+
+4. Start the server:
+   ```bash
+   uv run foresight-mcp
+   ```
+
+```bash
+# Run CLI (legacy + current names)
+uv run foresight-cli --help
+uv run foresight --help
 ```
 
 ## Add to Your MCP Client
@@ -119,6 +153,7 @@ Use the same configuration pattern as Claude Code, adjusting for your client's s
 ### Crisis Detection
 
 Automatically detects crisis signals including:
+
 - Self-harm ideation
 - Depression indicators
 - Anxiety/panic episodes

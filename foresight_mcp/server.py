@@ -242,8 +242,8 @@ def init_db():
 
     conn.close()
 
-# Initialize database on module load
-init_db()
+# Initialize database on module load – deferred to runtime in main()
+# init_db()  # Deferred initialization
 
 # Initialize memory system components
 _memory_system_initialized = False
@@ -1987,6 +1987,8 @@ def _subconscious_context_for_terms(
 
 
 def main():
+    # Ensure database schema is initialized before serving
+    init_db()
     # Initialize stream producer for Kafka/Kinesis event publishing
     initialize_stream_producer()
     mcp.run()
