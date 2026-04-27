@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import logging
 
+from fastmcp.server.middleware import Middleware as _Middleware
+
 from .config import DEFAULT_TENANT_ID
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
 
 logger = logging.getLogger(__name__)
 
 
-class TenantMiddleware:
+class TenantMiddleware(_Middleware):
     """Resolves tenant_id from request context and sets the contextvar.
 
     Resolution order:

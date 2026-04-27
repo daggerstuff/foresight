@@ -6,54 +6,174 @@ Restored from src/lib/ai/memory/ architecture.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import concurrent.futures
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware as _Middleware
+from mcp.types import CallToolResult, TextContent
+from pydantic import BaseModel, Field
 
-# Configuration - canonical source is now .config; re-exported here for
-# backward compatibility so that existing `from .server import DB_PATH`
-# still works during the transition.
-from .config import (  # noqa: F401 - re-exports
+from .auth import AuthMiddleware
+from .config import (
     BANK_ID,
     DB_PATH,
-    DEFAULT_BANK_ID,
     DEFAULT_BURST_LIMIT,
-    DEFAULT_DB_PATH,
     DEFAULT_RATE_LIMIT,
-    DEFAULT_TENANT_ID,
-    DEFAULT_USER_ID,
     USER_ID,
 )
-from .tenant_context import get_current_tenant_id, set_current_tenant_id
 from .connection_pool import get_pool
 from .crisis_detection import get_crisis_service
-from .event_bus import get_event_bus, memory_deleted, memory_retrieved, memory_stored, memory_updated
-from .memory_components import MemoryCrisisTagger, MemoryLinker, MemorySynthesizer, SocraticGate
-
-# Import restored memory system components
-from .memory_types import EmotionalMetadata, EmpathyMetrics, MemoryObject
-from .projections.builder import ProjectionBuilder
+from .enhanced_synthesizer import get_enhanced_synthesizer
+from .entity_extractor import get_entity_extractor
+from .event_bus import (
+    get_event_bus,
+    memory_deleted,
+    memory_retrieved,
+    memory_stored,
+    memory_updated,
+)
+from .graph_store import get_graph_store
+from .hybrid_retriever import get_hybrid_retriever
+from .memory_components import (
+    MemoryCrisisTagger,
+    MemoryLinker,
+    MemorySynthesizer,
+    SocraticGate,
+)
+from .memory_types import (
+    EmotionalMetadata,
+    EmpathyMetrics,
+    MemoryObject,
+    MemoryScope,
+    RetentionPolicy,
+)
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
-from .subconscious import PENDING_ITEMS, SESSION_PATTERNS, USER_PREFERENCES, get_subconscious_agent
-from .websocket.subscriptions import SubscriptionManager
+from .reflection_engine import get_reflection_engine
 from .stream_producer import (
-    create_stream_producer,
-    StreamType,
-    StreamPublisher,
     KafkaProducer,
     KinesisProducer,
+    StreamPublisher,
+    create_stream_producer,
 )
-from .consumer_group import KafkaConsumerGroup
+from .subconscious import (
+    PENDING_ITEMS,
+    SESSION_PATTERNS,
+    USER_PREFERENCES,
+    get_subconscious_agent,
+)
+from .temporal_queries import get_temporal_query_builder
+from .temporal_service import get_temporal_service
+from .tenant_context import get_current_tenant_id, set_current_tenant_id
+from .tenant_middleware import TenantMiddleware
+from .websocket.subscriptions import SubscriptionManager
+
+
+# Tool argument grouping models
+class MemoryOptions(BaseModel):
+    category: str = Field(default="fact", description="Category label")
+    scope: str = Field(default="session", description="Memory scope: session, arc, trait, or fact")
+    retention: str = Field(default="short_term", description="Retention policy: ephemeral, short_term, long_term, or permanent")
+    importance: float = Field(default=0.5, description="Initial importance score (0.0 to 1.0)")
+    emotional_context: dict[str, Any] | None = Field(default=None, description="Emotional metadata (valence, arousal, dominance, primary_emotion, intensity)")
+    metrics: dict[str, Any] | None = Field(default=None, description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)")
+
+
+class MemoryUpdateOptions(BaseModel):
+    content: str | None = Field(default=None, description="New memory content")
+    category: str | None = Field(default=None, description="New category label")
+    scope: str | None = Field(default=None, description="New memory scope")
+    retention: str | None = Field(default=None, description="New retention policy")
+    tags: list[str] | None = Field(default=None, description="New list of tags")
+
+
+class SearchOptions(BaseModel):
+    query_type: Literal["id", "keyword", "list"] = Field(default="keyword", description="Type of search/retrieval")
+    query: str | None = Field(default=None, description="Search query string")
+    memory_id: str | None = Field(default=None, description="Retrieve specific memory by ID")
+    limit: int = Field(default=10, description="Maximum results")
+    offset: int = Field(default=0, description="Result offset")
+    min_importance: float = Field(default=0.1, description="Minimum importance threshold")
+    use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
+
+
+class SubconsciousAction(BaseModel):
+    action: Literal["list", "get", "update", "reset", "clear"] = Field(description="Action to perform")
+    label: str | None = Field(default=None, description="Block label (e.g. guidance, preferences)")
+    content: str | None = Field(default=None, description="New content for update action")
+
+
+class EntityQueryType(BaseModel):
+    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(description="Type of entity query")
+    entity_type: str | None = Field(default=None, description="Entity type for 'by_type' (person/place/concept/event/emotion/object)")
+    name: str | None = Field(default=None, description="Name for 'by_name' partial match")
+    entity_id: str | None = Field(default=None, description="Entity ID for 'relationships' or 'traverse'")
+    direction: Literal["in", "out", "both"] = Field(default="both", description="Direction for relationships")
+    max_depth: int = Field(default=2, description="Max depth for traversal")
+
+
+class TemporalWindow(BaseModel):
+    window: Literal["today", "week", "month", "year"] = Field(default="week", description="Time window for retrieval")
+    trend: str | None = Field(default=None, description="Filter by trend (stable/strengthening/weakening/stale)")
+    category: str | None = Field(default=None, description="Category filter")
+    limit: int = Field(default=50, description="Max results")
+
+
+class SystemStatusOptions(BaseModel):
+    include_trends: bool = Field(default=False, description="Whether to include temporal trend analysis")
+    timeframe: str = Field(default="30 days", description="Timeframe for trend analysis")
+
+
+class EntityAction(BaseModel):
+    action: Literal["extract", "link"] = Field(..., description="Action to perform")
+    content: str | None = Field(default=None, description="Text content for extraction")
+    memory_id: str | None = Field(default=None, description="Memory ID for linking")
+    entity_ids: list[str] | None = Field(default=None, description="Entity IDs for linking")
+
+
+class EntityQuery(BaseModel):
+    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(..., description="Type of query")
+    entity_type: str | None = Field(default=None, description="Entity type filter")
+    name: str | None = Field(default=None, description="Name for partial match")
+    entity_id: str | None = Field(default=None, description="Entity ID for relationships or starting traversal")
+    direction: Literal["in", "out", "both"] = Field(default="both", description="Relationship direction")
+    max_depth: int = Field(default=2, description="Traversal depth")
+    limit: int = Field(default=50, description="Result limit")
+
+
+class MemoryAction(BaseModel):
+    action: Literal["store", "update", "delete", "archive"] = Field(..., description="Action to perform")
+    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
+    content: str | None = Field(default=None, description="Content for store/update")
+    options: MemoryOptions | None = Field(default=None, description="Options for store")
+    updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
+
+
+class VersionAction(BaseModel):
+    action: Literal["diff", "rollback"] = Field(..., description="Versioning action")
+    memory_id: str = Field(..., description="Memory ID")
+    version1: int | None = Field(default=None, description="First version for diff")
+    version2: int | None = Field(default=None, description="Second version for diff")
+    to_version: int | None = Field(default=None, description="Version to rollback to")
+
+
+class AnalysisAction(BaseModel):
+    action: Literal["synthesize", "reflect"] = Field(..., description="Analysis action")
+    period: str = Field(default="weekly", description="Period for reflection")
+    limit: int = Field(default=50, description="Limit for synthesis")
+    enhanced: bool = Field(default=False, description="Whether to use enhanced synthesis")
 
 
 def _run_async(coro):
@@ -242,11 +362,17 @@ def init_db():
 
     conn.close()
 
-# Initialize database on module load – deferred to runtime in main()
+# Initialize database on module load - deferred to runtime in main()
 # init_db()  # Deferred initialization
 
 # Initialize memory system components
-_memory_system_initialized = False
+_SERVER_STATE: dict[str, Any] = {
+    "memory_system_initialized": False,
+    "safe_path_prefixes": None,
+    "stream_publisher": None,
+    "subscription_manager": None,
+    "tenant_context": None,
+}
 
 
 # =============================================================================
@@ -291,13 +417,19 @@ def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     return "\n".join(result)
 
 
-def create_version_snapshot(memory_id: str, user_id: str, content: str,
-                             tags: str, emotional_context: dict, metrics: dict,
-                             version: int, rollback_of: str | None = None) -> str:
-    """Create a version snapshot before updating memory."""
-    version_id = hashlib.sha256(
-        f"{memory_id}{version}{datetime.now(timezone.utc).isoformat()}".encode()
-    ).hexdigest()[:16]
+def create_version_snapshot(memory_id: str, data: dict) -> str:
+    """Create a new version snapshot for a memory."""
+    version = data.get("version", 1)
+    version_id = str(hashlib.sha256(f"{memory_id}:{version}".encode()).hexdigest())[:16]
+
+    # Handle stringified inputs from DB rows
+    tags = data.get("tags", "[]")
+    emo = data.get("emotional_context")
+    met = data.get("metrics")
+
+    tags_json = tags if isinstance(tags, str) else json.dumps(tags)
+    emo_json = emo if isinstance(emo, str) else json.dumps(emo)
+    met_json = met if isinstance(met, str) else json.dumps(met)
 
     conn = get_db_connection()
     conn.execute("""
@@ -305,9 +437,9 @@ def create_version_snapshot(memory_id: str, user_id: str, content: str,
         id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        version_id, memory_id, content, version,
-        datetime.now(timezone.utc).isoformat(), tags,
-        json.dumps(emotional_context), json.dumps(metrics), rollback_of
+        version_id, memory_id, data["content"], version,
+        datetime.now(timezone.utc).isoformat(), tags_json,
+        emo_json, met_json, data.get("rollback_of")
     ))
     conn.commit()
     conn.close()
@@ -342,13 +474,14 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     # Snapshot current state before rollback
     create_version_snapshot(
         memory_id=memory_id,
-        user_id=uid,
-        content=current["content"],
-        tags=current["tags"],
-        emotional_context=json.loads(current["emotional_context"] or "{}"),
-        metrics=json.loads(current["metrics"] or "{}"),
-        version=current["version"] or 1,
-        rollback_of=None
+        data={
+            "content": current["content"],
+            "tags": current["tags"],
+            "emotional_context": current["emotional_context"],
+            "metrics": current["metrics"],
+            "version": current["version"] or 1,
+            "rollback_of": None
+        }
     )
 
     # Update to target version content
@@ -368,7 +501,6 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     conn.close()
 
     # Emit rollback event
-    from .event_bus import get_event_bus, memory_updated
     event_bus = get_event_bus_with_stream()
     event_bus.publish(memory_updated(
         memory_id=memory_id,
@@ -380,9 +512,8 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     return f"Rolled back memory {memory_id} to version {target_version}"
 
 
-def get_memory_diff(memory_id: str, version1: int, version2: int, user_id: str | None = None) -> dict[str, Any]:
+def get_memory_diff(memory_id: str, version1: int, version2: int, _user_id: str | None = None) -> dict[str, Any]:
     """Get diff between two versions of a memory."""
-    uid = user_id or USER_ID
     conn = get_db_connection()
 
     v1 = conn.execute(
@@ -411,24 +542,18 @@ def get_memory_diff(memory_id: str, version1: int, version2: int, user_id: str |
 # =============================================================================
 # Memory System Components
 # =============================================================================
-# Memory System Components
-# =============================================================================
 
 
 def get_memory_system():
     """Get or initialize the memory system components."""
-    global _memory_system_initialized
-    if not _memory_system_initialized:
-        _memory_system_initialized = True
+    if not _SERVER_STATE["memory_system_initialized"]:
+        _SERVER_STATE["memory_system_initialized"] = True
     return {
         "tagger": MemoryCrisisTagger(get_crisis_service("high")),
-        "gate": None,  # Created per-evaluate to get fresh tagger
+        "gate": None,
         "synthesizer": MemorySynthesizer(),
         "linker": MemoryLinker(),
     }
-
-
-from fastmcp.server.middleware import Middleware as _Middleware
 
 
 class RateLimitMiddleware(_Middleware):
@@ -438,949 +563,589 @@ class RateLimitMiddleware(_Middleware):
         try:
             _check_rate_limit()
         except RateLimitExceeded as e:
-            from mcp.types import CallToolResult, TextContent
-            return CallToolResult(
-                content=[TextContent(type="text", text=str(e))],
-                isError=True,
+            return CallToolResult.model_validate(
+                {
+                    "content": [TextContent(type="text", text=str(e))],
+                    "isError": True,
+                }
             )
         return await call_next(context)
 
 
-# Input validation constants
-_MAX_CONTENT_LENGTH = 100_000     # 100KB max for text inputs
-_MAX_QUERY_LENGTH = 10_000       # 10KB max for query strings
-_MAX_LIMIT = 1000                # Max rows for pagination
+_MAX_CONTENT_LENGTH = 100_000
+_MAX_QUERY_LENGTH = 10_000
+_MAX_LIMIT = 1000
 _MAX_TENANT_ID_LENGTH = 64
 _MAX_USER_ID_LENGTH = 128
-_SAFE_PATH_PREFIXES = None       # Initialized lazily
 
 
-def _validate_tool_inputs(name: str, arguments: dict) -> str | None:
-    """Validate tool inputs. Returns error message or None if valid."""
-    import os
-    global _SAFE_PATH_PREFIXES
-    if _SAFE_PATH_PREFIXES is None:
-        _SAFE_PATH_PREFIXES = [
-            str(Path.home()),
-            os.getcwd(),
-            "/tmp",
-        ]
-
-    # Validate text content fields
+def _validate_lengths(arguments: dict) -> str | None:
     for key in ("content", "conversation_text", "transcript"):
         val = arguments.get(key)
         if isinstance(val, str) and len(val) > _MAX_CONTENT_LENGTH:
             return f"{key} exceeds maximum length of {_MAX_CONTENT_LENGTH} characters"
 
-    # Validate query fields
     for key in ("query",):
         val = arguments.get(key)
         if isinstance(val, str) and len(val) > _MAX_QUERY_LENGTH:
             return f"{key} exceeds maximum length of {_MAX_QUERY_LENGTH} characters"
+    return None
 
-    # Validate limit/offset
+
+def _validate_numeric(arguments: dict) -> str | None:
     for key in ("limit",):
         val = arguments.get(key)
         if val is not None:
             try:
-                if int(val) > _MAX_LIMIT:
-                    return f"{key} exceeds maximum of {_MAX_LIMIT}"
-                if int(val) < 1:
-                    return f"{key} must be at least 1"
+                limit_val = int(val)
+                if limit_val > _MAX_LIMIT:
+                    return f"limit cannot exceed {_MAX_LIMIT}"
+                if limit_val < 0:
+                    return "limit cannot be negative"
             except (ValueError, TypeError):
-                return f"{key} must be a positive integer"
-
+                return f"{key} must be an integer"
     for key in ("offset",):
         val = arguments.get(key)
         if val is not None:
             try:
                 if int(val) < 0:
-                    return f"{key} must be non-negative"
+                    return "offset cannot be negative"
             except (ValueError, TypeError):
                 return f"{key} must be a non-negative integer"
+    return None
 
-    # Validate user_id/tenant_id format
+
+def _validate_ids(arguments: dict) -> str | None:
     for key in ("user_id", "tenant_id"):
         val = arguments.get(key)
         if val is not None and isinstance(val, str):
-            if len(val) == 0:
-                return f"{key} cannot be empty"
             if key == "tenant_id" and len(val) > _MAX_TENANT_ID_LENGTH:
                 return f"{key} exceeds maximum length of {_MAX_TENANT_ID_LENGTH}"
             if key == "user_id" and len(val) > _MAX_USER_ID_LENGTH:
                 return f"{key} exceeds maximum length of {_MAX_USER_ID_LENGTH}"
+    return None
 
-    # Validate file paths — prevent path traversal
+
+def _validate_paths(arguments: dict) -> str | None:
+    if _SERVER_STATE["safe_path_prefixes"] is None:
+        _SERVER_STATE["safe_path_prefixes"] = [
+            str(Path.home()),
+            os.getcwd(),
+            "/tmp",
+        ]
+
     for key in ("output_path", "path", "file_path"):
         val = arguments.get(key)
         if val is not None and isinstance(val, str):
-            resolved = str(Path(val).expanduser().resolve())
-            if not any(resolved.startswith(p) for p in _SAFE_PATH_PREFIXES):
-                return f"{key} must be under home directory, current directory, or /tmp"
+            if ".." in val:
+                return "Path traversal not allowed"
+            if not any(val.startswith(p) for p in _SERVER_STATE["safe_path_prefixes"]):
+                return f"Access to {val} is restricted"
+    return None
 
+
+def _validate_tool_inputs(_name: str, arguments: dict) -> str | None:
+    """Validate tool inputs."""
+    for validator in (_validate_lengths, _validate_numeric, _validate_ids, _validate_paths):
+        error = validator(arguments)
+        if error:
+            return error
     return None
 
 
 class InputValidationMiddleware(_Middleware):
-    """FastMCP middleware that validates tool inputs before execution."""
+    """FastMCP middleware that validates tool inputs."""
 
     async def on_call_tool(self, context, call_next):
-        # Extract tool name and arguments from context
         try:
-            name = getattr(context, 'name', None) or getattr(context, 'tool_name', None) or ''
-            arguments = getattr(context, 'arguments', {}) or {}
+            name = getattr(context, "name", None) or getattr(context, "tool_name", None) or ""
+            arguments = getattr(context, "arguments", {}) or {}
             error = _validate_tool_inputs(name, arguments)
             if error:
-                from mcp.types import CallToolResult, TextContent
-                return CallToolResult(
-                    content=[TextContent(type="text", text=f"Validation error: {error}")],
-                    isError=True,
+                return CallToolResult.model_validate(
+                    {
+                        "content": [TextContent(type="text", text=f"Validation error: {error}")],
+                        "isError": True,
+                    }
                 )
         except Exception:
-            pass  # Don't block on validation failures
+            pass
         return await call_next(context)
 
-
-from .tenant_middleware import TenantMiddleware
-from .auth import AuthMiddleware
 
 mcp = FastMCP("Foresight", middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()])
 
 logger = logging.getLogger("foresight_server")
 
-# =============================================================================
-# Stream Producer Initialization
-# =============================================================================
-
-_stream_publisher: StreamPublisher | None = None
-
 
 def initialize_stream_producer():
     """Initialize stream producer for Kafka/Kinesis event publishing."""
-    global _stream_publisher
-
     try:
-        # Create stream producer based on environment configuration
         producer = create_stream_producer(environment=get_current_tenant_id() or "dev")
-
-        # Create stream publisher
-        _stream_publisher = StreamPublisher(producer, environment=get_current_tenant_id() or "dev")
-
+        publisher = StreamPublisher(producer, environment=get_current_tenant_id() or "dev")
+        _SERVER_STATE["stream_publisher"] = publisher
         logger.info("Stream publisher initialized successfully")
-
-        # Log which stream type is being used
         if isinstance(producer, KafkaProducer):
             logger.info(f"Using Kafka stream producer: {producer.bootstrap_servers}")
         elif isinstance(producer, KinesisProducer):
-            logger.info(f"Using Kinesis stream producer: {producer.stream_name}")
+            logger.info("Using Kinesis stream producer")
         else:
-            logger.info("Using mock stream producer (no Kafka/Kinesis configured)")
-
-        return _stream_publisher
-
+            logger.info("Using mock stream producer")
+        return publisher
     except Exception as e:
-        logger.warning(f"Failed to initialize stream producer: {e}. Events will not be published to stream.")
+        logger.warning(f"Failed to initialize stream producer: {e}")
         return None
 
 
-def get_stream_publisher() -> StreamPublisher | None:
-    """Get the stream publisher instance."""
-    return _stream_publisher
+def get_stream_publisher():
+    return _SERVER_STATE["stream_publisher"]
 
 
 def cleanup_stream_producer():
-    """Clean up stream producer on shutdown."""
-    global _stream_publisher
-    if _stream_publisher:
+    """Clean up stream producer."""
+    publisher = _SERVER_STATE["stream_publisher"]
+    if publisher:
         try:
-            _stream_publisher.close()
-            logger.info("Stream publisher closed successfully")
+            if hasattr(publisher.producer, "close"):
+                publisher.producer.close()
+            _SERVER_STATE["stream_publisher"] = None
+            logger.info("Stream publisher closed")
         except Exception as e:
-            logger.warning(f"Error closing stream publisher: {e}")
+            logger.error(f"Error closing stream producer: {e}")
         finally:
-            _stream_publisher = None
+            _SERVER_STATE["stream_publisher"] = None
 
-
-# Register cleanup on exit
-import atexit
 
 atexit.register(cleanup_stream_producer)
 
 
 def get_event_bus_with_stream():
-    """Get event bus with stream publisher automatically wired up."""
-    return get_event_bus(stream_publisher=_stream_publisher)
+    return get_event_bus(stream_publisher=_SERVER_STATE["stream_publisher"])
 
 
-@mcp.tool()
-def store_memory(content: str, category: str = "fact",
-                 scope: str = "session", retention: str = "short_term",
-                 emotional_context: dict | None = None,
-                 metrics: dict | None = None,
-                 user_id: str | None = None) -> str:
-    """
-    Store a new memory with full psychological safety features.
+def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Helper to handle memory storage."""
+    if not options.content:
+        return "Error: Content is required for 'store' action"
 
-    Args:
-        content: The memory content to store
-        category: Category label (default: "fact")
-        scope: Memory scope - session, arc, trait, or fact
-        retention: Retention policy - ephemeral, short_term, long_term, or permanent
-        emotional_context: Emotional metadata (valence, arousal, dominance, primary_emotion, intensity)
-        metrics: Empathy metrics (reciprocity, validation_accuracy, resistance_level)
-        user_id: Optional user ID override
-
-    Returns:
-        Confirmation with memory ID and gate decision
-    """
+    opts = options.options or MemoryOptions()
     memory_id = hashlib.sha256(
-        f"{content}{datetime.now().isoformat()}".encode()
+        f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()
     ).hexdigest()[:16]
 
-    uid = user_id or USER_ID
-
-    # Deduplication: check for exact content match within same user+tenant
+    # Deduplication
     conn = get_db_connection()
     existing = conn.execute(
-        "SELECT id, importance, activation_count FROM memories "
+        "SELECT id, activation_count FROM memories "
         "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
         "ORDER BY created_at DESC LIMIT 1",
-        (uid, get_current_tenant_id(), content.strip())
+        (uid, tenant_id, options.content.strip())
     ).fetchone()
+
     if existing:
-        # Bump activation count instead of creating duplicate
         conn.execute(
-            "UPDATE memories SET activation_count = activation_count + 1, "
-            "updated_at = ? WHERE id = ?",
+            "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? WHERE id = ?",
             (datetime.now(timezone.utc).isoformat(), existing["id"])
         )
         conn.commit()
         conn.close()
-        return (f"Duplicate detected — bumped activation for existing memory "
-                f"{existing['id']} (activations: {existing['activation_count'] + 1})")
-    conn.close()
+        return f"Duplicate detected - bumped activation for existing memory {existing['id']}"
 
-    # Parse emotional context if provided
-    emo_ctx = None
-    if emotional_context:
-        emo_ctx = EmotionalMetadata(**emotional_context)
+    # Parse emotional context and metrics
+    emo_ctx = EmotionalMetadata.from_dict(opts.emotional_context) if opts.emotional_context else None
+    met = EmpathyMetrics.from_dict(opts.metrics) if opts.metrics else None
 
-    # Parse metrics if provided
-    met = None
-    if metrics:
-        met = EmpathyMetrics(**metrics)
-
-    # Create memory object
     memory = MemoryObject.create(
-        content=content,
-        scope=scope,
-        retention=retention,
+        content=options.content,
+        scope=cast(MemoryScope, opts.scope),
+        retention=cast(RetentionPolicy, opts.retention),
         emotional_context=emo_ctx,
         metrics=met
     )
     memory.id = memory_id
 
-    # Run through Socratic Gate
+    # Socratic Gate
     ms = get_memory_system()
-    gate = SocraticGate(ms["tagger"])
-
-    gate_result = _run_async(gate.evaluate(memory, uid))
-
-    # Apply tags from gate
+    gate_result = _run_async(SocraticGate(ms["tagger"]).evaluate(memory, uid))
     memory.tags = gate_result.suggested_tags
+    if opts.category and opts.category not in memory.tags:
+        memory.tags.append(opts.category)
 
-    # Store in database
-    conn = get_db_connection()
-    conn.execute("""
-        INSERT INTO memories (
-            id, content, scope, retention, category, user_id, bank_id,
-            created_at, tags, emotional_context, metrics, is_ghost, synthesized_from
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        memory_id, content, scope, retention, category, uid, BANK_ID,
-        datetime.now(timezone.utc).isoformat(),
-        json.dumps(memory.tags),
-        json.dumps(emotional_context or {}),
-        json.dumps(metrics or {}),
-        0,
-        json.dumps([])
-    ))
+    # Store
+    conn.execute(
+        "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
+        "content, emotional_context, metrics, importance, activation_count, "
+        "created_at, updated_at, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (memory_id, uid, tenant_id, opts.category, memory.scope, memory.retention,
+         options.content.strip(), json.dumps(opts.emotional_context) if opts.emotional_context else None,
+         json.dumps(opts.metrics) if opts.metrics else None, opts.importance, 1,
+         datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(),
+         json.dumps(memory.tags))
+    )
     conn.commit()
     conn.close()
 
-    # Emit event
-    event_bus = get_event_bus_with_stream()
-    event_bus.publish(memory_stored(memory_id=memory_id, content=content, actor=uid))
+    get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=options.content, actor=uid))
+    return f"Stored memory {memory_id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
 
-    # Build response
-    response = f"Stored memory {memory_id}: {content[:50]}..."
-    response += f"\nGate Decision: {gate_result.decision}"
-    response += f"\nReason: {gate_result.reason}"
-    if gate_result.suggested_tags:
-        response += f"\nTags: {', '.join(gate_result.suggested_tags)}"
-    if gate_result.anomaly_detected:
-        response += "\n⚠️  ANOMALY DETECTED - Review required"
 
-    return response
+def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Helper to handle memory updates."""
+    if not options.memory_id or not options.updates:
+        return "Error: memory_id and updates required for 'update' action"
+
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (options.memory_id, uid, tenant_id)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return f"Memory {options.memory_id} not found."
+
+    updates_list = []
+    values = []
+    if options.updates.content:
+        create_version_snapshot(options.memory_id, {
+            "content": row["content"], "tags": row["tags"], "emotional_context": row["emotional_context"],
+            "metrics": row["metrics"], "version": row["version"] or 1
+        })
+        updates_list.extend(["content = ?", "version = ?"])
+        values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
+
+    if options.updates.category:
+        updates_list.append("category = ?")
+        values.append(options.updates.category)
+    if options.updates.scope:
+        updates_list.append("scope = ?")
+        values.append(options.updates.scope)
+    if options.updates.retention:
+        updates_list.append("retention = ?")
+        values.append(options.updates.retention)
+    if options.updates.tags:
+        updates_list.append("tags = ?")
+        values.append(json.dumps(options.updates.tags))
+
+    if not updates_list:
+        conn.close()
+        return "No updates provided."
+
+    updates_list.append("updated_at = ?")
+    values.append(datetime.now(timezone.utc).isoformat())
+    values.extend([options.memory_id, uid, tenant_id])
+    conn.execute(f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?", values)
+    conn.commit()
+    conn.close()
+    get_event_bus_with_stream().publish(memory_updated(memory_id=options.memory_id, old_content=row["content"], new_content=options.updates.content or row["content"], actor=uid))
+    return f"Updated memory {options.memory_id}"
+
+
+def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> str:
+    """Helper to handle memory deletion."""
+    if not memory_id:
+        return "Error: memory_id required for 'delete' action"
+
+    conn = get_db_connection()
+    if not conn.execute("SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)).fetchone():
+        conn.close()
+        return f"Memory {memory_id} not found."
+
+    get_event_bus_with_stream().publish(memory_deleted(memory_id=memory_id, actor=uid))
+    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id))
+    conn.commit()
+    conn.close()
+    return f"Deleted memory {memory_id}"
+
+
+def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> str:
+    """Helper to handle memory archiving."""
+    if not memory_id:
+        return "Error: memory_id required for 'archive' action"
+
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)).fetchone()
+
+    if not row:
+        conn.close()
+        return f"Memory {memory_id} not found."
+    if not row.get("vector_id"):
+        conn.close()
+        return "Cannot archive memory without vector_id. Embed first."
+
+    ms = get_memory_system()
+    ghost = ms["linker"].to_ghost(MemoryObject(
+        id=row["id"], timestamp=row["created_at"], scope=row["scope"], retention=row["retention"],
+        content=row["content"], tags=json.loads(row["tags"]) or [], synthesized_from=json.loads(row["synthesized_from"]) or [],
+        is_ghost=bool(row.get("is_ghost", 0)), vector_id=row["vector_id"], gist=row.get("gist")
+    ))
+    conn.execute("UPDATE memories SET content = ?, is_ghost = 1, gist = ? WHERE id = ? AND user_id = ?", (ghost.content, ghost.gist, memory_id, uid))
+    conn.commit()
+    conn.close()
+    return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
 @mcp.tool()
-def query_memories(query: str, user_id: str | None = None,
-                   limit: int = 5, offset: int = 0) -> str:
-    """Search memories by content using a query string."""
-    uid = user_id or USER_ID
-    escaped = query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-    conn = get_db_connection()
-    rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?",
-        (uid, get_current_tenant_id(), f"%{escaped}%", limit, offset)
-    ).fetchall()
-    conn.close()
+def manage_memories(
+    options: MemoryAction,
+    user_id: str | None = None,
+) -> str:
+    """
+    Manage memory lifecycle: store, update, delete, or archive.
 
-    if not rows:
-        # Fallback to hybrid retriever for semantic + graph + temporal search
+    Args:
+        options: Action and parameters
+        user_id: Optional user ID override
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+
+    if options.action == "store":
+        return _handle_memory_store(uid, tenant_id, options)
+
+    if options.action == "update":
+        return _handle_memory_update(uid, tenant_id, options)
+
+    if options.action == "delete":
+        return _handle_memory_delete(uid, tenant_id, options.memory_id)
+
+    if options.action == "archive":
+        return _handle_memory_archive(uid, tenant_id, options.memory_id)
+
+    return f"Unknown action: {options.action}"
+
+    return f"Unknown action: {options.action}"
+
+
+@mcp.tool()
+def search_memories(
+    options: SearchOptions,
+    user_id: str | None = None,
+) -> str:
+    """
+    Unified search and retrieval for memories.
+    Supports ID lookup, content keyword search, and hybrid retrieval.
+
+    Args:
+        options: Search parameters (query_type, query, memory_id, limit, etc.)
+        user_id: Optional user ID override
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+
+    # 1. Direct ID lookup
+    if options.query_type == "id" or options.memory_id:
+        mid = options.memory_id or options.query
+        if not mid:
+            return "Error: memory_id or query (as ID) required for id lookup."
+        conn = get_db_connection()
+        row = conn.execute(
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (mid, uid, tenant_id)
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            return f"Memory {mid} not found."
+
+        # Emit event
+        event_bus = get_event_bus_with_stream()
+        event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
+
+        tags = json.loads(row["tags"])
+        result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
+        result += f"Content: {row['content']}\n"
+        result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
+        if row["is_ghost"]:
+            result += "[GHOST NODE - Content archived]"
+        return result
+
+    # 2. Hybrid search if enabled and query provided
+    if options.use_hybrid and options.query:
         try:
-            from .hybrid_retriever import get_hybrid_retriever
             retriever = get_hybrid_retriever()
             hybrid_result = retriever.search(
-                query, uid, tenant_id=get_current_tenant_id(), limit=limit
+                options.query, uid, tenant_id=tenant_id,
+                limit=options.limit, min_importance=options.min_importance
             )
             if hybrid_result.results:
                 results = []
                 for r in hybrid_result.results:
                     signals = ", ".join(r.source_signals) if r.source_signals else "hybrid"
                     results.append(
-                        f"- [{r.memory_id}] {r.content} "
+                        f"- [{r.memory_id}] {r.content[:100]}... "
                         f"(score={r.combined_score:.3f}, signals={signals})"
                     )
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
-        except Exception:
-            logger.debug("Hybrid retriever fallback failed", exc_info=True)
+        except Exception as e:
+            logger.debug(f"Hybrid search failed: {e}")
 
-        return f"No memories found matching '{query}'"
-
-    # Emit events for retrieved memories
-    event_bus = get_event_bus_with_stream()
-    for r in rows:
-        event_bus.publish(memory_retrieved(memory_id=r["id"], query_context=query, actor=uid))
-
-    results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content']}" for r in rows]
-    return f"Found {len(results)} memories:\n" + "\n".join(results)
-
-
-@mcp.tool()
-def list_memories(user_id: str | None = None,
-                  limit: int = 10, offset: int = 0) -> str:
-    """List all memories for a user, ordered by creation date."""
-    uid = user_id or USER_ID
+    # 3. Fallback to basic list/keyword search
     conn = get_db_connection()
-    rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (uid, get_current_tenant_id(), limit, offset)
-    ).fetchall()
+    if options.query:
+        escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        query_sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
+        params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
+    else:
+        query_sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params = (uid, tenant_id, options.limit, options.offset)
+
+    rows = conn.execute(query_sql, params).fetchall()
     conn.close()
 
     if not rows:
         return "No memories found."
 
     results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
-    return f"Memories ({len(results)} shown):\n" + "\n".join(results)
-
-
-@mcp.tool()
-def get_memory(memory_id: str, user_id: str | None = None) -> str:
-    """Retrieve a specific memory by its ID with full metadata."""
-    uid = user_id or USER_ID
-    conn = get_db_connection()
-    row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
-    ).fetchone()
-    conn.close()
-
-    if not row:
-        return f"Memory {memory_id} not found."
-
-    # Emit event
-    event_bus = get_event_bus_with_stream()
-    event_bus.publish(memory_retrieved(memory_id=memory_id, query_context="", actor=uid))
-
-    # Parse JSON fields
-    tags = json.loads(row["tags"])
-    emotional_context = json.loads(row["emotional_context"])
-    metrics = json.loads(row["metrics"])
-    synthesized_from = json.loads(row["synthesized_from"])
-
-    result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
-    result += f"Content: {row['content']}\n"
-    result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
-    if emotional_context:
-        result += f"Emotional Context: {emotional_context}\n"
-    if metrics:
-        result += f"Metrics: {metrics}\n"
-    if row["vector_id"]:
-        result += f"Vector ID: {row['vector_id']}\n"
-    if row["gist"]:
-        result += f"Gist: {row['gist']}\n"
-    if row["is_ghost"]:
-        result += "[GHOST NODE - Content archived]"
-
-    return result
-
-
-@mcp.tool()
-def update_memory(memory_id: str, content: str | None = None,
-                  category: str | None = None,
-                  scope: str | None = None,
-                  retention: str | None = None,
-                  tags: list[str] | None = None,
-                  user_id: str | None = None) -> str:
-    """Update an existing memory's content or metadata."""
-    uid = user_id or USER_ID
-    conn = get_db_connection()
-    row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
-    ).fetchone()
-
-    if not row:
-        conn.close()
-        return f"Memory {memory_id} not found."
-
-    updates = []
-    values = []
-
-    if content:
-        # Create version snapshot before updating
-        current_version = row["version"] or 1
-        version_id = hashlib.sha256(
-            f"{memory_id}{current_version}{datetime.now(timezone.utc).isoformat()}".encode()
-        ).hexdigest()[:16]
-        conn.execute("""
-        INSERT INTO memory_versions (
-            id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            version_id, memory_id, row["content"], current_version,
-            datetime.now(timezone.utc).isoformat(),
-            row["tags"], row["emotional_context"], row["metrics"], None
-        ))
-        updates.append("content = ?")
-        values.append(content)
-    if category:
-        updates.append("category = ?")
-        values.append(category)
-    if scope:
-        updates.append("scope = ?")
-        values.append(scope)
-    if retention:
-        updates.append("retention = ?")
-        values.append(retention)
-    if tags:
-        updates.append("tags = ?")
-        values.append(json.dumps(tags))
-
-    if updates:
-        updates.append("updated_at = ?")
-        values.append(datetime.now(timezone.utc).isoformat())
-        if content:
-            current_version = row["version"] or 1
-            updates.append("version = ?")
-            values.append(current_version + 1)
-        values.extend([memory_id, uid, get_current_tenant_id()])
-        conn.execute(
-            f"UPDATE memories SET {', '.join(updates)} WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            values
-        )
-        conn.commit()
-
-    conn.close()
-
-    # Emit event
-    event_bus = get_event_bus_with_stream()
-    event_bus.publish(memory_updated(memory_id=memory_id, old_content=row["content"], new_content=content or row["content"], actor=uid))
-
-    return f"Updated memory {memory_id}"
-
-
-@mcp.tool()
-def delete_memory(memory_id: str, user_id: str | None = None) -> str:
-    """Delete a memory by its ID."""
-    uid = user_id or USER_ID
-    conn = get_db_connection()
-    row = conn.execute(
-        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
-    ).fetchone()
-
-    if not row:
-        conn.close()
-        return f"Memory {memory_id} not found."
-
-    # Emit event before deletion
-    event_bus = get_event_bus_with_stream()
-    event_bus.publish(memory_deleted(memory_id=memory_id, actor=uid))
-
-    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, get_current_tenant_id()))
-    conn.commit()
-    conn.close()
-    return f"Deleted memory {memory_id}"
-
-
-@mcp.tool()
-def synthesize_memories(user_id: str | None = None) -> str:
-    """
-    Run synthesis on all memories to detect stance shifts and merge candidates.
-
-    Returns:
-        Synthesis results including merged IDs and detected shifts
-    """
-    uid = user_id or USER_ID
-    conn = get_db_connection()
-    rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at LIMIT 500",
-        (uid, get_current_tenant_id())
-    ).fetchall()
-    conn.close()
-
-    if len(rows) < 5:
-        return "Not enough memories for synthesis (need 5+, have %d)" % len(rows)
-
-    # Convert to MemoryObject list
-    memories = []
-    for row in rows:
-        emo = json.loads(row["emotional_context"]) if row["emotional_context"] else None
-        met = json.loads(row["metrics"]) if row["metrics"] else None
-        emo_obj = EmotionalMetadata(**emo) if emo else None
-        met_obj = EmpathyMetrics(**met) if met else None
-
-        mem = MemoryObject(
-            id=row["id"],
-            timestamp=row["created_at"],
-            scope=row["scope"],
-            retention=row["retention"],
-            content=row["content"],
-            tags=json.loads(row["tags"]) or [],
-            synthesized_from=json.loads(row["synthesized_from"]) or [],
-            is_ghost=bool(row.get("is_ghost", 0)),
-            emotional_context=emo_obj,
-            metrics=met_obj,
-            vector_id=row.get("vector_id"),
-            gist=row.get("gist")
-        )
-        memories.append(mem)
-
-    # Run synthesis
-    ms = get_memory_system()
-    result = _run_async(ms["synthesizer"].synthesize(memories))
-
-    if not result:
-        return "Synthesis returned no results."
-
-    output = [
-        "=== Synthesis Results ===",
-        f"Merged memories: {len(result.merged_ids)}",
-        f"New memory ID: {result.new_memory_id}",
-        f"Compression ratio: {result.compression_ratio:.2f}",
-        f"Stance shifts detected: {len(result.stance_shifts)}"
-    ]
-
-    if result.stance_shifts:
-        output.append("\n--- Stance Shifts ---")
-        for shift in result.stance_shifts:
-            output.append(
-                f"  {shift.attribute}: {shift.old_value:.2f} → {shift.new_value:.2f} "
-                f"(Δ={shift.delta:+.2f}, confidence={shift.confidence:.2f})"
-            )
-
-    return "\n".join(output)
-
-
-@mcp.tool()
-def archive_memory(memory_id: str, user_id: str | None = None) -> str:
-    """
-    Archive a memory to a ghost node.
-    Requires the memory to have a vector_id.
-    """
-    uid = user_id or USER_ID
-    conn = get_db_connection()
-    row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
-    ).fetchone()
-
-    if not row:
-        conn.close()
-        return f"Memory {memory_id} not found."
-
-    if not row.get("vector_id"):
-        conn.close()
-        return f"Cannot archive memory without vector_id. Embed first."
-
-    # Create ghost node
-    ms = get_memory_system()
-    ghost = ms["linker"].to_ghost(
-        MemoryObject(
-            id=row["id"],
-            timestamp=row["created_at"],
-            scope=row["scope"],
-            retention=row["retention"],
-            content=row["content"],
-            tags=json.loads(row["tags"]) or [],
-            synthesized_from=json.loads(row["synthesized_from"]) or [],
-            is_ghost=bool(row.get("is_ghost", 0)),
-            vector_id=row["vector_id"],
-            gist=row.get("gist")
-        )
-    )
-
-    # Update database
-    conn.execute("""
-        UPDATE memories SET content = ?, is_ghost = 1, gist = ?
-        WHERE id = ? AND user_id = ?
-    """, (ghost.content, ghost.gist, memory_id, uid))
-    conn.commit()
-    conn.close()
-
-    return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
+    return f"Memories ({len(results)} found):\n" + "\n".join(results)
 
 
 # =============================================================================
 # Memory Versioning Tools
 # =============================================================================
 
-@mcp.tool()
-def rollback_memory(memory_id: str, to_version: int, user_id: str | None = None) -> str:
-    """
-    Rollback a memory to a previous version.
 
-    Args:
-        memory_id: The memory ID to rollback
-        to_version: Version number to rollback to
-        user_id: Optional user ID override
 
-    Returns:
-        Confirmation message
-    """
-    uid = user_id or USER_ID
+def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -> str:
+    """Helper to handle memory version rollback."""
+    if options.to_version is None:
+        return "Error: to_version required for rollback"
+
     conn = get_db_connection()
-
-    # Verify memory exists
-    row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
-    ).fetchone()
-
+    row = conn.execute("SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)).fetchone()
     if not row:
         conn.close()
-        return f"Memory {memory_id} not found."
+        return f"Memory {options.memory_id} not found."
 
-    # Verify version exists (tenant enforced via memory ownership above)
-    version_row = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, to_version, get_current_tenant_id())
-    ).fetchone()
-
+    version_row = conn.execute("SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?", (options.memory_id, options.to_version, tenant_id)).fetchone()
     if not version_row:
         conn.close()
-        return f"Version {to_version} not found for memory {memory_id}."
+        return f"Version {options.to_version} not found for memory {options.memory_id}."
 
-    # Snapshot current state
-    version_id = hashlib.sha256(
-        f"{memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()
-    ).hexdigest()[:16]
-
-    conn.execute("""
-    INSERT INTO memory_versions (
-        id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        version_id, memory_id, row["content"], row["version"] or 1,
-        datetime.now(timezone.utc).isoformat(),
-        row["tags"], row["emotional_context"], row["metrics"], None
-    ))
-
-    # Update to target version content
-    new_version = to_version + 1
-    conn.execute("""
-    UPDATE memories SET
-        content = ?, tags = ?, emotional_context = ?, metrics = ?,
-        version = ?, updated_at = ?
-    WHERE id = ? AND user_id = ?
-    """, (
-        version_row["content"], version_row["tags"],
-        version_row["emotional_context"], version_row["metrics"],
-        new_version, datetime.now(timezone.utc).isoformat(),
-        memory_id, uid, get_current_tenant_id()
-    ))
+    version_id = hashlib.sha256(f"{options.memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+    conn.execute("INSERT INTO memory_versions (id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (version_id, options.memory_id, row["content"], row["version"] or 1, datetime.now(timezone.utc).isoformat(), row["tags"], row["emotional_context"], row["metrics"], None))
+    new_version = options.to_version + 1
+    conn.execute("UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                 (version_row["content"], version_row["tags"], version_row["emotional_context"], version_row["metrics"], new_version, datetime.now(timezone.utc).isoformat(), options.memory_id, uid))
     conn.commit()
     conn.close()
-
-    # Emit event
-    from .event_bus import get_event_bus, memory_updated
-    event_bus = get_event_bus_with_stream()
-    event_bus.publish(memory_updated(
-        memory_id=memory_id,
-        old_content=row["content"],
-        new_content=version_row["content"],
-        actor=uid
-    ))
-
-    return f"Rolled back memory {memory_id} to version {to_version} (now at version {new_version})"
+    get_event_bus_with_stream().publish(memory_updated(memory_id=options.memory_id, old_content=row["content"], new_content=version_row["content"], actor=uid))
+    return f"Rolled back memory {options.memory_id} to version {options.to_version} (now at {new_version})"
 
 
-@mcp.tool()
-def diff_memories(memory_id: str, version1: int, version2: int, user_id: str | None = None) -> str:
-    """
-    Compare two versions of a memory.
+def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> str:
+    """Helper to handle memory version diff."""
+    if options.version1 is None or options.version2 is None:
+        return "Error: version1 and version2 required for diff"
 
-    Args:
-        memory_id: The memory ID to compare
-        version1: First version number
-        version2: Second version number
-        user_id: Optional user ID override
-
-    Returns:
-        Diff output showing changes between versions
-    """
-    uid = user_id or USER_ID
     conn = get_db_connection()
-
-    # Verify memory ownership first
-    mem = conn.execute(
-        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
-    ).fetchone()
-
-    if not mem:
+    if not conn.execute("SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)).fetchone():
         conn.close()
-        return f"Memory {memory_id} not found."
+        return f"Memory {options.memory_id} not found."
 
-    v1 = conn.execute(
-        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, version1, get_current_tenant_id())
-    ).fetchone()
-
-    v2 = conn.execute(
-        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, version2, get_current_tenant_id())
-    ).fetchone()
-
+    v1 = conn.execute("SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?", (options.memory_id, options.version1, tenant_id)).fetchone()
+    v2 = conn.execute("SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?", (options.memory_id, options.version2, tenant_id)).fetchone()
     conn.close()
 
     if not v1:
-        return f"Version {version1} not found for memory {memory_id}."
+        return f"Version {options.version1} not found."
     if not v2:
-        return f"Version {version2} not found for memory {memory_id}."
+        return f"Version {options.version2} not found."
 
-    # Simple diff output
-    result = [
-        f"Comparing versions of {memory_id}:",
-        "",
-        f"Version {version1} ({v1['created_at']}):",
-        f"  {v1['content'][:100]}...",
-        "",
-        f"Version {version2} ({v2['created_at']}):",
-        f"  {v2['content'][:100]}...",
-    ]
-
-    if v1["content"] == v2["content"]:
-        result.append("")
-        result.append("No changes between versions.")
-    else:
-        result.append("")
-        result.append("Content changed.")
-
-    return "\n".join(result)
+    res = [f"Diff for {options.memory_id}:", f"V{options.version1}: {v1['content'][:50]}...", f"V{options.version2}: {v2['content'][:50]}..."]
+    res.append("Changed." if v1["content"] != v2["content"] else "Identical.")
+    return "\n".join(res)
 
 
-@mcp.tool()
-def memory_status() -> str:
-    """Get the current status of the memory system."""
-    conn = get_db_connection()
-    count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?",
-        (USER_ID, get_current_tenant_id())
-    ).fetchone()[0]
+def manage_memory_versions(
+    options: VersionAction,
+    user_id: str | None = None
+) -> str:
+    """
+    Manage memory versioning: diff or rollback.
 
-    # Count by scope
-    scope_counts = conn.execute(
-        "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
-        (USER_ID, get_current_tenant_id())
-    ).fetchall()
+    Args:
+        options: Action and parameters
+        user_id: Optional user ID override
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
 
-    # Count crisis signals
-    crisis_count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND tags LIKE '%CRISIS%'",
-        (USER_ID, get_current_tenant_id())
-    ).fetchone()[0]
+    if options.action == "rollback":
+        return _handle_version_rollback(uid, tenant_id, options)
 
-    conn.close()
+    if options.action == "diff":
+        return _handle_version_diff(uid, tenant_id, options)
 
-    status = {
-        "status": "healthy",
-        "database": DB_PATH,
-        "bank_id": BANK_ID,
-        "user_id": USER_ID,
-        "memory_count": count,
-        "crisis_signals": crisis_count,
-        "by_scope": {r[0]: r[1] for r in scope_counts}
-    }
-
-    return json.dumps(status, indent=2)
+    return f"Unknown action: {options.action}"
 
 
 # =============================================================================
 # Subconscious Memory Block Tools
 # =============================================================================
 
-@mcp.tool()
-def get_subconscious_blocks(user_id: str | None = None) -> str:
-    """
-    Get all subconscious memory blocks.
-
-    Returns:
-        JSON list of all non-empty memory blocks
-    """
-    uid = user_id or USER_ID
-    agent = get_subconscious_agent(uid)
+def _handle_subconscious_list(agent) -> str:
+    """Helper for subconscious list action."""
     blocks = agent.get_all_blocks()
     return json.dumps(blocks, indent=2)
 
 
-@mcp.tool()
-def get_subconscious_block(label: str, user_id: str | None = None) -> str:
-    """
-    Get a specific subconscious memory block.
-
-    Args:
-        label: Block label (guidance, pending_items, project_context,
-               session_patterns, user_preferences, self_improvement, tool_guidelines)
-        user_id: Optional user ID override
-
-    Returns:
-        Block content or not found message
-    """
-    uid = user_id or USER_ID
-    agent = get_subconscious_agent(uid)
+def _handle_subconscious_get(agent, label: str) -> str:
+    """Helper for subconscious get action."""
     content = agent.get_block(label)
     if content:
         return f"[{label}]\n{content}"
     return f"Block '{label}' not found."
 
 
-@mcp.tool()
-def update_subconscious_block(
-    label: str,
-    content: str,
-    user_id: str | None = None
-) -> str:
-    """
-    Update a subconscious memory block.
-
-    Args:
-        label: Block label to update
-        content: New content for the block
-        user_id: Optional user ID override
-
-    Returns:
-        Confirmation message
-    """
-    uid = user_id or USER_ID
-    agent = get_subconscious_agent(uid)
-    agent.update_guidance(content) if label == "guidance" else None
-    if label != "guidance":
+def _handle_subconscious_update(agent, label: str, content: str | None) -> str:
+    """Helper for subconscious update action."""
+    if content is None:
+        return "Error: 'content' is required for update."
+    if label == "guidance":
+        agent.update_guidance(content)
+    else:
         agent.state.update_block(label, content)
     return f"Updated block '{label}'"
 
 
 @mcp.tool()
-def add_subconscious_guidance(line: str, user_id: str | None = None) -> str:
+def manage_subconscious(
+    options: SubconsciousAction,
+    user_id: str | None = None
+) -> str:
     """
-    Add a line to the guidance block.
+    Manage subconscious memory blocks (guidance, preferences, context).
 
     Args:
-        line: Line to append to guidance
+        options: Action and parameters (list, get, update, reset, clear)
         user_id: Optional user ID override
-
-    Returns:
-        Confirmation message
     """
     uid = user_id or USER_ID
     agent = get_subconscious_agent(uid)
-    agent.add_guidance_line(line)
-    return f"Added guidance line: {line[:50]}..."
 
+    if options.action == "list":
+        return _handle_subconscious_list(agent)
 
-@mcp.tool()
-def get_subconscious_whisper(user_id: str | None = None) -> str:
-    """
-    Get the current whisper injection (guidance in XML format).
+    if not options.label:
+        return "Error: 'label' is required for this action."
 
-    Args:
-        user_id: Optional user ID override
+    if options.action == "get":
+        return _handle_subconscious_get(agent, options.label)
 
-    Returns:
-        XML formatted whisper message or empty if no guidance
-    """
-    uid = user_id or USER_ID
-    agent = get_subconscious_agent(uid)
-    whisper = agent.get_whisper()
-    if not whisper:
-        return "(No active guidance - whisper is empty)"
-    return whisper
+    if options.action == "update":
+        return _handle_subconscious_update(agent, options.label, options.content)
 
+    if options.action in ("reset", "clear"):
+        if options.action == "reset":
+            agent.reset_block(options.label)
+        else:
+            agent.clear_block(options.label)
+        suffix = " to default" if options.action == "reset" else ""
+        return f"{options.action.capitalize()}ed block '{options.label}'{suffix}"
 
-@mcp.tool()
-def get_subconscious_context(user_id: str | None = None) -> str:
-    """
-    Get all subconscious memory blocks as XML context.
-
-    Args:
-        user_id: Optional user ID override
-
-    Returns:
-        XML formatted memory blocks
-    """
-    uid = user_id or USER_ID
-    agent = get_subconscious_agent(uid)
-    return agent.get_full_context()
-
-
-@mcp.tool()
-def reset_subconscious_block(label: str, user_id: str | None = None) -> str:
-    """
-    Reset a subconscious memory block to default.
-
-    Args:
-        label: Block label to reset
-        user_id: Optional user ID override
-
-    Returns:
-        Confirmation message
-    """
-    uid = user_id or USER_ID
-    agent = get_subconscious_agent(uid)
-    agent.reset_block(label)
-    return f"Reset block '{label}' to default"
-
-
-@mcp.tool()
-def clear_subconscious_block(label: str, user_id: str | None = None) -> str:
-    """
-    Clear a subconscious memory block.
-
-    Args:
-        label: Block label to clear
-        user_id: Optional user ID override
-
-    Returns:
-        Confirmation message
-    """
-    uid = user_id or USER_ID
-    agent = get_subconscious_agent(uid)
-    agent.clear_block(label)
-    return f"Cleared block '{label}'"
+    return f"Unsupported action: {options.action}"
 
 
 def _bridge_subconscious_to_memories(agent, uid: str) -> int:
@@ -1453,15 +1218,12 @@ def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
 
     Returns the number of entities stored.
     """
-    from .entity_extractor import get_entity_extractor
-    from .graph_store import get_graph_store
 
-    # Combine user messages for extraction (skip system/assistant noise)
     user_content = " ".join(
         msg.get("content", "")
         for msg in messages
         if msg.get("role") == "user"
-    )[:3000]  # Truncate to avoid excessive extraction
+    )[:3000]
 
     if not user_content.strip():
         return 0
@@ -1506,10 +1268,7 @@ def process_session_transcript(
         project_path=project_path
     ))
 
-    # Bridge subconscious extraction to memory store
     _bridge_subconscious_to_memories(agent, uid)
-
-    # Run entity extraction on transcript content and store entities
     _bridge_transcript_entities(messages, uid)
 
     return f"Processed transcript for session {session_id}"
@@ -1519,260 +1278,14 @@ def process_session_transcript(
 # WebSocket Subscription Tools
 # =============================================================================
 
-_subscription_manager: SubscriptionManager | None = None
-
-
 def get_subscription_manager() -> SubscriptionManager:
     """Get or create the global subscription manager."""
-    global _subscription_manager
-    if _subscription_manager is None:
-        _subscription_manager = SubscriptionManager()
-    return _subscription_manager
+    if _SERVER_STATE["subscription_manager"] is None:
+        _SERVER_STATE["subscription_manager"] = SubscriptionManager()
+    return _SERVER_STATE["subscription_manager"]
 
 
-@mcp.tool()
-def ws_subscribe(
-    subscription_id: str,
-    event_types: list[str],
-    entity_filter: str | None = None,
-    user_id: str | None = None,
-) -> str:
-    """
-    Subscribe to real-time events via WebSocket.
 
-    Args:
-        subscription_id: Unique subscription identifier
-        event_types: List of event types (e.g., ["memory.stored", "memory.updated"])
-        entity_filter: Optional filter (e.g., "memory:*" or "memory:123")
-        user_id: Optional user ID
-
-    Returns:
-        Subscription confirmation
-    """
-    manager = get_subscription_manager()
-    uid = user_id or USER_ID
-
-    _run_async(
-        manager.subscribe(
-            subscription_id=subscription_id,
-            connection_id=uid,
-            event_types=event_types,
-            entity_filter=entity_filter,
-        )
-    )
-
-    return f"Subscribed to {', '.join(event_types)} with filter '{entity_filter or '*'}"
-
-
-@mcp.tool()
-def ws_unsubscribe(subscription_id: str) -> str:
-    """
-    Unsubscribe from real-time events.
-
-    Args:
-        subscription_id: Subscription identifier to remove
-
-    Returns:
-        Unsubscription confirmation
-    """
-    manager = get_subscription_manager()
-
-    if _run_async(manager.unsubscribe(subscription_id)):
-        return f"Unsubscribed {subscription_id}"
-    return f"Subscription {subscription_id} not found"
-
-
-@mcp.tool()
-def ws_status() -> str:
-    """
-    Get WebSocket subscription status.
-
-    Returns:
-        JSON status of subscriptions
-    """
-    manager = get_subscription_manager()
-    stats = manager.get_stats()
-    return json.dumps(stats, indent=2)
-
-
-@mcp.tool()
-def ws_list_subscriptions(user_id: str | None = None) -> str:
-    """
-    List active subscriptions for a user.
-
-    Args:
-        user_id: Optional user ID filter
-
-    Returns:
-        List of active subscriptions
-    """
-    manager = get_subscription_manager()
-    uid = user_id or USER_ID
-
-    # Filter subscriptions by connection
-    user_subs = [
-        sub for sub in manager._subscriptions.values()
-        if sub.connection_id == uid
-    ]
-
-    if not user_subs:
-        return "No active subscriptions"
-
-    lines = ["Active subscriptions:", ""]
-    for sub in user_subs:
-        lines.append(f"- {sub.id}")
-        lines.append(f"  Events: {', '.join(et.value for et in sub.event_types)}")
-        if sub.entity_filter:
-            lines.append(f"  Filter: {sub.entity_filter}")
-        lines.append(f"  Status: {sub.status.value}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-# =============================================================================
-# Audit Trail Projections Tools
-# =============================================================================
-
-_projection_builder: ProjectionBuilder | None = None
-
-
-def get_projection_builder() -> ProjectionBuilder:
-    """Get or create the global projection builder."""
-    global _projection_builder
-    if _projection_builder is None:
-        _projection_builder = ProjectionBuilder()
-    return _projection_builder
-
-
-@mcp.tool()
-def audit_build(
-    report_name: str,
-    start_date: str | None = None,
-    end_date: str | None = None,
-    user_filter: str | None = None,
-) -> str:
-    """
-    Build an audit trail projection report.
-
-    Args:
-        report_name: One of: memory_timeline, user_activity, block_changes, access_log, anomaly_report
-        start_date: Optional ISO date filter
-        end_date: Optional ISO date filter
-        user_filter: Optional user ID filter
-
-    Returns:
-        JSON formatted report data
-    """
-    builder = get_projection_builder()
-    report = builder.get_report(report_name)
-
-    if not report:
-        return f"Unknown report: {report_name}. Available: {builder.list_reports()}"
-
-    # Get events from event store
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    # Build report
-    data = report.build(events)
-
-    # Apply filters
-    if start_date or end_date:
-        from datetime import datetime
-        start = datetime.fromisoformat(start_date) if start_date else None
-        end = datetime.fromisoformat(end_date) if end_date else None
-        data = report.filter_by_date(data, start, end)
-
-    if user_filter:
-        data = report.filter_by_user(data, user_filter)
-
-    return json.dumps({
-        "report": report_name,
-        "record_count": len(data),
-        "data": data
-    }, indent=2)
-
-
-@mcp.tool()
-def audit_list_reports() -> str:
-    """
-    List available audit trail reports.
-
-    Returns:
-        List of report names
-    """
-    builder = get_projection_builder()
-    reports = builder.list_reports()
-    return json.dumps({
-        "available_reports": reports,
-        "count": len(reports)
-    }, indent=2)
-
-
-@mcp.tool()
-def audit_export(
-    report_name: str,
-    format: str = "json",
-    output_path: str | None = None,
-) -> str:
-    """
-    Export an audit trail report to file.
-
-    Args:
-        report_name: Report to export
-        format: Output format (json or csv)
-        output_path: Path to write file (default: ~/.foresight/reports/<report_name>.<format>)
-
-    Returns:
-        Path to generated file
-    """
-    from datetime import datetime
-
-    builder = get_projection_builder()
-
-    # Get events
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    # Default output path
-    if not output_path:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path.home() / ".foresight" / "reports"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(output_dir / f"{report_name}_{ts}.{format}")
-    else:
-        output_path = str(Path(output_path).expanduser())
-
-    try:
-        if format.lower() == "csv":
-            builder.export_csv(report_name, events, output_path)
-        else:
-            builder.export_json(report_name, events, output_path)
-        return f"Exported to: {output_path}"
-    except Exception as e:
-        return f"Export failed: {e}"
-
-
-@mcp.tool()
-def audit_summary() -> str:
-    """
-    Get summary of all audit trail projections.
-
-    Returns:
-        Summary statistics for all reports
-    """
-    builder = get_projection_builder()
-
-    # Get events
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    summary = builder.get_report_summary(events)
-    return json.dumps(summary, indent=2)
 
 
 # =============================================================================
@@ -1809,27 +1322,22 @@ def _score_memory_relevance(
 ) -> float:
     """Compute a relevance score for a memory row given search terms.
 
-    Score = term_overlap_count + importance_boost + recency_decay
+    Score = term-overlap-count + importance-boost + recency-decay
 
-    - term_overlap_count: how many of the search terms appear in the memory content
-    - importance_boost: the stored importance value (default 1.0)
-    - recency_decay: exponential decay based on age in days (half-life ~7 days)
+    - term-overlap-count: how many of the search terms appear in the memory content
+    - importance-boost: the stored importance value (default 1.0)
+    - recency-decay: exponential decay based on age in days (half-life ~7 days)
     """
     content_lower = (memory["content"] or "").lower()
 
-    # Term overlap: count how many distinct search terms appear in content
-    # Use word-boundary regex to prevent substring matches (e.g. "work" in "networking")
     overlap = sum(
         1 for t in terms if re.search(rf"\b{re.escape(t)}\b", content_lower)
     )
 
-    # Normalize overlap to 0-1 range so min_relevance threshold is meaningful
     overlap_score = overlap / max(len(terms), 1)
 
-    # Importance: use stored importance, defaulting to 0.5 for older rows
     importance = memory["importance"] if memory["importance"] is not None else 0.5
 
-    # Recency decay: exponential with ~7-day half-life
     created_str = memory["created_at"]
     try:
         created = datetime.fromisoformat(created_str)
@@ -1838,7 +1346,7 @@ def _score_memory_relevance(
         age_hours = max((now - created).total_seconds() / 3600, 0)
     except (ValueError, TypeError):
         age_hours = 0
-    half_life_hours = 168.0  # 7 days
+    half_life_hours = 168.0
     decay = 0.5 ** (age_hours / half_life_hours)
 
     return overlap_score + importance * 0.5 + decay * 0.5
@@ -1869,12 +1377,10 @@ def inject_context(
     terms = _extract_terms(conversation_text)
     now = datetime.now(timezone.utc)
 
-    # Query candidate memories that match any term via LIKE
     conn = get_db_connection()
     candidates: list[sqlite3.Row] = []
 
     if terms:
-        # Build OR-clause of LIKE conditions with proper ESCAPE
         conditions = []
         params: list[str] = []
         for term in terms:
@@ -1891,10 +1397,9 @@ def inject_context(
         )
         candidates = conn.execute(
             query,
-            [uid, get_current_tenant_id()] + params,
+            [uid, get_current_tenant_id(), *params],
         ).fetchall()
 
-    # Also fetch high-importance memories as fallback (even without term match)
     fallback = conn.execute(
         "SELECT * FROM memories "
         "WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
@@ -1905,7 +1410,6 @@ def inject_context(
 
     conn.close()
 
-    # Merge candidates and fallback, deduplicate by id
     seen_ids: set[str] = set()
     all_rows: list[sqlite3.Row] = []
     for row in candidates + fallback:
@@ -1913,22 +1417,19 @@ def inject_context(
             seen_ids.add(row["id"])
             all_rows.append(row)
 
-    # Score and sort
     scored = [
         (row, _score_memory_relevance(row, terms, now))
         for row in all_rows
     ]
     scored.sort(key=lambda pair: pair[1], reverse=True)
 
-    # Filter by minimum relevance
     top = [(row, score) for row, score in scored if score >= min_relevance]
     top = top[:max_memories]
 
-    # Build structured context block
     lines: list[str] = []
     if top:
         lines.append(f"[Relevant Context - {len(top)} memories surfaced]")
-        for row, score in top:
+        for row, _ in top:
             importance_val = row["importance"] if row["importance"] is not None else 1.0
             snippet = (row["content"] or "")[:120]
             if len(row["content"] or "") > 120:
@@ -1937,11 +1438,10 @@ def inject_context(
                 f"- [{row['id']}] (importance: {importance_val:.1f}) {snippet}"
             )
 
-    # Check subconscious blocks for relevant preferences/patterns
     sub_lines = _subconscious_context_for_terms(uid, terms)
     if sub_lines:
         if not top:
-            lines.append(f"[Relevant Context - 0 memories surfaced]")
+            lines.append("[Relevant Context - 0 memories surfaced]")
         lines.append("")
         lines.append("[Subconscious Patterns]")
         lines.extend(sub_lines)
@@ -1969,10 +1469,8 @@ def _subconscious_context_for_terms(
         if not block or block.is_empty():
             continue
         content = block.content
-        # Check if any term appears in the block content
         content_lower = content.lower()
         if terms and any(re.search(rf"\b{re.escape(t)}\b", content_lower) for t in terms):
-            # Include relevant lines from the block
             matching = []
             for line in content.splitlines():
                 line_lower = line.lower().strip()
@@ -1980,18 +1478,16 @@ def _subconscious_context_for_terms(
                     matching.append(line.strip())
             if matching:
                 lines.append(f"[{label}]")
-                for m in matching[:3]:  # Limit to 3 lines per block
+                for m in matching[:3]:
                     lines.append(f"  {m}")
 
     return lines
 
 
 def main():
-    # Ensure database schema is initialized before serving
     init_db()
-    # Initialize stream producer for Kafka/Kinesis event publishing
     initialize_stream_producer()
-    mcp.run()
+    mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":
@@ -2010,146 +1506,25 @@ class TenantContext:
     burst_limit: int = 20
 
 
-_tenant_context: TenantContext | None = None
-
-
-def get_tenant_context() -> TenantContext:
+def get_tenant_context() -> dict:
     """Get current tenant context."""
-    global _tenant_context
-    if _tenant_context is None or _tenant_context.tenant_id != get_current_tenant_id():
-        _tenant_context = TenantContext(
-            tenant_id=get_current_tenant_id(),
-            rate_limit=DEFAULT_RATE_LIMIT,
-            burst_limit=DEFAULT_BURST_LIMIT
-        )
-    return _tenant_context
+    if _SERVER_STATE["tenant_context"] is None:
+        _SERVER_STATE["tenant_context"] = {"id": get_current_tenant_id()}
+    return _SERVER_STATE["tenant_context"]
 
 
 def set_tenant_context(tenant_id: str) -> None:
     """Set tenant context for current request.
 
-    Deprecated: Use set_current_tenant_id() from tenant_context module instead.
+    Deprecated: Use set_current_tenant_id() from tenant_module instead.
     The TenantMiddleware handles per-request tenant isolation automatically.
     """
-    import warnings
     warnings.warn(
         "set_tenant_context() is deprecated; use set_current_tenant_id() instead",
         DeprecationWarning,
         stacklevel=2,
     )
     set_current_tenant_id(tenant_id)
-
-
-@mcp.tool()
-def create_tenant(tenant_id: str, name: str, rate_limit: int = 100, burst_limit: int = 20) -> str:
-    """
-    Create a new tenant with isolated rate limits.
-
-    Args:
-        tenant_id: Unique tenant identifier
-        name: Human-readable tenant name
-        rate_limit: Requests per minute limit
-        burst_limit: Burst request limit
-
-    Returns:
-        Confirmation message
-    """
-    conn = get_db_connection()
-    try:
-        conn.execute("""
-        INSERT INTO tenants (id, name, rate_limit, burst_limit, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        """, (
-            tenant_id, name, rate_limit, burst_limit,
-            datetime.now(timezone.utc).isoformat()
-        ))
-        conn.commit()
-        return f"Created tenant '{name}' ({tenant_id}) with rate_limit={rate_limit}/min, burst={burst_limit}"
-    except sqlite3.IntegrityError:
-        return f"Tenant '{tenant_id}' already exists"
-    finally:
-        conn.close()
-
-
-@mcp.tool()
-def get_tenant(tenant_id: str) -> str:
-    """
-    Get tenant configuration.
-
-    Args:
-        tenant_id: Tenant identifier
-
-    Returns:
-        Tenant configuration as JSON
-    """
-    conn = get_db_connection()
-    row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
-    conn.close()
-
-    if not row:
-        return f"Tenant '{tenant_id}' not found"
-
-    return json.dumps({
-        "id": row["id"],
-        "name": row["name"],
-        "rate_limit": row["rate_limit"],
-        "burst_limit": row["burst_limit"],
-        "created_at": row["created_at"],
-        "config": json.loads(row["config"])
-    }, indent=2)
-
-
-@mcp.tool()
-def list_tenants() -> str:
-    """
-    List all tenants.
-
-    Returns:
-        List of tenants with their configurations
-    """
-    conn = get_db_connection()
-    rows = conn.execute("SELECT * FROM tenants ORDER BY created_at").fetchall()
-    conn.close()
-
-    if not rows:
-        return "No tenants found"
-
-    result = ["Tenants:", ""]
-    for row in rows:
-        result.append(f"- {row['id']}: {row['name']} (rate={row['rate_limit']}/min, burst={row['burst_limit']})")
-    return "\n".join(result)
-
-
-@mcp.tool()
-def update_tenant_config(tenant_id: str, config: dict) -> str:
-    """
-    Update tenant configuration.
-
-    Args:
-        tenant_id: Tenant identifier
-        config: Configuration dictionary to merge
-
-    Returns:
-        Updated configuration
-    """
-    conn = get_db_connection()
-
-    # Get current config
-    row = conn.execute("SELECT config FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
-    if not row:
-        conn.close()
-        return f"Tenant '{tenant_id}' not found"
-
-    # Merge configs
-    current = json.loads(row["config"])
-    current.update(config)
-
-    conn.execute("UPDATE tenants SET config = ? WHERE id = ?",
-                 (json.dumps(current), tenant_id))
-    conn.commit()
-    conn.close()
-
-    return f"Updated config for tenant '{tenant_id}'"
 
 
 @mcp.tool()
@@ -2163,7 +1538,6 @@ def switch_tenant(tenant_id: str) -> str:
     Returns:
         Confirmation message
     """
-    # Verify tenant exists
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
     conn.close()
@@ -2171,348 +1545,48 @@ def switch_tenant(tenant_id: str) -> str:
     if not row:
         return f"Tenant '{tenant_id}' not found"
 
-    # Update context
     set_current_tenant_id(tenant_id)
     return f"Switched to tenant '{tenant_id}'"
-
-
-@mcp.tool()
-def get_tenant_isolation_status() -> str:
-    """
-    Get multi-tenant isolation status.
-
-    Returns:
-        JSON status of isolation configuration
-    """
-    conn = get_db_connection()
-
-    # Count tenants
-    tenant_count = conn.execute("SELECT COUNT(*) FROM tenants").fetchone()[0]
-
-    # Count memories per tenant
-    tenant_memories = conn.execute("""
-        SELECT tenant_id, COUNT(*) as count
-        FROM memories
-        GROUP BY tenant_id
-    """).fetchall()
-
-    conn.close()
-
-    return json.dumps({
-        "current_tenant": get_current_tenant_id(),
-        "total_tenants": tenant_count,
-        "memories_by_tenant": [{"tenant_id": row[0], "count": row[1]} for row in tenant_memories],
-        "isolation": "enabled"
-    }, indent=2)
-
-
-# =============================================================================
-# Compliance Export Tools (HIPAA, SOC2, GDPR)
-# =============================================================================
-
-from .compliance import ComplianceExporter
-
-
-@mcp.tool()
-def compliance_hipaa_access_log(start_date: str | None = None,
-                                end_date: str | None = None,
-                                user_id: str | None = None,
-                                format: str = "json") -> str:
-    """
-    Generate HIPAA-compliant access log.
-    
-    Args:
-        start_date: ISO date filter (optional)
-        end_date: ISO date filter (optional)
-        user_id: Filter by specific user (optional)
-        format: Output format (json or csv)
-    
-    Returns:
-        HIPAA access log in specified format
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-    export = exporter.hipaa_access_log(start_date, end_date, user_id)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_hipaa_modification_log(start_date: str | None = None,
-                                       end_date: str | None = None,
-                                       user_id: str | None = None,
-                                       format: str = "json") -> str:
-    """
-    Generate HIPAA-compliant modification log.
-    
-    Args:
-        start_date: ISO date filter (optional)
-        end_date: ISO date filter (optional)
-        user_id: Filter by specific user (optional)
-        format: Output format (json or csv)
-    
-    Returns:
-        HIPAA modification log in specified format
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-    export = exporter.hipaa_modification_log(start_date, end_date, user_id)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_hipaa_user_activity(user_id: str,
-                                    start_date: str | None = None,
-                                    end_date: str | None = None,
-                                    format: str = "json") -> str:
-    """
-    Generate HIPAA user activity report.
-    
-    Args:
-        user_id: User ID to report on (required)
-        start_date: ISO date filter (optional)
-        end_date: ISO date filter (optional)
-        format: Output format (json or csv)
-    
-    Returns:
-        HIPAA user activity report
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-    export = exporter.hipaa_user_activity(user_id, start_date, end_date)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_soc2_change_history(start_date: str | None = None,
-                                    end_date: str | None = None,
-                                    format: str = "json") -> str:
-    """
-    Generate SOC2 change history report.
-    
-    Args:
-        start_date: ISO date filter (optional)
-        end_date: ISO date filter (optional)
-        format: Output format (json or csv)
-    
-    Returns:
-        SOC2 change history report
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-    export = exporter.soc2_change_history(start_date, end_date)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_soc2_access_review(user_ids: str | None = None,
-                                   format: str = "json") -> str:
-    """
-    Generate SOC2 access control review report.
-    
-    Args:
-        user_ids: Comma-separated user IDs (optional, all if omitted)
-        format: Output format (json or csv)
-    
-    Returns:
-        SOC2 access review report
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    user_id_list = user_ids.split(",") if user_ids else None
-    exporter = ComplianceExporter(events)
-    export = exporter.soc2_access_review(user_id_list)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_soc2_monitoring(start_date: str | None = None,
-                                end_date: str | None = None,
-                                format: str = "json") -> str:
-    """
-    Generate SOC2 monitoring report.
-    
-    Args:
-        start_date: ISO date filter (optional)
-        end_date: ISO date filter (optional)
-        format: Output format (json or csv)
-    
-    Returns:
-        SOC2 monitoring report
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-    export = exporter.soc2_monitoring_report(start_date, end_date)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_gdpr_data_export(user_id: str,
-                                include_deleted: bool = False,
-                                format: str = "json") -> str:
-    """
-    Generate GDPR data portability export.
-    
-    Args:
-        user_id: User ID to export data for (required)
-        include_deleted: Include deleted items (default: False)
-        format: Output format (json or csv)
-    
-    Returns:
-        GDPR data export
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-    export = exporter.gdpr_data_export(user_id, include_deleted)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_gdpr_erasure_certification(user_id: str,
-                                          deletion_date: str | None = None,
-                                          format: str = "json") -> str:
-    """
-    Generate GDPR erasure certification.
-    
-    Args:
-        user_id: User ID for erasure certification (required)
-        deletion_date: ISO date of deletion (default: now)
-        format: Output format (json or csv)
-    
-    Returns:
-        GDPR erasure certification
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-    export = exporter.gdpr_erasure_certification(user_id, deletion_date)
-
-    if format == "csv":
-        return exporter.to_csv(export)
-    return exporter.to_json(export)
-
-
-@mcp.tool()
-def compliance_save_report(report_name: str, output_path: str, 
-                           format: str = "json") -> str:
-    """
-    Save a compliance report to file.
-    
-    Args:
-        report_name: Name of report to save (e.g., 'hipaa_access_log')
-        output_path: Path to save the file
-        format: Output format (json or csv)
-    
-    Returns:
-        Path to saved file
-    """
-    from .event_bus import get_event_bus
-    event_bus = get_event_bus_with_stream()
-    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
-
-    exporter = ComplianceExporter(events)
-
-    # Map report names to functions
-    report_funcs = {
-        "hipaa_access_log": lambda: exporter.hipaa_access_log(),
-        "hipaa_modification_log": lambda: exporter.hipaa_modification_log(),
-        "soc2_change_history": lambda: exporter.soc2_change_history(),
-        "soc2_access_review": lambda: exporter.soc2_access_review(),
-        "soc2_monitoring": lambda: exporter.soc2_monitoring_report(),
-        "gdpr_data_export": lambda: exporter.gdpr_data_export("default"),
-        "gdpr_erasure_certification": lambda: exporter.gdpr_erasure_certification("default"),
-    }
-
-    if report_name not in report_funcs:
-        return f"Unknown report: {report_name}. Available: {list(report_funcs.keys())}"
-
-    export = report_funcs[report_name]()
-    return exporter.save_to_file(export, output_path, format)
 
 
 # =============================================================================
 # Temporal Memory Tools
 # =============================================================================
 
+# =============================================================================
+# Temporal and Status Tools
+# =============================================================================
+
 @mcp.tool()
-def get_memories_from_window(
-    window: str,
-    user_id: str | None = None,
-    limit: int = 50,
-    min_importance: float = 0.1,
-    category: str | None = None
+def query_memories_temporal(
+    options: TemporalWindow,
+    user_id: str | None = None
 ) -> str:
     """
-    Get memories from a time window.
+    Query memories based on temporal signals (window, trend).
 
     Args:
-        window: Time window (today/week/month/year)
+        options: Temporal query parameters (window, trend, category, limit)
         user_id: Optional user ID override
-        limit: Max results (default: 50)
-        min_importance: Minimum importance threshold (default: 0.1)
-        category: Optional category filter
-
-    Returns:
-        JSON list of memories with temporal metadata
     """
-    from .temporal_queries import get_temporal_query_builder
-
-    valid_windows = ["today", "week", "month", "year"]
-    if window not in valid_windows:
-        return f"Invalid window. Must be one of: {', '.join(valid_windows)}"
-
     uid = user_id or USER_ID
     builder = get_temporal_query_builder()
 
-    results = builder.get_memories_from_window(
-        user_id=uid,
-        window=window,  # type: ignore
-        limit=limit,
-        min_importance=min_importance,
-        category=category
-    )
+    if options.trend:
+        results = builder.get_memories_by_trend(
+            user_id=uid,
+            trend=options.trend,
+            limit=options.limit,
+            category=options.category
+        )
+    else:
+        results = builder.get_memories_from_window(
+            user_id=uid,
+            window=options.window,
+            limit=options.limit,
+            min_importance=0.1,
+            category=options.category
+        )
 
     return json.dumps([
         {
@@ -2522,7 +1596,6 @@ def get_memories_from_window(
             "strength_trend": r.strength_trend,
             "activation_count": r.activation_count,
             "created_at": r.created_at,
-            "accessed_at": r.accessed_at,
             "category": r.category,
         }
         for r in results
@@ -2530,153 +1603,104 @@ def get_memories_from_window(
 
 
 @mcp.tool()
-def get_memories_by_trend(
-    trend: str,
-    user_id: str | None = None,
-    limit: int = 50,
-    category: str | None = None
+def get_system_status(
+    options: SystemStatusOptions | None = None,
+    user_id: str | None = None
 ) -> str:
     """
-    Get memories by freshness trend.
+    Get system health, memory statistics, and temporal trends.
 
     Args:
-        trend: Trend type (stable/strengthening/weakening/stale)
+        options: Optional status and trend parameters
         user_id: Optional user ID override
-        limit: Max results (default: 50)
-        category: Optional category filter
-
-    Returns:
-        JSON list of memories with the specified trend
     """
-    from .temporal_queries import get_temporal_query_builder
-
-    valid_trends = ["stable", "strengthening", "weakening", "stale"]
-    if trend not in valid_trends:
-        return f"Invalid trend. Must be one of: {', '.join(valid_trends)}"
-
     uid = user_id or USER_ID
-    builder = get_temporal_query_builder()
+    opts = options or SystemStatusOptions()
+    conn = get_db_connection()
 
-    results = builder.get_memories_by_trend(
-        user_id=uid,
-        trend=trend,  # type: ignore
-        limit=limit,
-        category=category
-    )
+    # Basic stats
+    count = conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?",
+        (uid, get_current_tenant_id())
+    ).fetchone()[0]
 
-    return json.dumps([
-        {
-            "memory_id": r.memory_id,
-            "content": r.content,
-            "importance": r.importance,
-            "strength_trend": r.strength_trend,
-            "activation_count": r.activation_count,
-            "created_at": r.created_at,
-        }
-        for r in results
-    ], indent=2)
-
-
-@mcp.tool()
-def analyze_memory_trends(
-    user_id: str | None = None,
-    timeframe: str = "30 days"
-) -> str:
-    """
-    Analyze memory trends over time.
-
-    Args:
-        user_id: Optional user ID override
-        timeframe: Timeframe for analysis (e.g., '30 days', '7 days')
-
-    Returns:
-        JSON with trend analysis including daily stats and category breakdown
-    """
-    from .temporal_queries import get_temporal_query_builder
-    from .temporal_service import get_temporal_service
-
-    uid = user_id or USER_ID
-    builder = get_temporal_query_builder()
-    service = get_temporal_service()
-
-    # Get trend analysis
-    trend_analysis = builder.analyze_trends(user_id=uid, timeframe=timeframe)
-
-    # Get overall stats
-    stats = service.get_memory_stats(user_id=uid)
+    scope_counts = conn.execute(
+        "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
+        (uid, get_current_tenant_id())
+    ).fetchall()
+    conn.close()
 
     result = {
-        "timeframe": timeframe,
-        "stats": stats,
-        "trend_analysis": trend_analysis,
+        "status": "healthy",
+        "memory_count": count,
+        "by_scope": {r[0]: r[1] for r in scope_counts},
+        "tenant_id": get_current_tenant_id()
     }
+
+    # Add temporal stats/trends if requested
+    if opts.include_trends:
+        builder = get_temporal_query_builder()
+        service = get_temporal_service()
+        result["temporal_stats"] = service.get_memory_stats(user_id=uid)
+        result["trend_analysis"] = builder.analyze_trends(user_id=uid, timeframe=opts.timeframe)
 
     return json.dumps(result, indent=2)
 
 
-@mcp.tool()
-def update_memory_decay(
-    user_id: str | None = None
-) -> str:
-    """
-    Trigger batch decay update for all user memories.
-
-    Should be run periodically (e.g., hourly) to keep importance values current.
-
-    Args:
-        user_id: Optional user ID override
-
-    Returns:
-        Number of memories updated
-    """
-    from .temporal_service import get_temporal_service
-
-    uid = user_id or USER_ID
-    service = get_temporal_service()
-
-    count = service.batch_update_decay(user_id=uid)
-    return f"Updated decay for {count} memories"
+def memory_status() -> str:
+    """Legacy alias for get_system_status() used by CLI health checks."""
+    return get_system_status()
 
 
-@mcp.tool()
-def get_memory_stats(
-    user_id: str | None = None
-) -> str:
-    """
-    Get temporal statistics for user memories.
-
-    Args:
-        user_id: Optional user ID override
-
-    Returns:
-        JSON with memory statistics including counts by trend
-    """
-    from .temporal_service import get_temporal_service
-
-    uid = user_id or USER_ID
-    service = get_temporal_service()
-
-    stats = service.get_memory_stats(user_id=uid)
-    return json.dumps(stats, indent=2)
+def store_memory(content: str, user_id: str | None = None, **kwargs) -> str:
+    """Legacy alias for manage_memories(action="store") used by tests."""
+    options = MemoryAction(
+        action="store",
+        content=content,
+        options=MemoryOptions(**kwargs)
+    )
+    return manage_memories(options, user_id=user_id)
 
 
-@mcp.tool()
-def run_temporal_migrations_tool() -> str:
-    """
-    Run temporal schema migrations.
+def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) -> str:
+    """Legacy alias for search_memories(query_type="list")."""
+    options = SearchOptions(query_type="list", limit=limit, offset=offset)
+    return search_memories(options, user_id=user_id)
 
-    Adds temporal fields to memories table for decay tracking and trend analysis.
 
-    Returns:
-        Confirmation message
-    """
-    from .temporal_schema import run_temporal_migrations
+def query_memories(query: str, limit: int = 10, user_id: str | None = None) -> str:
+    """Legacy alias for search_memories(query_type="keyword")."""
+    options = SearchOptions(query_type="keyword", query=query, limit=limit)
+    return search_memories(options, user_id=user_id)
 
-    try:
-        run_temporal_migrations(DB_PATH)
-        return f"Temporal migrations completed successfully on {DB_PATH}"
-    except Exception as e:
-        return f"Migration failed: {e}"
+
+def get_memory(memory_id: str, user_id: str | None = None) -> str:
+    """Legacy alias for search_memories(query_type="id")."""
+    options = SearchOptions(query_type="id", memory_id=memory_id)
+    return search_memories(options, user_id=user_id)
+
+
+def update_memory(memory_id: str, **kwargs) -> str:
+    """Legacy alias for manage_memories(action="update")."""
+    user_id = kwargs.pop("user_id", None)
+    updates = MemoryUpdateOptions(**kwargs)
+    options = MemoryAction(action="update", memory_id=memory_id, updates=updates)
+    return manage_memories(options, user_id=user_id)
+
+
+def delete_memory(memory_id: str, user_id: str | None = None) -> str:
+    """Legacy alias for manage_memories(action="delete")."""
+    options = MemoryAction(action="delete", memory_id=memory_id)
+    return manage_memories(options, user_id=user_id)
+
+
+def archive_memory(memory_id: str, user_id: str | None = None) -> str:
+    """Legacy alias for manage_memories(action="archive")."""
+    options = MemoryAction(action="archive", memory_id=memory_id)
+    return manage_memories(options, user_id=user_id)
+
+
+
 
 
 # =============================================================================
@@ -2684,330 +1708,173 @@ def run_temporal_migrations_tool() -> str:
 # =============================================================================
 
 @mcp.tool()
-def extract_entities(
-    content: str,
+def manage_entities(
+    action: EntityAction,
     user_id: str | None = None
 ) -> str:
     """
-    Extract entities and relationships from text.
+    Manage entities and relationships (extract, link).
 
     Args:
-        content: Text to analyze
+        action: Action details (extract, link)
         user_id: Optional user ID override
-
-    Returns:
-        JSON with extracted entities and relationships
     """
-    from .entity_extractor import get_entity_extractor
-
-    uid = user_id or USER_ID
-    extractor = get_entity_extractor()
-
-    result = _run_async(extractor.extract(content))
-
-    return json.dumps({
-        "user_id": uid,
-        "entities": [e.to_dict() for e in result.entities],
-        "relationships": [r.to_dict() for r in result.relationships],
-    }, indent=2)
-
-
-@mcp.tool()
-def get_entities_by_type(
-    entity_type: str,
-    user_id: str | None = None,
-    limit: int = 50
-) -> str:
-    """
-    Get all entities of a specific type.
-
-    Args:
-        entity_type: Entity type (person/place/concept/event/emotion/object)
-        user_id: Optional user ID override
-        limit: Max results (default: 50)
-
-    Returns:
-        JSON list of entities
-    """
-    from .graph_store import get_graph_store
-
-    valid_types = ["person", "place", "concept", "event", "emotion", "object"]
-    if entity_type not in valid_types:
-        return f"Invalid entity_type. Must be one of: {', '.join(valid_types)}"
-
     uid = user_id or USER_ID
     store = get_graph_store()
 
-    entities = store.get_entities_by_type(uid, entity_type, limit)
+    if action.action == "extract":
+        if not action.content:
+            return "Content is required for entity extraction"
+        extractor = get_entity_extractor()
+        result = _run_async(extractor.extract(action.content))
+        return json.dumps({
+            "user_id": uid,
+            "entities": [e.to_dict() for e in result.entities],
+            "relationships": [r.to_dict() for r in result.relationships],
+        }, indent=2)
 
+    if action.action == "link":
+        if not action.memory_id or not action.entity_ids:
+            return "memory_id and entity_ids are required for linking"
+        store.link_memory_to_entities(action.memory_id, action.entity_ids, uid)
+        return f"Linked memory {action.memory_id} to {len(action.entity_ids)} entities"
+
+    return "Invalid action"
+
+
+def _handle_entity_query_by_type(uid: str, store, query: EntityQuery) -> str:
+    """Helper for entity query by type."""
+    if not query.entity_type:
+        return "entity_type is required"
+    entities = store.get_entities_by_type(uid, query.entity_type, query.limit)
     return json.dumps([e.to_dict() for e in entities], indent=2)
 
 
-@mcp.tool()
-def find_entities_by_name(
-    name: str,
-    user_id: str | None = None,
-    limit: int = 10
-) -> str:
-    """
-    Find entities by name (partial match).
-
-    Args:
-        name: Name to search for
-        user_id: Optional user ID override
-        limit: Max results (default: 10)
-
-    Returns:
-        JSON list of matching entities
-    """
-    from .graph_store import get_graph_store
-
-    uid = user_id or USER_ID
-    store = get_graph_store()
-
-    entities = store.find_entities_by_name(uid, name, limit)
-
+def _handle_entity_query_by_name(uid: str, store, query: EntityQuery) -> str:
+    """Helper for entity query by name."""
+    if not query.name:
+        return "name is required"
+    entities = store.find_entities_by_name(uid, query.name, query.limit)
     return json.dumps([e.to_dict() for e in entities], indent=2)
 
 
-@mcp.tool()
-def get_relationships(
-    entity_id: str,
-    user_id: str | None = None,
-    direction: str = "both"
-) -> str:
-    """
-    Get relationships for an entity.
-
-    Args:
-        entity_id: Entity ID
-        user_id: Optional user ID override
-        direction: Direction filter (in/out/both)
-
-    Returns:
-        JSON list of relationships
-    """
-    from .graph_store import get_graph_store
-
-    valid_directions = ["in", "out", "both"]
-    if direction not in valid_directions:
-        return f"Invalid direction. Must be one of: {', '.join(valid_directions)}"
-
-    uid = user_id or USER_ID
-    store = get_graph_store()
-
-    relationships = store.get_relationships(entity_id, uid, direction)
-
+def _handle_entity_query_relationships(uid: str, store, query: EntityQuery) -> str:
+    """Helper for entity relationships query."""
+    if not query.entity_id:
+        return "entity_id is required"
+    relationships = store.get_relationships(query.entity_id, uid, query.direction)
     return json.dumps([r.to_dict() for r in relationships], indent=2)
 
 
 @mcp.tool()
-def traverse_graph(
-    start_entity_id: str,
-    user_id: str | None = None,
-    max_depth: int = 2,
-    max_results: int = 50
-) -> str:
-    """
-    Traverse graph from a starting entity.
-
-    Args:
-        start_entity_id: Starting entity ID
-        user_id: Optional user ID override
-        max_depth: Maximum traversal depth (default: 2)
-        max_results: Maximum results (default: 50)
-
-    Returns:
-        JSON with traversed nodes and edges
-    """
-    from .graph_store import get_graph_store
-
-    uid = user_id or USER_ID
-    store = get_graph_store()
-
-    result = store.traverse_graph(start_entity_id, uid, max_depth, max_results)
-
-    return json.dumps({
-        "nodes": [e.to_dict() for e in result.nodes],
-        "edges": [r.to_dict() for r in result.edges],
-    }, indent=2)
-
-
-@mcp.tool()
-def link_memory_to_entities(
-    memory_id: str,
-    entity_ids: list,
+def query_entities(
+    query: EntityQuery,
     user_id: str | None = None
 ) -> str:
     """
-    Link a memory to entities.
+    Query entities and graph relationships.
 
     Args:
-        memory_id: Memory ID
-        entity_ids: List of entity IDs to link
+        query: Query parameters (by_type, by_name, relationships, traverse)
         user_id: Optional user ID override
-
-    Returns:
-        Confirmation message
     """
-    from .graph_store import get_graph_store
-
     uid = user_id or USER_ID
     store = get_graph_store()
 
-    store.link_memory_to_entities(memory_id, entity_ids, uid)
+    if query.query_type == "by_type":
+        return _handle_entity_query_by_type(uid, store, query)
 
-    return f"Linked memory {memory_id} to {len(entity_ids)} entities"
+    if query.query_type == "by_name":
+        return _handle_entity_query_by_name(uid, store, query)
+
+    if query.query_type == "relationships":
+        return _handle_entity_query_relationships(uid, store, query)
+
+    if query.query_type == "traverse":
+        if not query.entity_id:
+            return "entity_id is required for traversal"
+        result = store.traverse_graph(query.entity_id, uid, query.max_depth, query.limit)
+        return json.dumps({
+            "nodes": [e.to_dict() for e in result.nodes],
+            "edges": [r.to_dict() for r in result.edges],
+        }, indent=2)
+
+    return "Invalid query_type"
 
 
 # =============================================================================
 # Enhanced Synthesis Tools
 # =============================================================================
 
-@mcp.tool()
-def enhanced_synthesize(
-    user_id: str | None = None,
-    limit: int = 50,
-    min_memories: int = 5
-) -> str:
-    """
-    Perform enhanced synthesis over user memories.
-
-    Extends base synthesis with contradiction detection, temporal trend
-    analysis, and evidence-anchored insight generation.
-
-    Args:
-        user_id: Optional user ID override
-        limit: Max memories to include in synthesis
-        min_memories: Minimum memories required (default: 5)
-
-    Returns:
-        JSON with synthesis result including contradictions, trends, insights
-    """
-    from .enhanced_synthesizer import get_enhanced_synthesizer
-    from .memory_types import EmotionalMetadata, MemoryObject
-
-    uid = user_id or USER_ID
+def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction) -> str:
+    """Helper for analyze synthesize action."""
+    synthesizer = get_enhanced_synthesizer() if options.enhanced else get_memory_system()["synthesizer"]
     conn = get_db_connection()
-
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
-        (uid, get_current_tenant_id(), limit)
+        (uid, tenant_id, options.limit)
     ).fetchall()
     conn.close()
 
-    if len(rows) < min_memories:
-        return f"Need at least {min_memories} memories for synthesis. Insufficient data available."
+    if len(rows) < 5:
+        return "Need at least 5 memories for synthesis."
 
-    # Convert rows to MemoryObjects
     memories = []
     for r in rows:
+        emo = json.loads(r["emotional_context"]) if r["emotional_context"] else {}
         memories.append(MemoryObject(
-            id=r["id"],
-            timestamp=r["created_at"],
-            scope=r["scope"],
-            retention=r["retention"],
-            content=r["content"],
-            tags=json.loads(r["tags"]),
-            emotional_context=EmotionalMetadata(
-                intensity=json.loads(r["emotional_context"]).get("intensity", 0.5)
-            ) if r["emotional_context"] else None,
+            id=r["id"], timestamp=r["created_at"], scope=r["scope"], retention=r["retention"],
+            content=r["content"], tags=json.loads(r["tags"]),
+            emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5)) if emo else None
         ))
 
-    synthesizer = get_enhanced_synthesizer()
+    if options.enhanced:
+        result = _run_async(synthesizer.synthesize(memories, user_id=uid))
+        return json.dumps(result.to_dict(), indent=2) if result else "No results."
 
-    result = _run_async(synthesizer.synthesize(memories, user_id=uid))
+    result = _run_async(synthesizer.synthesize(memories))
+    if not result:
+        return "No results."
 
-    if result is None:
-        return "Synthesis could not be completed with available data."
+    return json.dumps({
+        "merged_ids": result.merged_ids, "new_memory_id": result.new_memory_id,
+        "compression": result.compression_ratio, "stance_shifts": len(result.stance_shifts)
+    }, indent=2)
 
-    return json.dumps(result.to_dict(), indent=2)
+
+@mcp.tool()
+def analyze_memories(
+    options: AnalysisAction,
+    user_id: str | None = None
+) -> str:
+    """
+    Perform analysis on memories: synthesis or reflection.
+
+    Args:
+        options: Action and parameters
+        user_id: Optional user ID override
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+
+    if options.action == "synthesize":
+        return _handle_analyze_synthesize(uid, tenant_id, options)
+
+    if options.action == "reflect":
+        engine = get_reflection_engine()
+        report = engine.reflect(uid, tenant_id=tenant_id, period=options.period)
+        return json.dumps(report.to_dict(), indent=2) if report else "No results."
+
+    return f"Unknown action: {options.action}"
 
 
 # =============================================================================
 # Hybrid Retrieval Tools
 # =============================================================================
 
-@mcp.tool()
-def hybrid_search(
-    query: str,
-    user_id: str | None = None,
-    limit: int = 10,
-    min_importance: float = 0.1,
-    use_keyword: bool = True,
-    use_graph: bool = True,
-    use_temporal: bool = True,
-) -> str:
-    """
-    Hybrid search combining keyword, graph, and temporal signals.
 
-    Uses Reciprocal Rank Fusion (RRF) to merge results from all three
-    retrieval strategies into a single ranked list.
-
-    Args:
-        query: Search query string
-        user_id: Optional user ID override
-        limit: Maximum results (default: 10)
-        min_importance: Minimum importance threshold (default: 0.1)
-        use_keyword: Enable keyword matching (default: true)
-        use_graph: Enable graph traversal (default: true)
-        use_temporal: Enable temporal scoring (default: true)
-
-    Returns:
-        JSON with merged search results and signal metadata
-    """
-    from .hybrid_retriever import get_hybrid_retriever
-
-    uid = user_id or USER_ID
-    retriever = get_hybrid_retriever()
-
-    result = retriever.search(
-        query=query,
-        user_id=uid,
-        tenant_id=get_current_tenant_id(),
-        limit=limit,
-        min_importance=min_importance,
-        use_keyword=use_keyword,
-        use_graph=use_graph,
-        use_temporal=use_temporal,
-    )
-
-    return json.dumps(result.to_dict(), indent=2)
 
 
 # =============================================================================
 # Reflection Engine Tools
 # =============================================================================
-
-@mcp.tool()
-def run_reflection(
-    user_id: str | None = None,
-    period: str = "weekly",
-) -> str:
-    """
-    Run a reflection analysis over user memories.
-
-    Generates structured insights by analyzing temporal trends,
-    entity patterns, and contradictions across a time period.
-
-    Args:
-        user_id: Optional user ID override
-        period: Analysis period - 'weekly' or 'monthly' (default: weekly)
-
-    Returns:
-        JSON reflection report with insights and trend summary
-    """
-    from .reflection_engine import get_reflection_engine
-
-    if period not in ("weekly", "monthly"):
-        return "Invalid period. Must be 'weekly' or 'monthly'."
-
-    uid = user_id or USER_ID
-    engine = get_reflection_engine()
-
-    report = engine.reflect(uid, tenant_id=get_current_tenant_id(), period=period)
-
-    if report is None:
-        return "Insufficient memories for reflection analysis."
-
-    return json.dumps(report.to_dict(), indent=2)

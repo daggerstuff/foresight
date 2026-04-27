@@ -224,6 +224,7 @@ class GraphStore:
         """
         for table in ("memory_entities", "entity_relationships", "memory_entity_links"):
             try:
+                # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query
                 cursor = conn.execute(f"PRAGMA table_info({table})")
                 columns = [row[1] for row in cursor.fetchall()]
             except sqlite3.OperationalError:
@@ -311,7 +312,7 @@ class GraphStore:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            cursor = conn.execute("""
+            conn.execute("""
             INSERT INTO memory_entities
             (id, tenant_id, user_id, name, entity_type, description, properties, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -580,7 +581,20 @@ class GraphStore:
             WHERE depth > 0
             LIMIT ?
             """
-            cursor = conn.execute(query, [start_entity_id, tid, user_id, tid] + type_params + [max_depth, tid, user_id, max_results])
+            cursor = conn.execute(
+                query,
+                [
+                    start_entity_id,
+                    tid,
+                    user_id,
+                    tid,
+                    *type_params,
+                    max_depth,
+                    tid,
+                    user_id,
+                    max_results,
+                ],
+            )
 
             nodes = [
                 Entity(

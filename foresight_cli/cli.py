@@ -1,34 +1,30 @@
 #!/usr/bin/env python3
 """
 Foresight CLI - Command-line interface for memory operations.
-
-Provides rich terminal output, JSON mode, and shell completion.
 """
 import json
-from pathlib import Path
 
+import click
 import typer
 
 # Import Foresight MCP components
 from foresight_mcp import (
-    delete_memory,
-    get_memory as get_memory_api,
-    list_memories as list_memories_api,
-    memory_status,
-    query_memories,
-    store_memory,
-    update_memory,
-)
-from foresight_mcp.block_registry import get_registry
-from foresight_mcp.hooks import list_hooks, register_hook, unregister_hook
-from foresight_mcp.server import (
-    archive_memory,
-    get_subconscious_block,
-    synthesize_memories,
+    AnalysisAction,
+    MemoryAction,
+    MemoryOptions,
+    MemoryUpdateOptions,
+    SearchOptions,
+    SubconsciousAction,
+    VersionAction,
+    analyze_memories,
+    get_system_status,
+    manage_memories,
+    manage_memory_versions,
+    manage_subconscious,
+    search_memories,
 )
 from rich.console import Console
 from rich.json import JSON
-from rich.table import Table
 from rich.text import Text
 
 app = typer.Typer(
@@ -38,51 +34,41 @@ app = typer.Typer(
 )
 console = Console()
 
-# Configuration
-CONFIG_DIR = Path.home() / ".foresight"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-
-
-def get_config() -> dict:
-    """Load configuration from file."""
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
-    return {}
-
-
-def save_config(config: dict) -> None:
-    """Save configuration to file."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
-
-
 def output_json(data: dict) -> None:
     """Output data as formatted JSON."""
     console.print(JSON(json.dumps(data)))
 
-
-# =============================================================================
-# Memory Commands
-# =============================================================================
-
+@app.callback()
+def callback(
+    ctx: typer.Context,
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Foresight Memory Management CLI."""
+    ctx.obj = {"user_id": user_id, "json": _json}
 
 @app.command("store")
 def cmd_store(
     content: str = typer.Argument(..., help="Memory content to store"),
-    scope: str = typer.Option("session", "--scope", "-s", help="Memory scope: session, arc, trait, fact"),
-    retention: str = typer.Option("short_term", "--retention", "-r", help="Retention: ephemeral, short_term, long_term, permanent"),
+    scope: str = typer.Option("session", "--scope", "-s", help="Memory scope"),
+    retention: str = typer.Option("short_term", "--retention", "-r", help="Retention"),
     category: str = typer.Option("fact", "--category", "-c", help="Category label"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Store a new memory."""
-    result = store_memory(
-        content=content,
-        category=category,
-        scope=scope,
-        retention=retention,
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+
+    result = manage_memories(
+        options=MemoryAction(
+            action="store",
+            content=content,
+            options=MemoryOptions(
+                category=category,
+                scope=scope,
+                retention=retention,
+            ),
+        ),
         user_id=user_id,
     )
 
@@ -91,53 +77,64 @@ def cmd_store(
     else:
         console.print(Text(result, style="green"))
 
-
 @app.command("get")
 def cmd_get(
     memory_id: str = typer.Argument(..., help="Memory ID"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Retrieve a specific memory by ID."""
-    result = get_memory_api(memory_id, user_id=user_id)
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+
+    result = search_memories(
+        options=SearchOptions(query_type="id", memory_id=memory_id),
+        user_id=user_id,
+    )
 
     if _json:
         output_json({"id": memory_id, "result": result})
     else:
         console.print(result)
 
-
 @app.command("list")
 def cmd_list(
     limit: int = typer.Option(10, "--limit", "-l", help="Number of memories"),
     offset: int = typer.Option(0, "--offset", "-o", help="Offset"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """List all memories."""
-    result = list_memories_api(user_id=user_id, limit=limit, offset=offset)
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+
+    result = search_memories(
+        options=SearchOptions(query_type="list", limit=limit, offset=offset),
+        user_id=user_id,
+    )
 
     if _json:
         output_json({"memories": result})
     else:
         console.print(result)
 
-
 @app.command("query")
 def cmd_query(
     query: str = typer.Argument(..., help="Search query"),
     limit: int = typer.Option(5, "--limit", "-l", help="Number of results"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Search memories by content."""
-    result = query_memories(query, user_id=user_id, limit=limit)
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+
+    result = search_memories(
+        options=SearchOptions(query_type="keyword", query=query, limit=limit),
+        user_id=user_id,
+    )
 
     if _json:
         output_json({"query": query, "result": result})
     else:
         console.print(result)
-
 
 @app.command("update")
 def cmd_update(
@@ -146,16 +143,23 @@ def cmd_update(
     category: str | None = typer.Option(None, "--category", help="New category"),
     scope: str | None = typer.Option(None, "--scope", help="New scope"),
     retention: str | None = typer.Option(None, "--retention", help="New retention"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Update an existing memory."""
-    result = update_memory(
-        memory_id=memory_id,
-        content=content,
-        category=category,
-        scope=scope,
-        retention=retention,
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+
+    result = manage_memories(
+        options=MemoryAction(
+            action="update",
+            memory_id=memory_id,
+            updates=MemoryUpdateOptions(
+                content=content,
+                category=category,
+                scope=scope,
+                retention=retention,
+            ),
+        ),
         user_id=user_id,
     )
 
@@ -164,234 +168,140 @@ def cmd_update(
     else:
         console.print(Text(result, style="yellow"))
 
-
 @app.command("delete")
 def cmd_delete(
     memory_id: str = typer.Argument(..., help="Memory ID"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Delete a memory by ID."""
-    result = delete_memory(memory_id, user_id=user_id)
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+
+    result = manage_memories(
+        options=MemoryAction(action="delete", memory_id=memory_id),
+        user_id=user_id,
+    )
 
     if _json:
         output_json({"id": memory_id, "result": result})
     else:
         console.print(Text(result, style="red"))
 
-
 @app.command("synthesize")
 def cmd_synthesize(
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Memory limit"),
+    enhanced: bool = typer.Option(False, "--enhanced", help="Use enhanced synthesis"),
 ):
-    """Run synthesis on all memories to detect stance shifts and merge candidates."""
-    result = synthesize_memories(user_id=user_id)
+    """Run synthesis on memories."""
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
 
-    if _json:
-        output_json({"result": result})
-    else:
-        console.print(result)
-
-
-@app.command("archive")
-def cmd_archive(
-    memory_id: str = typer.Argument(..., help="Memory ID"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Archive a memory to a ghost node."""
-    result = archive_memory(memory_id, user_id=user_id)
-
-    if _json:
-        output_json({"id": memory_id, "result": result})
-    else:
-        console.print(Text(result, style="dim"))
-
-
-# =============================================================================
-# Block Commands
-# =============================================================================
-
-
-block_app = typer.Typer(help="Memory block management.")
-app.add_typer(block_app, name="block")
-
-
-@block_app.command("list")
-def cmd_block_list(
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """List all registered block schemas."""
-    registry = get_registry()
-    schemas = registry.list_schemas()
-
-    if _json:
-        output_json({"schemas": [s.to_dict() for s in schemas]})
-    else:
-        table = Table(title="Memory Block Schemas")
-        table.add_column("Label", style="cyan")
-        table.add_column("Description")
-        table.add_column("Retention", style="magenta")
-        table.add_column("Merge", style="green")
-        table.add_column("Injection", style="blue")
-
-        for schema in schemas:
-            table.add_row(
-                schema.label,
-                schema.description,
-                schema.retention_policy.value,
-                schema.merge_strategy.value,
-                schema.injection_point.value,
-            )
-
-        console.print(table)
-
-
-@block_app.command("create")
-def cmd_block_create(
-    label: str = typer.Argument(..., help="Block label"),
-    content: str = typer.Option("", "--content", "-c", help="Block content"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Create a new memory block."""
-    registry = get_registry()
-    block = registry.create_block(label, content)
-
-    if _json:
-        output_json({"block": block.to_dict()})
-    else:
-        console.print(Text(f"Created block '{label}'", style="green"))
-
-
-@block_app.command("get")
-def cmd_block_get(
-    label: str = typer.Argument(..., help="Block label"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Get a specific memory block."""
-    result = get_subconscious_block(label, user_id=user_id)
-
-    if _json:
-        output_json({"label": label, "result": result})
-    else:
-        console.print(result)
-
-
-# =============================================================================
-# Hook Commands
-# =============================================================================
-
-
-hook_app = typer.Typer(help="Event hook management.")
-app.add_typer(hook_app, name="hook")
-
-
-@hook_app.command("list")
-def cmd_hook_list(
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """List all registered hooks."""
-    result = list_hooks()
-
-    if _json:
-        output_json({"result": result})
-    else:
-        console.print(result)
-
-
-@hook_app.command("register")
-def cmd_hook_register(
-    name: str = typer.Argument(..., help="Hook name"),
-    event_type: str = typer.Argument(..., help="Event type (e.g., memory.stored)"),
-    url: str = typer.Option(..., "--url", "-u", help="Webhook URL"),
-    retry_count: int = typer.Option(3, "--retry", "-r", help="Retry count"),
-    timeout: int = typer.Option(30, "--timeout", "-t", help="Timeout in seconds"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Register a new HTTP webhook hook."""
-    result = register_hook(
-        name=name,
-        event_type=event_type,
-        hook_type="http",
-        url=url,
-        retry_count=retry_count,
-        timeout=timeout,
+    result = analyze_memories(
+        options=AnalysisAction(action="synthesize", limit=limit, enhanced=enhanced),
+        user_id=user_id,
     )
 
     if _json:
         output_json({"result": result})
     else:
-        console.print(Text(result, style="green"))
+        console.print(result)
 
-
-@hook_app.command("unregister")
-def cmd_hook_unregister(
-    hook_id: str = typer.Argument(..., help="Hook ID"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
+@app.command("reflect")
+def cmd_reflect(
+    period: str = typer.Option("weekly", "--period", "-p", help="Reflection period"),
 ):
-    """Unregister a hook by ID."""
-    result = unregister_hook(hook_id)
+    """Run reflection analysis."""
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
 
-    if _json:
-        output_json({"id": hook_id, "result": result})
-    else:
-        console.print(Text(result, style="yellow"))
-
-
-# =============================================================================
-# Event Commands
-# =============================================================================
-
-
-event_app = typer.Typer(help="Event log and audit trail.")
-app.add_typer(event_app, name="event")
-
-
-@event_app.command("log")
-def cmd_event_log(
-    since: str = typer.Option("1h", "--since", "-s", help="Time range (e.g., 1h, 30m, 2d)"),
-    entity: str | None = typer.Option(None, "--entity", "-e", help="Entity filter (e.g., memory:*)"),
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """View event log."""
-    # TODO: Implement event log retrieval from EventStore
-    result = "Event log retrieval not yet implemented"
+    result = analyze_memories(
+        options=AnalysisAction(action="reflect", period=period),
+        user_id=user_id,
+    )
 
     if _json:
         output_json({"result": result})
     else:
         console.print(result)
 
+@app.command("diff")
+def cmd_diff(
+    memory_id: str = typer.Argument(..., help="Memory ID"),
+    v1: int = typer.Argument(..., help="Version 1"),
+    v2: int = typer.Argument(..., help="Version 2"),
+):
+    """Compare two versions of a memory."""
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
 
-# =============================================================================
-# Status Command
-# =============================================================================
+    result = manage_memory_versions(
+        options=VersionAction(action="diff", memory_id=memory_id, version1=v1, version2=v2),
+        user_id=user_id,
+    )
 
+    if _json:
+        output_json({"result": result})
+    else:
+        console.print(result)
+
+@app.command("rollback")
+def cmd_rollback(
+    memory_id: str = typer.Argument(..., help="Memory ID"),
+    version: int = typer.Argument(..., help="Version to rollback to"),
+):
+    """Rollback a memory to a specific version."""
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+
+    result = manage_memory_versions(
+        options=VersionAction(action="rollback", memory_id=memory_id, to_version=version),
+        user_id=user_id,
+    )
+
+    if _json:
+        output_json({"result": result})
+    else:
+        console.print(result)
 
 @app.command("status")
-def cmd_status(
-    _json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
+def cmd_status():
     """Get system status."""
-    result = memory_status()
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
+    result = get_system_status(user_id=user_id)
 
     if _json:
         output_json(json.loads(result))
     else:
         console.print(result)
 
+@app.command("block-get")
+def cmd_block_get(
+    label: str = typer.Argument(..., help="Block label"),
+):
+    """Get a specific memory block."""
+    ctx = click.get_current_context()
+    user_id = ctx.obj["user_id"]
+    _json = ctx.obj["json"]
 
-# =============================================================================
-# Main entry point
-# =============================================================================
+    result = manage_subconscious(
+        options=SubconsciousAction(action="get", label=label),
+        user_id=user_id,
+    )
+
+    if _json:
+        output_json({"label": label, "result": result})
+    else:
+        console.print(result)
 
 def main():
     """CLI entry point."""
     app()
-
 
 if __name__ == "__main__":
     app()

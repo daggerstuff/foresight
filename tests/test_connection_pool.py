@@ -78,7 +78,7 @@ def test_pool_exhausted_raises(pool):
 def test_close_all_clears_pool(pool):
     conn = pool.acquire()
     pool.release(conn)          # one idle
-    conn2 = pool.acquire()      # one in-use
+    _conn2 = pool.acquire()      # one in-use
     pool.close_all()
     assert pool.stats == {"idle": 0, "in_use": 0, "max_size": pool.max_size}
 
