@@ -14,366 +14,354 @@ Includes:
 - Event hook system for extensibility (HTTP webhooks, callables, async)
 - Memory versioning with rollback capabilities
 - Multi-tenant isolation with rate limiting
-- Compliance exporters for HIPAA, SOC2, GDPR
+# - Compliance exporters for HIPAA, SOC2, GDPR -- Removed
 """
-# Block registry exports
+
+from typing import TYPE_CHECKING, Any
+
+# Core system exports
 from .block_registry import (
-    BlockRegistry,
-    BlockScope,
-    InjectionPoint,
-    MemoryBlock,
-    MemoryBlockSchema,
-    MergeStrategy,
-    RetentionPolicy,
-    get_registry,
-    initialize_default_blocks,
+    BlockRegistry as BlockRegistry,
+    BlockScope as BlockScope,
+    InjectionPoint as InjectionPoint,
+    MemoryBlock as MemoryBlock,
+    MemoryBlockSchema as MemoryBlockSchema,
+    MergeStrategy as MergeStrategy,
+    RetentionPolicy as RetentionPolicy,
+    get_registry as get_registry,
+    initialize_default_blocks as initialize_default_blocks,
 )
-
-# Enhanced synthesizer exports
 from .enhanced_synthesizer import (
-    Contradiction,
-    EnhancedMemorySynthesizer,
-    EnhancedSynthesisResult,
-    Insight,
-    TemporalTrend,
-    get_enhanced_synthesizer,
-    reset_enhanced_synthesizer,
+    Contradiction as Contradiction,
+    EnhancedMemorySynthesizer as EnhancedMemorySynthesizer,
+    EnhancedSynthesisResult as EnhancedSynthesisResult,
+    Insight as Insight,
+    TemporalTrend as TemporalTrend,
+    get_enhanced_synthesizer as get_enhanced_synthesizer,
+    reset_enhanced_synthesizer as reset_enhanced_synthesizer,
 )
-
-# Entity and graph exports
 from .entity_extractor import (
-    Entity,
-    EntityExtractor,
-    ExtractionResult,
-    Relationship,
-    get_entity_extractor,
-    reset_entity_extractor,
+    Entity as Entity,
+    EntityExtractor as EntityExtractor,
+    ExtractionResult as ExtractionResult,
+    Relationship as Relationship,
+    get_entity_extractor as get_entity_extractor,
+    reset_entity_extractor as reset_entity_extractor,
 )
-
-# Event bus exports
 from .event_bus import (
-    Event,
-    EventBus,
-    EventType,
-    get_event_bus,
+    Event as Event,
+    EventBus as EventBus,
+    EventType as EventType,
+    get_event_bus as get_event_bus,
 )
 from .graph_store import (
-    GraphStore,
-    GraphTraversalResult,
-    get_graph_store,
-    reset_graph_store,
+    GraphStore as GraphStore,
+    GraphTraversalResult as GraphTraversalResult,
+    get_graph_store as get_graph_store,
+    reset_graph_store as reset_graph_store,
 )
-
-# Hook system exports
 from .hooks import (
-    HookExecutor,
-    HookRegistration,
-    HookRegistry,
-    HookType,
-    get_hook_executor,
-    list_hooks,
-    register_hook,
-    unregister_hook,
+    HookExecutor as HookExecutor,
+    HookRegistration as HookRegistration,
+    HookRegistry as HookRegistry,
+    HookType as HookType,
+    get_hook_executor as get_hook_executor,
+    list_hooks as list_hooks,
+    register_hook as register_hook,
+    unregister_hook as unregister_hook,
 )
-
-# Hybrid retriever exports
 from .hybrid_retriever import (
-    HybridResult,
-    HybridRetriever,
-    HybridSearchResult,
-    get_hybrid_retriever,
-    reset_hybrid_retriever,
+    HybridResult as HybridResult,
+    HybridRetriever as HybridRetriever,
+    HybridSearchResult as HybridSearchResult,
+    get_hybrid_retriever as get_hybrid_retriever,
+    reset_hybrid_retriever as reset_hybrid_retriever,
 )
-
-# Reflection engine exports
 from .reflection_engine import (
-    ReflectionEngine,
-    ReflectionInsight,
-    ReflectionReport,
-    get_reflection_engine,
-    reset_reflection_engine,
+    ReflectionEngine as ReflectionEngine,
+    ReflectionInsight as ReflectionInsight,
+    ReflectionReport as ReflectionReport,
+    get_reflection_engine as get_reflection_engine,
+    reset_reflection_engine as reset_reflection_engine,
 )
 from .server import (
-    add_subconscious_guidance,
-    archive_memory,
-    # Audit tools
-    audit_build,
-    audit_export,
-    audit_list_reports,
-    audit_summary,
-    clear_subconscious_block,
-    compliance_gdpr_data_export,
-    compliance_gdpr_erasure_certification,
-    # Compliance exporters
-    compliance_hipaa_access_log,
-    compliance_hipaa_modification_log,
-    compliance_hipaa_user_activity,
-    compliance_save_report,
-    compliance_soc2_access_review,
-    compliance_soc2_change_history,
-    compliance_soc2_monitoring,
-    # Multi-tenant isolation
-    create_tenant,
-    delete_memory,
-    diff_memories,
-    get_memory,
-    # Versioning tools
-    get_memory_versions,
-    get_subconscious_block,
-    # Subconscious tools
-    get_subconscious_blocks,
-    get_subconscious_context,
-    get_subconscious_whisper,
-    get_tenant,
-    get_tenant_isolation_status,
-    list_memories,
-    list_tenants,
-    mcp,
-    memory_status,
-    process_session_transcript,
-    query_memories,
-    reset_subconscious_block,
-    rollback_memory,
-    store_memory,
-    switch_tenant,
-    synthesize_memories,
-    update_memory,
-    update_subconscious_block,
-    update_tenant_config,
+    AnalysisAction as AnalysisAction,
+    EntityAction as EntityAction,
+    EntityQuery as EntityQuery,
+    MemoryAction as MemoryAction,
+    MemoryOptions as MemoryOptions,
+    MemoryUpdateOptions as MemoryUpdateOptions,
+    SearchOptions as SearchOptions,
+    SubconsciousAction as SubconsciousAction,
+    SystemStatusOptions as SystemStatusOptions,
+    TemporalWindow as TemporalWindow,
+    VersionAction as VersionAction,
+    analyze_memories as analyze_memories,
+    archive_memory as archive_memory,
+    delete_memory as delete_memory,
+    get_memory as get_memory,
+    get_system_status as get_system_status,
+    inject_context as inject_context,
+    list_memories as list_memories,
+    manage_entities as manage_entities,
+    manage_memories as manage_memories,
+    manage_memory_versions as manage_memory_versions,
+    manage_subconscious as manage_subconscious,
+    mcp as mcp,
+    memory_status as memory_status,
+    process_session_transcript as process_session_transcript,
+    query_entities as query_entities,
+    query_memories as query_memories,
+    query_memories_temporal as query_memories_temporal,
+    search_memories as search_memories,
+    store_memory as store_memory,
+    switch_tenant as switch_tenant,
+    update_memory as update_memory,
 )
 from .temporal_queries import (
-    TemporalQueryBuilder,
-    TemporalQueryResult,
-    TimeWindow,
-    get_temporal_query_builder,
-    reset_temporal_query_builder,
+    TemporalQueryBuilder as TemporalQueryBuilder,
+    TemporalQueryResult as TemporalQueryResult,
+    TimeWindow as TimeWindow,
+    get_temporal_query_builder as get_temporal_query_builder,
+    reset_temporal_query_builder as reset_temporal_query_builder,
 )
 from .temporal_schema import (
-    initialize_decay_config,
-    run_temporal_migrations,
+    initialize_decay_config as initialize_decay_config,
+    run_temporal_migrations as run_temporal_migrations,
 )
-
-# Temporal memory exports
 from .temporal_service import (
-    DecayConfig,
-    FreshnessTrend,
-    TemporalService,
-    get_temporal_service,
-    reset_temporal_service,
+    DecayConfig as DecayConfig,
+    FreshnessTrend as FreshnessTrend,
+    TemporalService as TemporalService,
+    get_temporal_service as get_temporal_service,
+    reset_temporal_service as reset_temporal_service,
 )
 
-# Stream producer exports (optional - may not have kafka-python installed)
-try:
-    from .stream_producer import (
-        KafkaProducer,
-        KinesisProducer,
-        MockProducer,
-        StreamEvent,
-        StreamProducer,
-        StreamPublisher,
-        StreamType,
-        create_stream_producer,
-    )
-    _stream_producer_available = True
-except ImportError:
-    _stream_producer_available = False
-
-    class _OptionalStreamDependencyStub:
-        """Stub for optional stream dependency that raises ImportError on any use."""
-
-        def __init__(self, *args, **kwargs):
-            raise ImportError(
-                f"{self.__class__.__name__} requires kafka-python or boto3. "
-                f"Install with: pip install kafka-python boto3"
-            )
-
-    class StreamProducer(_OptionalStreamDependencyStub): ...
-    class StreamPublisher(_OptionalStreamDependencyStub): ...
-    class StreamEvent(_OptionalStreamDependencyStub): ...
-    class StreamType(_OptionalStreamDependencyStub): ...
-    class KafkaProducer(_OptionalStreamDependencyStub): ...
-    class KinesisProducer(_OptionalStreamDependencyStub): ...
-    class MockProducer(_OptionalStreamDependencyStub): ...
-
-    def create_stream_producer(*args, **kwargs):
-        raise ImportError(
-            "create_stream_producer requires kafka-python or boto3. "
-            "Install with: pip install kafka-python boto3"
-        )
-
-# Consumer group exports (optional - may not have kafka-python installed)
-try:
+# Optional stream producer and consumer dependencies
+if TYPE_CHECKING:
     from .consumer_group import (
-        ConsumerRecord,
-        ConsumerState,
-        ConsumerStats,
-        KafkaConsumerGroup,
+        ConsumerRecord as ConsumerRecord,
+        ConsumerState as ConsumerState,
+        ConsumerStats as ConsumerStats,
+        KafkaConsumerGroup as KafkaConsumerGroup,
     )
+    from .stream_producer import (
+        KafkaProducer as KafkaProducer,
+        KinesisProducer as KinesisProducer,
+        MockProducer as MockProducer,
+        StreamEvent as StreamEvent,
+        StreamProducer as StreamProducer,
+        StreamPublisher as StreamPublisher,
+        StreamType as StreamType,
+        create_stream_producer as create_stream_producer,
+    )
+
+    _stream_producer_available = True
     _consumer_group_available = True
-except ImportError:
-    _consumer_group_available = False
+else:
+    # Stream producer (optional)
+    try:
+        from .stream_producer import (
+            KafkaProducer,
+            KinesisProducer,
+            MockProducer,
+            StreamEvent,
+            StreamProducer,
+            StreamPublisher,
+            StreamType,
+            create_stream_producer,
+        )
+        _stream_producer_available = True
+    except ImportError:
+        _stream_producer_available = False
 
-    class _OptionalConsumerDependencyStub:
-        """Stub for optional consumer dependency that raises ImportError on any use."""
+        class _OptionalStreamDependencyStub:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                raise ImportError(
+                    f"{self.__class__.__name__} requires kafka-python or boto3. "
+                    "Install with: pip install kafka-python boto3"
+                )
 
-        def __init__(self, *args, **kwargs):
+        StreamProducer = StreamPublisher = StreamEvent = StreamType = _OptionalStreamDependencyStub
+        KafkaProducer = KinesisProducer = MockProducer = _OptionalStreamDependencyStub
+
+        def create_stream_producer(*_args: Any, **_kwargs: Any) -> Any:
             raise ImportError(
-                f"{self.__class__.__name__} requires kafka-python. "
-                f"Install with: pip install kafka-python"
+                "create_stream_producer requires kafka-python or boto3. "
+                "Install with: pip install kafka-python boto3"
             )
 
-    class KafkaConsumerGroup(_OptionalConsumerDependencyStub): ...
-    class ConsumerRecord(_OptionalConsumerDependencyStub): ...
-    class ConsumerStats(_OptionalConsumerDependencyStub): ...
-    class ConsumerState(_OptionalConsumerDependencyStub): ...
-# Hook system exports
-# CRDT exports
+    # Consumer group (optional)
+    try:
+        from .consumer_group import (
+            ConsumerRecord,
+            ConsumerState,
+            ConsumerStats,
+            KafkaConsumerGroup,
+        )
+        _consumer_group_available = True
+    except ImportError:
+        _consumer_group_available = False
+
+        class _OptionalConsumerDependencyStub:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                raise ImportError(
+                    f"{self.__class__.__name__} requires kafka-python. "
+                    "Install with: pip install kafka-python"
+                )
+
+        KafkaConsumerGroup = ConsumerRecord = ConsumerStats = ConsumerState = _OptionalConsumerDependencyStub
+# CRDT and Sync exports
 from .crdt import (
-    LWWMap,
-    LWWRegister,
-    ORSet,
-    VectorClock,
+    LWWMap as LWWMap,
+    LWWRegister as LWWRegister,
+    ORSet as ORSet,
+    VectorClock as VectorClock,
 )
-
-# Projections exports
-from .projections.builder import ProjectionBuilder
-from .projections.reports import (
-    AccessLog,
-    AnomalyReport,
-    BlockChangeLog,
-    MemoryTimeline,
-    UserActivityReport,
-)
-
-# Sync exports
 from .sync import (
-    Operation,
-    OperationQueue,
-    OperationType,
-    SyncManager,
-    SyncProgress,
-    SyncStatus,
-    get_sync_manager,
-    reset_sync_manager,
+    Operation as Operation,
+    OperationQueue as OperationQueue,
+    OperationType as OperationType,
+    SyncManager as SyncManager,
+    SyncProgress as SyncProgress,
+    SyncStatus as SyncStatus,
+    get_sync_manager as get_sync_manager,
+    reset_sync_manager as reset_sync_manager,
 )
 from .websocket.server import (
-    Connection,
-    ConnectionState,
-    WebSocketHandler,
-    WebSocketServer,
+    Connection as Connection,
+    ConnectionState as ConnectionState,
+    WebSocketHandler as WebSocketHandler,
+    WebSocketServer as WebSocketServer,
 )
 from .websocket.subscriptions import (
-    Subscription,
-    SubscriptionManager,
-    get_subscription_manager,
-    reset_subscription_manager,
+    Subscription as Subscription,
+    SubscriptionManager as SubscriptionManager,
+    get_subscription_manager as get_subscription_manager,
+    reset_subscription_manager as reset_subscription_manager,
 )
 
 __version__ = "1.2.0"
 __all__ = [
-    "mcp",
-    "store_memory",
-    "query_memories",
-    "list_memories",
-    "get_memory",
-    "update_memory",
-    "delete_memory",
-    "memory_status",
-    "synthesize_memories",
-    "archive_memory",
-    # Versioning tools
-    "get_memory_versions",
-    "rollback_memory",
-    "diff_memories",
-    # Multi-tenant isolation
-    "create_tenant",
-    "get_tenant",
-    "list_tenants",
-    "update_tenant_config",
-    "switch_tenant",
-    "get_tenant_isolation_status",
-    # Compliance exporters
-    "compliance_hipaa_access_log",
-    "compliance_hipaa_modification_log",
-    "compliance_hipaa_user_activity",
-    "compliance_soc2_change_history",
-    "compliance_soc2_access_review",
-    "compliance_soc2_monitoring",
-    "compliance_gdpr_data_export",
-    "compliance_gdpr_erasure_certification",
-    "compliance_save_report",
-    # Subconscious
-    "get_subconscious_blocks",
-    "get_subconscious_block",
-    "update_subconscious_block",
-    "add_subconscious_guidance",
-    "get_subconscious_whisper",
-    "get_subconscious_context",
-    "reset_subconscious_block",
-    "clear_subconscious_block",
-    "process_session_transcript",
-    # Audit tools
-    "audit_build",
-    "audit_list_reports",
-    "audit_export",
-    "audit_summary",
-    # Block registry
+    "AnalysisAction",
     "BlockRegistry",
-    "MemoryBlockSchema",
-    "MemoryBlock",
-    "RetentionPolicy",
-    "MergeStrategy",
-    "InjectionPoint",
     "BlockScope",
-    "get_registry",
-    "initialize_default_blocks",
-    # Stream processing
-    "StreamProducer",
-    "StreamPublisher",
-    "StreamEvent",
-    "StreamType",
+    "Connection",
+    "ConnectionState",
+    "ConsumerRecord",
+    "ConsumerState",
+    "ConsumerStats",
+    "Contradiction",
+    "DecayConfig",
+    "EnhancedMemorySynthesizer",
+    "EnhancedSynthesisResult",
+    "Entity",
+    "EntityAction",
+    "EntityExtractor",
+    "EntityQuery",
+    "Event",
+    "EventBus",
+    "EventType",
+    "ExtractionResult",
+    "FreshnessTrend",
+    "GraphStore",
+    "GraphTraversalResult",
+    "HookExecutor",
+    "HookRegistration",
+    "HookRegistry",
+    "HookType",
+    "HybridResult",
+    "HybridRetriever",
+    "HybridSearchResult",
+    "InjectionPoint",
+    "Insight",
+    "KafkaConsumerGroup",
     "KafkaProducer",
     "KinesisProducer",
-    "MockProducer",
-    "create_stream_producer",
-    # Consumer group
-    "KafkaConsumerGroup",
-    "ConsumerRecord",
-    "ConsumerStats",
-    "ConsumerState",
-    # WebSocket
-    "WebSocketServer",
-    "WebSocketHandler",
-    "ConnectionState",
-    "Connection",
-    "SubscriptionManager",
-    "Subscription",
-    "get_subscription_manager",
-    "reset_subscription_manager",
-    # CRDT
-    "VectorClock",
-    "LWWRegister",
-    "ORSet",
     "LWWMap",
-    # Sync
-    "SyncManager",
-    "SyncStatus",
-    "OperationType",
+    "LWWRegister",
+    "MemoryAction",
+    "MemoryBlock",
+    "MemoryBlockSchema",
+    "MemoryOptions",
+    "MemoryUpdateOptions",
+    "MergeStrategy",
+    "MockProducer",
+    "ORSet",
     "Operation",
     "OperationQueue",
-    "SyncProgress",
-    "get_sync_manager",
-    "reset_sync_manager",
-    # Hybrid retriever
-    "HybridRetriever",
-    "HybridResult",
-    "HybridSearchResult",
-    "get_hybrid_retriever",
-    "reset_hybrid_retriever",
-    # Reflection engine
+    "OperationType",
     "ReflectionEngine",
-    "ReflectionReport",
     "ReflectionInsight",
+    "ReflectionReport",
+    "Relationship",
+    "RetentionPolicy",
+    "SearchOptions",
+    "StreamEvent",
+    "StreamProducer",
+    "StreamPublisher",
+    "StreamType",
+    "SubconsciousAction",
+    "Subscription",
+    "SubscriptionManager",
+    "SyncManager",
+    "SyncProgress",
+    "SyncStatus",
+    "SystemStatusOptions",
+    "TemporalQueryBuilder",
+    "TemporalQueryResult",
+    "TemporalService",
+    "TemporalTrend",
+    "TemporalWindow",
+    "TimeWindow",
+    "VectorClock",
+    "VersionAction",
+    "WebSocketHandler",
+    "WebSocketServer",
+    "analyze_memories",
+    "archive_memory",
+    "create_stream_producer",
+    "delete_memory",
+    "get_enhanced_synthesizer",
+    "get_entity_extractor",
+    "get_event_bus",
+    "get_graph_store",
+    "get_hook_executor",
+    "get_hybrid_retriever",
+    "get_memory",
     "get_reflection_engine",
+    "get_registry",
+    "get_system_status",
+    "get_temporal_query_builder",
+    "get_temporal_service",
+    "initialize_decay_config",
+    "initialize_default_blocks",
+    "inject_context",
+    "list_hooks",
+    "list_memories",
+    "manage_entities",
+    "manage_memories",
+    "manage_memory_versions",
+    "manage_subconscious",
+    "mcp",
+    "memory_status",
+    "process_session_transcript",
+    "query_entities",
+    "query_memories",
+    "query_memories_temporal",
+    "register_hook",
+    "reset_enhanced_synthesizer",
+    "reset_entity_extractor",
+    "reset_graph_store",
+    "reset_hybrid_retriever",
     "reset_reflection_engine",
+    "reset_sync_manager",
+    "reset_temporal_query_builder",
+    "reset_temporal_service",
+    "run_temporal_migrations",
+    "search_memories",
+    "store_memory",
+    "switch_tenant",
+    "unregister_hook",
+    "update_memory",
 ]

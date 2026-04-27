@@ -5,11 +5,12 @@ and automatic cleanup of stale connections.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
-import os
 from collections import deque
+from contextlib import suppress
 
 from .config import DB_PATH
 
@@ -25,7 +26,7 @@ class ConnectionPool:
         self._in_use: set[sqlite3.Connection] = set()
         self._lock = threading.Lock()
 
-    def acquire(self) -> "PooledConnection":
+    def acquire(self) -> PooledConnection:
         """Get a connection from the pool, reusing idle wrappers when possible."""
         with self._lock:
             # Try to reuse an idle connection (could be raw conn or wrapper)
@@ -34,10 +35,8 @@ class ConnectionPool:
                 # Discard stale connections based on underlying raw connection
                 raw = item._conn if isinstance(item, PooledConnection) else item
                 if time.time() - last_used > self.max_idle_seconds:
-                    try:
+                    with suppress(Exception):
                         raw.close()
-                    except Exception:
-                        pass
                     continue
                 # Validate connection is still alive
                 try:
@@ -46,13 +45,10 @@ class ConnectionPool:
                     # Return the original wrapper if we have one, else wrap anew
                     if isinstance(item, PooledConnection):
                         return item
-                    else:
-                        return PooledConnection(raw, self)
+                    return PooledConnection(raw, self)
                 except Exception:
-                    try:
+                    with suppress(Exception):
                         raw.close()
-                    except Exception:
-                        pass
                     continue
 
             # Create a new connection only if under the size limit
@@ -64,22 +60,27 @@ class ConnectionPool:
             self._in_use.add(conn)
             return PooledConnection(conn, self)
 
-    def _unwrap_connection(self, conn: sqlite3.Connection | PooledConnection) -> sqlite3.Connection:
-        """Get underlying sqlite3 connection from either wrapper or raw connection."""
-        if isinstance(conn, PooledConnection):
-            return conn._conn
-        return conn
+    def _unwrap_and_track(
+        self, conn: sqlite3.Connection | PooledConnection
+    ) -> tuple[sqlite3.Connection, PooledConnection | None]:
+        """Return the raw sqlite3 connection and nearest wrapper owning it."""
+        tracked: PooledConnection | None = None
+        while isinstance(conn, PooledConnection):
+            if isinstance(conn._conn, sqlite3.Connection):
+                tracked = conn
+            conn = conn._conn
+        return conn, tracked
 
     def release(self, conn: sqlite3.Connection | PooledConnection) -> None:
         """Return a connection to the pool."""
         if isinstance(conn, PooledConnection) and getattr(conn, "_released", False):
             return
         if isinstance(conn, PooledConnection):
-            wrapper_conn = conn
+            raw_conn, wrapper_conn = self._unwrap_and_track(conn)
             conn._released = True
         else:
+            raw_conn = conn
             wrapper_conn = None
-        raw_conn = self._unwrap_connection(conn)
 
         with self._lock:
             if raw_conn not in self._in_use:
@@ -88,10 +89,8 @@ class ConnectionPool:
                     if wrapper_conn is not None:
                         wrapper_conn._released = True
                     return
-                try:
+                with suppress(Exception):
                     raw_conn.close()
-                except Exception:
-                    pass
                 if wrapper_conn is not None:
                     wrapper_conn._released = True
                 return
@@ -109,10 +108,8 @@ class ConnectionPool:
                 except Exception:
                     pass
             # Pool full or connection dead -- close it
-            try:
+            with suppress(Exception):
                 raw_conn.close()
-            except Exception:
-                pass
             if wrapper_conn is not None:
                 wrapper_conn._released = True
 
@@ -128,15 +125,11 @@ class ConnectionPool:
         """Close all connections (for shutdown/testing)."""
         with self._lock:
             for conn, _ in self._pool:
-                try:
+                with suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
             for conn in list(self._in_use):
-                try:
+                with suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
             self._pool.clear()
             self._in_use.clear()
 
@@ -158,11 +151,8 @@ _pool_lock = threading.Lock()
 
 def get_pool(db_path: str | None = None) -> ConnectionPool:
     """Get or create the global connection pool (thread-safe)."""
-    global _pools
     with _pool_lock:
-        from .config import DB_PATH as default_path
-
-        pool_path = os.path.abspath(db_path or default_path)
+        pool_path = os.path.abspath(db_path or DB_PATH)
         if pool_path not in _pools:
             _pools[pool_path] = ConnectionPool(pool_path)
         return _pools[pool_path]
@@ -170,11 +160,10 @@ def get_pool(db_path: str | None = None) -> ConnectionPool:
 
 def reset_pool() -> None:
     """Reset the global pool (for testing)."""
-    global _pools
     with _pool_lock:
         for pool in _pools.values():
             pool.close_all()
-        _pools = {}
+        _pools.clear()
 
 
 class PooledConnection:
@@ -196,6 +185,9 @@ class PooledConnection:
     def close(self):
         if self._released:
             return
+        if isinstance(self._conn, sqlite3.Connection):
+            with suppress(Exception):
+                self._conn.close()
         self._pool.release(self)
 
     def __enter__(self):
@@ -206,7 +198,5 @@ class PooledConnection:
 
     def __del__(self):
         # Ensure connections are never leaked if callers forget to close.
-        try:
+        with suppress(Exception):
             self.close()
-        except Exception:
-            pass

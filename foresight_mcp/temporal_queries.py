@@ -9,12 +9,14 @@ Implements:
 from __future__ import annotations
 
 import logging
-from .connection_pool import get_pool
-
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
+
+from .config import DB_PATH
+from .connection_pool import get_pool
+from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_temporal_queries")
 
@@ -68,14 +70,15 @@ class TemporalQueryBuilder:
         self,
         user_id: str,
         window: TimeWindow,
+        *,
         limit: int = 50,
         min_importance: float = 0.1,
-        category: str | None = None,
-        tenant_id: str = "default"
+        category: str | None = None
     ) -> list[TemporalQueryResult]:
         """
         Get memories from a time window, handling optional tenant column.
         """
+        tenant_id = get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
@@ -142,73 +145,18 @@ class TemporalQueryBuilder:
             ]
         finally:
             pool.release(conn)
-        """
-        Get memories from a time window.
-
-        Args:
-            user_id: User ID
-            window: Time window (today/week/month/year)
-            limit: Max results
-            min_importance: Minimum importance threshold
-            category: Optional category filter
-
-        Returns:
-            List of TemporalQueryResult
-        """
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            window_hours = self._get_window_hours(window)
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-
-            category_clause = "AND category = ?" if category else ""
-            # Build params in the correct order matching placeholders.
-            params = [user_id, tenant_id, cutoff.isoformat(), min_importance]
-            if category:
-                params.append(category)
-            params.append(limit)
-
-            cursor = conn.execute(f"""
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND created_at >= ?
-                AND importance >= ?
-                {category_clause}
-                ORDER BY importance DESC, created_at DESC
-                LIMIT ?
-            """, params)
-
-            return [
-                TemporalQueryResult(
-                    memory_id=row[0],
-                    content=row[1],
-                    importance=row[2],
-                    strength_trend=row[3],
-                    activation_count=row[4],
-                    created_at=row[5],
-                    accessed_at=row[6],
-                    category=row[7],
-                )
-                for row in cursor.fetchall()
-            ]
-        finally:
-            pool.release(conn)
 
     def get_memories_as_of_time(
         self,
         user_id: str,
         target_date: datetime,
         category: str | None = None,
-        min_importance: float = 0.1,
-        tenant_id: str = "default"
+        min_importance: float = 0.1
     ) -> list[TemporalQueryResult]:
         """
         Get memories as of a specific time, with optional tenant handling.
         """
+        tenant_id = get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
@@ -268,68 +216,18 @@ class TemporalQueryBuilder:
             ]
         finally:
             pool.release(conn)
-        """
-        Get memories as they existed at a specific time.
-
-        Useful for historical state queries.
-
-        Args:
-            user_id: User ID
-            target_date: Target date/time
-            category: Optional category filter
-            min_importance: Minimum importance threshold
-
-        Returns:
-            List of TemporalQueryResult
-        """
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            category_clause = "AND category = ?" if category else ""
-            params = [user_id, tenant_id, target_date.isoformat(), min_importance]
-            if category:
-                params = [user_id, tenant_id, category, target_date.isoformat(), min_importance]
-
-            cursor = conn.execute(f"""
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND created_at <= ?
-                AND importance > ?
-                {category_clause}
-                ORDER BY created_at DESC
-            """, params)
-
-            return [
-                TemporalQueryResult(
-                    memory_id=row[0],
-                    content=row[1],
-                    importance=row[2],
-                    strength_trend=row[3],
-                    activation_count=row[4],
-                    created_at=row[5],
-                    accessed_at=row[6],
-                    category=row[7],
-                )
-                for row in cursor.fetchall()
-            ]
-        finally:
-            pool.release(conn)
 
     def get_memories_by_trend(
         self,
         user_id: str,
         trend: str,
         limit: int = 50,
-        category: str | None = None,
-        tenant_id: str = "default"
+        category: str | None = None
     ) -> list[TemporalQueryResult]:
         """
         Get memories by trend, handling optional tenant column.
         """
+        tenant_id = get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
@@ -388,60 +286,11 @@ class TemporalQueryBuilder:
             ]
         finally:
             pool.release(conn)
-        """
-        Get memories by freshness trend.
-
-        Args:
-            user_id: User ID
-            trend: Trend type (stable/strengthening/weakening/stale)
-            limit: Max results
-            category: Optional category filter
-
-        Returns:
-            List of TemporalQueryResult
-        """
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            category_clause = "AND category = ?" if category else ""
-            params = [user_id, tenant_id, trend, limit]
-            if category:
-                params = [user_id, tenant_id, category, trend, limit]
-
-            cursor = conn.execute(f"""
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND strength_trend = ?
-                {category_clause}
-                ORDER BY created_at DESC
-                LIMIT ?
-            """, params)
-
-            return [
-                TemporalQueryResult(
-                    memory_id=row[0],
-                    content=row[1],
-                    importance=row[2],
-                    strength_trend=row[3],
-                    activation_count=row[4],
-                    created_at=row[5],
-                    accessed_at=row[6],
-                    category=row[7],
-                )
-                for row in cursor.fetchall()
-            ]
-        finally:
-            pool.release(conn)
 
     def analyze_trends(
         self,
         user_id: str,
-        timeframe: str = "30 days",
-        tenant_id: str = "default"
+        timeframe: str = "30 days"
     ) -> dict:
         """
         Analyze memory trends over time.
@@ -453,13 +302,14 @@ class TemporalQueryBuilder:
         Returns:
             Dictionary with trend analysis
         """
+        tenant_id = get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Daily stats
             try:
-                cursor = conn.execute(f"""
+                cursor = conn.execute("""
                     SELECT
                         strftime('%Y-%m-%d', created_at) as date,
                         COUNT(*) as count,
@@ -474,7 +324,7 @@ class TemporalQueryBuilder:
                 """, (user_id, tenant_id, timeframe))
             except Exception as e:
                 if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute(f"""
+                    cursor = conn.execute("""
                         SELECT
                             strftime('%Y-%m-%d', created_at) as date,
                             COUNT(*) as count,
@@ -503,7 +353,7 @@ class TemporalQueryBuilder:
 
             # Category breakdown
             try:
-                cursor = conn.execute(f"""
+                cursor = conn.execute("""
                     SELECT
                         COALESCE(category, 'general') as category,
                         COUNT(*) as count,
@@ -517,7 +367,7 @@ class TemporalQueryBuilder:
                 """, (user_id, tenant_id, timeframe))
             except Exception as e:
                 if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute(f"""
+                    cursor = conn.execute("""
                         SELECT
                             COALESCE(category, 'general') as category,
                             COUNT(*) as count,
@@ -567,15 +417,14 @@ class TemporalQueryBuilder:
 
         if delta > 0.1:
             return "improving"
-        elif delta < -0.1:
+        if delta < -0.1:
             return "declining"
         return "stable"
 
     def get_time_weighted_scores(
         self,
         memory_ids: list[str],
-        user_id: str,
-        tenant_id: str = "default"
+        user_id: str
     ) -> dict:
         """
         Calculate time-weighted scores for memories.
@@ -589,6 +438,7 @@ class TemporalQueryBuilder:
         Returns:
             Dictionary mapping memory_id to time_score
         """
+        tenant_id = get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
@@ -598,7 +448,7 @@ class TemporalQueryBuilder:
                 SELECT id, created_at, activation_count
                 FROM memories
                 WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?
-            """, memory_ids + [user_id, tenant_id])
+            """, [*memory_ids, user_id, tenant_id])
 
             scores = {}
             now = datetime.now(timezone.utc)
@@ -623,25 +473,24 @@ class TemporalQueryBuilder:
             pool.release(conn)
 
 
-# Global instance management (thread-safe)
-_temporal_query_builder: TemporalQueryBuilder | None = None
+# Global instance management (thread-safe) using state dictionary
+_MODULE_STATE: dict[str, Any] = {
+    "temporal_query_builder": None,
+}
 _temporal_query_lock = threading.Lock()
 
 
 def get_temporal_query_builder(db_path: str | None = None) -> TemporalQueryBuilder:
     """Get or create global temporal query builder instance (thread-safe)."""
-    global _temporal_query_builder
     with _temporal_query_lock:
-        if _temporal_query_builder is None:
+        if _MODULE_STATE["temporal_query_builder"] is None:
             if db_path is None:
-                from .config import DB_PATH
                 db_path = DB_PATH
-            _temporal_query_builder = TemporalQueryBuilder(db_path)
-    return _temporal_query_builder
+            _MODULE_STATE["temporal_query_builder"] = TemporalQueryBuilder(db_path)
+    return _MODULE_STATE["temporal_query_builder"]
 
 
 def reset_temporal_query_builder() -> None:
     """Reset global temporal query builder (for testing)."""
-    global _temporal_query_builder
     with _temporal_query_lock:
-        _temporal_query_builder = None
+        _MODULE_STATE["temporal_query_builder"] = None

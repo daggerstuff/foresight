@@ -155,7 +155,7 @@ class EnhancedMemorySynthesizer:
     - Evidence-anchored insight generation
     """
 
-    SENTIMENT_OPPOSITES: list[tuple[str, str]] = [
+    SENTIMENT_OPPOSITES: tuple[tuple[str, str], ...] = (
         ("love", "hate"),
         ("good", "bad"),
         ("happy", "sad"),
@@ -183,7 +183,7 @@ class EnhancedMemorySynthesizer:
         ("progress", "regress"),
         ("healing", "hurting"),
         ("joy", "sorrow"),
-    ]
+    )
 
     def __init__(
         self,
@@ -211,7 +211,7 @@ class EnhancedMemorySynthesizer:
     async def synthesize(
         self,
         memories: list[MemoryObject],
-        user_id: str = "default",  # noqa: ARG002 - part of public API
+        user_id: str = "default",
     ) -> EnhancedSynthesisResult | None:
         """
         Perform enhanced synthesis over memories.
@@ -223,6 +223,7 @@ class EnhancedMemorySynthesizer:
         Returns:
             EnhancedSynthesisResult or None if not enough data
         """
+        logger.debug("Synthesizing for user: %s", user_id)
         if len(memories) < 5:
             return None
 
@@ -366,7 +367,7 @@ class EnhancedMemorySynthesizer:
 
     def _generate_insights(
         self,
-        memories: list[MemoryObject],  # noqa: ARG002 - reserved for future use
+        _memories: list[MemoryObject],
         contradictions: list[Contradiction],
         temporal_trends: list[TemporalTrend]
     ) -> list[Insight]:
@@ -543,18 +544,18 @@ class EnhancedMemorySynthesizer:
                 f"changed from '{contradiction.old_value}' to '{contradiction.new_value}' "
                 f"over {contradiction.temporal_distance_days} days"
             )
-        elif contradiction.type == "evolution":
+        if contradiction.type == "evolution":
             return (
                 f"Improvement in {contradiction.attribute}: "
                 f"increased from {contradiction.old_value} to {contradiction.new_value} "
                 f"over {contradiction.temporal_distance_days} days"
             )
-        else:  # regression
-            return (
-                f"Setback in {contradiction.attribute}: "
-                f"decreased from {contradiction.old_value} to {contradiction.new_value} "
-                f"over {contradiction.temporal_distance_days} days"
-            )
+        # regression
+        return (
+            f"Setback in {contradiction.attribute}: "
+            f"decreased from {contradiction.old_value} to {contradiction.new_value} "
+            f"over {contradiction.temporal_distance_days} days"
+        )
 
     def _format_trend_insight(self, trend: TemporalTrend) -> str:
         """Format a trend as an insight statement."""
@@ -566,21 +567,20 @@ class EnhancedMemorySynthesizer:
 
 
 # Global instance management
-_enhanced_synthesizer: EnhancedMemorySynthesizer | None = None
+_ENHANCED_SYNTHESIZER_CONTAINER: dict[str, EnhancedMemorySynthesizer | None] = {"instance": None}
 _enhanced_synthesizer_lock = threading.Lock()
 
 
 def get_enhanced_synthesizer() -> EnhancedMemorySynthesizer:
     """Get or create global enhanced synthesizer instance (thread-safe)."""
-    global _enhanced_synthesizer
-    with _enhanced_synthesizer_lock:
-        if _enhanced_synthesizer is None:
-            _enhanced_synthesizer = EnhancedMemorySynthesizer()
-    return _enhanced_synthesizer
+    if _ENHANCED_SYNTHESIZER_CONTAINER["instance"] is None:
+        with _enhanced_synthesizer_lock:
+            if _ENHANCED_SYNTHESIZER_CONTAINER["instance"] is None:
+                _ENHANCED_SYNTHESIZER_CONTAINER["instance"] = EnhancedMemorySynthesizer()
+    return _ENHANCED_SYNTHESIZER_CONTAINER["instance"]
 
 
 def reset_enhanced_synthesizer() -> None:
     """Reset global enhanced synthesizer (for testing)."""
-    global _enhanced_synthesizer
     with _enhanced_synthesizer_lock:
-        _enhanced_synthesizer = None
+        _ENHANCED_SYNTHESIZER_CONTAINER["instance"] = None
