@@ -24,7 +24,8 @@ from typing import Any, Literal, cast
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
-from mcp.types import CallToolResult, TextContent
+from fastmcp.tools.base import ToolResult
+from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
 from .auth import AuthMiddleware
@@ -582,11 +583,9 @@ class RateLimitMiddleware(_Middleware):
         try:
             _check_rate_limit()
         except RateLimitExceeded as e:
-            return CallToolResult.model_validate(
-                {
-                    "content": [TextContent(type="text", text=str(e))],
-                    "isError": True,
-                }
+            return ToolResult(
+                content=[TextContent(type="text", text=str(e))],
+                meta={"isError": True},
             )
         return await call_next(context)
 
@@ -681,11 +680,9 @@ class InputValidationMiddleware(_Middleware):
             arguments = getattr(context, "arguments", {}) or {}
             error = _validate_tool_inputs(name, arguments)
             if error:
-                return CallToolResult.model_validate(
-                    {
-                        "content": [TextContent(type="text", text=f"Validation error: {error}")],
-                        "isError": True,
-                    }
+                return ToolResult(
+                    content=[TextContent(type="text", text=f"Validation error: {error}")],
+                    meta={"isError": True},
                 )
         except Exception:
             pass

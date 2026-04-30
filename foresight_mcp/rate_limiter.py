@@ -54,7 +54,7 @@ class RateLimiter:
         if tenant_id not in self._buckets:
             rl = rate_limit if rate_limit is not None else self.rate_limit
             bl = burst_limit if burst_limit is not None else self.burst_limit
-            self._buckets[tenant_id] = TokenBucket(tokens=bl, last_update=time.time(), rate=rl / 60.0, burst=bl)
+            self._buckets[tenant_id] = TokenBucket(tokens=bl, last_update=time.monotonic(), rate=rl / 60.0, burst=bl)
         return self._buckets[tenant_id]
 
     def acquire(
