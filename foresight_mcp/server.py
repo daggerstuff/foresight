@@ -1164,6 +1164,7 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
     return "\n".join(res)
 
 
+@mcp.tool()
 def manage_memory_versions(options: VersionAction, user_id: str | None = None) -> str:
     """
     Manage memory versioning: diff or rollback.
@@ -1809,49 +1810,105 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
     return json.dumps(result, indent=2)
 
 
-def memory_status() -> str:
+@mcp.tool()
+def memory_status(
+    user_id: str | None = None,
+    include_trends: bool = False,
+    timeframe: str = "30 days",
+) -> str:
     """Legacy alias for get_system_status() used by CLI health checks."""
-    return get_system_status()
+    return get_system_status(
+        options=SystemStatusOptions(include_trends=include_trends, timeframe=timeframe),
+        user_id=user_id,
+    )
 
 
-def store_memory(content: str, user_id: str | None = None, **kwargs) -> str:
-    """Legacy alias for manage_memories(action="store") used by tests."""
-    options = MemoryAction(action="store", content=content, options=MemoryOptions(**kwargs))
+@mcp.tool()
+def store_memory(
+    content: str,
+    user_id: str | None = None,
+    category: str = "fact",
+    scope: str = "session",
+    retention: str = "short_term",
+    importance: float = 0.5,
+    emotional_context: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
+) -> str:
+    """Legacy alias for manage_memories(action="store") used by callers and tests."""
+    options = MemoryAction(
+        action="store",
+        content=content,
+        options=MemoryOptions(
+            category=category,
+            scope=scope,
+            retention=retention,
+            importance=importance,
+            emotional_context=emotional_context,
+            metrics=metrics,
+        ),
+    )
     return manage_memories(options, user_id=user_id)
 
 
+@mcp.tool()
 def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) -> str:
     """Legacy alias for search_memories(query_type="list")."""
     options = SearchOptions(query_type="list", limit=limit, offset=offset)
     return search_memories(options, user_id=user_id)
 
 
-def query_memories(query: str, limit: int = 10, user_id: str | None = None) -> str:
+@mcp.tool()
+def query_memories(
+    query: str,
+    user_id: str | None = None,
+    limit: int = 10,
+    use_hybrid: bool = True,
+    min_importance: float = 0.1,
+    offset: int = 0,
+) -> str:
     """Legacy alias for search_memories(query_type="keyword")."""
-    options = SearchOptions(query_type="keyword", query=query, limit=limit)
+    options = SearchOptions(
+        query_type="keyword",
+        query=query,
+        limit=limit,
+        use_hybrid=use_hybrid,
+        min_importance=min_importance,
+        offset=offset,
+    )
     return search_memories(options, user_id=user_id)
 
 
-def get_memory(memory_id: str, user_id: str | None = None) -> str:
+@mcp.tool()
+def get_memory(memory_id: str, user_id: str | None = None, min_importance: float = 0.1) -> str:
     """Legacy alias for search_memories(query_type="id")."""
-    options = SearchOptions(query_type="id", memory_id=memory_id)
+    options = SearchOptions(query_type="id", memory_id=memory_id, min_importance=min_importance)
     return search_memories(options, user_id=user_id)
 
 
-def update_memory(memory_id: str, **kwargs) -> str:
+@mcp.tool()
+def update_memory(
+    memory_id: str,
+    user_id: str | None = None,
+    content: str | None = None,
+    category: str | None = None,
+    scope: str | None = None,
+    retention: str | None = None,
+    tags: list[str] | None = None,
+) -> str:
     """Legacy alias for manage_memories(action="update")."""
-    user_id = kwargs.pop("user_id", None)
-    updates = MemoryUpdateOptions(**kwargs)
+    updates = MemoryUpdateOptions(content=content, category=category, scope=scope, retention=retention, tags=tags)
     options = MemoryAction(action="update", memory_id=memory_id, updates=updates)
     return manage_memories(options, user_id=user_id)
 
 
+@mcp.tool()
 def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     """Legacy alias for manage_memories(action="delete")."""
     options = MemoryAction(action="delete", memory_id=memory_id)
     return manage_memories(options, user_id=user_id)
 
 
+@mcp.tool()
 def archive_memory(memory_id: str, user_id: str | None = None) -> str:
     """Legacy alias for manage_memories(action="archive")."""
     options = MemoryAction(action="archive", memory_id=memory_id)

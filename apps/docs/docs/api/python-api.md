@@ -14,12 +14,13 @@ Complete Python API documentation.
 ```python
 def store_memory(
     content: str,
+    user_id: str | None = None,
     category: str = "fact",
     scope: str = "session",
     retention: str = "short_term",
+    importance: float = 0.5,
     emotional_context: Optional[dict] = None,
     metrics: Optional[dict] = None,
-    user_id: Optional[str] = None
 ) -> str
 ```
 
@@ -39,8 +40,10 @@ def store_memory(
 def query_memories(
     query: str,
     user_id: Optional[str] = None,
-    limit: int = 5,
-    offset: int = 0
+    limit: int = 10,
+    use_hybrid: bool = True,
+    min_importance: float = 0.1,
+    offset: int = 0,
 ) -> str
 ```
 
@@ -48,9 +51,9 @@ def query_memories(
 
 ```python
 def list_memories(
-    user_id: Optional[str] = None,
     limit: int = 10,
-    offset: int = 0
+    offset: int = 0,
+    user_id: Optional[str] = None,
 ) -> str
 ```
 
@@ -59,7 +62,8 @@ def list_memories(
 ```python
 def get_memory(
     memory_id: str,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    min_importance: float = 0.1
 ) -> str
 ```
 
@@ -68,12 +72,22 @@ def get_memory(
 ```python
 def update_memory(
     memory_id: str,
+    user_id: Optional[str] = None,
     content: Optional[str] = None,
     category: Optional[str] = None,
     scope: Optional[str] = None,
     retention: Optional[str] = None,
     tags: Optional[List[str]] = None,
-    user_id: Optional[str] = None
+) -> str
+```
+
+### memory_status
+
+```python
+def memory_status(
+    user_id: Optional[str] = None,
+    include_trends: bool = False,
+    timeframe: str = "30 days",
 ) -> str
 ```
 
