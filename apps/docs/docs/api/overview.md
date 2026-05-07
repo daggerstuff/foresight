@@ -18,12 +18,13 @@ Complete API documentation for Foresight Memory Architecture.
 ## Quick Links
 
 ### Memory Operations
-- `store_memory(content, **options)` - Store new memory
-- `query_memories(query, **options)` - Search memories
-- `list_memories(**options)` - List all memories
+- `store_memory(content, user_id=None, category="fact", scope="session", retention="short_term", importance=0.5, emotional_context=None, metrics=None)` - Store new memory
+- `query_memories(query, user_id=None, limit=10, use_hybrid=True, min_importance=0.1, offset=0)` - Search memories
+- `list_memories(limit=10, offset=0, user_id=None)` - List all memories
 - `get_memory(id)` - Get specific memory
-- `update_memory(id, **updates)` - Update memory
+- `update_memory(id, user_id=None, content=None, category=None, scope=None, retention=None, tags=None)` - Update memory
 - `delete_memory(id)` - Delete memory
+- `memory_status(user_id=None, include_trends=False, timeframe="30 days")` - Get system status
 
 ### Block Operations
 - `get_subconscious_block(label)` - Get block content
