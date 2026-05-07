@@ -13,3 +13,4 @@ node_modules/
 *.db
 .beads-credential-key
 AGENTS.md
+CLAUDE.md
