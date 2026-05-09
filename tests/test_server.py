@@ -1,5 +1,6 @@
 """Tests for Foresight MCP server."""
 import hashlib
+import json
 import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,11 @@ from foresight_mcp import memory_status, store_memory
 from foresight_mcp.server import (
     _extract_terms,
     _score_memory_relevance,
+    ContextBlockAction,
+    CurationRunAction,
     inject_context,
+    manage_context_blocks,
+    manage_curation_runs,
 )
 
 
@@ -65,14 +70,12 @@ def _mock_db_connection(db_path):
     return conn
 
 
-def test_bridge_subconscious_to_memories():
-    """_bridge_subconscious_to_memories stores extracted blocks as memories."""
-    from foresight_mcp.server import _bridge_subconscious_to_memories
-    from foresight_mcp.subconscious import (
-        SubconsciousAgent,
-    )
+def test_bridge_context_blocks_to_memories():
+    """_bridge_context_blocks_to_memories stores extracted blocks as memories."""
+    from foresight_mcp.server import _bridge_context_blocks_to_memories
+    from foresight_mcp.subconscious import ContextBlockAgent
 
-    agent = SubconsciousAgent(user_id="bridge_test_user")
+    agent = ContextBlockAgent(user_id="bridge_test_user")
     # Populate some blocks via the agent's normal extraction
     agent._extract_preference("I always use type hints")
     agent._extract_pending_item("TODO: add more tests", "sess_1")
@@ -80,7 +83,7 @@ def test_bridge_subconscious_to_memories():
     db_path = _make_test_db()
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)), \
          patch("foresight_mcp.server.BANK_ID", "test_bank"):
-        stored = _bridge_subconscious_to_memories(agent, "bridge_test_user")
+        stored = _bridge_context_blocks_to_memories(agent, "bridge_test_user")
 
     assert stored >= 2  # at least one preference + one pending
 
@@ -96,19 +99,19 @@ def test_bridge_subconscious_to_memories():
     assert "pending" in categories
 
 
-def test_bridge_subconscious_dedup():
+def test_bridge_context_blocks_dedup():
     """Bridging the same agent state twice should bump, not duplicate."""
-    from foresight_mcp.server import _bridge_subconscious_to_memories
-    from foresight_mcp.subconscious import SubconsciousAgent
+    from foresight_mcp.server import _bridge_context_blocks_to_memories
+    from foresight_mcp.subconscious import ContextBlockAgent
 
-    agent = SubconsciousAgent(user_id="dedup_bridge_user")
+    agent = ContextBlockAgent(user_id="dedup_bridge_user")
     agent._extract_preference("I prefer explicit returns")
 
     db_path = _make_test_db()
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)), \
          patch("foresight_mcp.server.BANK_ID", "test_bank"):
-        _bridge_subconscious_to_memories(agent, "dedup_bridge_user")
-        _bridge_subconscious_to_memories(agent, "dedup_bridge_user")
+        _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
+        _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
 
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
@@ -274,7 +277,7 @@ def test_inject_context_returns_formatted_output():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_context_block_agent"):
         result = inject_context("Let's talk about database and type hints")
 
     assert "Relevant Context" in result
@@ -292,7 +295,7 @@ def test_inject_context_respects_max_memories():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_context_block_agent"):
         result = inject_context("python topic", max_memories=2)
 
     # Count memory lines (lines starting with "- [")
@@ -309,7 +312,7 @@ def test_inject_context_no_match():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_context_block_agent"):
         result = inject_context("quantum computing algorithms", min_relevance=0.5)
 
     assert "0 memories surfaced" in result
@@ -321,7 +324,7 @@ def test_inject_context_empty_conversation_text():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_context_block_agent"):
         result = inject_context("")
 
     assert "0 memories surfaced" in result
@@ -378,3 +381,197 @@ def test_score_memory_relevance_old_memory():
     score_fresh = _score_memory_relevance(fresh_row, ["databases"], now)
 
     assert score_fresh > score_old
+
+
+def test_manage_context_blocks_update_reset_clear_cycle():
+    """The renamed block manager preserves the continuity block semantics."""
+    user_id = f"context_block_test_{datetime.now(timezone.utc).timestamp()}"
+
+    listed = manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id)
+    assert "guidance" in listed
+
+    updated = manage_context_blocks(
+        ContextBlockAction(action="update", label="guidance", content="Always show exact verification evidence."),
+        user_id=user_id,
+    )
+    assert "Updated block 'guidance'" in updated
+
+    fetched = manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+    assert "Always show exact verification evidence." in fetched
+
+    cleared = manage_context_blocks(ContextBlockAction(action="clear", label="guidance"), user_id=user_id)
+    assert "Cleared block 'guidance'" in cleared
+
+    reset = manage_context_blocks(ContextBlockAction(action="reset", label="guidance"), user_id=user_id)
+    assert "Reseted block 'guidance' to default" in reset
+
+
+def _make_curation_test_db():
+    """Create a temp DB with the schemas required for curation workflow tests."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    conn = sqlite3.connect(tmp.name)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY, content TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            scope TEXT DEFAULT 'session', retention TEXT DEFAULT 'short_term',
+            category TEXT DEFAULT 'fact', user_id TEXT DEFAULT 'default',
+            bank_id TEXT DEFAULT 'default', created_at TEXT NOT NULL,
+            updated_at TEXT, tags TEXT DEFAULT '[]',
+            emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
+            vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
+            synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
+            importance REAL DEFAULT 1.0, activation_count INTEGER DEFAULT 0,
+            decay_rate REAL DEFAULT 0.01, retrieval_count INTEGER DEFAULT 0,
+            strength_trend TEXT DEFAULT 'stable', last_retrieved_at TEXT,
+            accessed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS curation_runs (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            source_bank_id TEXT NOT NULL,
+            output_bank_id TEXT NOT NULL,
+            policy_mode TEXT NOT NULL,
+            tool_access TEXT NOT NULL,
+            output_mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            instructions TEXT,
+            summary_json TEXT DEFAULT '{}',
+            error_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            ended_at TEXT,
+            archived_at TEXT
+        )"""
+    )
+    conn.commit()
+    conn.close()
+    return tmp.name
+
+
+def _seed_memory(db_path: str, *, memory_id: str, content: str, bank_id: str, user_id: str) -> None:
+    """Insert a memory row for curation tests."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO memories
+        (id, content, tenant_id, scope, retention, category, user_id, bank_id, created_at,
+         updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, version,
+         importance, activation_count, decay_rate, retrieval_count, strength_trend, last_retrieved_at, accessed_at)
+        VALUES (?, ?, 'default', 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, 'stable', NULL, ?)""",
+        (memory_id, content, user_id, bank_id, now, now, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_manage_curation_runs_create_cancel_archive():
+    """Pending runs can be created, canceled, and archived."""
+    db_path = _make_curation_test_db()
+    user_id = "curation_cancel_user"
+    _seed_memory(db_path, memory_id="mem1", content="A durable memory", bank_id="source_bank", user_id=user_id)
+
+    with patch("foresight_mcp.server.DB_PATH", db_path), \
+         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
+         patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None), \
+         patch("foresight_mcp.server._publish_curation_status", lambda *_args, **_kwargs: None):
+        created = json.loads(
+            manage_curation_runs(
+                CurationRunAction(action="create", source_bank_id="source_bank"),
+                user_id=user_id,
+            )
+        )
+        assert created["status"] == "pending"
+        assert created["output_bank_id"].startswith("curation:")
+
+        fetched = json.loads(
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["id"]), user_id=user_id)
+        )
+        assert fetched["id"] == created["id"]
+
+        listed = json.loads(manage_curation_runs(CurationRunAction(action="list", limit=5), user_id=user_id))
+        assert listed[0]["id"] == created["id"]
+
+        canceled = json.loads(
+            manage_curation_runs(CurationRunAction(action="cancel", run_id=created["id"]), user_id=user_id)
+        )
+        assert canceled["status"] == "canceled"
+
+        archived = json.loads(
+            manage_curation_runs(CurationRunAction(action="archive", run_id=created["id"]), user_id=user_id)
+        )
+        assert archived["archived_at"] is not None
+
+
+def test_manage_curation_runs_validates_in_place_and_transcript_rules():
+    """Explicit in-place writes and transcript processing require operate access."""
+    user_id = "curation_validation_user"
+
+    in_place = manage_curation_runs(
+        CurationRunAction(
+            action="create",
+            source_bank_id="source_bank",
+            output_mode="in_place",
+            tool_access="observe",
+        ),
+        user_id=user_id,
+    )
+    assert in_place == "output_mode=in_place requires tool_access=operate"
+
+    transcript = manage_curation_runs(
+        CurationRunAction(
+            action="create",
+            source_bank_id="source_bank",
+            tool_access="observe",
+            transcript_bundle=[{"role": "user", "content": "Remember this"}],
+        ),
+        user_id=user_id,
+    )
+    assert transcript == "transcript_bundle requires tool_access=operate"
+
+
+def test_manage_curation_runs_reviewable_output_and_failure_status():
+    """Curation runs keep failed output reviewable and persist error metadata."""
+    from foresight_mcp import server as server_module
+
+    db_path = _make_curation_test_db()
+    user_id = "curation_failure_user"
+    _seed_memory(db_path, memory_id="mem1", content="Primary insight", bank_id="source_bank", user_id=user_id)
+    events = []
+
+    class _FakeBus:
+        def publish(self, event):
+            events.append(event.event_type.value)
+
+    def _run_inline(run_id, payload):
+        server_module._execute_curation_run(run_id, payload)
+
+    with patch("foresight_mcp.server.DB_PATH", db_path), \
+         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
+         patch("foresight_mcp.server.get_event_bus", return_value=_FakeBus()), \
+         patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline), \
+         patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}), \
+         patch("foresight_mcp.server._build_reflection_snapshot", return_value={"trend_summary": {"overall": "stable"}, "insights": []}), \
+         patch("foresight_mcp.server._insert_curation_entries", side_effect=RuntimeError("curation exploded")):
+        created = json.loads(
+            manage_curation_runs(
+                CurationRunAction(action="create", source_bank_id="source_bank"),
+                user_id=user_id,
+            )
+        )
+        fetched = json.loads(
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["id"]), user_id=user_id)
+        )
+        assert fetched["status"] == "failed"
+        assert fetched["output_bank_id"].startswith("curation:")
+        assert fetched["error"]["message"] == "curation exploded"
+
+    assert "curation.created" in events
+    assert "curation.failed" in events

@@ -1,100 +1,72 @@
 ---
-
-sidebar_label: Blocks title: Memory Blocks
-
+sidebar_label: Blocks
+title: Context Blocks
 ---
 
-# Memory Blocks
+# Context Blocks
 
-Memory Blocks provide structured, composable context containers with
-configurable retention and merge strategies.
+Context blocks are Foresight's structured continuity layer for active guidance, project state, and durable preferences.
 
-## What are Blocks?
+## What context blocks provide
 
-Blocks are named containers that hold contextual information with:
+Context blocks are named containers that hold high-signal context with:
 
-- Defined schema (label, description, retention policy)
-- Merge strategies (append, replace, synthesize)
-- Injection points (pre-prompt, post-prompt, whisper-only)
-- Scope (global, project, session)
+- stable labels for retrieval and updates
+- explicit default content
+- XML snapshot and whisper views for prompt injection
+- clear separation between active continuity and long-term memory banks
 
-## Default Blocks
+## Default context blocks
 
-Foresight ships with these default blocks:
+| Block | Purpose |
+| --- | --- |
+| `core_directives` | Role definition and operating principles |
+| `guidance` | Active guidance for the next session or turn |
+| `pending_items` | Open work that should survive context resets |
+| `project_context` | Architecture notes, constraints, and repo-specific state |
+| `session_patterns` | Repeated patterns across sessions |
+| `user_preferences` | User workflow and communication preferences |
+| `self_improvement` | Lessons about the memory system itself |
+| `tool_guidelines` | Tool-usage reminders and constraints |
 
-| Block              | Purpose                | Retention  | Injection  |
-| ------------------ | ---------------------- | ---------- | ---------- |
-| `guidance`         | Active guidance        | Short-term | Pre-prompt |
-| `pending_items`    | Unfinished work        | Short-term | Pre-prompt |
-| `project_context`  | Codebase decisions     | Long-term  | Pre-prompt |
-| `session_patterns` | Observed patterns      | Long-term  | Pre-prompt |
-| `user_preferences` | Coding style           | Long-term  | Pre-prompt |
-| `self_improvement` | Architecture evolution | Permanent  | Whisper    |
-| `tool_guidelines`  | Tool usage patterns    | Permanent  | Whisper    |
-
-## Creating Custom Blocks
-
-```python
-from foresight_mcp.block_registry import BlockRegistry, MemoryBlockSchema, RetentionPolicy, MergeStrategy, InjectionPoint, BlockScope
-
-registry = get_registry()
-
-# Define schema
-schema = MemoryBlockSchema(
-    label="api_keys",
-    description="API keys and credentials",
-    retention_policy=RetentionPolicy.PERMANENT,
-    merge_strategy=MergeStrategy.REPLACE,
-    injection_point=InjectionPoint.WHISPER_ONLY,
-    scope=BlockScope.GLOBAL,
-    char_limit=1000
-)
-
-# Register
-registry.register(schema)
-```
-
-## Merge Strategies
-
-| Strategy     | Behavior         | Use Case          |
-| ------------ | ---------------- | ----------------- |
-| `append`     | Add to existing  | Session patterns  |
-| `replace`    | Replace entirely | Configuration     |
-| `synthesize` | LLM merge        | Complex evolution |
-
-## Block Operations
+## Working with blocks in Python
 
 ```python
 from foresight_mcp import (
-    get_subconscious_block,
-    update_subconscious_block,
-    add_subconscious_guidance,
-    get_subconscious_whisper
+    add_context_guidance,
+    get_context_block,
+    get_context_snapshot,
+    get_context_whisper,
+    update_context_block,
 )
 
-# Get block content
-content = get_subconscious_block("guidance")
-
-# Update block
-update_subconscious_block("guidance", "Always use TDD")
-
-# Add guidance line
-add_subconscious_guidance("Prefer early returns")
-
-# Get full context (XML format)
-whisper = get_subconscious_whisper()
+content = get_context_block("guidance", user_id="vivi")
+update_context_block("guidance", "Write code first, then docs.", user_id="vivi")
+add_context_guidance("Keep updates short.", user_id="vivi")
+whisper = get_context_whisper(user_id="vivi")
+snapshot = get_context_snapshot(user_id="vivi")
 ```
 
-## Injection Points
+## Working with blocks from the CLI
 
-Blocks inject at specific points:
+```bash
+foresight blocks list
+foresight blocks get guidance
+foresight blocks update guidance "Write code first, then docs."
+foresight blocks reset guidance
+foresight blocks clear guidance
+```
 
-- **Pre-prompt**: Beginning of prompt
-- **Post-prompt**: End of prompt
-- **Whisper-only**: System messages only
+## Relationship to curation
 
-## Related
+Context blocks are not the same as curation outputs:
 
-- [Memory](./memory) - Core memory structure
-- [Events](./events) - Block lifecycle events
-- [Managing Blocks](../guides/managing-blocks) - Full guide
+- **Context blocks** hold active continuity state
+- **Memory banks** hold stored memories
+- **Curation runs** reorganize a memory bank into a new reviewable output bank or, with stronger permissions, back into the source bank
+
+This separation keeps continuity lightweight while letting long-lived memory maintenance remain asynchronous and inspectable.
+
+## Migration note
+
+Older Foresight integrations and upstream inspiration may refer to these as `subconscious` blocks. The public Foresight term is now **context blocks**.
