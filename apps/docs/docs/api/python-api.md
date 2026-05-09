@@ -5,7 +5,8 @@ title: Python API Reference
 
 # Python API Reference
 
-Complete Python API documentation for Foresight memory, context blocks, and curation workflows.
+Complete Python API documentation for Foresight memory, context blocks, and
+curation workflows.
 
 ## Memory operations
 
@@ -214,7 +215,8 @@ def manage_context_blocks(
 ) -> str
 ```
 
-Manages context blocks through the same action-oriented contract exposed by the MCP server.
+Manages context blocks through the same action-oriented contract exposed by the
+MCP server.
 
 ### CurationRunAction
 
@@ -255,7 +257,8 @@ Creates and manages asynchronous curation runs.
 
 ## Migration note
 
-Legacy `subconscious` helper names remain available as compatibility aliases, but new code should use the Foresight-native context block helpers above.
+Legacy `subconscious` helper names remain available as compatibility aliases,
+but new code should use the Foresight-native context block helpers above.
 
 ## Related
 

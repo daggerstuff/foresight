@@ -5,7 +5,8 @@ title: Context Blocks
 
 # Context Blocks
 
-Context blocks are Foresight's structured continuity layer for active guidance, project state, and durable preferences.
+Context blocks are Foresight's structured continuity layer for active guidance,
+project state, and durable preferences.
 
 ## What context blocks provide
 
@@ -18,16 +19,16 @@ Context blocks are named containers that hold high-signal context with:
 
 ## Default context blocks
 
-| Block | Purpose |
-| --- | --- |
-| `core_directives` | Role definition and operating principles |
-| `guidance` | Active guidance for the next session or turn |
-| `pending_items` | Open work that should survive context resets |
-| `project_context` | Architecture notes, constraints, and repo-specific state |
-| `session_patterns` | Repeated patterns across sessions |
-| `user_preferences` | User workflow and communication preferences |
-| `self_improvement` | Lessons about the memory system itself |
-| `tool_guidelines` | Tool-usage reminders and constraints |
+| Block              | Purpose                                                  |
+| ------------------ | -------------------------------------------------------- |
+| `core_directives`  | Role definition and operating principles                 |
+| `guidance`         | Active guidance for the next session or turn             |
+| `pending_items`    | Open work that should survive context resets             |
+| `project_context`  | Architecture notes, constraints, and repo-specific state |
+| `session_patterns` | Repeated patterns across sessions                        |
+| `user_preferences` | User workflow and communication preferences              |
+| `self_improvement` | Lessons about the memory system itself                   |
+| `tool_guidelines`  | Tool-usage reminders and constraints                     |
 
 ## Working with blocks in Python
 
@@ -63,10 +64,13 @@ Context blocks are not the same as curation outputs:
 
 - **Context blocks** hold active continuity state
 - **Memory banks** hold stored memories
-- **Curation runs** reorganize a memory bank into a new reviewable output bank or, with stronger permissions, back into the source bank
+- **Curation runs** reorganize a memory bank into a new reviewable output bank
+  or, with stronger permissions, back into the source bank
 
-This separation keeps continuity lightweight while letting long-lived memory maintenance remain asynchronous and inspectable.
+This separation keeps continuity lightweight while letting long-lived memory
+maintenance remain asynchronous and inspectable.
 
 ## Migration note
 
-Older Foresight integrations and upstream inspiration may refer to these as `subconscious` blocks. The public Foresight term is now **context blocks**.
+Older Foresight integrations and upstream inspiration may refer to these as
+`subconscious` blocks. The public Foresight term is now **context blocks**.
