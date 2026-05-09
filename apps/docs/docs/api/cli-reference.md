@@ -1,6 +1,7 @@
- ---
-sidebar_label: CLI Reference
-title: CLI Reference
+---
+
+sidebar_label: CLI Reference title: CLI Reference
+
 ---
 
 # CLI Reference

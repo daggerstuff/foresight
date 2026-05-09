@@ -1,6 +1,7 @@
- ---
-sidebar_label: Installation
-title: Installation Guide
+---
+
+sidebar_label: Installation title: Installation Guide
+
 ---
 
 # Installation

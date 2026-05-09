@@ -1,6 +1,7 @@
- ---
-sidebar_label: Quickstart
-title: Quickstart - 5 Minutes to Foresight
+---
+
+sidebar_label: Quickstart title: Quickstart - 5 Minutes to Foresight
+
 ---
 
 # Quickstart Guide

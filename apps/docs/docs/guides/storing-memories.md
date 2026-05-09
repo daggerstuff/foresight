@@ -1,6 +1,7 @@
- ---
-sidebar_label: Storing Memories
-title: Guide - Storing Memories
+---
+
+sidebar_label: Storing Memories title: Guide - Storing Memories
+
 ---
 
 # Storing Memories
