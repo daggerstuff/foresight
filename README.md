@@ -1,8 +1,11 @@
 # Foresight MCP Server
 
-**Persistent memory for AI agents with safety-aware memory storage, Foresight-native context blocks, and reviewable curation runs.**
+**Persistent memory for AI agents with safety-aware memory storage,
+Foresight-native context blocks, and reviewable curation runs.**
 
-Foresight provides a local MCP server plus Python and CLI helpers for storing memories, maintaining continuity context, and curating long-lived memory banks into cleaner reviewable outputs.
+Foresight provides a local MCP server plus Python and CLI helpers for storing
+memories, maintaining continuity context, and curating long-lived memory banks
+into cleaner reviewable outputs.
 
 Compatible with Claude Code, Goose, Cursor, and other MCP-compatible AI agents.
 
@@ -12,14 +15,17 @@ Foresight combines three layers:
 
 ### Core memory system
 
-- **Structured memory storage** with scope, retention, tags, and emotional metadata
+- **Structured memory storage** with scope, retention, tags, and emotional
+  metadata
 - **Safety-aware ingestion** with crisis detection and gate decisions
-- **Synthesis and reflection** pipelines for trends, contradictions, and stance shifts
+- **Synthesis and reflection** pipelines for trends, contradictions, and stance
+  shifts
 - **Versioning and archival** for long-lived memory maintenance
 
 ### Context blocks
 
-Context blocks are the Foresight-native continuity surface for active guidance and project state.
+Context blocks are the Foresight-native continuity surface for active guidance
+and project state.
 
 Default blocks:
 
@@ -34,13 +40,16 @@ Default blocks:
 
 ### Curation runs
 
-Curation runs are asynchronous jobs that reorganize an existing memory bank into a new reviewable output bank.
+Curation runs are asynchronous jobs that reorganize an existing memory bank into
+a new reviewable output bank.
 
 - **Source bank preserved** by default
 - **Reviewable output bank** created automatically unless `output_mode=in_place`
 - **Curator controls** for policy mode, tool access, and freeform instructions
-- **Transcript-aware curation** when transcript bundles are provided with `tool_access=operate`
-- **Terminal-state reviewability** so failed or canceled runs keep partial output for inspection
+- **Transcript-aware curation** when transcript bundles are provided with
+  `tool_access=operate`
+- **Terminal-state reviewability** so failed or canceled runs keep partial
+  output for inspection
 
 ## Quick start
 
@@ -207,20 +216,22 @@ foresight curate create   --source-bank-id default   --policy-mode rebalance   -
 
 ## Migration notes
 
-Foresight now centers **context block** and **curation** terminology on the public surface.
+Foresight now centers **context block** and **curation** terminology on the
+public surface.
 
-| Legacy name | Foresight-native name |
-| --- | --- |
-| `manage_subconscious` | `manage_context_blocks` |
-| `get_subconscious_block` | `get_context_block` |
-| `update_subconscious_block` | `update_context_block` |
-| `add_subconscious_guidance` | `add_context_guidance` |
-| `get_subconscious_whisper` | `get_context_whisper` |
-| `get_subconscious_context` | `get_context_snapshot` |
-| `reset_subconscious_block` | `reset_context_block` |
-| `clear_subconscious_block` | `clear_context_block` |
+| Legacy name                 | Foresight-native name   |
+| --------------------------- | ----------------------- |
+| `manage_subconscious`       | `manage_context_blocks` |
+| `get_subconscious_block`    | `get_context_block`     |
+| `update_subconscious_block` | `update_context_block`  |
+| `add_subconscious_guidance` | `add_context_guidance`  |
+| `get_subconscious_whisper`  | `get_context_whisper`   |
+| `get_subconscious_context`  | `get_context_snapshot`  |
+| `reset_subconscious_block`  | `reset_context_block`   |
+| `clear_subconscious_block`  | `clear_context_block`   |
 
-Compatibility aliases remain in place for older clients, but new integrations should use the Foresight-native names above.
+Compatibility aliases remain in place for older clients, but new integrations
+should use the Foresight-native names above.
 
 ## License
 

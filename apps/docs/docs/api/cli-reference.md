@@ -5,7 +5,8 @@ title: CLI Reference
 
 # CLI Reference
 
-Command-line interface for Foresight memory operations, context blocks, and curation runs.
+Command-line interface for Foresight memory operations, context blocks, and
+curation runs.
 
 ## Installation
 
@@ -19,11 +20,11 @@ uv run python scripts/foresight-cli.py --help
 
 ## Global options
 
-| Option | Description | Default |
-| --- | --- | --- |
-| `--help` | Show help | - |
-| `--json` | Emit machine-readable JSON when supported | `false` |
-| `--user-id`, `-u` | Override the active user ID | auto |
+| Option            | Description                               | Default |
+| ----------------- | ----------------------------------------- | ------- |
+| `--help`          | Show help                                 | -       |
+| `--json`          | Emit machine-readable JSON when supported | `false` |
+| `--user-id`, `-u` | Override the active user ID               | auto    |
 
 ## Memory commands
 
@@ -51,7 +52,8 @@ foresight blocks reset <label>
 foresight blocks clear <label>
 ```
 
-Common labels include `guidance`, `pending_items`, `project_context`, `session_patterns`, and `user_preferences`.
+Common labels include `guidance`, `pending_items`, `project_context`,
+`session_patterns`, and `user_preferences`.
 
 ## Curation commands
 
@@ -65,17 +67,17 @@ foresight curate archive <run_id>
 
 ### `foresight curate create` options
 
-| Option | Description | Default |
-| --- | --- | --- |
-| `--source-bank-id` | Source bank to curate | required |
-| `--output-bank-id` | Optional destination bank override | auto |
-| `--policy-mode` | `preserve`, `rebalance`, or `rebuild` | `rebalance` |
-| `--tool-access` | `disabled`, `observe`, or `operate` | `observe` |
-| `--output-mode` | `reviewable_output` or `in_place` | `reviewable_output` |
-| `--instructions` | Curator guidance for this run | none |
-| `--transcript-bundle-file` | JSON transcript bundle to fold into curation | none |
-| `--session-id` | Optional session identifier for the transcript bundle | none |
-| `--project-path` | Optional project path for the transcript bundle | none |
+| Option                     | Description                                           | Default             |
+| -------------------------- | ----------------------------------------------------- | ------------------- |
+| `--source-bank-id`         | Source bank to curate                                 | required            |
+| `--output-bank-id`         | Optional destination bank override                    | auto                |
+| `--policy-mode`            | `preserve`, `rebalance`, or `rebuild`                 | `rebalance`         |
+| `--tool-access`            | `disabled`, `observe`, or `operate`                   | `observe`           |
+| `--output-mode`            | `reviewable_output` or `in_place`                     | `reviewable_output` |
+| `--instructions`           | Curator guidance for this run                         | none                |
+| `--transcript-bundle-file` | JSON transcript bundle to fold into curation          | none                |
+| `--session-id`             | Optional session identifier for the transcript bundle | none                |
+| `--project-path`           | Optional project path for the transcript bundle       | none                |
 
 ## Examples
 
@@ -102,4 +104,6 @@ foresight curate cancel cur_abc123def456
 
 ## Migration note
 
-Older documentation may mention `foresight subconscious ...` commands. Those names have been replaced on the public CLI by `foresight blocks ...`, with a hidden compatibility alias only for legacy automation.
+Older documentation may mention `foresight subconscious ...` commands. Those
+names have been replaced on the public CLI by `foresight blocks ...`, with a
+hidden compatibility alias only for legacy automation.

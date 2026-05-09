@@ -79,12 +79,12 @@ foresight blocks clear guidance
 
 If you are upgrading older automation, map the legacy names as follows:
 
-| Legacy | Current |
-| --- | --- |
-| `get_subconscious_block` | `get_context_block` |
+| Legacy                      | Current                |
+| --------------------------- | ---------------------- |
+| `get_subconscious_block`    | `get_context_block`    |
 | `update_subconscious_block` | `update_context_block` |
 | `add_subconscious_guidance` | `add_context_guidance` |
-| `get_subconscious_whisper` | `get_context_whisper` |
-| `get_subconscious_context` | `get_context_snapshot` |
-| `reset_subconscious_block` | `reset_context_block` |
-| `clear_subconscious_block` | `clear_context_block` |
+| `get_subconscious_whisper`  | `get_context_whisper`  |
+| `get_subconscious_context`  | `get_context_snapshot` |
+| `reset_subconscious_block`  | `reset_context_block`  |
+| `clear_subconscious_block`  | `clear_context_block`  |
