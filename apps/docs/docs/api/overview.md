@@ -1,6 +1,7 @@
- ---
-sidebar_label: Overview
-title: API Reference Overview
+---
+
+sidebar_label: Overview title: API Reference Overview
+
 ---
 
 # API Reference

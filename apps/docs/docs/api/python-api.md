@@ -1,6 +1,7 @@
- ---
-sidebar_label: Python API
-title: Python API Reference
+---
+
+sidebar_label: Python API title: Python API Reference
+
 ---
 
 # Python API Reference

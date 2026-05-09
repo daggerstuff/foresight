@@ -1,6 +1,7 @@
- ---
-sidebar_label: Events
-title: Event Sourcing
+---
+
+sidebar_label: Events title: Event Sourcing
+
 ---
 
 # Event Sourcing

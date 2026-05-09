@@ -1,6 +1,7 @@
- ---
-sidebar_label: Blocks
-title: Memory Blocks
+---
+
+sidebar_label: Blocks title: Memory Blocks
+
 ---
 
 # Memory Blocks

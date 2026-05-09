@@ -1,6 +1,7 @@
- ---
-sidebar_label: Managing Blocks
-title: Guide - Managing Memory Blocks
+---
+
+sidebar_label: Managing Blocks title: Guide - Managing Memory Blocks
+
 ---
 
 # Managing Memory Blocks
