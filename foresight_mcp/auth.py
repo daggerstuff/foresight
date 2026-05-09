@@ -3,14 +3,14 @@ Authentication System for Foresight MCP
 Provides API key-based authentication with secure password hashing.
 """
 
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+import logging
 import os
 import re
 import secrets
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from dataclasses import dataclass, field
-from enum import Enum
-import logging
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class User:
     email: str
     role: Role
     is_active: bool = True
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_login: Optional[datetime] = None
     # Hashed password (bcrypt-style, simplified for this implementation)
     password_hash: str = ""
@@ -53,6 +53,21 @@ class AuthError(Exception):
 
 
 _VALID_TENANT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+
+
+def _utcnow() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc)
+
+
+def _parse_db_timestamp(value: str | None) -> datetime | None:
+    """Parse stored timestamps and normalize legacy naive values to UTC."""
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _validate_tenant_id(tenant_id: str) -> None:
@@ -205,7 +220,7 @@ class AuthManager:
                     email,
                     role.value,
                     True,
-                    datetime.utcnow().isoformat(),
+                    _utcnow().isoformat(),
                     password_hash,
                     api_key,
                     tenant_access_json,
@@ -219,7 +234,7 @@ class AuthManager:
                 email=email,
                 role=role,
                 is_active=True,
-                created_at=datetime.utcnow(),
+                created_at=_utcnow(),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=tenant_access,
@@ -264,14 +279,13 @@ class AuthManager:
                 return None
 
             import json
-            from datetime import datetime
 
             # Update last login
             conn.execute(
                 """
                 UPDATE users SET last_login = ? WHERE user_id = ?
             """,
-                (datetime.utcnow().isoformat(), user_id),
+                (_utcnow().isoformat(), user_id),
             )
             conn.commit()
 
@@ -281,8 +295,8 @@ class AuthManager:
                 email=email,
                 role=Role(role_str),
                 is_active=bool(is_active),
-                created_at=datetime.fromisoformat(created_at_str) if created_at_str else datetime.utcnow(),
-                last_login=datetime.fromisoformat(last_login_str) if last_login_str else None,
+                created_at=_parse_db_timestamp(created_at_str) or _utcnow(),
+                last_login=_parse_db_timestamp(last_login_str),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=json.loads(tenant_access_json) if tenant_access_json else [],
@@ -324,14 +338,13 @@ class AuthManager:
             ) = row
 
             import json
-            from datetime import datetime
 
             # Update last login
             conn.execute(
                 """
                 UPDATE users SET last_login = ? WHERE user_id = ?
             """,
-                (datetime.utcnow().isoformat(), user_id),
+                (_utcnow().isoformat(), user_id),
             )
             conn.commit()
 
@@ -341,8 +354,8 @@ class AuthManager:
                 email=email,
                 role=Role(role_str),
                 is_active=bool(is_active),
-                created_at=datetime.fromisoformat(created_at_str) if created_at_str else datetime.utcnow(),
-                last_login=datetime.fromisoformat(last_login_str) if last_login_str else None,
+                created_at=_parse_db_timestamp(created_at_str) or _utcnow(),
+                last_login=_parse_db_timestamp(last_login_str),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=json.loads(tenant_access_json) if tenant_access_json else [],
@@ -361,7 +374,7 @@ class AuthManager:
     def create_session(self, user: User, ip_address: str = "", user_agent: str = "") -> str:
         """Create a new authentication session."""
         session_id = secrets.token_urlsafe(32)
-        expires_at = datetime.utcnow() + timedelta(hours=24)
+        expires_at = _utcnow() + timedelta(hours=24)
 
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -375,7 +388,7 @@ class AuthManager:
                 (
                     session_id,
                     user.user_id,
-                    datetime.utcnow().isoformat(),
+                    _utcnow().isoformat(),
                     expires_at.isoformat(),
                     ip_address,
                     user_agent,
@@ -400,7 +413,7 @@ class AuthManager:
                 JOIN users u ON s.user_id = u.user_id
                 WHERE s.session_id = ? AND s.expires_at > ?
             """,
-                (session_id, datetime.utcnow().isoformat()),
+                (session_id, _utcnow().isoformat()),
             )
 
             row = cursor.fetchone()
@@ -424,7 +437,6 @@ class AuthManager:
             # Session hash validation handled elsewhere; no placeholder check needed
 
             import json
-            from datetime import datetime
 
             return User(
                 user_id=user_id,
@@ -432,8 +444,8 @@ class AuthManager:
                 email=email,
                 role=Role(role_str),
                 is_active=bool(is_active),
-                created_at=datetime.fromisoformat(created_at_str) if created_at_str else datetime.utcnow(),
-                last_login=datetime.fromisoformat(last_login_str) if last_login_str else None,
+                created_at=_parse_db_timestamp(created_at_str) or _utcnow(),
+                last_login=_parse_db_timestamp(last_login_str),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=json.loads(tenant_access_json) if tenant_access_json else [],
@@ -451,7 +463,7 @@ class AuthManager:
                 """
                 DELETE FROM auth_sessions WHERE expires_at < ?
             """,
-                (datetime.utcnow().isoformat(),),
+                (_utcnow().isoformat(),),
             )
             deleted_count = cursor.rowcount
             conn.commit()

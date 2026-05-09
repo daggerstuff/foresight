@@ -1,12 +1,12 @@
 """
-Foresight Subconscious - Persistent memory blocks for Claude Code sessions.
-Restored from ai/memory/foresight_subconscious.py
+Foresight context blocks - persistent continuity blocks for Foresight sessions.
+Compatibility kept for older subconscious-named integrations.
 
 This module provides:
-- Memory block architecture (guidance, pending_items, project_context, user_preferences, session_patterns)
+- Context block architecture (guidance, pending_items, project_context, user_preferences, session_patterns)
 - Session transcript capture and delivery to Foresight
 - Whisper injection mechanism for pre-prompt context
-- Background processing of transcripts
+- Background curation of transcript-derived continuity
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 
 from .memory_components import MemoryCrisisTagger, SocraticGate
 
-logger = logging.getLogger("foresight_subconscious")
+logger = logging.getLogger("foresight_context_blocks")
 
 # Memory block labels
 CORE_DIRECTIVES = "core_directives"
@@ -31,9 +31,9 @@ SELF_IMPROVEMENT = "self_improvement"
 TOOL_GUIDELINES = "tool_guidelines"
 
 DEFAULT_MEMORY_BLOCKS = {
-    CORE_DIRECTIVES: """ROLE: Foresight Subconscious — persistent memory layer for Claude Code.
+    CORE_DIRECTIVES: """ROLE: Foresight Curator — background continuity and curation layer for Foresight.
 
-WHAT I AM: A background agent that watches Claude Code sessions, reads the codebase, and builds memory over time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
+WHAT I AM: A background curator that watches Foresight sessions, reads the codebase, and builds memory over time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
 
 OBSERVE (from transcripts):
 - User corrections to Claude's output → preferences
@@ -42,7 +42,7 @@ OBSERVE (from transcripts):
 - Unfinished work, mentioned TODOs → pending_items
 - Explicit statements ("I always want...", "I prefer...") → user_preferences
 
-PROVIDE (via memory blocks):
+PROVIDE (via context blocks):
 - Accumulated context that persists across sessions
 - Pattern observations when genuinely useful
 - Reminders about past issues with similar code
@@ -164,8 +164,8 @@ class MemoryBlock:
 
 
 @dataclass
-class SubconsciousState:
-    """State container for Subconscious agent."""
+class ContextBlockState:
+    """State container for the Foresight context block agent."""
 
     blocks: dict[str, MemoryBlock] = field(default_factory=dict)
     last_sync: datetime | None = None
@@ -173,7 +173,7 @@ class SubconsciousState:
     user_id: str = "default"
 
     def initialize_defaults(self) -> None:
-        """Initialize memory blocks with default content."""
+        """Initialize context blocks with default content."""
         for label, content in DEFAULT_MEMORY_BLOCKS.items():
             self.blocks[label] = MemoryBlock(
                 label=label,
@@ -182,11 +182,11 @@ class SubconsciousState:
             )
 
     def get_block(self, label: str) -> MemoryBlock | None:
-        """Get a memory block by label."""
+        """Get a context block by label."""
         return self.blocks.get(label)
 
     def update_block(self, label: str, content: str) -> None:
-        """Update a memory block's content.
+        """Update a context block's content.
 
         ``label`` must be one of the predefined block names or an existing
         custom block already in ``self.blocks``.  Arbitrary labels are
@@ -221,7 +221,7 @@ class SubconsciousState:
             return ""
 
         timestamp = datetime.now(timezone.utc).isoformat()
-        return f"""<foresight_message from="Subconscious" timestamp="{timestamp}">
+        return f"""<foresight_message from="Foresight Curator" timestamp="{timestamp}">
 {guidance.content}
 </foresight_message>"""
 
@@ -245,9 +245,9 @@ class SubconsciousState:
         return [block.to_dict() for block in self.blocks.values() if not block.is_empty()]
 
 
-class SubconsciousAgent:
+class ContextBlockAgent:
     """
-    Subconscious agent for Claude Code sessions.
+    Foresight context block agent for Foresight sessions.
 
     This agent:
     - Receives session transcripts asynchronously
@@ -257,13 +257,13 @@ class SubconsciousAgent:
     """
 
     def __init__(self, user_id: str = "default"):
-        """Initialize the Subconscious agent.
+        """Initialize the context block agent.
 
         Args:
             user_id: User identifier for memory storage
         """
         self.user_id = user_id
-        self.state = SubconsciousState(user_id=user_id)
+        self.state = ContextBlockState(user_id=user_id)
         self.state.initialize_defaults()
         self._tagger = MemoryCrisisTagger()
         self._gate = SocraticGate(self._tagger)
@@ -337,7 +337,7 @@ class SubconsciousAgent:
         return self.state.to_whisper_xml()
 
     def get_full_context(self) -> str:
-        """Get all memory blocks as XML context."""
+        """Get all context blocks as XML context."""
         return self.state.to_full_xml()
 
     def update_guidance(self, new_guidance: str) -> None:
@@ -359,7 +359,7 @@ class SubconsciousAgent:
         return block.content if block else None
 
     def get_all_blocks(self) -> list[dict]:
-        """Get all non-empty blocks."""
+        """Get all non-empty context blocks."""
         return self.state.get_all_blocks()
 
     def reset_block(self, label: str) -> None:
@@ -374,13 +374,23 @@ class SubconsciousAgent:
         logger.info(f"Cleared block {label}")
 
 
+SubconsciousState = ContextBlockState
+SubconsciousAgent = ContextBlockAgent
+
+
 # Global instance for convenience
-_subconscious_agent: SubconsciousAgent | None = None
+_context_block_agent: ContextBlockAgent | None = None
 
 
-def get_subconscious_agent(user_id: str, tenant_id: str = "default") -> SubconsciousAgent:
-    """Get or create the global subconscious agent instance."""
-    global _subconscious_agent
-    if _subconscious_agent is None or _subconscious_agent.user_id != user_id:
-        _subconscious_agent = SubconsciousAgent(user_id=user_id)
-    return _subconscious_agent
+def get_context_block_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
+    """Get or create the global context block agent instance."""
+    del tenant_id  # Compatibility parameter; current implementation is user-scoped.
+    global _context_block_agent
+    if _context_block_agent is None or _context_block_agent.user_id != user_id:
+        _context_block_agent = ContextBlockAgent(user_id=user_id)
+    return _context_block_agent
+
+
+def get_subconscious_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
+    """Compatibility wrapper for older subconscious-named integrations."""
+    return get_context_block_agent(user_id, tenant_id)

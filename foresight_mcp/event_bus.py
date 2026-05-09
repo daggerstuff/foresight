@@ -37,6 +37,13 @@ class EventType(str, Enum):
     BLOCK_UPDATED = "block.updated"
     BLOCK_DELETED = "block.deleted"
 
+    # Curation lifecycle
+    CURATION_CREATED = "curation.created"
+    CURATION_UPDATED = "curation.updated"
+    CURATION_COMPLETED = "curation.completed"
+    CURATION_FAILED = "curation.failed"
+    CURATION_CANCELED = "curation.canceled"
+
     # Anomaly detection
     ANOMALY_DETECTED = "anomaly.detected"
 
@@ -534,6 +541,25 @@ def block_deleted(block_label: str, actor: str = "system") -> Event:
         block_label,
         {},
     )
+
+
+def curation_status_changed(
+    run_id: str,
+    status: str,
+    payload: dict[str, Any] | None = None,
+    actor: str = "system",
+) -> Event:
+    """Emit curation lifecycle events."""
+    event_type_map = {
+        "pending": EventType.CURATION_CREATED,
+        "running": EventType.CURATION_UPDATED,
+        "completed": EventType.CURATION_COMPLETED,
+        "failed": EventType.CURATION_FAILED,
+        "canceled": EventType.CURATION_CANCELED,
+    }
+    event_type = event_type_map.get(status, EventType.CURATION_UPDATED)
+    event_payload = {"status": status, **(payload or {})}
+    return _make_event(event_type, actor, run_id, event_payload)
 
 
 # Anomaly events
