@@ -6,6 +6,7 @@ Provides API key-based authentication with secure password hashing.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import hashlib
 import logging
 import os
 import re
@@ -39,7 +40,7 @@ class User:
     is_active: bool = True
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_login: Optional[datetime] = None
-    # Hashed password (bcrypt-style, simplified for this implementation)
+    # Hashed password (Argon2, bcrypt, or PBKDF2-SHA256)
     password_hash: str = ""
     # API key for programmatic access
     api_key: str = field(default_factory=lambda: secrets.token_urlsafe(32))
@@ -59,6 +60,21 @@ _VALID_TENANT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 def _utcnow() -> datetime:
     """Return a timezone-aware UTC timestamp."""
     return datetime.now(timezone.utc)
+
+
+def _env_truthy(value: str | None) -> bool:
+    """Interpret common truthy environment-variable values."""
+    if value is None:
+        return False
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _should_require_api_key() -> bool:
+    """Require API keys by default unless an explicit local override disables it."""
+    explicit = os.environ.get("FORESIGHT_REQUIRE_API_KEY")
+    if explicit is not None:
+        return _env_truthy(explicit)
+    return not _env_truthy(os.environ.get("FORESIGHT_ALLOW_UNAUTHENTICATED"))
 
 
 def _parse_db_timestamp(value: str | None) -> datetime | None:
@@ -130,7 +146,7 @@ class AuthManager:
             pool.release(conn)
 
     def _hash_password(self, password: str) -> str:
-        """Hash a password using Argon2 if available, else fallback to bcrypt."""
+        """Hash a password using Argon2, bcrypt, or PBKDF2-SHA256."""
         # Lazy import to avoid hard dependency
         # Try Argon2 first
         try:
@@ -146,15 +162,19 @@ class AuthManager:
                 hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
                 return hashed.decode("utf-8")
             except Exception:
-                # Final fallback: simple SHA256 with salt (not recommended for production)
-                import hashlib
-
-                salt = hashlib.sha256(os.urandom(16)).hexdigest()
-                hash_bytes = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-                return f"sha256${salt}${hash_bytes}"
+                # Final fallback: PBKDF2-SHA256 from the Python standard library
+                iterations = 600_000
+                salt = secrets.token_hex(16)
+                hash_bytes = hashlib.pbkdf2_hmac(
+                    "sha256",
+                    password.encode("utf-8"),
+                    salt.encode("utf-8"),
+                    iterations,
+                ).hex()
+                return f"pbkdf2_sha256${iterations}${salt}${hash_bytes}"
 
     def _verify_password(self, password: str, password_hash: str) -> bool:
-        """Verify a password against its stored Argon2 or bcrypt hash."""
+        """Verify a password against its stored Argon2, bcrypt, PBKDF2, or legacy hash."""
         # Attempt Argon2 verification first
         # Attempt Argon2 verification
         try:
@@ -169,14 +189,26 @@ class AuthManager:
 
                 return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
             except Exception:
-                # Fallback to simple SHA256 verification
+                # Fallback to PBKDF2 verification
+                if password_hash.startswith("pbkdf2_sha256$"):
+                    try:
+                        _, iteration_str, salt, stored_hash = password_hash.split("$", 3)
+                        calc_hash = hashlib.pbkdf2_hmac(
+                            "sha256",
+                            password.encode("utf-8"),
+                            salt.encode("utf-8"),
+                            int(iteration_str),
+                        ).hex()
+                        return secrets.compare_digest(calc_hash, stored_hash)
+                    except Exception:
+                        return False
+
+                # Legacy fallback for pre-hardening hashes
                 if password_hash.startswith("sha256$"):
                     try:
                         _, salt, stored_hash = password_hash.split("$")
-                        import hashlib
-
                         calc_hash = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-                        return calc_hash == stored_hash
+                        return secrets.compare_digest(calc_hash, stored_hash)
                     except Exception:
                         return False
                 return False
@@ -534,21 +566,11 @@ def initialize_default_users() -> None:
 from fastmcp.server.middleware import Middleware as _Middleware
 
 
-_REQUIRE_API_KEY = os.environ.get("FORESIGHT_REQUIRE_API_KEY", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-
-
 class AuthMiddleware(_Middleware):
     """FastMCP middleware that authenticates API calls via API key."""
 
     async def on_call_tool(self, context, call_next):
-        # Keep local MCP clients compatible by default.
-        # Opt in to strict API-key enforcement only when explicitly enabled.
-        if not _REQUIRE_API_KEY:
+        if not _should_require_api_key():
             return await call_next(context)
 
         # Extract API key from request metadata
