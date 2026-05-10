@@ -186,10 +186,12 @@ class ORSet(Generic[T]):
     Attributes:
         _adds: Dict mapping element hash to set of (timestamp, node_id) pairs
         _removes: Dict mapping element hash to set of (timestamp, node_id) pairs
+        _values: Dict mapping element hash to the most recent element value
         _cache: Cache of current set contents
     """
     _adds: dict[str, set[tuple]] = field(default_factory=dict)
     _removes: dict[str, set[tuple]] = field(default_factory=dict)
+    _values: dict[str, T] = field(default_factory=dict)
     _cache: set[T] | None = None
     _node_id: str = "default"
     vector_clock: VectorClock = field(default_factory=VectorClock)
@@ -199,6 +201,8 @@ class ORSet(Generic[T]):
             self._adds = {}
         if self._removes is None:
             self._removes = {}
+        if self._values is None:
+            self._values = {}
 
     def set_node_id(self, node_id: str) -> None:
         """Set the node ID for this replica."""
@@ -217,15 +221,14 @@ class ORSet(Generic[T]):
         if element_hash not in self._adds:
             self._adds[element_hash] = set()
         self._adds[element_hash].add(tag)
+        self._values[element_hash] = element
 
         self.vector_clock.increment(self._node_id)
         self._cache = None
 
     def remove(self, element: T) -> None:
         """Remove an element from the set."""
-        ts = time.time()
         element_hash = self._get_hash(element)
-        tag = (ts, self._node_id)
 
         # Mark all current adds as removed
         if element_hash in self._adds:
@@ -253,14 +256,14 @@ class ORSet(Generic[T]):
 
     def get_elements(self) -> set[T]:
         """Get all elements in the set."""
-        # This is a simplified implementation
-        # A full implementation would track element values separately
         if self._cache is not None:
             return self._cache
 
-        # For now, return empty set as we don't track values
-        # In practice, you'd need a separate value store
-        self._cache = set()
+        self._cache = {
+            self._values[element_hash]
+            for element_hash, adds in self._adds.items()
+            if element_hash in self._values and adds - self._removes.get(element_hash, set())
+        }
         return self._cache
 
     def merge(self, other: 'ORSet[T]') -> None:
@@ -270,6 +273,8 @@ class ORSet(Generic[T]):
             if element_hash not in self._adds:
                 self._adds[element_hash] = set()
             self._adds[element_hash].update(tags)
+            if element_hash in other._values:
+                self._values[element_hash] = other._values[element_hash]
 
         # Merge removes
         for element_hash, tags in other._removes.items():
@@ -285,6 +290,7 @@ class ORSet(Generic[T]):
         return {
             "adds": {k: list(v) for k, v in self._adds.items()},
             "removes": {k: list(v) for k, v in self._removes.items()},
+            "values": self._values.copy(),
             "vector_clock": self.vector_clock.to_dict(),
             "node_id": self._node_id,
         }
@@ -295,6 +301,7 @@ class ORSet(Generic[T]):
         orset = cls()
         orset._adds = {k: set(v) for k, v in data.get("adds", {}).items()}
         orset._removes = {k: set(v) for k, v in data.get("removes", {}).items()}
+        orset._values = data.get("values", {}).copy()
         orset._node_id = data.get("node_id", "default")
         if "vector_clock" in data:
             orset.vector_clock = VectorClock.from_dict(data["vector_clock"])

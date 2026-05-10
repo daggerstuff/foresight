@@ -366,6 +366,11 @@ class EventBus:
         self._stream_publisher = stream_publisher
         self._lock = threading.Lock()
 
+    def set_stream_publisher(self, stream_publisher: Any | None) -> None:
+        """Attach or replace the stream publisher after bus initialization."""
+        with self._lock:
+            self._stream_publisher = stream_publisher
+
     def publish(self, event: Event) -> None:
         """
         Publish an event.
@@ -439,6 +444,8 @@ def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
         if _event_bus is None:
             _event_store = EventStore()
             _event_bus = EventBus(_event_store, stream_publisher)
+        elif stream_publisher is not None:
+            _event_bus.set_stream_publisher(stream_publisher)
     return _event_bus
 
 
