@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 from .tenant_context import get_current_tenant_id, set_current_tenant_id, reset_tenant_context
 from .connection_pool import get_pool
 from .config import DB_PATH
+from .tenant_middleware import resolve_tenant_id_from_message
 
 
 class Role(Enum):
@@ -411,7 +412,7 @@ class AuthManager:
                        u.password_hash, u.api_key, u.tenant_access, s.expires_at
                 FROM auth_sessions s
                 JOIN users u ON s.user_id = u.user_id
-                WHERE s.session_id = ? AND s.expires_at > ?
+                WHERE s.session_id = ? AND s.expires_at > ? AND u.is_active = 1
             """,
                 (session_id, _utcnow().isoformat()),
             )
@@ -570,6 +571,14 @@ class AuthMiddleware(_Middleware):
 
             return CallToolResult(
                 content=[TextContent(type="text", text="Invalid API key")],
+                isError=True,
+            )
+        tenant_id = resolve_tenant_id_from_message(message)
+        if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
+            from mcp.types import CallToolResult, TextContent
+
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Tenant access denied for tenant '{tenant_id}'")],
                 isError=True,
             )
         # Proceed to next middleware
