@@ -51,8 +51,9 @@ the source bank through a staging-and-promotion flow.
 - **Curator controls** for policy mode, tool access, and freeform instructions
 - **Transcript-aware curation** when transcript bundles are provided with
   `tool_access=operate`
-- **Safe in-place promotion**: `in_place` runs stage into a separate bank first,
-  then archive originals and promote staged rows only after a successful commit
+- **Safe in-place promotion**: `in_place` runs always use an auto-generated
+  staging bank, then archive originals and promote staged rows only after a
+  successful commit
 - **Terminal-state reviewability** so failed or canceled runs leave any staged
   output untouched for inspection and do not overwrite the source bank
 

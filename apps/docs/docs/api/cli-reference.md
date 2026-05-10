@@ -74,7 +74,7 @@ foresight curate archive <run_id>
 | Option                     | Description                                           | Default             |
 | -------------------------- | ----------------------------------------------------- | ------------------- |
 | `--source-bank-id`         | Source bank to curate                                 | required            |
-| `--output-bank-id`         | Optional destination bank override                    | auto                |
+| `--output-bank-id`         | Optional destination bank override for reviewable runs | auto               |
 | `--policy-mode`            | `preserve`, `rebalance`, or `rebuild`                 | `rebalance`         |
 | `--tool-access`            | `disabled`, `observe`, or `operate`                   | `observe`           |
 | `--output-mode`            | `reviewable_output` or `in_place`                     | `reviewable_output` |
@@ -86,6 +86,8 @@ foresight curate archive <run_id>
 `reviewable_output` writes curated memories to a separate bank. `in_place`
 first writes to a staging bank, and only after a successful run archives the
 original source rows and promotes the staged rows into the source bank.
+`in_place` does not allow `--output-bank-id`; the staging bank is always
+generated automatically.
 
 ## Examples
 

@@ -622,9 +622,7 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
         )
     )
     assert unsafe_output_bank["ok"] is False
-    assert unsafe_output_bank["error"]["message"] == (
-        "output_mode=in_place requires output_bank_id to differ from source_bank_id"
-    )
+    assert unsafe_output_bank["error"]["message"] == "output_mode=in_place does not allow output_bank_id override"
 
     transcript = manage_curation_runs(
         CurationRunAction(
@@ -988,6 +986,59 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
             },
         )
     ]
+
+
+def test_claim_curation_run_is_atomic_for_duplicate_workers():
+    """Only one worker may claim a pending run even if execution is invoked twice."""
+    from foresight_mcp import server as server_module
+
+    db_path = _make_curation_test_db()
+    user_id = "curation_atomic_claim_user"
+    _seed_memory(db_path, memory_id="mem1", content="Atomic claim source", bank_id="source_bank", user_id=user_id)
+
+    with patch("foresight_mcp.server.DB_PATH", db_path), \
+         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
+         patch("foresight_mcp.server.get_event_bus_with_stream"), \
+         patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None), \
+         patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}), \
+         patch("foresight_mcp.server._build_reflection_snapshot", return_value={"trend_summary": {"overall": "stable"}, "insights": []}):
+        created = json.loads(
+            manage_curation_runs(
+                CurationRunAction(action="create", source_bank_id="source_bank"),
+                user_id=user_id,
+            )
+        )
+        run = created["run"]
+        payload = {
+            "tenant_id": "default",
+            "user_id": user_id,
+            "source_bank_id": "source_bank",
+            "output_bank_id": run["output_bank_id"],
+            "policy_mode": run["policy_mode"],
+            "tool_access": run["tool_access"],
+            "output_mode": run["output_mode"],
+            "instructions": run["instructions"],
+            "transcript_bundle": None,
+            "session_id": None,
+            "project_path": None,
+        }
+
+        server_module._execute_curation_run(run["id"], payload)
+        server_module._execute_curation_run(run["id"], payload)
+
+        fetched = json.loads(
+            manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id)
+        )["run"]
+
+    conn = sqlite3.connect(db_path)
+    output_rows = conn.execute(
+        "SELECT id FROM memories WHERE user_id = ? AND bank_id = ? ORDER BY id",
+        (user_id, run["output_bank_id"]),
+    ).fetchall()
+    conn.close()
+
+    assert fetched["status"] == "completed"
+    assert len(output_rows) == fetched["summary"]["output_memory_count"]
 
 
 def test_manage_curation_runs_list_initializes_schema_for_empty_database():

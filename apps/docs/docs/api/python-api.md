@@ -261,9 +261,11 @@ Creates and manages asynchronous curation runs.
 
 - `create` defaults to a separate reviewable output bank
 - `output_mode="in_place"` requires `tool_access="operate"`
+- `output_mode="in_place"` always uses an auto-generated staging bank and
+  rejects `output_bank_id` overrides
 - transcript bundles require `tool_access="operate"`
-- `in_place` runs stage into `output_bank_id`, archive source rows on success,
-  and then promote staged rows into the source bank
+- `in_place` runs stage into an auto-generated bank, archive source rows on
+  success, and then promote staged rows into the source bank
 - `failed` and `canceled` runs leave any already-written staged output
   untouched for inspection
 - `archive` only works after a run reaches a terminal state
