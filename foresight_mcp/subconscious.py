@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -269,6 +270,7 @@ class ContextBlockAgent:
         """
         self.user_id = user_id
         self.tenant_id = tenant_id
+        self._lock = threading.RLock()
         self.state = ContextBlockState(user_id=user_id, tenant_id=tenant_id)
         self.state.initialize_defaults()
         self._load_persisted_blocks()
@@ -349,11 +351,6 @@ class ContextBlockAgent:
         finally:
             conn.close()
 
-    def _persist_all_blocks(self) -> None:
-        """Persist the full block state for the current user and tenant."""
-        for label in self.state.blocks:
-            self._persist_block(label)
-
     async def process_transcript(
         self,
         session_id: str,
@@ -388,36 +385,43 @@ class ContextBlockAgent:
                     f"messages[{i}] has invalid role {msg['role']!r}; must be one of {sorted(valid_roles)}"
                 )
 
-        for msg in messages:
-            if msg["role"] == "user":
-                self._process_user_message(msg["content"], session_id)
+        touched_labels: set[str] = set()
+        with self._lock:
+            for msg in messages:
+                if msg["role"] == "user":
+                    touched_labels.update(self._process_user_message(msg["content"], session_id))
 
-        self.state.session_count += 1
-        self.state.last_sync = datetime.now(timezone.utc)
-        self._persist_all_blocks()
+            self.state.session_count += 1
+            self.state.last_sync = datetime.now(timezone.utc)
+            for label in touched_labels:
+                self._persist_block(label)
         logger.info("Processed transcript for session %s", session_id)
 
-    def _process_user_message(self, content: str, session_id: str) -> None:
+    def _process_user_message(self, content: str, session_id: str) -> set[str]:
         """Process a user message for preferences and pending items."""
+        touched_labels: set[str] = set()
         # Extract preferences
         if any(phrase in content.lower() for phrase in ["i always", "i prefer", "i want", "don't ever", "never do"]):
-            self._extract_preference(content)
+            touched_labels.add(self._extract_preference(content))
 
         # Extract pending items (TODOs, unfinished work)
         if any(phrase in content.upper() for phrase in ["TODO", "TO-DO", "NEED TO", "SHOULD", "MUST"]):
-            self._extract_pending_item(content, session_id)
+            touched_labels.add(self._extract_pending_item(content, session_id))
+        return touched_labels
 
-    def _extract_preference(self, content: str) -> None:
+    def _extract_preference(self, content: str) -> str:
         """Extract user preference from message content."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         self.state.append_to_block(USER_PREFERENCES, f"- [{timestamp}] {content.strip()}")
         logger.info(f"Extracted preference: {content[:50]}...")
+        return USER_PREFERENCES
 
-    def _extract_pending_item(self, content: str, session_id: str) -> None:
+    def _extract_pending_item(self, content: str, session_id: str) -> str:
         """Extract TODO/pending item from content."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         self.state.append_to_block(PENDING_ITEMS, f"- [{timestamp}] {content.strip()} (session: {session_id})")
         logger.info(f"Extracted pending item: {content[:50]}...")
+        return PENDING_ITEMS
 
     def get_whisper(self) -> str:
         """Get the current whisper injection (guidance block in XML format)."""
@@ -429,8 +433,9 @@ class ContextBlockAgent:
 
     def update_guidance(self, new_guidance: str) -> None:
         """Update the guidance block directly."""
-        self.state.update_block(GUIDANCE, new_guidance)
-        self._persist_block(GUIDANCE)
+        with self._lock:
+            self.state.update_block(GUIDANCE, new_guidance)
+            self._persist_block(GUIDANCE)
         logger.info("Updated guidance block")
 
     def update_block(self, label: str, content: str) -> None:
@@ -438,41 +443,47 @@ class ContextBlockAgent:
         if label == GUIDANCE:
             self.update_guidance(content)
             return
-        self.state.update_block(label, content)
-        self._persist_block(label)
+        with self._lock:
+            self.state.update_block(label, content)
+            self._persist_block(label)
         logger.info("Updated block %s", label)
 
     def add_guidance_line(self, line: str) -> None:
         """Add a line to the guidance block."""
-        block = self.state.get_block(GUIDANCE)
-        if block and not block.is_empty():
-            self.state.update_block(GUIDANCE, f"{block.content}\n{line}")
-        else:
-            self.state.update_block(GUIDANCE, line)
-        self._persist_block(GUIDANCE)
+        with self._lock:
+            block = self.state.get_block(GUIDANCE)
+            if block and not block.is_empty():
+                self.state.update_block(GUIDANCE, f"{block.content}\n{line}")
+            else:
+                self.state.update_block(GUIDANCE, line)
+            self._persist_block(GUIDANCE)
 
     def get_block(self, label: str) -> str | None:
         """Get a specific block's content."""
-        block = self.state.get_block(label)
-        return block.content if block else None
+        with self._lock:
+            block = self.state.get_block(label)
+            return block.content if block else None
 
     def get_all_blocks(self) -> list[dict]:
         """Get all non-empty context blocks."""
-        return self.state.get_all_blocks()
+        with self._lock:
+            return self.state.get_all_blocks()
 
     def reset_block(self, label: str) -> None:
         """Reset a block to its default content."""
         if label in DEFAULT_MEMORY_BLOCKS:
-            self.state.update_block(label, DEFAULT_MEMORY_BLOCKS[label])
-            self._persist_block(label)
+            with self._lock:
+                self.state.update_block(label, DEFAULT_MEMORY_BLOCKS[label])
+                self._persist_block(label)
             logger.info(f"Reset block {label} to default")
             return
         raise ValueError(f"Unknown block label {label!r}. Must be one of: {sorted(DEFAULT_MEMORY_BLOCKS)}")
 
     def clear_block(self, label: str) -> None:
         """Clear a block's content."""
-        self.state.update_block(label, "")
-        self._persist_block(label)
+        with self._lock:
+            self.state.update_block(label, "")
+            self._persist_block(label)
         logger.info(f"Cleared block {label}")
 
 
@@ -482,6 +493,7 @@ SubconsciousAgent = ContextBlockAgent
 
 # Global instances keyed by user and tenant for isolation
 _context_block_agents: dict[tuple[str, str], ContextBlockAgent] = {}
+_CONTEXT_BLOCK_AGENTS_LOCK = threading.Lock()
 
 
 def _normalize_tenant_id(tenant_id: str | None) -> str:
@@ -493,11 +505,12 @@ def _normalize_tenant_id(tenant_id: str | None) -> str:
 def get_context_block_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
     """Get or create the context block agent instance for one user+tenant."""
     key = (user_id, _normalize_tenant_id(tenant_id))
-    agent = _context_block_agents.get(key)
-    if agent is None:
-        agent = ContextBlockAgent(user_id=user_id, tenant_id=key[1])
-        _context_block_agents[key] = agent
-    return agent
+    with _CONTEXT_BLOCK_AGENTS_LOCK:
+        agent = _context_block_agents.get(key)
+        if agent is None:
+            agent = ContextBlockAgent(user_id=user_id, tenant_id=key[1])
+            _context_block_agents[key] = agent
+        return agent
 
 
 def get_subconscious_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:

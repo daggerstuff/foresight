@@ -36,6 +36,7 @@ from .config import (
     DB_PATH,
     DEFAULT_BURST_LIMIT,
     DEFAULT_RATE_LIMIT,
+    DEFAULT_TENANT_ID,
     USER_ID,
 )
 from .connection_pool import get_pool
@@ -270,6 +271,18 @@ def get_db_connection():
 
 SCHEMA_VERSION = 5
 
+
+def _seed_default_tenant(conn) -> None:
+    """Insert the default tenant row if it does not already exist."""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO tenants (id, name, rate_limit, burst_limit, created_at, config)
+        VALUES (?, 'Default tenant', ?, ?, ?, '{}')
+        """,
+        (DEFAULT_TENANT_ID, DEFAULT_RATE_LIMIT, DEFAULT_BURST_LIMIT, datetime.now(timezone.utc).isoformat()),
+    )
+
+
 _SCHEMA_MIGRATIONS = {
     1: [
         """CREATE TABLE IF NOT EXISTS tenants (
@@ -423,6 +436,10 @@ def init_db():
             (version, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
+
+    # Ensure the built-in default tenant always exists so tenant switches are stable.
+    _seed_default_tenant(conn)
+    conn.commit()
 
     # Migrate decay_config: add tenant_id if table exists without it
     try:
@@ -1511,7 +1528,7 @@ def _row_to_curation_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
 def _curation_run_output_bank(run_id: str, source_bank_id: str, output_mode: str, requested_output_bank: str | None) -> str:
     """Resolve the effective output bank for a curation run."""
     if output_mode == "in_place":
-        return requested_output_bank or f"curation:stage:{run_id}"
+        return f"curation:stage:{run_id}"
     return requested_output_bank or f"curation:{run_id}"
 
 
@@ -1590,6 +1607,22 @@ def _update_curation_run(
     )
     conn.commit()
     conn.close()
+
+
+def _claim_curation_run(run_id: str, tenant_id: str, started_at: str) -> bool:
+    """Atomically claim a pending curation run for execution."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute(
+            """UPDATE curation_runs
+            SET status = 'running', started_at = ?, ended_at = NULL, error_json = '{}'
+            WHERE id = ? AND tenant_id = ? AND status = 'pending'""",
+            (started_at, run_id, tenant_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
 
 
 def _publish_curation_status(
@@ -1945,7 +1978,8 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     set_current_tenant_id(tenant_id)
     queue = OperationQueue(DB_PATH)
     now = datetime.now(timezone.utc).isoformat()
-    _update_curation_run(run_id, tenant_id, status="running", started_at=now)
+    if not _claim_curation_run(run_id, tenant_id, now):
+        return
     _publish_curation_status(run_id, "running", actor=uid, source_bank_id=payload["source_bank_id"])
 
     try:
@@ -2093,12 +2127,8 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
         source_bank_id = options.source_bank_id or BANK_ID
         if options.output_mode == "in_place" and options.tool_access != "operate":
             return _tool_error("create", "output_mode=in_place requires tool_access=operate")
-        if (
-            options.output_mode == "in_place"
-            and options.output_bank_id is not None
-            and options.output_bank_id == source_bank_id
-        ):
-            return _tool_error("create", "output_mode=in_place requires output_bank_id to differ from source_bank_id")
+        if options.output_mode == "in_place" and options.output_bank_id is not None:
+            return _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
         if options.transcript_bundle and options.tool_access != "operate":
             return _tool_error("create", "transcript_bundle requires tool_access=operate")
 
@@ -2605,11 +2635,18 @@ def switch_tenant(tenant_id: str) -> str:
         Confirmation message
     """
     conn = get_db_connection()
-    row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
-    conn.close()
+    try:
+        if tenant_id == DEFAULT_TENANT_ID:
+            _seed_default_tenant(conn)
+            conn.commit()
+            set_current_tenant_id(tenant_id)
+            return f"Switched to tenant '{tenant_id}'"
 
-    if not row:
-        return f"Tenant '{tenant_id}' not found"
+        row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+        if not row:
+            return f"Tenant '{tenant_id}' not found"
+    finally:
+        conn.close()
 
     set_current_tenant_id(tenant_id)
     return f"Switched to tenant '{tenant_id}'"
