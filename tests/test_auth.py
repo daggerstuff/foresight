@@ -28,8 +28,23 @@ def test_user_creation_and_authentication(temp_db_path):
     auth_user = manager.authenticate_user(username=username, password=password)
     assert auth_user is not None
     assert auth_user.user_id == user.user_id
+    assert not user.password_hash.startswith("sha256$")
     # Wrong password should fail
     assert manager.authenticate_user(username=username, password="wrong") is None
+
+
+def test_api_key_authentication_defaults_to_required(monkeypatch):
+    monkeypatch.delenv("FORESIGHT_REQUIRE_API_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ALLOW_UNAUTHENTICATED", raising=False)
+
+    assert auth_module._should_require_api_key() is True
+
+
+def test_allow_unauthenticated_env_disables_api_key_requirement(monkeypatch):
+    monkeypatch.delenv("FORESIGHT_REQUIRE_API_KEY", raising=False)
+    monkeypatch.setenv("FORESIGHT_ALLOW_UNAUTHENTICATED", "true")
+
+    assert auth_module._should_require_api_key() is False
 
 
 def test_validate_session_rejects_inactive_user(temp_db_path):
@@ -74,7 +89,7 @@ async def test_auth_middleware_blocks_unauthorized_tenant_access(temp_db_path, m
     )
 
     monkeypatch.setattr(auth_module, "_auth_manager", manager)
-    monkeypatch.setattr(auth_module, "_REQUIRE_API_KEY", True)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
 
     ctx = _make_context(user.api_key, "tenant-b")
     call_next = AsyncMock(return_value="ok")
@@ -98,7 +113,7 @@ async def test_auth_middleware_allows_authorized_tenant_access(temp_db_path, mon
     )
 
     monkeypatch.setattr(auth_module, "_auth_manager", manager)
-    monkeypatch.setattr(auth_module, "_REQUIRE_API_KEY", True)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
 
     ctx = _make_context(user.api_key, "tenant-a")
     call_next = AsyncMock(return_value="ok")
@@ -107,3 +122,19 @@ async def test_auth_middleware_allows_authorized_tenant_access(temp_db_path, mon
 
     assert result == "ok"
     call_next.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auth_middleware_requires_api_key_when_missing(monkeypatch):
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    ctx = SimpleNamespace(
+        message=SimpleNamespace(arguments={"tenant_id": "tenant-a"}, meta=SimpleNamespace(model_extra={})),
+    )
+    call_next = AsyncMock(return_value="ok")
+
+    result = await AuthMiddleware().on_call_tool(ctx, call_next)
+
+    assert result.isError is True
+    assert "missing api_key" in result.content[0].text
+    call_next.assert_not_awaited()

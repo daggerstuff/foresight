@@ -18,12 +18,14 @@ env/
 # Database
 *.db
 memory.db
+:memory:
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
 .dolt/
 
 # Miscellaneous
+.coverage
 *.egg-info/
 AGENTS.md
 CLAUDE.md
