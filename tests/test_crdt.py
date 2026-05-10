@@ -139,8 +139,9 @@ class TestORSet:
         orset.add("element1")
         orset.add("element2")
 
-        # Check that elements were added (hashes are stored)
-        assert len(orset._adds) == 2
+        assert orset.contains("element1") is True
+        assert orset.contains("element2") is True
+        assert orset.get_elements() == {"element1", "element2"}
 
     def test_remove(self):
         """Test removing elements."""
@@ -164,8 +165,7 @@ class TestORSet:
 
         orset1.merge(orset2)
 
-        # After merge, all adds should be present
-        assert len(orset1._adds) == 4
+        assert orset1.get_elements() == {"a", "b", "c", "d"}
 
     def test_to_from_dict(self):
         """Test serialization."""
@@ -175,7 +175,7 @@ class TestORSet:
         data = orset1.to_dict()
         orset2 = ORSet.from_dict(data)
 
-        assert len(orset2._adds) == len(orset1._adds)
+        assert orset2.get_elements() == {"test"}
 
 
 class TestLWWMap:
