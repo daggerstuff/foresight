@@ -257,7 +257,7 @@ def manage_curation_runs(
 
 Creates and manages asynchronous curation runs.
 
-**Behavior notes**
+### Behavior notes
 
 - `create` defaults to a separate reviewable output bank
 - `output_mode="in_place"` requires `tool_access="operate"`
