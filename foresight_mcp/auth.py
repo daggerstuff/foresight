@@ -581,27 +581,27 @@ class AuthMiddleware(_Middleware):
             if meta and hasattr(meta, "model_extra") and meta.model_extra:
                 api_key = meta.model_extra.get("api_key")
         if not api_key:
-            from mcp.types import CallToolResult, TextContent
+            from fastmcp.tools.base import ToolResult
+            from mcp.types import TextContent
 
-            return CallToolResult(
-                content=[TextContent(type="text", text="Authentication required: missing api_key")],
-                isError=True,
+            return ToolResult(
+                content=[TextContent(type="text", text="Authentication required: missing api_key")]
             )
         user = get_auth_manager().authenticate_api_key(api_key)
         if not user:
-            from mcp.types import CallToolResult, TextContent
+            from fastmcp.tools.base import ToolResult
+            from mcp.types import TextContent
 
-            return CallToolResult(
-                content=[TextContent(type="text", text="Invalid API key")],
-                isError=True,
+            return ToolResult(
+                content=[TextContent(type="text", text="Invalid API key")]
             )
         tenant_id = resolve_tenant_id_from_message(message)
         if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
-            from mcp.types import CallToolResult, TextContent
+            from fastmcp.tools.base import ToolResult
+            from mcp.types import TextContent
 
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"Tenant access denied for tenant '{tenant_id}'")],
-                isError=True,
+            return ToolResult(
+                content=[TextContent(type="text", text=f"Tenant access denied for tenant '{tenant_id}'")]
             )
         # Proceed to next middleware
         return await call_next(context)

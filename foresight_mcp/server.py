@@ -1322,7 +1322,7 @@ def _handle_context_block_update(agent, label: str, content: str | None) -> str:
     return _tool_response(ok=True, action="update", label=label, message=f"Updated block '{label}'")
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def manage_context_blocks(options: ContextBlockAction, user_id: str | None = None) -> str:
     """
     Manage Foresight context blocks (guidance, preferences, context).
@@ -1370,7 +1370,7 @@ def manage_context_blocks(options: ContextBlockAction, user_id: str | None = Non
     return _tool_error(options.action, f"Unsupported action: {options.action}")
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def manage_subconscious(options: SubconsciousAction, user_id: str | None = None) -> str:
     """Legacy alias for manage_context_blocks()."""
     return manage_context_blocks(ContextBlockAction(**options.model_dump()), user_id=user_id)
