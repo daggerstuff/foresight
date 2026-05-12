@@ -1040,7 +1040,7 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def manage_memories(
     options: MemoryAction,
     user_id: str | None = None,
@@ -1072,7 +1072,7 @@ def manage_memories(
     return f"Unknown action: {options.action}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def search_memories(
     options: SearchOptions,
     user_id: str | None = None,
@@ -1259,7 +1259,7 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
     return "\n".join(res)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def manage_memory_versions(options: VersionAction, user_id: str | None = None) -> str:
     """
     Manage memory versioning: diff or rollback.
@@ -1466,7 +1466,7 @@ def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
     return len(result.entities)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def process_session_transcript(
     session_id: str, messages: list[dict], project_path: str | None = None, user_id: str | None = None
 ) -> str:
@@ -2107,7 +2107,7 @@ def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
     worker.start()
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def manage_curation_runs(options: CurationRunAction, user_id: str | None = None) -> str:
     """
     Manage async Foresight curation runs.
@@ -2418,7 +2418,7 @@ def _score_memory_relevance(
     return overlap_score + importance * 0.5 + decay * 0.5
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def inject_context(
     conversation_text: str,
     user_id: str | None = None,
@@ -2623,7 +2623,7 @@ def set_tenant_context(tenant_id: str) -> None:
     set_current_tenant_id(tenant_id)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def switch_tenant(tenant_id: str) -> str:
     """
     Switch current tenant context.
@@ -2661,7 +2661,7 @@ def switch_tenant(tenant_id: str) -> str:
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def query_memories_temporal(options: TemporalWindow, user_id: str | None = None) -> str:
     """
     Query memories based on temporal signals (window, trend).
@@ -2699,7 +2699,7 @@ def query_memories_temporal(options: TemporalWindow, user_id: str | None = None)
     )
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def get_system_status(options: SystemStatusOptions | None = None, user_id: str | None = None) -> str:
     """
     Get system health, memory statistics, and temporal trends.
@@ -2740,7 +2740,7 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
     return json.dumps(result, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def memory_status(
     user_id: str | None = None,
     include_trends: bool = False,
@@ -2753,7 +2753,7 @@ def memory_status(
     )
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def store_memory(
     content: str,
     user_id: str | None = None,
@@ -2780,14 +2780,14 @@ def store_memory(
     return manage_memories(options, user_id=user_id)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) -> str:
     """Legacy alias for search_memories(query_type="list")."""
     options = SearchOptions(query_type="list", limit=limit, offset=offset)
     return search_memories(options, user_id=user_id)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def query_memories(
     query: str,
     user_id: str | None = None,
@@ -2808,14 +2808,14 @@ def query_memories(
     return search_memories(options, user_id=user_id)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def get_memory(memory_id: str, user_id: str | None = None, min_importance: float = 0.1) -> str:
     """Legacy alias for search_memories(query_type="id")."""
     options = SearchOptions(query_type="id", memory_id=memory_id, min_importance=min_importance)
     return search_memories(options, user_id=user_id)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def update_memory(
     memory_id: str,
     user_id: str | None = None,
@@ -2831,14 +2831,14 @@ def update_memory(
     return manage_memories(options, user_id=user_id)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     """Legacy alias for manage_memories(action="delete")."""
     options = MemoryAction(action="delete", memory_id=memory_id)
     return manage_memories(options, user_id=user_id)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def archive_memory(memory_id: str, user_id: str | None = None) -> str:
     """Legacy alias for manage_memories(action="archive")."""
     options = MemoryAction(action="archive", memory_id=memory_id)
@@ -2850,7 +2850,7 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def manage_entities(action: EntityAction, user_id: str | None = None) -> str:
     """
     Manage entities and relationships (extract, link).
@@ -2909,7 +2909,7 @@ def _handle_entity_query_relationships(uid: str, store, query: EntityQuery) -> s
     return json.dumps([r.to_dict() for r in relationships], indent=2)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
     """
     Query entities and graph relationships.
@@ -2997,7 +2997,7 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     )
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str:
     """
     Perform analysis on memories: synthesis or reflection.

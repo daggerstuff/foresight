@@ -8,17 +8,20 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import pytest
+from fastmcp import Client
+from foresight_cli.cli import _decode_tool_result
 from foresight_mcp import memory_status, store_memory
 from foresight_mcp.server import (
-    _extract_terms,
-    _score_memory_relevance,
     ContextBlockAction,
     CurationRunAction,
+    _extract_terms,
+    _score_memory_relevance,
     inject_context,
     manage_context_blocks,
     manage_curation_runs,
+    mcp,
 )
-from foresight_cli.cli import _decode_tool_result
 
 
 def test_store_memory():
@@ -76,6 +79,35 @@ def _mock_db_connection(db_path):
 def _decode_json_result(result: str) -> dict:
     """Decode a JSON tool envelope."""
     return json.loads(result)
+
+
+@pytest.mark.asyncio
+async def test_text_tools_do_not_advertise_structured_output(monkeypatch):
+    """Text-only Foresight tools should not trigger MCP outputSchema validation."""
+    monkeypatch.setenv("FORESIGHT_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.delenv("FORESIGHT_REQUIRE_API_KEY", raising=False)
+
+    async with Client(mcp) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+
+    for tool_name in ("manage_subconscious", "search_memories", "inject_context"):
+        assert tools[tool_name].outputSchema is None
+
+
+@pytest.mark.asyncio
+async def test_local_mcp_calls_return_text_without_api_key(monkeypatch):
+    """Local stdio callers can use Foresight when the launcher disables auth."""
+    monkeypatch.setenv("FORESIGHT_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.delenv("FORESIGHT_REQUIRE_API_KEY", raising=False)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "manage_subconscious",
+            {"options": {"action": "list"}, "user_id": "test_user"},
+        )
+
+    assert result.is_error is False
+    assert result.content
 
 
 @contextmanager

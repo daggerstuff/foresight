@@ -1,10 +1,14 @@
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-import pytest
 
 import foresight_mcp.auth as auth_module
+import pytest
 from foresight_mcp.auth import AuthManager, AuthMiddleware, Role
+
+
+def _tool_result_is_error(result) -> bool:
+    return bool((result.meta or {}).get("isError"))
 
 @pytest.fixture(scope="function")
 def temp_db_path(tmp_path):
@@ -96,7 +100,7 @@ async def test_auth_middleware_blocks_unauthorized_tenant_access(temp_db_path, m
 
     result = await AuthMiddleware().on_call_tool(ctx, call_next)
 
-    assert result.isError is True
+    assert _tool_result_is_error(result) is True
     assert "Tenant access denied" in result.content[0].text
     call_next.assert_not_awaited()
 
@@ -135,6 +139,6 @@ async def test_auth_middleware_requires_api_key_when_missing(monkeypatch):
 
     result = await AuthMiddleware().on_call_tool(ctx, call_next)
 
-    assert result.isError is True
+    assert _tool_result_is_error(result) is True
     assert "missing api_key" in result.content[0].text
     call_next.assert_not_awaited()
