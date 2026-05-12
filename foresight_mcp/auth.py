@@ -564,10 +564,19 @@ def initialize_default_users() -> None:
 
 # FastMCP authentication middleware
 from fastmcp.server.middleware import Middleware as _Middleware
+from fastmcp.tools.base import ToolResult
+from mcp.types import TextContent
 
 
 class AuthMiddleware(_Middleware):
     """FastMCP middleware that authenticates API calls via API key."""
+
+    @staticmethod
+    def _error_result(message: str) -> ToolResult:
+        return ToolResult(
+            content=[TextContent(type="text", text=message)],
+            meta={"isError": True},
+        )
 
     async def on_call_tool(self, context, call_next):
         if not _should_require_api_key():
@@ -581,27 +590,12 @@ class AuthMiddleware(_Middleware):
             if meta and hasattr(meta, "model_extra") and meta.model_extra:
                 api_key = meta.model_extra.get("api_key")
         if not api_key:
-            from fastmcp.tools.base import ToolResult
-            from mcp.types import TextContent
-
-            return ToolResult(
-                content=[TextContent(type="text", text="Authentication required: missing api_key")]
-            )
+            return self._error_result("Authentication required: missing api_key")
         user = get_auth_manager().authenticate_api_key(api_key)
         if not user:
-            from fastmcp.tools.base import ToolResult
-            from mcp.types import TextContent
-
-            return ToolResult(
-                content=[TextContent(type="text", text="Invalid API key")]
-            )
+            return self._error_result("Invalid API key")
         tenant_id = resolve_tenant_id_from_message(message)
         if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
-            from fastmcp.tools.base import ToolResult
-            from mcp.types import TextContent
-
-            return ToolResult(
-                content=[TextContent(type="text", text=f"Tenant access denied for tenant '{tenant_id}'")]
-            )
+            return self._error_result(f"Tenant access denied for tenant '{tenant_id}'")
         # Proceed to next middleware
         return await call_next(context)
