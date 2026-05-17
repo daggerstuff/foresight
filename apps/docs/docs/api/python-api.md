@@ -1,13 +1,14 @@
- ---
+---
 sidebar_label: Python API
 title: Python API Reference
 ---
 
 # Python API Reference
 
-Complete Python API documentation.
+Complete Python API documentation for Foresight memory, context blocks, and
+curation workflows.
 
-## Memory Operations
+## Memory operations
 
 ### store_memory
 
@@ -19,28 +20,19 @@ def store_memory(
     scope: str = "session",
     retention: str = "short_term",
     importance: float = 0.5,
-    emotional_context: Optional[dict] = None,
-    metrics: Optional[dict] = None,
+    emotional_context: dict | None = None,
+    metrics: dict | None = None,
 ) -> str
 ```
 
-**Parameters:**
-
-- `content` - Memory content to store
-- `category` - Category label (default: "fact")
-- `scope` - session | arc | trait | fact
-- `retention` - ephemeral | short_term | long_term | permanent
-- `emotional_context` - Optional emotional metadata
-- `user_id` - Optional user ID override
-
-**Returns:** Confirmation string with memory ID
+Stores a new memory record.
 
 ### query_memories
 
 ```python
 def query_memories(
     query: str,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     limit: int = 10,
     use_hybrid: bool = True,
     min_importance: float = 0.1,
@@ -48,117 +40,255 @@ def query_memories(
 ) -> str
 ```
 
+Searches memories by text and ranking signals.
+
 ### list_memories
 
 ```python
 def list_memories(
     limit: int = 10,
     offset: int = 0,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
 ) -> str
 ```
+
+Lists memories for a user.
 
 ### get_memory
 
 ```python
 def get_memory(
     memory_id: str,
-    user_id: Optional[str] = None,
-    min_importance: float = 0.1
+    user_id: str | None = None,
+    min_importance: float = 0.1,
 ) -> str
 ```
+
+Retrieves one memory by ID.
 
 ### update_memory
 
 ```python
 def update_memory(
     memory_id: str,
-    user_id: Optional[str] = None,
-    content: Optional[str] = None,
-    category: Optional[str] = None,
-    scope: Optional[str] = None,
-    retention: Optional[str] = None,
-    tags: Optional[List[str]] = None,
+    user_id: str | None = None,
+    content: str | None = None,
+    category: str | None = None,
+    scope: str | None = None,
+    retention: str | None = None,
+    tags: list[str] | None = None,
 ) -> str
 ```
+
+Updates memory content or metadata.
+
+### delete_memory
+
+```python
+def delete_memory(memory_id: str, user_id: str | None = None) -> str
+```
+
+Deletes a memory.
 
 ### memory_status
 
 ```python
 def memory_status(
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     include_trends: bool = False,
     timeframe: str = "30 days",
 ) -> str
 ```
 
-### delete_memory
+Returns system status and optional trend data.
+
+## Context block helpers
+
+### list_context_blocks
 
 ```python
-def delete_memory(
-    memory_id: str,
-    user_id: Optional[str] = None
-) -> str
+def list_context_blocks(user_id: str, tenant_id: str = "default") -> list[dict]
 ```
 
-## Block Operations
+Lists non-empty persisted context blocks for a `(user_id, tenant_id)` pair.
 
-### get_subconscious_block
+### get_context_block
 
 ```python
-def get_subconscious_block(
+def get_context_block(
     label: str,
-    user_id: Optional[str] = None
-) -> str
+    user_id: str,
+    tenant_id: str = "default",
+) -> str | None
 ```
 
-### update_subconscious_block
+Reads one context block.
+
+### update_context_block
 
 ```python
-def update_subconscious_block(
+def update_context_block(
     label: str,
     content: str,
-    user_id: Optional[str] = None
-) -> str
+    user_id: str,
+    tenant_id: str = "default",
+) -> None
 ```
 
-### add_subconscious_guidance
+Replaces a block's content.
+
+### add_context_guidance
 
 ```python
-def add_subconscious_guidance(
+def add_context_guidance(
     line: str,
-    user_id: Optional[str] = None
+    user_id: str,
+    tenant_id: str = "default",
+) -> None
+```
+
+Appends a line to the `guidance` block.
+
+### reset_context_block
+
+```python
+def reset_context_block(
+    label: str,
+    user_id: str,
+    tenant_id: str = "default",
+) -> None
+```
+
+Restores a block's default content.
+
+### clear_context_block
+
+```python
+def clear_context_block(
+    label: str,
+    user_id: str,
+    tenant_id: str = "default",
+) -> None
+```
+
+Clears a block.
+
+### get_context_whisper
+
+```python
+def get_context_whisper(
+    user_id: str,
+    tenant_id: str = "default",
 ) -> str
 ```
 
-## Hook Operations
+Returns the whisper-ready XML payload.
 
-### register_hook
+### get_context_snapshot
 
 ```python
-def register_hook(
-    name: str,
-    event_type: str,
-    hook_type: str = "http",
-    url: Optional[str] = None,
-    retry_count: int = 3,
-    timeout: int = 30
+def get_context_snapshot(
+    user_id: str,
+    tenant_id: str = "default",
 ) -> str
 ```
 
-### list_hooks
+Returns the full XML snapshot of non-empty blocks.
+
+## MCP-style actions
+
+### ContextBlockAction
 
 ```python
-def list_hooks() -> str
+class ContextBlockAction(BaseModel):
+    action: Literal["list", "get", "update", "reset", "clear"]
+    label: str | None = None
+    content: str | None = None
 ```
 
-### unregister_hook
+### manage_context_blocks
 
 ```python
-def unregister_hook(hook_id: str) -> str
+def manage_context_blocks(
+    options: ContextBlockAction,
+    user_id: str | None = None,
+) -> str
 ```
+
+Manages context blocks through the same action-oriented contract exposed by the
+MCP server.
+
+Returns a JSON envelope string such as:
+
+```json
+{
+  "ok": true,
+  "action": "list",
+  "blocks": [{ "label": "project_context", "content": "..." }]
+}
+```
+
+### CurationRunAction
+
+```python
+class CurationRunAction(BaseModel):
+    action: Literal["create", "get", "list", "cancel", "archive"]
+    run_id: str | None = None
+    source_bank_id: str | None = None
+    output_bank_id: str | None = None
+    policy_mode: Literal["preserve", "rebalance", "rebuild"] = "rebalance"
+    tool_access: Literal["disabled", "observe", "operate"] = "observe"
+    output_mode: Literal["reviewable_output", "in_place"] = "reviewable_output"
+    instructions: str | None = None
+    transcript_bundle: list[dict[str, Any]] | None = None
+    session_id: str | None = None
+    project_path: str | None = None
+    limit: int = 20
+```
+
+### manage_curation_runs
+
+```python
+def manage_curation_runs(
+    options: CurationRunAction,
+    user_id: str | None = None,
+) -> str
+```
+
+Creates and manages asynchronous curation runs.
+
+### Behavior notes
+
+- `create` defaults to a separate reviewable output bank
+- `output_mode="in_place"` requires `tool_access="operate"`
+- `output_mode="in_place"` always uses an auto-generated staging bank and
+  rejects `output_bank_id` overrides
+- transcript bundles require `tool_access="operate"`
+- `in_place` runs stage into an auto-generated bank, archive source rows on
+  success, and then promote staged rows into the source bank
+- `failed` and `canceled` runs leave any already-written staged output untouched
+  for inspection
+- `archive` only works after a run reaches a terminal state
+
+Tool responses are JSON envelope strings:
+
+```json
+{
+  "ok": true,
+  "action": "get",
+  "run": {
+    "id": "cur_abc123def456",
+    "status": "completed"
+  }
+}
+```
+
+## Migration note
+
+Legacy `subconscious` helper names remain available as compatibility aliases,
+but new code should use the Foresight-native context block helpers above.
 
 ## Related
 
-- [TypeScript API](./typescript-api)
 - [CLI Reference](./cli-reference)
+- [TypeScript API](./typescript-api)

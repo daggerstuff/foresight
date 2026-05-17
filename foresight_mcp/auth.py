@@ -3,20 +3,22 @@ Authentication System for Foresight MCP
 Provides API key-based authentication with secure password hashing.
 """
 
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+import hashlib
+import logging
 import os
 import re
 import secrets
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from dataclasses import dataclass, field
-from enum import Enum
-import logging
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 from .tenant_context import get_current_tenant_id, set_current_tenant_id, reset_tenant_context
 from .connection_pool import get_pool
 from .config import DB_PATH
+from .tenant_middleware import resolve_tenant_id_from_message
 
 
 class Role(Enum):
@@ -36,9 +38,9 @@ class User:
     email: str
     role: Role
     is_active: bool = True
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_login: Optional[datetime] = None
-    # Hashed password (bcrypt-style, simplified for this implementation)
+    # Hashed password (Argon2, bcrypt, or PBKDF2-SHA256)
     password_hash: str = ""
     # API key for programmatic access
     api_key: str = field(default_factory=lambda: secrets.token_urlsafe(32))
@@ -53,6 +55,36 @@ class AuthError(Exception):
 
 
 _VALID_TENANT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+
+
+def _utcnow() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc)
+
+
+def _env_truthy(value: str | None) -> bool:
+    """Interpret common truthy environment-variable values."""
+    if value is None:
+        return False
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _should_require_api_key() -> bool:
+    """Require API keys by default unless an explicit local override disables it."""
+    explicit = os.environ.get("FORESIGHT_REQUIRE_API_KEY")
+    if explicit is not None:
+        return _env_truthy(explicit)
+    return not _env_truthy(os.environ.get("FORESIGHT_ALLOW_UNAUTHENTICATED"))
+
+
+def _parse_db_timestamp(value: str | None) -> datetime | None:
+    """Parse stored timestamps and normalize legacy naive values to UTC."""
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _validate_tenant_id(tenant_id: str) -> None:
@@ -114,7 +146,7 @@ class AuthManager:
             pool.release(conn)
 
     def _hash_password(self, password: str) -> str:
-        """Hash a password using Argon2 if available, else fallback to bcrypt."""
+        """Hash a password using Argon2, bcrypt, or PBKDF2-SHA256."""
         # Lazy import to avoid hard dependency
         # Try Argon2 first
         try:
@@ -130,15 +162,19 @@ class AuthManager:
                 hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
                 return hashed.decode("utf-8")
             except Exception:
-                # Final fallback: simple SHA256 with salt (not recommended for production)
-                import hashlib
-
-                salt = hashlib.sha256(os.urandom(16)).hexdigest()
-                hash_bytes = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-                return f"sha256${salt}${hash_bytes}"
+                # Final fallback: PBKDF2-SHA256 from the Python standard library
+                iterations = 600_000
+                salt = secrets.token_hex(16)
+                hash_bytes = hashlib.pbkdf2_hmac(
+                    "sha256",
+                    password.encode("utf-8"),
+                    salt.encode("utf-8"),
+                    iterations,
+                ).hex()
+                return f"pbkdf2_sha256${iterations}${salt}${hash_bytes}"
 
     def _verify_password(self, password: str, password_hash: str) -> bool:
-        """Verify a password against its stored Argon2 or bcrypt hash."""
+        """Verify a password against its stored Argon2, bcrypt, PBKDF2, or legacy hash."""
         # Attempt Argon2 verification first
         # Attempt Argon2 verification
         try:
@@ -153,14 +189,26 @@ class AuthManager:
 
                 return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
             except Exception:
-                # Fallback to simple SHA256 verification
+                # Fallback to PBKDF2 verification
+                if password_hash.startswith("pbkdf2_sha256$"):
+                    try:
+                        _, iteration_str, salt, stored_hash = password_hash.split("$", 3)
+                        calc_hash = hashlib.pbkdf2_hmac(
+                            "sha256",
+                            password.encode("utf-8"),
+                            salt.encode("utf-8"),
+                            int(iteration_str),
+                        ).hex()
+                        return secrets.compare_digest(calc_hash, stored_hash)
+                    except Exception:
+                        return False
+
+                # Legacy fallback for pre-hardening hashes
                 if password_hash.startswith("sha256$"):
                     try:
                         _, salt, stored_hash = password_hash.split("$")
-                        import hashlib
-
                         calc_hash = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-                        return calc_hash == stored_hash
+                        return secrets.compare_digest(calc_hash, stored_hash)
                     except Exception:
                         return False
                 return False
@@ -205,7 +253,7 @@ class AuthManager:
                     email,
                     role.value,
                     True,
-                    datetime.utcnow().isoformat(),
+                    _utcnow().isoformat(),
                     password_hash,
                     api_key,
                     tenant_access_json,
@@ -219,7 +267,7 @@ class AuthManager:
                 email=email,
                 role=role,
                 is_active=True,
-                created_at=datetime.utcnow(),
+                created_at=_utcnow(),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=tenant_access,
@@ -264,14 +312,13 @@ class AuthManager:
                 return None
 
             import json
-            from datetime import datetime
 
             # Update last login
             conn.execute(
                 """
                 UPDATE users SET last_login = ? WHERE user_id = ?
             """,
-                (datetime.utcnow().isoformat(), user_id),
+                (_utcnow().isoformat(), user_id),
             )
             conn.commit()
 
@@ -281,8 +328,8 @@ class AuthManager:
                 email=email,
                 role=Role(role_str),
                 is_active=bool(is_active),
-                created_at=datetime.fromisoformat(created_at_str) if created_at_str else datetime.utcnow(),
-                last_login=datetime.fromisoformat(last_login_str) if last_login_str else None,
+                created_at=_parse_db_timestamp(created_at_str) or _utcnow(),
+                last_login=_parse_db_timestamp(last_login_str),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=json.loads(tenant_access_json) if tenant_access_json else [],
@@ -324,14 +371,13 @@ class AuthManager:
             ) = row
 
             import json
-            from datetime import datetime
 
             # Update last login
             conn.execute(
                 """
                 UPDATE users SET last_login = ? WHERE user_id = ?
             """,
-                (datetime.utcnow().isoformat(), user_id),
+                (_utcnow().isoformat(), user_id),
             )
             conn.commit()
 
@@ -341,8 +387,8 @@ class AuthManager:
                 email=email,
                 role=Role(role_str),
                 is_active=bool(is_active),
-                created_at=datetime.fromisoformat(created_at_str) if created_at_str else datetime.utcnow(),
-                last_login=datetime.fromisoformat(last_login_str) if last_login_str else None,
+                created_at=_parse_db_timestamp(created_at_str) or _utcnow(),
+                last_login=_parse_db_timestamp(last_login_str),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=json.loads(tenant_access_json) if tenant_access_json else [],
@@ -361,7 +407,7 @@ class AuthManager:
     def create_session(self, user: User, ip_address: str = "", user_agent: str = "") -> str:
         """Create a new authentication session."""
         session_id = secrets.token_urlsafe(32)
-        expires_at = datetime.utcnow() + timedelta(hours=24)
+        expires_at = _utcnow() + timedelta(hours=24)
 
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -375,7 +421,7 @@ class AuthManager:
                 (
                     session_id,
                     user.user_id,
-                    datetime.utcnow().isoformat(),
+                    _utcnow().isoformat(),
                     expires_at.isoformat(),
                     ip_address,
                     user_agent,
@@ -398,9 +444,9 @@ class AuthManager:
                        u.password_hash, u.api_key, u.tenant_access, s.expires_at
                 FROM auth_sessions s
                 JOIN users u ON s.user_id = u.user_id
-                WHERE s.session_id = ? AND s.expires_at > ?
+                WHERE s.session_id = ? AND s.expires_at > ? AND u.is_active = 1
             """,
-                (session_id, datetime.utcnow().isoformat()),
+                (session_id, _utcnow().isoformat()),
             )
 
             row = cursor.fetchone()
@@ -424,7 +470,6 @@ class AuthManager:
             # Session hash validation handled elsewhere; no placeholder check needed
 
             import json
-            from datetime import datetime
 
             return User(
                 user_id=user_id,
@@ -432,8 +477,8 @@ class AuthManager:
                 email=email,
                 role=Role(role_str),
                 is_active=bool(is_active),
-                created_at=datetime.fromisoformat(created_at_str) if created_at_str else datetime.utcnow(),
-                last_login=datetime.fromisoformat(last_login_str) if last_login_str else None,
+                created_at=_parse_db_timestamp(created_at_str) or _utcnow(),
+                last_login=_parse_db_timestamp(last_login_str),
                 password_hash=password_hash,
                 api_key=api_key,
                 tenant_access=json.loads(tenant_access_json) if tenant_access_json else [],
@@ -451,7 +496,7 @@ class AuthManager:
                 """
                 DELETE FROM auth_sessions WHERE expires_at < ?
             """,
-                (datetime.utcnow().isoformat(),),
+                (_utcnow().isoformat(),),
             )
             deleted_count = cursor.rowcount
             conn.commit()
@@ -519,23 +564,22 @@ def initialize_default_users() -> None:
 
 # FastMCP authentication middleware
 from fastmcp.server.middleware import Middleware as _Middleware
-
-
-_REQUIRE_API_KEY = os.environ.get("FORESIGHT_REQUIRE_API_KEY", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+from fastmcp.tools.base import ToolResult
+from mcp.types import TextContent
 
 
 class AuthMiddleware(_Middleware):
     """FastMCP middleware that authenticates API calls via API key."""
 
+    @staticmethod
+    def _error_result(message: str) -> ToolResult:
+        return ToolResult(
+            content=[TextContent(type="text", text=message)],
+            meta={"isError": True},
+        )
+
     async def on_call_tool(self, context, call_next):
-        # Keep local MCP clients compatible by default.
-        # Opt in to strict API-key enforcement only when explicitly enabled.
-        if not _REQUIRE_API_KEY:
+        if not _should_require_api_key():
             return await call_next(context)
 
         # Extract API key from request metadata
@@ -546,19 +590,12 @@ class AuthMiddleware(_Middleware):
             if meta and hasattr(meta, "model_extra") and meta.model_extra:
                 api_key = meta.model_extra.get("api_key")
         if not api_key:
-            from mcp.types import CallToolResult, TextContent
-
-            return CallToolResult(
-                content=[TextContent(type="text", text="Authentication required: missing api_key")],
-                isError=True,
-            )
+            return self._error_result("Authentication required: missing api_key")
         user = get_auth_manager().authenticate_api_key(api_key)
         if not user:
-            from mcp.types import CallToolResult, TextContent
-
-            return CallToolResult(
-                content=[TextContent(type="text", text="Invalid API key")],
-                isError=True,
-            )
+            return self._error_result("Invalid API key")
+        tenant_id = resolve_tenant_id_from_message(message)
+        if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
+            return self._error_result(f"Tenant access denied for tenant '{tenant_id}'")
         # Proceed to next middleware
         return await call_next(context)

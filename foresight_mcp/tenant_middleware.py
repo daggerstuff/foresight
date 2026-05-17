@@ -25,6 +25,27 @@ def _sanitize_tenant_id(value: str) -> str | None:
     return None
 
 
+def resolve_tenant_id_from_message(message) -> str:
+    """Resolve tenant_id from an MCP message object."""
+    if message:
+        arguments = getattr(message, "arguments", None) or {}
+        if isinstance(arguments, dict) and "tenant_id" in arguments:
+            sanitized = _sanitize_tenant_id(arguments["tenant_id"])
+            if sanitized:
+                return sanitized
+
+    if message:
+        meta = getattr(message, "meta", None)
+        if meta and hasattr(meta, "model_extra") and meta.model_extra:
+            tid = meta.model_extra.get("tenant_id")
+            if tid:
+                sanitized = _sanitize_tenant_id(tid)
+                if sanitized:
+                    return sanitized
+
+    return DEFAULT_TENANT_ID
+
+
 class TenantMiddleware(_Middleware):
     """Resolves tenant_id from request context and sets the contextvar.
 
@@ -48,23 +69,5 @@ class TenantMiddleware(_Middleware):
             set_current_tenant_id(DEFAULT_TENANT_ID)
 
     def _resolve_tenant(self, context) -> str:
-        # Try tool arguments first
         message = getattr(context, "message", None)
-        if message:
-            arguments = getattr(message, "arguments", None) or {}
-            if isinstance(arguments, dict) and "tenant_id" in arguments:
-                sanitized = _sanitize_tenant_id(arguments["tenant_id"])
-                if sanitized:
-                    return sanitized
-
-        # Try request metadata
-        if message:
-            meta = getattr(message, "meta", None)
-            if meta and hasattr(meta, "model_extra") and meta.model_extra:
-                tid = meta.model_extra.get("tenant_id")
-                if tid:
-                    sanitized = _sanitize_tenant_id(tid)
-                    if sanitized:
-                        return sanitized
-
-        return DEFAULT_TENANT_ID
+        return resolve_tenant_id_from_message(message)

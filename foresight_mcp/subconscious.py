@@ -1,24 +1,28 @@
 """
-Foresight Subconscious - Persistent memory blocks for Claude Code sessions.
-Restored from ai/memory/foresight_subconscious.py
+Foresight context blocks - persistent continuity blocks for Foresight sessions.
+Compatibility kept for older subconscious-named integrations.
 
 This module provides:
-- Memory block architecture (guidance, pending_items, project_context, user_preferences, session_patterns)
+- Context block architecture (guidance, pending_items, project_context, user_preferences, session_patterns)
 - Session transcript capture and delivery to Foresight
 - Whisper injection mechanism for pre-prompt context
-- Background processing of transcripts
+- Background curation of transcript-derived continuity
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .config import DB_PATH
+from .connection_pool import get_pool
 from .memory_components import MemoryCrisisTagger, SocraticGate
 
-logger = logging.getLogger("foresight_subconscious")
+logger = logging.getLogger("foresight_context_blocks")
 
 # Memory block labels
 CORE_DIRECTIVES = "core_directives"
@@ -31,9 +35,9 @@ SELF_IMPROVEMENT = "self_improvement"
 TOOL_GUIDELINES = "tool_guidelines"
 
 DEFAULT_MEMORY_BLOCKS = {
-    CORE_DIRECTIVES: """ROLE: Foresight Subconscious — persistent memory layer for Claude Code.
+    CORE_DIRECTIVES: """ROLE: Foresight Curator — background continuity and curation layer for Foresight.
 
-WHAT I AM: A background agent that watches Claude Code sessions, reads the codebase, and builds memory over time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
+WHAT I AM: A background curator that watches Foresight sessions, reads the codebase, and builds memory over time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
 
 OBSERVE (from transcripts):
 - User corrections to Claude's output → preferences
@@ -42,7 +46,7 @@ OBSERVE (from transcripts):
 - Unfinished work, mentioned TODOs → pending_items
 - Explicit statements ("I always want...", "I prefer...") → user_preferences
 
-PROVIDE (via memory blocks):
+PROVIDE (via context blocks):
 - Accumulated context that persists across sessions
 - Pattern observations when genuinely useful
 - Reminders about past issues with similar code
@@ -164,16 +168,17 @@ class MemoryBlock:
 
 
 @dataclass
-class SubconsciousState:
-    """State container for Subconscious agent."""
+class ContextBlockState:
+    """State container for the Foresight context block agent."""
 
     blocks: dict[str, MemoryBlock] = field(default_factory=dict)
     last_sync: datetime | None = None
     session_count: int = 0
     user_id: str = "default"
+    tenant_id: str = "default"
 
     def initialize_defaults(self) -> None:
-        """Initialize memory blocks with default content."""
+        """Initialize context blocks with default content."""
         for label, content in DEFAULT_MEMORY_BLOCKS.items():
             self.blocks[label] = MemoryBlock(
                 label=label,
@@ -182,11 +187,11 @@ class SubconsciousState:
             )
 
     def get_block(self, label: str) -> MemoryBlock | None:
-        """Get a memory block by label."""
+        """Get a context block by label."""
         return self.blocks.get(label)
 
     def update_block(self, label: str, content: str) -> None:
-        """Update a memory block's content.
+        """Update a context block's content.
 
         ``label`` must be one of the predefined block names or an existing
         custom block already in ``self.blocks``.  Arbitrary labels are
@@ -221,7 +226,7 @@ class SubconsciousState:
             return ""
 
         timestamp = datetime.now(timezone.utc).isoformat()
-        return f"""<foresight_message from="Subconscious" timestamp="{timestamp}">
+        return f"""<foresight_message from="Foresight Curator" timestamp="{timestamp}">
 {guidance.content}
 </foresight_message>"""
 
@@ -245,9 +250,9 @@ class SubconsciousState:
         return [block.to_dict() for block in self.blocks.values() if not block.is_empty()]
 
 
-class SubconsciousAgent:
+class ContextBlockAgent:
     """
-    Subconscious agent for Claude Code sessions.
+    Foresight context block agent for Foresight sessions.
 
     This agent:
     - Receives session transcripts asynchronously
@@ -256,17 +261,95 @@ class SubconsciousAgent:
     - Provides whisper injections for Claude Code prompts
     """
 
-    def __init__(self, user_id: str = "default"):
-        """Initialize the Subconscious agent.
+    def __init__(self, user_id: str = "default", tenant_id: str = "default"):
+        """Initialize the context block agent.
 
         Args:
             user_id: User identifier for memory storage
+            tenant_id: Tenant identifier for memory isolation
         """
         self.user_id = user_id
-        self.state = SubconsciousState(user_id=user_id)
+        self.tenant_id = tenant_id
+        self._lock = threading.RLock()
+        self.state = ContextBlockState(user_id=user_id, tenant_id=tenant_id)
         self.state.initialize_defaults()
+        self._load_persisted_blocks()
         self._tagger = MemoryCrisisTagger()
         self._gate = SocraticGate(self._tagger)
+
+    def _connect(self):
+        return get_pool(DB_PATH).acquire()
+
+    def _ensure_storage(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS context_blocks (
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    user_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, user_id, label)
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_context_blocks_lookup "
+                "ON context_blocks(tenant_id, user_id, updated_at DESC)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _load_persisted_blocks(self) -> None:
+        """Overlay persisted blocks onto the default in-memory state."""
+        self._ensure_storage()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT label, content, updated_at FROM context_blocks WHERE tenant_id = ? AND user_id = ?",
+                (self.tenant_id, self.user_id),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for row in rows:
+            label = row["label"]
+            block = self.state.get_block(label)
+            updated_at = datetime.fromisoformat(row["updated_at"])
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            if block:
+                block.content = row["content"]
+                block.chars_current = len(row["content"])
+                block.updated_at = updated_at
+            else:
+                self.state.blocks[label] = MemoryBlock(
+                    label=label,
+                    content=row["content"],
+                    description=f"Memory block for {label}",
+                    updated_at=updated_at,
+                )
+
+    def _persist_block(self, label: str) -> None:
+        """Persist one block for the current user and tenant."""
+        self._ensure_storage()
+        block = self.state.get_block(label)
+        if block is None:
+            return
+        updated_at = (block.updated_at or datetime.now(timezone.utc)).isoformat()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO context_blocks (tenant_id, user_id, label, content, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, user_id, label)
+                DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at""",
+                (self.tenant_id, self.user_id, label, block.content, updated_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     async def process_transcript(
         self,
@@ -302,85 +385,134 @@ class SubconsciousAgent:
                     f"messages[{i}] has invalid role {msg['role']!r}; must be one of {sorted(valid_roles)}"
                 )
 
-        for msg in messages:
-            if msg["role"] == "user":
-                self._process_user_message(msg["content"], session_id)
+        touched_labels: set[str] = set()
+        with self._lock:
+            for msg in messages:
+                if msg["role"] == "user":
+                    touched_labels.update(self._process_user_message(msg["content"], session_id))
 
-        self.state.session_count += 1
-        self.state.last_sync = datetime.now(timezone.utc)
+            self.state.session_count += 1
+            self.state.last_sync = datetime.now(timezone.utc)
+            for label in touched_labels:
+                self._persist_block(label)
         logger.info("Processed transcript for session %s", session_id)
 
-    def _process_user_message(self, content: str, session_id: str) -> None:
+    def _process_user_message(self, content: str, session_id: str) -> set[str]:
         """Process a user message for preferences and pending items."""
+        touched_labels: set[str] = set()
         # Extract preferences
         if any(phrase in content.lower() for phrase in ["i always", "i prefer", "i want", "don't ever", "never do"]):
-            self._extract_preference(content)
+            touched_labels.add(self._extract_preference(content))
 
         # Extract pending items (TODOs, unfinished work)
         if any(phrase in content.upper() for phrase in ["TODO", "TO-DO", "NEED TO", "SHOULD", "MUST"]):
-            self._extract_pending_item(content, session_id)
+            touched_labels.add(self._extract_pending_item(content, session_id))
+        return touched_labels
 
-    def _extract_preference(self, content: str) -> None:
+    def _extract_preference(self, content: str) -> str:
         """Extract user preference from message content."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         self.state.append_to_block(USER_PREFERENCES, f"- [{timestamp}] {content.strip()}")
         logger.info(f"Extracted preference: {content[:50]}...")
+        return USER_PREFERENCES
 
-    def _extract_pending_item(self, content: str, session_id: str) -> None:
+    def _extract_pending_item(self, content: str, session_id: str) -> str:
         """Extract TODO/pending item from content."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         self.state.append_to_block(PENDING_ITEMS, f"- [{timestamp}] {content.strip()} (session: {session_id})")
         logger.info(f"Extracted pending item: {content[:50]}...")
+        return PENDING_ITEMS
 
     def get_whisper(self) -> str:
         """Get the current whisper injection (guidance block in XML format)."""
         return self.state.to_whisper_xml()
 
     def get_full_context(self) -> str:
-        """Get all memory blocks as XML context."""
+        """Get all context blocks as XML context."""
         return self.state.to_full_xml()
 
     def update_guidance(self, new_guidance: str) -> None:
         """Update the guidance block directly."""
-        self.state.update_block(GUIDANCE, new_guidance)
+        with self._lock:
+            self.state.update_block(GUIDANCE, new_guidance)
+            self._persist_block(GUIDANCE)
         logger.info("Updated guidance block")
+
+    def update_block(self, label: str, content: str) -> None:
+        """Update any context block and persist the change."""
+        if label == GUIDANCE:
+            self.update_guidance(content)
+            return
+        with self._lock:
+            self.state.update_block(label, content)
+            self._persist_block(label)
+        logger.info("Updated block %s", label)
 
     def add_guidance_line(self, line: str) -> None:
         """Add a line to the guidance block."""
-        block = self.state.get_block(GUIDANCE)
-        if block and not block.is_empty():
-            self.state.update_block(GUIDANCE, f"{block.content}\n{line}")
-        else:
-            self.state.update_block(GUIDANCE, line)
+        with self._lock:
+            block = self.state.get_block(GUIDANCE)
+            if block and not block.is_empty():
+                self.state.update_block(GUIDANCE, f"{block.content}\n{line}")
+            else:
+                self.state.update_block(GUIDANCE, line)
+            self._persist_block(GUIDANCE)
 
     def get_block(self, label: str) -> str | None:
         """Get a specific block's content."""
-        block = self.state.get_block(label)
-        return block.content if block else None
+        with self._lock:
+            block = self.state.get_block(label)
+            return block.content if block else None
 
     def get_all_blocks(self) -> list[dict]:
-        """Get all non-empty blocks."""
-        return self.state.get_all_blocks()
+        """Get all non-empty context blocks."""
+        with self._lock:
+            return self.state.get_all_blocks()
 
     def reset_block(self, label: str) -> None:
         """Reset a block to its default content."""
         if label in DEFAULT_MEMORY_BLOCKS:
-            self.state.update_block(label, DEFAULT_MEMORY_BLOCKS[label])
+            with self._lock:
+                self.state.update_block(label, DEFAULT_MEMORY_BLOCKS[label])
+                self._persist_block(label)
             logger.info(f"Reset block {label} to default")
+            return
+        raise ValueError(f"Unknown block label {label!r}. Must be one of: {sorted(DEFAULT_MEMORY_BLOCKS)}")
 
     def clear_block(self, label: str) -> None:
         """Clear a block's content."""
-        self.state.update_block(label, "(Cleared)")
+        with self._lock:
+            self.state.update_block(label, "")
+            self._persist_block(label)
         logger.info(f"Cleared block {label}")
 
 
-# Global instance for convenience
-_subconscious_agent: SubconsciousAgent | None = None
+SubconsciousState = ContextBlockState
+SubconsciousAgent = ContextBlockAgent
 
 
-def get_subconscious_agent(user_id: str, tenant_id: str = "default") -> SubconsciousAgent:
-    """Get or create the global subconscious agent instance."""
-    global _subconscious_agent
-    if _subconscious_agent is None or _subconscious_agent.user_id != user_id:
-        _subconscious_agent = SubconsciousAgent(user_id=user_id)
-    return _subconscious_agent
+# Global instances keyed by user and tenant for isolation
+_context_block_agents: dict[tuple[str, str], ContextBlockAgent] = {}
+_CONTEXT_BLOCK_AGENTS_LOCK = threading.Lock()
+
+
+def _normalize_tenant_id(tenant_id: str | None) -> str:
+    """Normalize optional tenant IDs into a stable cache key."""
+    normalized = (tenant_id or "").strip()
+    return normalized or "default"
+
+
+def get_context_block_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
+    """Get or create the context block agent instance for one user+tenant."""
+    key = (user_id, _normalize_tenant_id(tenant_id))
+    with _CONTEXT_BLOCK_AGENTS_LOCK:
+        agent = _context_block_agents.get(key)
+        if agent is None:
+            agent = ContextBlockAgent(user_id=user_id, tenant_id=key[1])
+            _context_block_agents[key] = agent
+        return agent
+
+
+def get_subconscious_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
+    """Compatibility wrapper for older subconscious-named integrations."""
+    return get_context_block_agent(user_id, tenant_id)

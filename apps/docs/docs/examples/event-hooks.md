@@ -1,6 +1,7 @@
- ---
-sidebar_label: Event Hooks
-title: Event Hooks Examples
+---
+
+sidebar_label: Event Hooks title: Event Hooks Examples
+
 ---
 
 # Event Hooks Examples

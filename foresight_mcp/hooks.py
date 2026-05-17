@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -266,6 +267,9 @@ class HookExecutor:
         self._registry = registry or HookRegistry()
         self._callable_handlers: dict[EventType, list[Callable[[Event], None]]] = {}
         self._async_handlers: dict[EventType, list[Callable[[Event], Coroutine[Any, Any, Any]]]] = {}
+        self._background_loop: asyncio.AbstractEventLoop | None = None
+        self._background_thread: threading.Thread | None = None
+        self._background_lock = threading.Lock()
 
         # Subscribe to event bus
         self._event_bus = get_event_bus()
@@ -292,16 +296,14 @@ class HookExecutor:
             if hook.hook_type == HookType.CALLABLE:
                 self._execute_callable(hook, event)
             elif hook.hook_type == HookType.ASYNC:
-                # Create task but ensure it's tracked for exceptions
-                task = asyncio.create_task(self._execute_async(hook, event))
-                task.add_done_callback(
-                    lambda t: t.exception() and logger.error(f"Async hook {hook.name} failed: {t.exception()}")
+                self._submit_coroutine(
+                    self._execute_async(hook, event),
+                    description=f"Async hook {hook.name}",
                 )
             elif hook.hook_type == HookType.HTTP:
-                # Create task but ensure it's tracked for exceptions
-                task = asyncio.create_task(self._execute_http(hook, event))
-                task.add_done_callback(
-                    lambda t: t.exception() and logger.error(f"HTTP hook {hook.name} failed: {t.exception()}")
+                self._submit_coroutine(
+                    self._execute_http(hook, event),
+                    description=f"HTTP hook {hook.name}",
                 )
 
         # Also execute in-memory handlers
@@ -314,7 +316,90 @@ class HookExecutor:
 
         if event_type in self._async_handlers:
             for handler in self._async_handlers[event_type]:
-                asyncio.create_task(handler(event))
+                handler_name = getattr(handler, "__name__", "async_handler")
+                self._submit_coroutine(
+                    handler(event),
+                    description=f"In-memory async hook {handler_name}",
+                )
+
+    def _ensure_background_loop(self) -> asyncio.AbstractEventLoop:
+        """Create a dedicated event loop for async hook execution from sync code."""
+        with self._background_lock:
+            if self._background_loop and self._background_loop.is_running():
+                return self._background_loop
+
+            ready = threading.Event()
+            loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
+
+            def _run_loop() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop_holder["loop"] = loop
+                ready.set()
+                loop.run_forever()
+
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.close()
+
+            thread = threading.Thread(
+                target=_run_loop,
+                name="foresight-hook-executor",
+                daemon=True,
+            )
+            thread.start()
+            ready.wait()
+
+            self._background_loop = loop_holder["loop"]
+            self._background_thread = thread
+            return self._background_loop
+
+    def _log_future_result(
+        self,
+        future: asyncio.Future[Any] | Any,
+        *,
+        description: str,
+    ) -> None:
+        """Log coroutine execution failures without raising into the publish path."""
+        try:
+            exc = future.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.error("%s completion inspection failed: %s", description, exc)
+            return
+
+        if exc is not None:
+            logger.error("%s failed: %s", description, exc)
+
+    def _submit_coroutine(self, coroutine: Coroutine[Any, Any, Any], *, description: str) -> None:
+        """Run a coroutine on the active loop or a dedicated background loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            background_loop = self._ensure_background_loop()
+            future = asyncio.run_coroutine_threadsafe(coroutine, background_loop)
+            future.add_done_callback(lambda done, desc=description: self._log_future_result(done, description=desc))
+            return
+
+        task = loop.create_task(coroutine)
+        task.add_done_callback(lambda done, desc=description: self._log_future_result(done, description=desc))
+
+    def close(self) -> None:
+        """Stop the background loop used for sync-triggered async hooks."""
+        with self._background_lock:
+            loop = self._background_loop
+            thread = self._background_thread
+            self._background_loop = None
+            self._background_thread = None
+
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        if thread and thread.is_alive():
+            thread.join(timeout=1)
 
     def _execute_callable(self, hook: HookRegistration, event: Event) -> None:
         """Execute a callable hook."""
@@ -429,6 +514,8 @@ def get_hook_executor() -> HookExecutor:
 def reset_hook_executor() -> None:
     """Reset the global hook executor (for testing)."""
     global _hook_executor
+    if _hook_executor is not None:
+        _hook_executor.close()
     _hook_executor = None
 
 

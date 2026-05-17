@@ -196,3 +196,36 @@ def test_thread_safe_singleton(db_path):
 
     # All threads must have received the exact same object.
     assert all(p is results[0] for p in results)
+
+
+def test_released_connection_can_be_reused_from_another_thread(db_path):
+    pool = ConnectionPool(db_path, max_size=1)
+    conn = pool.acquire()
+    try:
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.commit()
+        raw = conn._conn
+    finally:
+        pool.release(conn)
+
+    result: dict[str, bool] = {}
+    errors: list[Exception] = []
+
+    def worker():
+        try:
+            conn2 = pool.acquire()
+            try:
+                result["same_connection"] = conn2._conn is raw
+                conn2.execute("SELECT 1").fetchone()
+                result["query_succeeded"] = True
+            finally:
+                pool.release(conn2)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert errors == []
+    assert result == {"same_connection": True, "query_succeeded": True}

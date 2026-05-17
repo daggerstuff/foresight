@@ -37,6 +37,13 @@ class EventType(str, Enum):
     BLOCK_UPDATED = "block.updated"
     BLOCK_DELETED = "block.deleted"
 
+    # Curation lifecycle
+    CURATION_CREATED = "curation.created"
+    CURATION_UPDATED = "curation.updated"
+    CURATION_COMPLETED = "curation.completed"
+    CURATION_FAILED = "curation.failed"
+    CURATION_CANCELED = "curation.canceled"
+
     # Anomaly detection
     ANOMALY_DETECTED = "anomaly.detected"
 
@@ -359,6 +366,11 @@ class EventBus:
         self._stream_publisher = stream_publisher
         self._lock = threading.Lock()
 
+    def set_stream_publisher(self, stream_publisher: Any | None) -> None:
+        """Attach or replace the stream publisher after bus initialization."""
+        with self._lock:
+            self._stream_publisher = stream_publisher
+
     def publish(self, event: Event) -> None:
         """
         Publish an event.
@@ -432,6 +444,8 @@ def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
         if _event_bus is None:
             _event_store = EventStore()
             _event_bus = EventBus(_event_store, stream_publisher)
+        elif stream_publisher is not None:
+            _event_bus.set_stream_publisher(stream_publisher)
     return _event_bus
 
 
@@ -534,6 +548,25 @@ def block_deleted(block_label: str, actor: str = "system") -> Event:
         block_label,
         {},
     )
+
+
+def curation_status_changed(
+    run_id: str,
+    status: str,
+    payload: dict[str, Any] | None = None,
+    actor: str = "system",
+) -> Event:
+    """Emit curation lifecycle events."""
+    event_type_map = {
+        "pending": EventType.CURATION_CREATED,
+        "running": EventType.CURATION_UPDATED,
+        "completed": EventType.CURATION_COMPLETED,
+        "failed": EventType.CURATION_FAILED,
+        "canceled": EventType.CURATION_CANCELED,
+    }
+    event_type = event_type_map.get(status, EventType.CURATION_UPDATED)
+    event_payload = {"status": status, **(payload or {})}
+    return _make_event(event_type, actor, run_id, event_payload)
 
 
 # Anomaly events

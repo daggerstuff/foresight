@@ -1,91 +1,109 @@
- ---
+---
 sidebar_label: Managing Blocks
-title: Guide - Managing Memory Blocks
+title: Guide - Managing Context Blocks
 ---
 
-# Managing Memory Blocks
+# Managing Context Blocks
 
-Create, update, and query memory blocks.
+Create, inspect, update, and reset Foresight context blocks.
 
-## Get Block Content
+Context blocks are persisted per `(user_id, tenant_id)`. `foresight blocks list`
+shows only non-empty blocks, while `get` can still return an empty string for a
+recently cleared block.
+
+## Read a block
 
 ```python
-from foresight_mcp import get_subconscious_block
+from foresight_mcp import get_context_block
 
-# Get guidance block
-guidance = get_subconscious_block("guidance")
+guidance = get_context_block("guidance", user_id="vivi")
 print(guidance)
 ```
 
-## Update Block
+## Update a block
 
 ```python
-from foresight_mcp import update_subconscious_block
+from foresight_mcp import update_context_block
 
-update_subconscious_block(
+update_context_block(
     label="guidance",
-    content="Always use TDD. Write tests first."
+    content="Always run focused verification before declaring completion.",
+    user_id="vivi",
 )
 ```
 
-## Add Guidance Line
+## Append a guidance line
 
 ```python
-from foresight_mcp import add_subconscious_guidance
+from foresight_mcp import add_context_guidance
 
-add_subconscious_guidance("Prefer early returns over nested conditionals")
+add_context_guidance("Prefer small, reviewable diffs.", user_id="vivi")
 ```
 
-## Get Full Context
+## Get the full continuity snapshot
 
 ```python
-from foresight_mcp import get_subconscious_context
+from foresight_mcp import get_context_snapshot, get_context_whisper
 
-# Get all blocks as XML
-context = get_subconscious_context()
-print(context)
+snapshot = get_context_snapshot(user_id="vivi")
+whisper = get_context_whisper(user_id="vivi")
+print(snapshot)
+print(whisper)
 ```
 
-## Whisper (XML Format)
+## Reset or clear a block
 
 ```python
-from foresight_mcp import get_subconscious_whisper
+from foresight_mcp import clear_context_block, reset_context_block
 
-whisper = get_subconscious_whisper()
-# Returns XML formatted context for LLM injection
+clear_context_block("guidance", user_id="vivi")
+reset_context_block("guidance", user_id="vivi")
 ```
 
-## CLI Commands
+## CLI commands
 
 ```bash
-# List all block schemas
-foresight block list
+# List non-empty blocks
+foresight blocks list
 
-# Get block content
-foresight block get guidance
+# Read one block
+foresight blocks get guidance
 
-# Create block
-foresight block create my-block --content "Initial content"
+# Replace block content
+foresight blocks update guidance "Prefer early returns over nested conditionals."
+
+# Reset to default content
+foresight blocks reset guidance
+
+# Clear content entirely
+foresight blocks clear guidance
 ```
 
-## TypeScript SDK
+## MCP / JSON contract
 
-```typescript
-import { BlockManager } from '@foresight/core'
+The MCP-facing `manage_context_blocks` tool returns stable JSON envelopes:
 
-const blockManager = new BlockManager()
-
-// Get block
-const block = blockManager.get('guidance')
-
-// Update content
-blockManager.updateContent('guidance', 'New guidance')
-
-// List all
-const blocks = blockManager.list()
+```json
+{
+  "ok": true,
+  "action": "clear",
+  "label": "guidance",
+  "message": "Cleared block 'guidance'"
+}
 ```
 
-## Related
+Failures return the same shape with `ok: false` and an `error.message` field.
 
-- [Blocks Concept](../concepts/blocks)
-- [Events](../concepts/events)
+## Migration note
+
+If you are upgrading older automation, map the legacy names as follows:
+
+| Legacy                      | Current                |
+| --------------------------- | ---------------------- |
+| `get_subconscious_block`    | `get_context_block`    |
+| `update_subconscious_block` | `update_context_block` |
+| `add_subconscious_guidance` | `add_context_guidance` |
+| `get_subconscious_whisper`  | `get_context_whisper`  |
+| `get_subconscious_context`  | `get_context_snapshot` |
+| `reset_subconscious_block`  | `reset_context_block`  |
+| `clear_subconscious_block`  | `clear_context_block`  |
