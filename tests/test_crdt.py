@@ -1,4 +1,5 @@
 """Tests for CRDT implementations."""
+
 import time
 
 import pytest
@@ -222,7 +223,10 @@ class TestLWWMap:
     def test_merge_conflict(self):
         """Test merge with conflicting updates."""
         map1 = LWWMap()
-        map1.set("key", "value1", )
+        map1.set(
+            "key",
+            "value1",
+        )
 
         time.sleep(0.01)
 

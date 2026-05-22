@@ -10,6 +10,7 @@ Supported embedding models and their dimensions:
 - bge-large-en-v1.5: 1024
 - all-MiniLM-L6-v2: 384
 """
+
 import math
 from dataclasses import dataclass
 from typing import Literal
@@ -38,12 +39,12 @@ EmbeddingModel = Literal[
 
 class EmbeddingDimensionError(ValueError):
     """Raised when embedding dimension validation fails."""
-    pass
 
 
 @dataclass
 class EmbeddingConfig:
     """Configuration for embedding validation."""
+
     model: EmbeddingModel
     expected_dimension: int
 
@@ -51,10 +52,7 @@ class EmbeddingConfig:
         """Validate model and set expected dimension."""
         if self.model not in EMBEDDING_DIMENSIONS:
             valid_models = ", ".join(EMBEDDING_DIMENSIONS.keys())
-            raise ValueError(
-                f"Unknown embedding model: {self.model}. "
-                f"Valid models: {valid_models}"
-            )
+            raise ValueError(f"Unknown embedding model: {self.model}. Valid models: {valid_models}")
         # Override with known dimension
         self.expected_dimension = EMBEDDING_DIMENSIONS[self.model]
 
@@ -92,14 +90,9 @@ def validate_embedding_dimension(
         expected_dimension = EMBEDDING_DIMENSIONS.get(model)
         if expected_dimension is None:
             valid_models = ", ".join(EMBEDDING_DIMENSIONS.keys())
-            raise EmbeddingDimensionError(
-                f"Unknown embedding model: {model}. "
-                f"Valid models: {valid_models}"
-            )
+            raise EmbeddingDimensionError(f"Unknown embedding model: {model}. Valid models: {valid_models}")
     elif expected_dimension is None:
-        raise EmbeddingDimensionError(
-            "Either model or expected_dimension must be provided"
-        )
+        raise EmbeddingDimensionError("Either model or expected_dimension must be provided")
 
     # Validate dimension
     if actual_dimension != expected_dimension:
@@ -134,7 +127,7 @@ def validate_embedding_vectors(
         try:
             validate_embedding_dimension(vector, expected_dimension, model)
         except EmbeddingDimensionError as e:
-            errors.append(f"Vector {i}: {str(e)}")
+            errors.append(f"Vector {i}: {e!s}")
 
     return errors
 

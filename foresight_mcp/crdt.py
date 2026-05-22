@@ -6,6 +6,7 @@ Provides conflict-free data types for offline-first synchronization:
 - OR-Set: Observed-Remove Set for collections
 - Vector Clock: Causal ordering of events
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -20,6 +21,7 @@ T = TypeVar("T")
 # Vector Clock
 # =============================================================================
 
+
 @dataclass
 class VectorClock:
     """
@@ -31,22 +33,20 @@ class VectorClock:
     Attributes:
         clock: Dict mapping node_id to counter
     """
+
     clock: dict[str, int] = field(default_factory=dict)
 
     def increment(self, node_id: str) -> None:
         """Increment clock for a node."""
         self.clock[node_id] = self.clock.get(node_id, 0) + 1
 
-    def merge(self, other: 'VectorClock') -> None:
+    def merge(self, other: VectorClock) -> None:
         """Merge with another vector clock (take max of each component)."""
         all_nodes = set(self.clock.keys()) | set(other.clock.keys())
         for node_id in all_nodes:
-            self.clock[node_id] = max(
-                self.clock.get(node_id, 0),
-                other.clock.get(node_id, 0)
-            )
+            self.clock[node_id] = max(self.clock.get(node_id, 0), other.clock.get(node_id, 0))
 
-    def happens_before(self, other: 'VectorClock') -> bool:
+    def happens_before(self, other: VectorClock) -> bool:
         """
         Check if this clock happens-before another.
 
@@ -68,11 +68,11 @@ class VectorClock:
 
         return at_least_one_less
 
-    def concurrent_with(self, other: 'VectorClock') -> bool:
+    def concurrent_with(self, other: VectorClock) -> bool:
         """Check if this clock is concurrent with another (neither happens-before)."""
         return not self.happens_before(other) and not other.happens_before(self)
 
-    def copy(self) -> 'VectorClock':
+    def copy(self) -> VectorClock:
         """Create a copy of this vector clock."""
         new_clock = VectorClock()
         new_clock.clock = self.clock.copy()
@@ -83,7 +83,7 @@ class VectorClock:
         return self.clock.copy()
 
     @classmethod
-    def from_dict(cls, data: dict[str, int]) -> 'VectorClock':
+    def from_dict(cls, data: dict[str, int]) -> VectorClock:
         """Create from dictionary."""
         clock = VectorClock()
         clock.clock = data
@@ -93,6 +93,7 @@ class VectorClock:
 # =============================================================================
 # LWW-Register (Last-Writer-Wins Register)
 # =============================================================================
+
 
 @dataclass
 class LWWRegister(Generic[T]):
@@ -108,6 +109,7 @@ class LWWRegister(Generic[T]):
         node_id: ID of the node that wrote the value
         vector_clock: Causal ordering
     """
+
     value: T | None = None
     timestamp: float = 0.0
     node_id: str = ""
@@ -131,7 +133,7 @@ class LWWRegister(Generic[T]):
             self.node_id = node_id
             self.vector_clock.increment(node_id)
 
-    def merge(self, other: 'LWWRegister[T]') -> None:
+    def merge(self, other: LWWRegister[T]) -> None:
         """Merge with another LWW-Register (last writer wins)."""
         if other.timestamp > self.timestamp:
             self.value = other.value
@@ -160,7 +162,7 @@ class LWWRegister(Generic[T]):
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'LWWRegister':
+    def from_dict(cls, data: dict[str, Any]) -> LWWRegister:
         """Create from dictionary."""
         register = cls()
         register.value = data.get("value")
@@ -174,6 +176,7 @@ class LWWRegister(Generic[T]):
 # =============================================================================
 # OR-Set (Observed-Remove Set)
 # =============================================================================
+
 
 @dataclass
 class ORSet(Generic[T]):
@@ -189,6 +192,7 @@ class ORSet(Generic[T]):
         _values: Dict mapping element hash to the most recent element value
         _cache: Cache of current set contents
     """
+
     _adds: dict[str, set[tuple]] = field(default_factory=dict)
     _removes: dict[str, set[tuple]] = field(default_factory=dict)
     _values: dict[str, T] = field(default_factory=dict)
@@ -266,7 +270,7 @@ class ORSet(Generic[T]):
         }
         return self._cache
 
-    def merge(self, other: 'ORSet[T]') -> None:
+    def merge(self, other: ORSet[T]) -> None:
         """Merge with another OR-Set."""
         # Merge adds
         for element_hash, tags in other._adds.items():
@@ -296,7 +300,7 @@ class ORSet(Generic[T]):
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'ORSet':
+    def from_dict(cls, data: dict[str, Any]) -> ORSet:
         """Create from dictionary."""
         orset = cls()
         orset._adds = {k: set(v) for k, v in data.get("adds", {}).items()}
@@ -312,6 +316,7 @@ class ORSet(Generic[T]):
 # LWW-Map (Last-Writer-Wins Map)
 # =============================================================================
 
+
 @dataclass
 class LWWMap(Generic[T]):
     """
@@ -323,6 +328,7 @@ class LWWMap(Generic[T]):
     Attributes:
         _entries: Dict mapping keys to LWW-Registers
     """
+
     _entries: dict[str, LWWRegister] = field(default_factory=dict)
     _node_id: str = "default"
     vector_clock: VectorClock = field(default_factory=VectorClock)
@@ -355,7 +361,7 @@ class LWWMap(Generic[T]):
         """Get all keys."""
         return list(self._entries.keys())
 
-    def merge(self, other: 'LWWMap[T]') -> None:
+    def merge(self, other: LWWMap[T]) -> None:
         """Merge with another LWW-Map."""
         for key, other_register in other._entries.items():
             if key not in self._entries:
@@ -373,13 +379,11 @@ class LWWMap(Generic[T]):
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'LWWMap':
+    def from_dict(cls, data: dict[str, Any]) -> LWWMap:
         """Create from dictionary."""
         lww_map = cls()
         entries = data.get("entries", {})
-        lww_map._entries = {
-            k: LWWRegister.from_dict(v) for k, v in entries.items()
-        }
+        lww_map._entries = {k: LWWRegister.from_dict(v) for k, v in entries.items()}
         lww_map._node_id = data.get("node_id", "default")
         if "vector_clock" in data:
             lww_map.vector_clock = VectorClock.from_dict(data["vector_clock"])

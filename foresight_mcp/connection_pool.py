@@ -3,6 +3,7 @@
 Provides thread-safe connection pooling with WAL mode, foreign keys,
 and automatic cleanup of stale connections.
 """
+
 from __future__ import annotations
 
 import os
@@ -45,9 +46,7 @@ class ConnectionPool:
                     continue
 
             if len(self._in_use) >= self.max_size:
-                raise RuntimeError(
-                    f"Connection pool exhausted ({self.max_size} connections in use)"
-                )
+                raise RuntimeError(f"Connection pool exhausted ({self.max_size} connections in use)")
             conn = self._new_connection()
             self._in_use.add(conn)
             return PooledConnection(conn, self)
@@ -69,9 +68,7 @@ class ConnectionPool:
                 return
 
             self._in_use.discard(raw)
-            if len(self._pool) < self.max_size and not any(
-                stored is raw for stored, _ in self._pool
-            ):
+            if len(self._pool) < self.max_size and not any(stored is raw for stored, _ in self._pool):
                 try:
                     raw.execute("SELECT 1")
                     self._pool.append((raw, time.time()))

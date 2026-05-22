@@ -1,8 +1,8 @@
 """Tests for TenantMiddleware."""
-from unittest.mock import AsyncMock, MagicMock
+
+from unittest.mock import MagicMock
 
 import pytest
-
 from foresight_mcp.tenant_context import (
     DEFAULT_TENANT_ID,
     get_current_tenant_id,

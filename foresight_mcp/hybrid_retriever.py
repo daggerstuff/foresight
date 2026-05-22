@@ -21,12 +21,12 @@ tfidf_cosine search with neural embeddings. For actual tfidf_cosine search,
 implement an embedding service (see embedding_validation.py for
 dimension requirements when adding that capability).
 """
+
 from __future__ import annotations
 
 import logging
 import math
 import sqlite3
-
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -56,6 +56,7 @@ def _validate_input(query: str, user_id: str) -> None:
 @dataclass
 class HybridResult:
     """A single result from hybrid retrieval."""
+
     memory_id: str
     content: str
     category: str | None
@@ -93,6 +94,7 @@ class HybridResult:
 @dataclass
 class HybridSearchResult:
     """Complete result from a hybrid search."""
+
     results: list[HybridResult]
     total_candidates: int
     signal_counts: dict[str, int] = field(default_factory=dict)
@@ -210,27 +212,19 @@ class HybridRetriever:
         conn = self._get_connection()
         try:
             if use_keyword:
-                keyword_ranking = self._keyword_search(
-                    conn, query, user_id, tenant_id, limit * 3
-                )
+                keyword_ranking = self._keyword_search(conn, query, user_id, tenant_id, limit * 3)
                 all_ids.update(keyword_ranking.keys())
 
             if use_tfidf_cosine:
-                tfidf_cosine_ranking = self._tfidf_cosine_search(
-                    conn, query, user_id, tenant_id, limit * 3
-                )
+                tfidf_cosine_ranking = self._tfidf_cosine_search(conn, query, user_id, tenant_id, limit * 3)
                 all_ids.update(tfidf_cosine_ranking.keys())
 
             if use_graph:
-                graph_ranking = self._graph_search(
-                    conn, query, user_id, tenant_id, limit * 3
-                )
+                graph_ranking = self._graph_search(conn, query, user_id, tenant_id, limit * 3)
                 all_ids.update(graph_ranking.keys())
 
             if use_temporal:
-                temporal_ranking = self._temporal_search(
-                    conn, user_id, tenant_id, limit * 3, min_importance
-                )
+                temporal_ranking = self._temporal_search(conn, user_id, tenant_id, limit * 3, min_importance)
                 all_ids.update(temporal_ranking.keys())
 
             if not all_ids:
@@ -275,27 +269,19 @@ class HybridRetriever:
             )
 
             if memory_id in keyword_ranking:
-                result.keyword_score = self._rank_to_score(
-                    keyword_ranking[memory_id], len(keyword_ranking)
-                )
+                result.keyword_score = self._rank_to_score(keyword_ranking[memory_id], len(keyword_ranking))
                 result.source_signals.append("keyword")
             if memory_id in tfidf_cosine_ranking:
-                result.semantic_score = self._rank_to_score(
-                    tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking)
-                )
+                result.semantic_score = self._rank_to_score(tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking))
                 result.tfidf_cosine_score = self._rank_to_score(
                     tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking)
                 )
                 result.source_signals.append(semantic_label)
             if memory_id in graph_ranking:
-                result.graph_score = self._rank_to_score(
-                    graph_ranking[memory_id], len(graph_ranking)
-                )
+                result.graph_score = self._rank_to_score(graph_ranking[memory_id], len(graph_ranking))
                 result.source_signals.append("graph")
             if memory_id in temporal_ranking:
-                result.temporal_score = self._rank_to_score(
-                    temporal_ranking[memory_id], len(temporal_ranking)
-                )
+                result.temporal_score = self._rank_to_score(temporal_ranking[memory_id], len(temporal_ranking))
                 result.source_signals.append("temporal")
 
             results.append(result)
@@ -332,19 +318,20 @@ class HybridRetriever:
         # Escape LIKE metacharacters to prevent wildcard injection
         escaped_terms = [_escape_like(t) for t in terms]
 
-        like_clauses = " OR ".join(
-            ["content LIKE ? ESCAPE '!'" for _ in terms]
-        )
+        like_clauses = " OR ".join(["content LIKE ? ESCAPE '!'" for _ in terms])
         params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
-        cursor = conn.execute(f"""
+        cursor = conn.execute(
+            f"""
             SELECT id, content
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND ({like_clauses})
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
-        """, params + [limit])
+        """,
+            params + [limit],
+        )
 
         rows = cursor.fetchall()
 
@@ -408,10 +395,7 @@ class HybridRetriever:
             for token in set(tokens):
                 doc_freq[token] = doc_freq.get(token, 0) + 1
 
-        idf: dict[str, float] = {
-            term: math.log(n_docs / df) if df > 0 else 0.0
-            for term, df in doc_freq.items()
-        }
+        idf: dict[str, float] = {term: math.log(n_docs / df) if df > 0 else 0.0 for term, df in doc_freq.items()}
 
         entry = {"idf": idf, "docs": docs, "doc_count": current_count}
         with self._tfidf_cache_lock:
@@ -435,15 +419,10 @@ class HybridRetriever:
         for token in tokens:
             tf_counts[token] = tf_counts.get(token, 0) + 1
         total = len(tokens) if tokens else 1
-        return {
-            term: (count / total) * idf.get(term, 0.0)
-            for term, count in tf_counts.items()
-        }
+        return {term: (count / total) * idf.get(term, 0.0) for term, count in tf_counts.items()}
 
     @staticmethod
-    def _cosine_similarity(
-        vec_a: dict[str, float], vec_b: dict[str, float]
-    ) -> float:
+    def _cosine_similarity(vec_a: dict[str, float], vec_b: dict[str, float]) -> float:
         """Compute cosine similarity between two sparse vectors."""
         common = vec_a.keys() & vec_b.keys()
         if not common:
@@ -491,11 +470,7 @@ class HybridRetriever:
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
 
-        ranked = {
-            mid: rank + 1
-            for rank, (mid, sim) in enumerate(scored)
-            if sim > 0.0
-        }
+        ranked = {mid: rank + 1 for rank, (mid, sim) in enumerate(scored) if sim > 0.0}
         if limit and len(ranked) > limit:
             ranked = dict(list(ranked.items())[:limit])
         return ranked
@@ -532,9 +507,7 @@ class HybridRetriever:
         escaped_terms = [_escape_like(t) for t in terms]
 
         # Find entities whose name matches query terms
-        like_clauses = " OR ".join(
-            ["e.name LIKE ? ESCAPE '!'" for _ in terms]
-        )
+        like_clauses = " OR ".join(["e.name LIKE ? ESCAPE '!'" for _ in terms])
         entity_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entities)").fetchall()}
         if "tenant_id" in entity_cols:
             sql = f"""
@@ -563,7 +536,8 @@ class HybridRetriever:
         # Find memories linked to these entities
         # Filter by tenant via memories table join
         entity_placeholders = ",".join("?" * len(entity_ids))
-        cursor = conn.execute(f"""
+        cursor = conn.execute(
+            f"""
             SELECT mel.memory_id, COUNT(DISTINCT mel.entity_id) as entity_hits
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id
@@ -573,7 +547,9 @@ class HybridRetriever:
             GROUP BY mel.memory_id
             ORDER BY entity_hits DESC
             LIMIT ?
-        """, [tenant_id, user_id] + entity_ids + [user_id, limit])
+        """,
+            [tenant_id, user_id] + entity_ids + [user_id, limit],
+        )
 
         rows = cursor.fetchall()
         return {mid: rank + 1 for rank, (mid, _) in enumerate(rows)}
@@ -594,7 +570,8 @@ class HybridRetriever:
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT id, importance, created_at, activation_count,
                    COALESCE(strength_trend, 'stable')
             FROM memories
@@ -602,7 +579,9 @@ class HybridRetriever:
             AND importance >= ?
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
-        """, (user_id, tenant_id, min_importance, limit))
+        """,
+            (user_id, tenant_id, min_importance, limit),
+        )
 
         rows = cursor.fetchall()
         if not rows:
@@ -615,12 +594,8 @@ class HybridRetriever:
             mid, importance, created_at, activation_count, trend = row
 
             try:
-                created = datetime.fromisoformat(
-                    created_at.replace("Z", "+00:00")
-                )
-                hours_old = max(
-                    (now - created).total_seconds() / 3600, 0.01
-                )
+                created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                hours_old = max((now - created).total_seconds() / 3600, 0.01)
             except (ValueError, AttributeError):
                 hours_old = 168.0
 
@@ -665,21 +640,13 @@ class HybridRetriever:
             score = 0.0
 
             if mid in keyword:
-                score += self.weights["keyword"] / (
-                    self.RRF_K + keyword[mid]
-                )
+                score += self.weights["keyword"] / (self.RRF_K + keyword[mid])
             if mid in tfidf_cosine:
-                score += self.weights["tfidf_cosine"] / (
-                    self.RRF_K + tfidf_cosine[mid]
-                )
+                score += self.weights["tfidf_cosine"] / (self.RRF_K + tfidf_cosine[mid])
             if mid in graph:
-                score += self.weights["graph"] / (
-                    self.RRF_K + graph[mid]
-                )
+                score += self.weights["graph"] / (self.RRF_K + graph[mid])
             if mid in temporal:
-                score += self.weights["temporal"] / (
-                    self.RRF_K + temporal[mid]
-                )
+                score += self.weights["temporal"] / (self.RRF_K + temporal[mid])
 
             scores[mid] = score
 
@@ -703,13 +670,16 @@ class HybridRetriever:
             return {}
 
         placeholders = ",".join("?" * len(memory_ids))
-        cursor = conn.execute(f"""
+        cursor = conn.execute(
+            f"""
             SELECT id, content, category, importance,
                    strength_trend, created_at
             FROM memories
             WHERE id IN ({placeholders})
             AND user_id = ? AND tenant_id = ?
-        """, memory_ids + [user_id, tenant_id])
+        """,
+            memory_ids + [user_id, tenant_id],
+        )
 
         return {
             row[0]: {
@@ -738,6 +708,7 @@ def get_hybrid_retriever(
         if _hybrid_retriever is None:
             if db_path is None:
                 from .config import DB_PATH
+
                 db_path = DB_PATH
             _hybrid_retriever = HybridRetriever(db_path, weights)
         return _hybrid_retriever

@@ -13,10 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger("foresight_websocket")
 
@@ -375,7 +376,6 @@ class WebSocketServer:
         """Broadcast event to all subscribed connections."""
         # This would send to all connected WebSocket clients
         # Implementation depends on the WebSocket server framework
-        pass
 
     def get_buffered_events(self, since_event_id: str | None = None) -> list[dict[str, Any]]:
         """Get buffered events for reconnection sync."""

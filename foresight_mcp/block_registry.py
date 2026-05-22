@@ -2,49 +2,56 @@
 Memory Block Registry and Schema System
 Composable memory blocks with dynamic registration and validation.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable
 
 # =============================================================================
 # Enums
 # =============================================================================
 
+
 class RetentionPolicy(Enum):
     """Defines how long a memory block is retained."""
-    EPHEMERAL = "ephemeral"      # Deleted after session
-    SHORT_TERM = "short_term"    # Kept for duration of arc
-    LONG_TERM = "long_term"      # Candidate for archival
-    PERMANENT = "permanent"      # Never archived
+
+    EPHEMERAL = "ephemeral"  # Deleted after session
+    SHORT_TERM = "short_term"  # Kept for duration of arc
+    LONG_TERM = "long_term"  # Candidate for archival
+    PERMANENT = "permanent"  # Never archived
 
 
 class MergeStrategy(Enum):
     """Defines how new content is merged with existing content."""
-    APPEND = "append"           # Append to existing content
-    REPLACE = "replace"         # Replace entire content
-    SYNTHESIZE = "synthesize"   # LLM-based synthesis
+
+    APPEND = "append"  # Append to existing content
+    REPLACE = "replace"  # Replace entire content
+    SYNTHESIZE = "synthesize"  # LLM-based synthesis
 
 
 class InjectionPoint(Enum):
     """Defines where block content is injected in prompts."""
-    PRE_PROMPT = "pre_prompt"       # Inject at start of prompt
-    POST_PROMPT = "post_prompt"     # Inject at end of prompt
-    WHISPER_ONLY = "whisper_only"   # Only in whisper injections
+
+    PRE_PROMPT = "pre_prompt"  # Inject at start of prompt
+    POST_PROMPT = "post_prompt"  # Inject at end of prompt
+    WHISPER_ONLY = "whisper_only"  # Only in whisper injections
 
 
 class BlockScope(Enum):
     """Defines the scope of a memory block."""
-    GLOBAL = "global"         # Global across all projects
-    PROJECT = "project"       # Specific to a project
-    SESSION = "session"       # Specific to a session
+
+    GLOBAL = "global"  # Global across all projects
+    PROJECT = "project"  # Specific to a project
+    SESSION = "session"  # Specific to a session
 
 
 # =============================================================================
 # Schema Definition
 # =============================================================================
+
 
 @dataclass
 class MemoryBlockSchema:
@@ -62,6 +69,7 @@ class MemoryBlockSchema:
         validator: Optional validation function
         metadata: Additional metadata
     """
+
     label: str
     description: str = ""
     retention_policy: RetentionPolicy = RetentionPolicy.SHORT_TERM
@@ -122,6 +130,7 @@ class MemoryBlockSchema:
 # Block Instance
 # =============================================================================
 
+
 @dataclass
 class MemoryBlock:
     """
@@ -134,6 +143,7 @@ class MemoryBlock:
         updated_at: Last update timestamp
         version: Version number for conflict detection
     """
+
     schema: MemoryBlockSchema
     content: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -175,6 +185,7 @@ class MemoryBlock:
 # Block Registry (Singleton)
 # =============================================================================
 
+
 class BlockRegistry:
     """
     Registry for memory block schemas.
@@ -182,9 +193,9 @@ class BlockRegistry:
     Singleton pattern - use get_registry() to get instance.
     """
 
-    _instance: "BlockRegistry" | None = None
+    _instance: BlockRegistry | None = None
 
-    def __new__(cls) -> "BlockRegistry":
+    def __new__(cls) -> BlockRegistry:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
@@ -317,6 +328,7 @@ DEFAULT_BLOCK_SCHEMAS = [
 # =============================================================================
 # Global Access Functions
 # =============================================================================
+
 
 def get_registry() -> BlockRegistry:
     """Get the global block registry instance."""

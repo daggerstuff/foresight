@@ -3,6 +3,7 @@ Anomaly Detection System
 Domain-agnostic anomaly detection with pluggable strategies.
 Extensible to any domain (mental health, security, finance, etc.)
 """
+
 from __future__ import annotations
 
 import re
@@ -29,6 +30,7 @@ class AnomalyResult:
     - Finance: fraud detection
     - DevOps: anomaly detection
     """
+
     is_anomaly: bool
     category: str | None
     risk_level: RiskLevel
@@ -78,12 +80,10 @@ class AnomalyDetector(ABC):
         Returns:
             AnomalyResult with findings
         """
-        pass
 
     @abstractmethod
     def get_categories(self) -> list[str]:
         """Return list of anomaly categories this detector supports."""
-        pass
 
 
 # =============================================================================
@@ -91,68 +91,97 @@ class AnomalyDetector(ABC):
 # =============================================================================
 
 MentalHealthCategory = Literal[
-    "self_harm", "depression", "anxiety", "trauma",
-    "substance_abuse", "eating_disorder", "crisis_event"
+    "self_harm", "depression", "anxiety", "trauma", "substance_abuse", "eating_disorder", "crisis_event"
 ]
 
 # Crisis keyword patterns by category - mental health specific
 MENTAL_HEALTH_PATTERNS = {
     "self_harm": {
         "keywords": [
-            r"\bkill myself\b", r"\bend my life\b", r"\bsuicide\b",
-            r"\bsuicidal\b", r"\bself harm\b", r"\bhurt myself\b",
-            r"\bcut myself\b", r"\bdont want to live\b",
-            r"\blife is not worth living\b", r"\bwish i was dead\b",
-            r"\bno reason to live\b", r"\bwant to die\b",
+            r"\bkill myself\b",
+            r"\bend my life\b",
+            r"\bsuicide\b",
+            r"\bsuicidal\b",
+            r"\bself harm\b",
+            r"\bhurt myself\b",
+            r"\bcut myself\b",
+            r"\bdont want to live\b",
+            r"\blife is not worth living\b",
+            r"\bwish i was dead\b",
+            r"\bno reason to live\b",
+            r"\bwant to die\b",
         ],
         "urgency": "immediate",
         "risk_level": "critical",
     },
     "depression": {
         "keywords": [
-            r"\bso hopeless\b", r"\bnothing matters\b", r"\bempty inside\b",
-            r"\bcant feel anything\b", r"\bworthless\b", r"\bburden to everyone\b",
-            r"\bno point\b", r"\bdeeply depressed\b", r"\bsevere depression\b",
+            r"\bso hopeless\b",
+            r"\bnothing matters\b",
+            r"\bempty inside\b",
+            r"\bcant feel anything\b",
+            r"\bworthless\b",
+            r"\bburden to everyone\b",
+            r"\bno point\b",
+            r"\bdeeply depressed\b",
+            r"\bsevere depression\b",
         ],
         "urgency": "high",
         "risk_level": "high",
     },
     "anxiety": {
         "keywords": [
-            r"\bpanic attack\b", r"\bcant breathe\b", r"\bheart racing\b",
-            r"\boverwhelming anxiety\b", r"\bsevere anxiety\b", r"\bcan t function\b",
+            r"\bpanic attack\b",
+            r"\bcant breathe\b",
+            r"\bheart racing\b",
+            r"\boverwhelming anxiety\b",
+            r"\bsevere anxiety\b",
+            r"\bcan t function\b",
         ],
         "urgency": "elevated",
         "risk_level": "moderate",
     },
     "trauma": {
         "keywords": [
-            r"\bflashback\b", r"\bptsd episode\b", r"\btrauma response\b",
-            r"\bdissociating\b", r"\btriggered by\b",
+            r"\bflashback\b",
+            r"\bptsd episode\b",
+            r"\btrauma response\b",
+            r"\bdissociating\b",
+            r"\btriggered by\b",
         ],
         "urgency": "elevated",
         "risk_level": "moderate",
     },
     "substance_abuse": {
         "keywords": [
-            r"\brelapsed\b", r"\boverdosed\b", r"\bcan t stop using\b",
-            r"\baddicted to\b", r"\bwithdrawal symptoms\b",
+            r"\brelapsed\b",
+            r"\boverdosed\b",
+            r"\bcan t stop using\b",
+            r"\baddicted to\b",
+            r"\bwithdrawal symptoms\b",
         ],
         "urgency": "high",
         "risk_level": "high",
     },
     "eating_disorder": {
         "keywords": [
-            r"\bstarving myself\b", r"\bpurge\b", r"\bbinge eating\b",
-            r"\bpro ana\b", r"\bmia\b", r"\bed recovery\b",
+            r"\bstarving myself\b",
+            r"\bpurge\b",
+            r"\bbinge eating\b",
+            r"\bpro ana\b",
+            r"\bmia\b",
+            r"\bed recovery\b",
         ],
         "urgency": "elevated",
         "risk_level": "moderate",
     },
     "crisis_event": {
         "keywords": [
-            r"\bin crisis\b", r"\bmental health crisis\b", r"\bbreaking point\b",
-            r"\bcant go on\b", r"\blosing my mind\b",
+            r"\bin crisis\b",
+            r"\bmental health crisis\b",
+            r"\bbreaking point\b",
+            r"\bcant go on\b",
+            r"\blosing my mind\b",
         ],
         "urgency": "immediate",
         "risk_level": "critical",
@@ -176,10 +205,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
         """Pre-compile regex patterns for performance."""
         self.compiled_patterns = {}
         for category, config in MENTAL_HEALTH_PATTERNS.items():
-            self.compiled_patterns[category] = [
-                re.compile(pattern, re.IGNORECASE)
-                for pattern in config["keywords"]
-            ]
+            self.compiled_patterns[category] = [re.compile(pattern, re.IGNORECASE) for pattern in config["keywords"]]
 
     def detect(self, content: str, **kwargs) -> AnomalyResult:
         """
@@ -225,8 +251,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
             # Find primary category (highest severity)
             severity_order = {"critical": 4, "high": 3, "moderate": 2, "low": 1}
             primary_category = max(
-                category_scores.keys(),
-                key=lambda c: severity_order.get(category_scores[c]["risk_level"], 0)
+                category_scores.keys(), key=lambda c: severity_order.get(category_scores[c]["risk_level"], 0)
             )
 
             primary_config = category_scores[primary_category]
@@ -247,13 +272,11 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
                 )
             elif urgency == "high":
                 recommended_action = (
-                    "HIGH PRIORITY: Flag for urgent supervisor review. "
-                    "Prepare crisis resources for user."
+                    "HIGH PRIORITY: Flag for urgent supervisor review. Prepare crisis resources for user."
                 )
             elif urgency == "elevated":
                 recommended_action = (
-                    "ELEVATED CONCERN: Include in post-session summary. "
-                    "Monitor closely for escalation."
+                    "ELEVATED CONCERN: Include in post-session summary. Monitor closely for escalation."
                 )
         else:
             confidence = 0.0
@@ -266,7 +289,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
             urgency=urgency,
             detected_terms=list(set(detected_terms)),
             recommended_action=recommended_action,
-            metadata={"sensitivity": sensitivity, "source": kwargs.get("source")}
+            metadata={"sensitivity": sensitivity, "source": kwargs.get("source")},
         )
 
     def get_categories(self) -> list[str]:
@@ -278,6 +301,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
 # Backward Compatibility Layer
 # =============================================================================
 
+
 class CrisisDetectionService(MentalHealthAnomalyDetector):
     """
     Backward compatibility alias.
@@ -285,7 +309,6 @@ class CrisisDetectionService(MentalHealthAnomalyDetector):
     DEPRECATED: Use MentalHealthAnomalyDetector instead.
     This alias exists for backward compatibility with existing code.
     """
-    pass
 
 
 # =============================================================================
@@ -296,10 +319,7 @@ _anomaly_detector: AnomalyDetector | None = None
 _detector_type: str = "mental_health"
 
 
-def get_anomaly_detector(
-    detector_type: str = "mental_health",
-    **kwargs
-) -> AnomalyDetector:
+def get_anomaly_detector(detector_type: str = "mental_health", **kwargs) -> AnomalyDetector:
     """
     Get or create an anomaly detector instance.
 

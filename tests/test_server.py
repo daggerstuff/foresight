@@ -1,4 +1,5 @@
 """Tests for Foresight MCP server."""
+
 import hashlib
 import json
 import sqlite3
@@ -115,8 +116,9 @@ def _patched_context_block_storage(db_path: str) -> Iterator[None]:
     """Point context-block persistence at a test database and isolate agent cache."""
     from foresight_mcp import subconscious as subconscious_module
 
-    with patch.object(subconscious_module, "DB_PATH", db_path), patch.dict(
-        subconscious_module._context_block_agents, {}, clear=True
+    with (
+        patch.object(subconscious_module, "DB_PATH", db_path),
+        patch.dict(subconscious_module._context_block_agents, {}, clear=True),
     ):
         yield
 
@@ -132,8 +134,10 @@ def test_bridge_context_blocks_to_memories():
     agent._extract_pending_item("TODO: add more tests", "sess_1")
 
     db_path = _make_test_db()
-    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)), \
-         patch("foresight_mcp.server.BANK_ID", "test_bank"):
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.BANK_ID", "test_bank"),
+    ):
         stored = _bridge_context_blocks_to_memories(agent, "bridge_test_user")
 
     assert stored >= 2  # at least one preference + one pending
@@ -159,8 +163,10 @@ def test_bridge_context_blocks_dedup():
     agent._extract_preference("I prefer explicit returns")
 
     db_path = _make_test_db()
-    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)), \
-         patch("foresight_mcp.server.BANK_ID", "test_bank"):
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.BANK_ID", "test_bank"),
+    ):
         _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
         _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
 
@@ -235,6 +241,7 @@ def test_bridge_transcript_entities():
 # =============================================================================
 # inject_context tests
 # =============================================================================
+
 
 def _make_inject_test_db(memories=None):
     """Create a temporary DB with full memories schema for inject_context tests.
@@ -321,14 +328,28 @@ def test_extract_terms_empty():
 def test_inject_context_returns_formatted_output():
     """inject_context returns structured context block with matching memories."""
     now_iso = datetime.now(timezone.utc).isoformat()
-    db_path = _make_inject_test_db(memories=[
-        {"id": "mem1", "content": "User prefers Python type hints in all functions", "importance": 0.8, "created_at": now_iso},
-        {"id": "mem2", "content": "Session discussed database migration strategies", "importance": 0.6, "created_at": now_iso},
-    ])
+    db_path = _make_inject_test_db(
+        memories=[
+            {
+                "id": "mem1",
+                "content": "User prefers Python type hints in all functions",
+                "importance": 0.8,
+                "created_at": now_iso,
+            },
+            {
+                "id": "mem2",
+                "content": "Session discussed database migration strategies",
+                "importance": 0.6,
+                "created_at": now_iso,
+            },
+        ]
+    )
 
-    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_context_block_agent"):
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight_mcp.server.get_context_block_agent"),
+    ):
         result = inject_context("Let's talk about database and type hints")
 
     assert "Relevant Context" in result
@@ -344,9 +365,11 @@ def test_inject_context_respects_max_memories():
     ]
     db_path = _make_inject_test_db(memories=memories)
 
-    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_context_block_agent"):
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight_mcp.server.get_context_block_agent"),
+    ):
         result = inject_context("python topic", max_memories=2)
 
     # Count memory lines (lines starting with "- [")
@@ -357,13 +380,22 @@ def test_inject_context_respects_max_memories():
 def test_inject_context_no_match():
     """inject_context with no matching memories returns empty context message."""
     now_iso = datetime.now(timezone.utc).isoformat()
-    db_path = _make_inject_test_db(memories=[
-        {"id": "mem1", "content": "Completely unrelated content about sailing", "importance": 0.1, "created_at": now_iso},
-    ])
+    db_path = _make_inject_test_db(
+        memories=[
+            {
+                "id": "mem1",
+                "content": "Completely unrelated content about sailing",
+                "importance": 0.1,
+                "created_at": now_iso,
+            },
+        ]
+    )
 
-    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_context_block_agent"):
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight_mcp.server.get_context_block_agent"),
+    ):
         result = inject_context("quantum computing algorithms", min_relevance=0.5)
 
     assert "0 memories surfaced" in result
@@ -373,9 +405,11 @@ def test_inject_context_empty_conversation_text():
     """inject_context with empty conversation text still works (no terms to match)."""
     db_path = _make_inject_test_db(memories=[])
 
-    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-              patch("foresight_mcp.server.get_context_block_agent"):
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight_mcp.server.get_context_block_agent"),
+    ):
         result = inject_context("")
 
     assert "0 memories surfaced" in result
@@ -452,7 +486,9 @@ def test_manage_context_blocks_update_reset_clear_cycle():
 
         updated = _decode_json_result(
             manage_context_blocks(
-                ContextBlockAction(action="update", label="guidance", content="Always show exact verification evidence."),
+                ContextBlockAction(
+                    action="update", label="guidance", content="Always show exact verification evidence."
+                ),
                 user_id=user_id,
             )
         )
@@ -478,7 +514,9 @@ def test_manage_context_blocks_update_reset_clear_cycle():
         )
         assert empty_fetch["content"] == ""
 
-        listed_after_clear = _decode_json_result(manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id))
+        listed_after_clear = _decode_json_result(
+            manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id)
+        )
         assert all(block["label"] != "guidance" for block in listed_after_clear["blocks"])
 
         reset = _decode_json_result(
@@ -591,10 +629,12 @@ def test_manage_curation_runs_create_cancel_archive():
     user_id = "curation_cancel_user"
     _seed_memory(db_path, memory_id="mem1", content="A durable memory", bank_id="source_bank", user_id=user_id)
 
-    with patch("foresight_mcp.server.DB_PATH", db_path), \
-         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None), \
-         patch("foresight_mcp.server._publish_curation_status", lambda *_args, **_kwargs: None):
+    with (
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None),
+        patch("foresight_mcp.server._publish_curation_status", lambda *_args, **_kwargs: None),
+    ):
         created = json.loads(
             manage_curation_runs(
                 CurationRunAction(action="create", source_bank_id="source_bank"),
@@ -687,13 +727,20 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
         server_module._execute_curation_run(run_id, payload)
 
     with _patched_context_block_storage(db_path):
-        with patch("foresight_mcp.server.DB_PATH", db_path), \
-             patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-             patch("foresight_mcp.server.get_event_bus_with_stream", return_value=_FakeBus()), \
-             patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline), \
-             patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}), \
-             patch("foresight_mcp.server._build_reflection_snapshot", return_value={"trend_summary": {"overall": "stable"}, "insights": []}), \
-             patch("foresight_mcp.server._insert_curation_entries", side_effect=RuntimeError("curation exploded")):
+        with (
+            patch("foresight_mcp.server.DB_PATH", db_path),
+            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+            patch("foresight_mcp.server.get_event_bus_with_stream", return_value=_FakeBus()),
+            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+            patch(
+                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
+            ),
+            patch(
+                "foresight_mcp.server._build_reflection_snapshot",
+                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+            ),
+            patch("foresight_mcp.server._insert_curation_entries", side_effect=RuntimeError("curation exploded")),
+        ):
             created = json.loads(
                 manage_curation_runs(
                     CurationRunAction(action="create", source_bank_id="source_bank"),
@@ -724,12 +771,19 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
         server_module._execute_curation_run(run_id, payload)
 
     with _patched_context_block_storage(db_path):
-        with patch("foresight_mcp.server.DB_PATH", db_path), \
-             patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-             patch("foresight_mcp.server.get_event_bus_with_stream"), \
-             patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline), \
-             patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}), \
-             patch("foresight_mcp.server._build_reflection_snapshot", return_value={"trend_summary": {"overall": "stable"}, "insights": []}):
+        with (
+            patch("foresight_mcp.server.DB_PATH", db_path),
+            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+            patch("foresight_mcp.server.get_event_bus_with_stream"),
+            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+            patch(
+                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
+            ),
+            patch(
+                "foresight_mcp.server._build_reflection_snapshot",
+                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+            ),
+        ):
             created = json.loads(
                 manage_curation_runs(
                     CurationRunAction(
@@ -767,9 +821,7 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
         "SELECT id FROM memories WHERE user_id = ? AND bank_id = ?",
         (user_id, fetched["summary"]["staging_bank_id"]),
     ).fetchall()
-    original_memories = conn.execute(
-        "SELECT bank_id FROM memories WHERE id IN ('mem1', 'mem2') ORDER BY id"
-    ).fetchall()
+    original_memories = conn.execute("SELECT bank_id FROM memories WHERE id IN ('mem1', 'mem2') ORDER BY id").fetchall()
     conn.close()
 
     assert len(source_rows) == fetched["summary"]["output_memory_count"]
@@ -803,13 +855,20 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
         ]
 
     with _patched_context_block_storage(db_path):
-        with patch("foresight_mcp.server.DB_PATH", db_path), \
-             patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-             patch("foresight_mcp.server.get_event_bus_with_stream"), \
-             patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline), \
-             patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}), \
-             patch("foresight_mcp.server._build_reflection_snapshot", return_value={"trend_summary": {"overall": "stable"}, "insights": []}), \
-             patch("foresight_mcp.server._make_curated_entries", side_effect=_cancel_before_insert):
+        with (
+            patch("foresight_mcp.server.DB_PATH", db_path),
+            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+            patch("foresight_mcp.server.get_event_bus_with_stream"),
+            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+            patch(
+                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
+            ),
+            patch(
+                "foresight_mcp.server._build_reflection_snapshot",
+                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+            ),
+            patch("foresight_mcp.server._make_curated_entries", side_effect=_cancel_before_insert),
+        ):
             created = json.loads(
                 manage_curation_runs(
                     CurationRunAction(
@@ -860,7 +919,9 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
 
     original_promote = server_module._promote_in_place_curation
 
-    def _cancel_after_promote(uid, tenant_id, run_id, source_bank_id, staging_bank_id, source_rows, staged_ids, *, cancel_event):
+    def _cancel_after_promote(
+        uid, tenant_id, run_id, source_bank_id, staging_bank_id, source_rows, staged_ids, *, cancel_event
+    ):
         summary = original_promote(
             uid,
             tenant_id,
@@ -876,13 +937,20 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
         return summary
 
     with _patched_context_block_storage(db_path):
-        with patch("foresight_mcp.server.DB_PATH", db_path), \
-             patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-             patch("foresight_mcp.server.get_event_bus_with_stream"), \
-             patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline), \
-             patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}), \
-             patch("foresight_mcp.server._build_reflection_snapshot", return_value={"trend_summary": {"overall": "stable"}, "insights": []}), \
-             patch("foresight_mcp.server._promote_in_place_curation", side_effect=_cancel_after_promote):
+        with (
+            patch("foresight_mcp.server.DB_PATH", db_path),
+            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+            patch("foresight_mcp.server.get_event_bus_with_stream"),
+            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+            patch(
+                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
+            ),
+            patch(
+                "foresight_mcp.server._build_reflection_snapshot",
+                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+            ),
+            patch("foresight_mcp.server._promote_in_place_curation", side_effect=_cancel_after_promote),
+        ):
             created = json.loads(
                 manage_curation_runs(
                     CurationRunAction(
@@ -946,9 +1014,11 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
     def _capture_start(run_id, payload):
         started.append((run_id, payload))
 
-    with patch("foresight_mcp.server.DB_PATH", db_path), \
-         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server._start_curation_worker", side_effect=_capture_start):
+    with (
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server._start_curation_worker", side_effect=_capture_start),
+    ):
         _resume_pending_curation_runs()
 
     conn = sqlite3.connect(db_path)
@@ -995,9 +1065,11 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
     def _capture_start(run_id, payload):
         started.append((run_id, payload))
 
-    with patch("foresight_mcp.server.DB_PATH", db_path), \
-         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server._start_curation_worker", side_effect=_capture_start):
+    with (
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server._start_curation_worker", side_effect=_capture_start),
+    ):
         _resume_pending_curation_runs()
 
     assert started == [
@@ -1028,12 +1100,17 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
     user_id = "curation_atomic_claim_user"
     _seed_memory(db_path, memory_id="mem1", content="Atomic claim source", bank_id="source_bank", user_id=user_id)
 
-    with patch("foresight_mcp.server.DB_PATH", db_path), \
-         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
-         patch("foresight_mcp.server.get_event_bus_with_stream"), \
-         patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None), \
-         patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}), \
-         patch("foresight_mcp.server._build_reflection_snapshot", return_value={"trend_summary": {"overall": "stable"}, "insights": []}):
+    with (
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.get_event_bus_with_stream"),
+        patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None),
+        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch(
+            "foresight_mcp.server._build_reflection_snapshot",
+            return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+        ),
+    ):
         created = json.loads(
             manage_curation_runs(
                 CurationRunAction(action="create", source_bank_id="source_bank"),
@@ -1058,9 +1135,9 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
         server_module._execute_curation_run(run["id"], payload)
         server_module._execute_curation_run(run["id"], payload)
 
-        fetched = json.loads(
-            manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id)
-        )["run"]
+        fetched = json.loads(manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id))[
+            "run"
+        ]
 
     conn = sqlite3.connect(db_path)
     output_rows = conn.execute(

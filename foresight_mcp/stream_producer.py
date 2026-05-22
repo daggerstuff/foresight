@@ -8,6 +8,7 @@ Supports:
 - Dead letter queue for failed messages
 - Consumer group coordination
 """
+
 from __future__ import annotations
 
 import json
@@ -19,14 +20,15 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-_TOPIC_ENTITY_RE = re.compile(r'[^a-zA-Z0-9._-]')
-_TOPIC_EVENT_RE = re.compile(r'[^a-zA-Z0-9._-]')
-_TOPIC_ENV_RE = re.compile(r'[^a-zA-Z0-9_-]')
-_MULTI_UNDERSCORE_RE = re.compile(r'_+')
+_TOPIC_ENTITY_RE = re.compile(r"[^a-zA-Z0-9._-]")
+_TOPIC_EVENT_RE = re.compile(r"[^a-zA-Z0-9._-]")
+_TOPIC_ENV_RE = re.compile(r"[^a-zA-Z0-9_-]")
+_MULTI_UNDERSCORE_RE = re.compile(r"_+")
 
 
 class StreamType(str, Enum):
     """Stream backend type."""
+
     KAFKA = "kafka"
     KINESIS = "kinesis"
     MOCK = "mock"  # For testing
@@ -35,6 +37,7 @@ class StreamType(str, Enum):
 @dataclass
 class StreamEvent:
     """Event for stream publishing."""
+
     event_type: str
     entity_id: str
     payload: dict[str, Any]
@@ -60,17 +63,14 @@ class StreamProducer(ABC):
     @abstractmethod
     def publish(self, topic: str, event: StreamEvent) -> bool:
         """Publish event to topic. Returns True if successful."""
-        pass
 
     @abstractmethod
     def publish_batch(self, events: list[tuple[str, StreamEvent]]) -> int:
         """Publish batch of events. Returns count of successful publishes."""
-        pass
 
     @abstractmethod
     def close(self) -> None:
         """Close producer connection."""
-        pass
 
 
 class MockProducer(StreamProducer):
@@ -134,6 +134,7 @@ class KafkaProducer(StreamProducer):
         if self._producer is None:
             try:
                 from kafka import KafkaProducer
+
                 self._kafka = KafkaProducer
                 self._producer = KafkaProducer(
                     bootstrap_servers=self.bootstrap_servers.split(","),
@@ -143,31 +144,29 @@ class KafkaProducer(StreamProducer):
                     retry_backoff_ms=100,
                 )
             except ImportError:
-                raise ImportError(
-                    "kafka-python not installed. Install with: pip install kafka-python"
-                )
+                raise ImportError("kafka-python not installed. Install with: pip install kafka-python")
         return self._producer
 
     def _get_topic(self, entity: str, event: str) -> str:
         """Generate topic name with naming convention."""
         # Normalize entity and event for topic naming
-        entity_clean = _TOPIC_ENTITY_RE.sub('_', entity)
-        entity_clean = _MULTI_UNDERSCORE_RE.sub('_', entity_clean).lower().strip('_')
-        event_clean = _TOPIC_EVENT_RE.sub('_', event)
-        event_clean = _MULTI_UNDERSCORE_RE.sub('_', event_clean).lower().strip('_')
+        entity_clean = _TOPIC_ENTITY_RE.sub("_", entity)
+        entity_clean = _MULTI_UNDERSCORE_RE.sub("_", entity_clean).lower().strip("_")
+        event_clean = _TOPIC_EVENT_RE.sub("_", event)
+        event_clean = _MULTI_UNDERSCORE_RE.sub("_", event_clean).lower().strip("_")
         # Validate environment is safe
-        env_clean = _TOPIC_ENV_RE.sub('', self.environment).lower()
+        env_clean = _TOPIC_ENV_RE.sub("", self.environment).lower()
         return f"foresight.{env_clean}.{entity_clean}.{event_clean}"
 
     def _validate_event(self, event: StreamEvent) -> bool:
         """Validate event against schema."""
         event_dict = event.to_dict()
-        
+
         # Check required fields exist
         required_fields = ["event_type", "entity_id", "payload", "timestamp"]
         if not all(field in event_dict for field in required_fields):
             return False
-        
+
         # Validate field types
         if not isinstance(event_dict["event_type"], str) or not event_dict["event_type"]:
             return False
@@ -177,7 +176,7 @@ class KafkaProducer(StreamProducer):
             return False
         if not isinstance(event_dict["timestamp"], str):
             return False
-        
+
         return True
 
     def _send_to_dlq(self, topic: str, event: StreamEvent, error: str) -> None:
@@ -199,13 +198,15 @@ class KafkaProducer(StreamProducer):
             # Don't block on DLQ send
         except Exception:
             # If DLQ fails, store locally for later recovery
-            self._failed_messages.append({
-                "topic": self.dlq_topic,
-                "event": dlq_event.to_dict(),
-                "error": error,
-            })
+            self._failed_messages.append(
+                {
+                    "topic": self.dlq_topic,
+                    "event": dlq_event.to_dict(),
+                    "error": error,
+                }
+            )
             if len(self._failed_messages) > self._max_failed_messages:
-                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
+                self._failed_messages = self._failed_messages[-self._max_failed_messages :]
 
     def publish(self, topic: str, event: StreamEvent) -> bool:
         """
@@ -282,12 +283,14 @@ class KafkaProducer(StreamProducer):
         except Exception:
             # Store failed batch
             for topic, event in events:
-                self._failed_messages.append({
-                    "topic": topic,
-                    "event": event.to_dict(),
-                })
+                self._failed_messages.append(
+                    {
+                        "topic": topic,
+                        "event": event.to_dict(),
+                    }
+                )
             if len(self._failed_messages) > self._max_failed_messages:
-                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
+                self._failed_messages = self._failed_messages[-self._max_failed_messages :]
             return 0
 
     def flush(self) -> None:
@@ -335,11 +338,10 @@ class KinesisProducer(StreamProducer):
         if self._client is None:
             try:
                 import boto3
+
                 self._client = boto3.client("kinesis", region_name=self.region)
             except ImportError:
-                raise ImportError(
-                    "boto3 not installed. Install with: pip install boto3"
-                )
+                raise ImportError("boto3 not installed. Install with: pip install boto3")
         return self._client
 
     def _get_partition_key(self, event: StreamEvent) -> str:
@@ -364,12 +366,14 @@ class KinesisProducer(StreamProducer):
             return response["ResponseMetadata"]["HTTPStatusCode"] == 200
 
         except Exception:
-            self._failed_messages.append({
-                "stream": self.stream_name,
-                "event": event.to_dict(),
-            })
+            self._failed_messages.append(
+                {
+                    "stream": self.stream_name,
+                    "event": event.to_dict(),
+                }
+            )
             if len(self._failed_messages) > self._max_failed_messages:
-                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
+                self._failed_messages = self._failed_messages[-self._max_failed_messages :]
             return False
 
     def publish_batch(self, events: list[tuple[str, StreamEvent]]) -> int:
@@ -385,14 +389,16 @@ class KinesisProducer(StreamProducer):
             success_count = 0
 
             for i in range(0, len(events), batch_size):
-                batch = events[i:i + batch_size]
+                batch = events[i : i + batch_size]
                 records = []
 
                 for topic, event in batch:
-                    records.append({
-                        "Data": json.dumps(event.to_dict()).encode("utf-8"),
-                        "PartitionKey": self._get_partition_key(event),
-                    })
+                    records.append(
+                        {
+                            "Data": json.dumps(event.to_dict()).encode("utf-8"),
+                            "PartitionKey": self._get_partition_key(event),
+                        }
+                    )
 
                 # Send batch
                 response = client.put_records(
@@ -406,12 +412,14 @@ class KinesisProducer(StreamProducer):
 
         except Exception:
             for topic, event in events:
-                self._failed_messages.append({
-                    "stream": self.stream_name,
-                    "event": event.to_dict(),
-                })
+                self._failed_messages.append(
+                    {
+                        "stream": self.stream_name,
+                        "event": event.to_dict(),
+                    }
+                )
             if len(self._failed_messages) > self._max_failed_messages:
-                self._failed_messages = self._failed_messages[-self._max_failed_messages:]
+                self._failed_messages = self._failed_messages[-self._max_failed_messages :]
             return 0
 
     def close(self) -> None:
@@ -427,6 +435,7 @@ class KinesisProducer(StreamProducer):
 # =============================================================================
 # Stream Producer Factory
 # =============================================================================
+
 
 def create_stream_producer(
     stream_type: StreamType | None = None,
@@ -460,7 +469,7 @@ def create_stream_producer(
             bootstrap_servers=bootstrap_servers,
             environment=environment,
         )
-    elif stream_type == StreamType.KINESIS:
+    if stream_type == StreamType.KINESIS:
         stream_name = os.environ.get("KINESIS_STREAM_NAME", "foresight-events")
         region = os.environ.get("AWS_REGION", "us-east-1")
         return KinesisProducer(
@@ -468,13 +477,13 @@ def create_stream_producer(
             region=region,
             environment=environment,
         )
-    else:
-        return MockProducer()
+    return MockProducer()
 
 
 # =============================================================================
 # EventBus Integration
 # =============================================================================
+
 
 class StreamPublisher:
     """

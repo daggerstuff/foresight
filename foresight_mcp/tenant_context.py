@@ -3,15 +3,14 @@
 Replaces the global _tenant_context singleton and TENANT_ID constant
 with per-request isolation that works correctly with asyncio and threading.
 """
+
 from __future__ import annotations
 
 from contextvars import ContextVar
 
 from .config import DEFAULT_TENANT_ID
 
-_current_tenant: ContextVar[str] = ContextVar(
-    "foresight_tenant_id", default=DEFAULT_TENANT_ID
-)
+_current_tenant: ContextVar[str] = ContextVar("foresight_tenant_id", default=DEFAULT_TENANT_ID)
 
 
 def get_current_tenant_id() -> str:

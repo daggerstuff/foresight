@@ -1,31 +1,34 @@
 """Circuit Breaker pattern implementation for preventing cascading failures."""
-import time
+
 import threading
-from enum import Enum
-from typing import Callable, Any, Optional
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from functools import wraps
+from typing import Any
 
 
 class CircuitState(Enum):
     """Circuit breaker states."""
-    CLOSED = "closed"      # Normal operation
-    OPEN = "open"          # Failing, reject requests
+
+    CLOSED = "closed"  # Normal operation
+    OPEN = "open"  # Failing, reject requests
     HALF_OPEN = "half_open"  # Testing recovery
 
 
 @dataclass
 class CircuitBreakerConfig:
     """Configuration for circuit breaker."""
-    failure_threshold: int = 5        # Failures before opening
-    recovery_timeout: float = 30.0    # Seconds before half-open
-    half_open_max_calls: int = 3      # Successful calls needed to close
+
+    failure_threshold: int = 5  # Failures before opening
+    recovery_timeout: float = 30.0  # Seconds before half-open
+    half_open_max_calls: int = 3  # Successful calls needed to close
     expected_exceptions: tuple = (Exception,)
 
 
 class CircuitBreakerOpenError(Exception):
     """Raised when circuit breaker is open."""
-    pass
 
 
 class CircuitBreaker:
@@ -36,7 +39,7 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._failure_count = 0
         self._success_count = 0
-        self._last_failure_time: Optional[float] = None
+        self._last_failure_time: float | None = None
         self._lock = threading.RLock()
 
         # Metrics
@@ -84,7 +87,7 @@ class CircuitBreaker:
                         self._failure_count = 0
                         self._success_count = 0
                 return result
-            except self.config.expected_exceptions as e:
+            except self.config.expected_exceptions:
                 # Failure - update state atomically
                 self._failure_count += 1
                 self.total_failures += 1
@@ -138,6 +141,8 @@ def with_circuit_breaker(config: CircuitBreakerConfig = None):
         @wraps(func)
         def wrapper(*args, **kwargs):
             return breaker.call(func, *args, **kwargs)
+
         wrapper.circuit_breaker = breaker
         return wrapper
+
     return decorator

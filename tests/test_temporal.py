@@ -7,6 +7,7 @@ Tests:
 - Temporal queries
 - Batch decay updates
 """
+
 import sqlite3
 
 # Add parent directory to path for imports
@@ -63,6 +64,7 @@ def temp_db():
     create_minimal_schema(path)
     yield path
     import os
+
     os.close(fd)
     os.unlink(path)
 
@@ -88,11 +90,7 @@ class TestDecayCalculations:
         """New memories should have full importance."""
         now = datetime.now(timezone.utc).isoformat()
         importance, trend = temporal_service.calculate_decay(
-            importance=1.0,
-            created_at=now,
-            activation_count=0,
-            category="general",
-            user_id="test"
+            importance=1.0, created_at=now, activation_count=0, category="general", user_id="test"
         )
         assert importance >= 0.95  # Allow small floating point variance
         assert trend == "stable"
@@ -101,11 +99,7 @@ class TestDecayCalculations:
         """After one half-life (168 hours), importance should be ~50%."""
         one_week_ago = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
         importance, trend = temporal_service.calculate_decay(
-            importance=1.0,
-            created_at=one_week_ago,
-            activation_count=0,
-            category="general",
-            user_id="test"
+            importance=1.0, created_at=one_week_ago, activation_count=0, category="general", user_id="test"
         )
         assert 0.45 <= importance <= 0.55  # ~50% with variance
 
@@ -115,20 +109,12 @@ class TestDecayCalculations:
 
         # Preference (2x half-life = 2 weeks)
         pref_importance, _ = temporal_service.calculate_decay(
-            importance=1.0,
-            created_at=two_weeks_ago,
-            activation_count=0,
-            category="preference",
-            user_id="test"
+            importance=1.0, created_at=two_weeks_ago, activation_count=0, category="preference", user_id="test"
         )
 
         # Conversation (0.5x half-life = 3.5 days)
         conv_importance, _ = temporal_service.calculate_decay(
-            importance=1.0,
-            created_at=two_weeks_ago,
-            activation_count=0,
-            category="conversation",
-            user_id="test"
+            importance=1.0, created_at=two_weeks_ago, activation_count=0, category="conversation", user_id="test"
         )
 
         # Preference should have higher importance
@@ -138,11 +124,7 @@ class TestDecayCalculations:
         """Very old memories should be marked as stale."""
         one_month_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         importance, trend = temporal_service.calculate_decay(
-            importance=1.0,
-            created_at=one_month_ago,
-            activation_count=0,
-            category="general",
-            user_id="test"
+            importance=1.0, created_at=one_month_ago, activation_count=0, category="general", user_id="test"
         )
         assert trend == "stale"
         assert importance <= 0.2  # Below stale threshold
@@ -159,7 +141,7 @@ class TestFreshnessTrends:
             created_at=now,
             activation_count=10,  # Above threshold of 5
             category="general",
-            user_id="test"
+            user_id="test",
         )
         assert trend == "strengthening"
 
@@ -167,11 +149,7 @@ class TestFreshnessTrends:
         """Recent memories with some activations should be stable."""
         one_day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         importance, trend = temporal_service.calculate_decay(
-            importance=0.9,
-            created_at=one_day_ago,
-            activation_count=2,
-            category="general",
-            user_id="test"
+            importance=0.9, created_at=one_day_ago, activation_count=2, category="general", user_id="test"
         )
         assert trend == "stable"
 
@@ -185,18 +163,18 @@ class TestTemporalQueries:
 
         # Insert test memories
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO memories (id, user_id, content, created_at, importance)
             VALUES (?, ?, ?, ?, ?)
-        """, ("mem1", "test", "Test memory", now, 0.8))
+        """,
+            ("mem1", "test", "Test memory", now, 0.8),
+        )
 
         conn.commit()
         conn.close()
 
-        results = query_builder.get_memories_from_window(
-            user_id="test",
-            window="today"
-        )
+        results = query_builder.get_memories_from_window(user_id="test", window="today")
 
         assert len(results) == 1
         assert results[0].memory_id == "mem1"
@@ -207,10 +185,13 @@ class TestTemporalQueries:
 
         # Insert test memories
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO memories (id, user_id, content, created_at, importance, category)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, ("mem1", "test", "Test memory", now, 0.8, "preference"))
+        """,
+            ("mem1", "test", "Test memory", now, 0.8, "preference"),
+        )
 
         conn.commit()
         conn.close()
@@ -231,14 +212,20 @@ class TestBatchDecayUpdate:
 
         # Insert test memories
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO memories (id, user_id, content, created_at, importance)
             VALUES (?, ?, ?, ?, ?)
-        """, ("mem1", "test", "Test 1", now, 0.8))
-        conn.execute("""
+        """,
+            ("mem1", "test", "Test 1", now, 0.8),
+        )
+        conn.execute(
+            """
             INSERT INTO memories (id, user_id, content, created_at, importance)
             VALUES (?, ?, ?, ?, ?)
-        """, ("mem2", "test", "Test 2", now, 0.6))
+        """,
+            ("mem2", "test", "Test 2", now, 0.6),
+        )
 
         conn.commit()
         conn.close()

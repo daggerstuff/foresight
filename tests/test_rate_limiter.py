@@ -1,4 +1,5 @@
 """Tests for rate limiter and middleware integration."""
+
 import pytest
 from foresight_mcp.rate_limiter import (
     RateLimiter,

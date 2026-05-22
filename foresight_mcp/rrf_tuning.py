@@ -10,12 +10,14 @@ Current default weights (subject to tuning):
 - temporal: 0.6 (recency context)
 - RRF k: 60 (standard smoothing constant)
 """
+
 import json
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger("foresight_rrf_tuning")
 
@@ -23,6 +25,7 @@ logger = logging.getLogger("foresight_rrf_tuning")
 @dataclass
 class RRFConfig:
     """Configuration for RRF fusion weights."""
+
     rrf_k: float = 60.0  # Smoothing constant
     keyword_weight: float = 1.0
     tfidf_cosine_weight: float = 0.7
@@ -58,7 +61,7 @@ class RRFConfig:
     @classmethod
     def from_json_file(cls, path: str) -> "RRFConfig":
         """Load configuration from JSON file."""
-        with open(path, "r") as f:
+        with open(path) as f:
             data = json.load(f)
         return cls.from_dict(data)
 
@@ -107,6 +110,7 @@ def save_rrf_config(config: RRFConfig, config_path: str | None = None) -> None:
 @dataclass
 class GridSearchResult:
     """Result from grid search optimization."""
+
     best_weights: dict[str, float]
     best_score: float
     all_results: list[dict[str, Any]] = field(default_factory=list)
@@ -125,7 +129,7 @@ def grid_search_weights(
     tfidf_range: tuple[float, float, float] = (0.3, 1.0, 0.2),
     graph_range: tuple[float, float, float] = (0.4, 1.2, 0.2),
     temporal_range: tuple[float, float, float] = (0.2, 1.0, 0.2),
-    evaluate_fn: Optional[Callable[[dict[str, float]], float]] = None,
+    evaluate_fn: Callable[[dict[str, float]], float] | None = None,
 ) -> GridSearchResult:
     """
     Grid search for optimal RRF weights.
@@ -146,22 +150,12 @@ def grid_search_weights(
     """
     import itertools
 
-    keyword_values = list(
-        frange(keyword_range[0], keyword_range[1] + 0.001, keyword_range[2])
-    )
-    tfidf_values = list(
-        frange(tfidf_range[0], tfidf_range[1] + 0.001, tfidf_range[2])
-    )
-    graph_values = list(
-        frange(graph_range[0], graph_range[1] + 0.001, graph_range[2])
-    )
-    temporal_values = list(
-        frange(temporal_range[0], temporal_range[1] + 0.001, temporal_range[2])
-    )
+    keyword_values = list(frange(keyword_range[0], keyword_range[1] + 0.001, keyword_range[2]))
+    tfidf_values = list(frange(tfidf_range[0], tfidf_range[1] + 0.001, tfidf_range[2]))
+    graph_values = list(frange(graph_range[0], graph_range[1] + 0.001, graph_range[2]))
+    temporal_values = list(frange(temporal_range[0], temporal_range[1] + 0.001, temporal_range[2]))
 
-    all_combinations = list(
-        itertools.product(keyword_values, tfidf_values, graph_values, temporal_values)
-    )
+    all_combinations = list(itertools.product(keyword_values, tfidf_values, graph_values, temporal_values))
 
     best_score = float("-inf")
     best_weights: dict[str, float] = {}
@@ -208,6 +202,7 @@ def frange(start: float, stop: float, step: float) -> list[float]:
 @dataclass
 class ABTestConfig:
     """Configuration for A/B testing different weight sets."""
+
     test_name: str
     control_weights: RRFConfig
     variant_weights: dict[str, list[RRFConfig]]  # variant_name -> [configs]

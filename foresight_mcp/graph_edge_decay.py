@@ -8,9 +8,10 @@ Decay model:
 - decay_factor = 0.5 ^ (hours_elapsed / half_life_hours)
 - Stale edges (below threshold) can be auto-pruned
 """
+
 import logging
-from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from .connection_pool import get_pool
 
@@ -20,6 +21,7 @@ logger = logging.getLogger("foresight_graph_decay")
 @dataclass
 class EdgeDecayStats:
     """Statistics from edge decay calculation."""
+
     edges_processed: int = 0
     edges_updated: int = 0
     edges_pruned: int = 0
@@ -191,10 +193,7 @@ class GraphEdgeDecay:
             pool.release(conn)
 
         if stats.edges_pruned > 0:
-            logger.info(
-                f"Pruned {stats.edges_pruned} stale edges "
-                f"(threshold: {self.prune_threshold})"
-            )
+            logger.info(f"Pruned {stats.edges_pruned} stale edges (threshold: {self.prune_threshold})")
 
         return stats
 
@@ -276,6 +275,7 @@ def get_graph_edge_decay(
         if _decay is None:
             if db_path is None:
                 from .config import DB_PATH
+
                 db_path = DB_PATH
             _decay = GraphEdgeDecay(db_path, half_life_hours)
         return _decay

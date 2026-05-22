@@ -31,6 +31,27 @@ from .block_registry import (
     get_registry as get_registry,
     initialize_default_blocks as initialize_default_blocks,
 )
+from .context_blocks import (
+    ContextBlock as ContextBlock,
+    ContextBlockAgent as ContextBlockAgent,
+    ContextBlockState as ContextBlockState,
+    add_context_guidance as add_context_guidance,
+    add_subconscious_guidance as add_subconscious_guidance,
+    clear_context_block as clear_context_block,
+    clear_subconscious_block as clear_subconscious_block,
+    get_context_block as get_context_block,
+    get_context_block_agent as get_context_block_agent,
+    get_context_snapshot as get_context_snapshot,
+    get_context_whisper as get_context_whisper,
+    get_subconscious_block as get_subconscious_block,
+    get_subconscious_context as get_subconscious_context,
+    get_subconscious_whisper as get_subconscious_whisper,
+    list_context_blocks as list_context_blocks,
+    reset_context_block as reset_context_block,
+    reset_subconscious_block as reset_subconscious_block,
+    update_context_block as update_context_block,
+    update_subconscious_block as update_subconscious_block,
+)
 from .enhanced_synthesizer import (
     Contradiction as Contradiction,
     EnhancedMemorySynthesizer as EnhancedMemorySynthesizer,
@@ -76,27 +97,6 @@ from .hybrid_retriever import (
     HybridSearchResult as HybridSearchResult,
     get_hybrid_retriever as get_hybrid_retriever,
     reset_hybrid_retriever as reset_hybrid_retriever,
-)
-from .context_blocks import (
-    ContextBlock as ContextBlock,
-    ContextBlockAgent as ContextBlockAgent,
-    ContextBlockState as ContextBlockState,
-    add_context_guidance as add_context_guidance,
-    add_subconscious_guidance as add_subconscious_guidance,
-    clear_context_block as clear_context_block,
-    clear_subconscious_block as clear_subconscious_block,
-    get_context_block as get_context_block,
-    get_context_block_agent as get_context_block_agent,
-    get_context_snapshot as get_context_snapshot,
-    get_context_whisper as get_context_whisper,
-    get_subconscious_block as get_subconscious_block,
-    get_subconscious_context as get_subconscious_context,
-    get_subconscious_whisper as get_subconscious_whisper,
-    list_context_blocks as list_context_blocks,
-    reset_context_block as reset_context_block,
-    reset_subconscious_block as reset_subconscious_block,
-    update_subconscious_block as update_subconscious_block,
-    update_context_block as update_context_block,
 )
 from .reflection_engine import (
     ReflectionEngine as ReflectionEngine,
@@ -196,6 +196,7 @@ else:
             StreamType,
             create_stream_producer,
         )
+
         _stream_producer_available = True
     except ImportError:
         _stream_producer_available = False
@@ -212,8 +213,7 @@ else:
 
         def create_stream_producer(*_args: Any, **_kwargs: Any) -> Any:
             raise ImportError(
-                "create_stream_producer requires kafka-python or boto3. "
-                "Install with: pip install kafka-python boto3"
+                "create_stream_producer requires kafka-python or boto3. Install with: pip install kafka-python boto3"
             )
 
     # Consumer group (optional)
@@ -224,6 +224,7 @@ else:
             ConsumerStats,
             KafkaConsumerGroup,
         )
+
         _consumer_group_available = True
     except ImportError:
         _consumer_group_available = False
@@ -231,8 +232,7 @@ else:
         class _OptionalConsumerDependencyStub:
             def __init__(self, *_args: Any, **_kwargs: Any) -> None:
                 raise ImportError(
-                    f"{self.__class__.__name__} requires kafka-python. "
-                    "Install with: pip install kafka-python"
+                    f"{self.__class__.__name__} requires kafka-python. Install with: pip install kafka-python"
                 )
 
         KafkaConsumerGroup = ConsumerRecord = ConsumerStats = ConsumerState = _OptionalConsumerDependencyStub
@@ -273,13 +273,13 @@ __all__ = [
     "BlockScope",
     "Connection",
     "ConnectionState",
+    "ConsumerRecord",
+    "ConsumerState",
+    "ConsumerStats",
     "ContextBlock",
     "ContextBlockAction",
     "ContextBlockAgent",
     "ContextBlockState",
-    "ConsumerRecord",
-    "ConsumerState",
-    "ConsumerStats",
     "Contradiction",
     "CurationRunAction",
     "DecayConfig",
@@ -348,16 +348,20 @@ __all__ = [
     "VersionAction",
     "WebSocketHandler",
     "WebSocketServer",
+    "add_context_guidance",
+    "add_subconscious_guidance",
     "analyze_memories",
     "archive_memory",
+    "clear_context_block",
+    "clear_subconscious_block",
     "create_stream_producer",
     "delete_memory",
-    "get_enhanced_synthesizer",
-    "get_entity_extractor",
     "get_context_block",
     "get_context_block_agent",
     "get_context_snapshot",
     "get_context_whisper",
+    "get_enhanced_synthesizer",
+    "get_entity_extractor",
     "get_event_bus",
     "get_graph_store",
     "get_hook_executor",
@@ -365,12 +369,12 @@ __all__ = [
     "get_memory",
     "get_reflection_engine",
     "get_registry",
-    "get_system_status",
-    "get_temporal_query_builder",
-    "get_temporal_service",
     "get_subconscious_block",
     "get_subconscious_context",
     "get_subconscious_whisper",
+    "get_system_status",
+    "get_temporal_query_builder",
+    "get_temporal_service",
     "initialize_decay_config",
     "initialize_default_blocks",
     "inject_context",
@@ -391,12 +395,12 @@ __all__ = [
     "query_memories_temporal",
     "register_hook",
     "reset_context_block",
-    "reset_subconscious_block",
     "reset_enhanced_synthesizer",
     "reset_entity_extractor",
     "reset_graph_store",
     "reset_hybrid_retriever",
     "reset_reflection_engine",
+    "reset_subconscious_block",
     "reset_sync_manager",
     "reset_temporal_query_builder",
     "reset_temporal_service",
@@ -404,12 +408,8 @@ __all__ = [
     "search_memories",
     "store_memory",
     "switch_tenant",
-    "update_context_block",
-    "update_subconscious_block",
     "unregister_hook",
+    "update_context_block",
     "update_memory",
-    "add_context_guidance",
-    "add_subconscious_guidance",
-    "clear_context_block",
-    "clear_subconscious_block",
+    "update_subconscious_block",
 ]

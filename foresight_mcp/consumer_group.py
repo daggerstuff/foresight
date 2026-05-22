@@ -8,15 +8,17 @@ Supports:
 - Event replay from specific offsets
 - Dead letter queue processing
 """
+
 from __future__ import annotations
 
 import json
+import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
-import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ConsumerRecord:
     """A single record from Kafka."""
+
     topic: str
     partition: int
     offset: int
@@ -36,6 +39,7 @@ class ConsumerRecord:
 @dataclass
 class ConsumerStats:
     """Statistics for consumer processing."""
+
     records_processed: int = 0
     records_failed: int = 0
     last_offset: dict[int, int] = field(default_factory=dict)  # partition -> offset
@@ -81,7 +85,7 @@ class ConsumerState:
         """Load state from file."""
         try:
             if os.path.exists(self.state_file):
-                with open(self.state_file, "r") as f:
+                with open(self.state_file) as f:
                     data = json.load(f)
                     self._offsets = {
                         topic: {int(k): v for k, v in partitions.items()}
@@ -165,6 +169,7 @@ class KafkaConsumerGroup:
         if self._consumer is None:
             try:
                 from kafka import KafkaConsumer
+
                 self._consumer = KafkaConsumer(
                     *self.topics,
                     bootstrap_servers=self.bootstrap_servers.split(","),
@@ -179,9 +184,7 @@ class KafkaConsumerGroup:
                     key_deserializer=lambda k: k.decode("utf-8") if k else None,
                 )
             except ImportError:
-                raise ImportError(
-                    "kafka-python not installed. Install with: pip install kafka-python"
-                )
+                raise ImportError("kafka-python not installed. Install with: pip install kafka-python")
         return self._consumer
 
     def add_handler(self, handler: Callable[[ConsumerRecord], None]) -> None:
@@ -232,6 +235,7 @@ class KafkaConsumerGroup:
                     break
                 logger.error(f"Consumer poll failed, retrying in {backoff_seconds}s: {e}")
                 import time
+
                 time.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)  # Exponential backoff, max 60s
 
@@ -245,7 +249,7 @@ class KafkaConsumerGroup:
                     try:
                         error_handler(e, record)
                     except Exception as eh_err:
-                                logger.error(f"Error handler failed: {eh_err}", exc_info=True)
+                        logger.error(f"Error handler failed: {eh_err}", exc_info=True)
 
     def stop(self) -> None:
         """Stop consuming."""
@@ -263,6 +267,7 @@ class KafkaConsumerGroup:
         """Seek to beginning of topic/partition."""
         consumer = self._get_consumer()
         from kafka import TopicPartition
+
         tp = TopicPartition(topic, partition)
         consumer.assign([tp])
         consumer.seek_to_beginning(tp)
@@ -271,20 +276,16 @@ class KafkaConsumerGroup:
         """Seek to end of topic/partition."""
         consumer = self._get_consumer()
         from kafka import TopicPartition
+
         tp = TopicPartition(topic, partition)
         consumer.assign([tp])
         consumer.seek_to_end(tp)
 
-    def seek_to_offset(
-        self,
-        topic: str,
-        partition: int,
-        offset: int
-    ) -> None:
+    def seek_to_offset(self, topic: str, partition: int, offset: int) -> None:
         """Seek to specific offset."""
         consumer = self._get_consumer()
         from kafka import TopicPartition
+
         tp = TopicPartition(topic, partition)
         consumer.assign([tp])
         consumer.seek(tp, offset)
-

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastmcp.server.middleware import Middleware as _Middleware
 
-import re
-
 from .config import DEFAULT_TENANT_ID
-from .tenant_context import get_current_tenant_id, set_current_tenant_id
+from .tenant_context import set_current_tenant_id
 
 logger = logging.getLogger(__name__)
 

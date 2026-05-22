@@ -1,4 +1,5 @@
 """Tests for offline-first synchronization."""
+
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -29,7 +30,6 @@ def temp_db():
 def reset_sync():
     """Reset sync manager before each test."""
     reset_sync_manager()
-    yield
 
 
 class TestOperation:
@@ -118,13 +118,15 @@ class TestOperationQueue:
         """Test peeking at all operations."""
         queue = OperationQueue(db_path=temp_db)
         for i in range(3):
-            queue.enqueue(Operation(
-                id=f"op-{i}",
-                type=OperationType.CREATE,
-                entity_type="memory",
-                entity_id=f"mem-{i}",
-                payload={},
-            ))
+            queue.enqueue(
+                Operation(
+                    id=f"op-{i}",
+                    type=OperationType.CREATE,
+                    entity_type="memory",
+                    entity_id=f"mem-{i}",
+                    payload={},
+                )
+            )
 
         ops = queue.peek()
         assert len(ops) == 3

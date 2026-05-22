@@ -1,6 +1,7 @@
 """
 Tests for entity extraction and graph store.
 """
+
 import sys
 import tempfile
 from pathlib import Path
@@ -19,6 +20,7 @@ def temp_db():
     fd, path = tempfile.mkstemp(suffix=".db")
     yield path
     import os
+
     os.close(fd)
     os.unlink(path)
 
@@ -99,7 +101,7 @@ class TestGraphStore:
             name="anxiety",
             entity_type="emotion",
             description="Feeling of worry",
-            properties={"intensity": "high"}
+            properties={"intensity": "high"},
         )
 
         result_id = graph_store.upsert_entity(entity, "test_user")
@@ -112,20 +114,10 @@ class TestGraphStore:
 
     def test_upsert_entity_duplicates(self, graph_store):
         """Should update on duplicate."""
-        entity1 = Entity(
-            id="entity_test123",
-            name="anxiety",
-            entity_type="emotion",
-            description="First description"
-        )
+        entity1 = Entity(id="entity_test123", name="anxiety", entity_type="emotion", description="First description")
         graph_store.upsert_entity(entity1, "test_user")
 
-        entity2 = Entity(
-            id="entity_test456",
-            name="anxiety",
-            entity_type="emotion",
-            description="Updated description"
-        )
+        entity2 = Entity(id="entity_test456", name="anxiety", entity_type="emotion", description="Updated description")
         graph_store.upsert_entity(entity2, "test_user")
 
         # Should still have same ID (deterministic)
@@ -135,12 +127,8 @@ class TestGraphStore:
 
     def test_get_entities_by_type(self, graph_store):
         """Should filter entities by type."""
-        graph_store.upsert_entity(Entity(
-            id="entity1", name="anxiety", entity_type="emotion"
-        ), "test_user")
-        graph_store.upsert_entity(Entity(
-            id="entity2", name="therapy", entity_type="concept"
-        ), "test_user")
+        graph_store.upsert_entity(Entity(id="entity1", name="anxiety", entity_type="emotion"), "test_user")
+        graph_store.upsert_entity(Entity(id="entity2", name="therapy", entity_type="concept"), "test_user")
 
         emotions = graph_store.get_entities_by_type("test_user", "emotion")
         concepts = graph_store.get_entities_by_type("test_user", "concept")
@@ -150,18 +138,14 @@ class TestGraphStore:
 
     def test_add_relationship(self, graph_store):
         """Should add relationships between entities."""
-        graph_store.upsert_entity(Entity(
-            id="entity_person", name="John", entity_type="person"
-        ), "test_user")
-        graph_store.upsert_entity(Entity(
-            id="entity_emotion", name="anxiety", entity_type="emotion"
-        ), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_person", name="John", entity_type="person"), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_emotion", name="anxiety", entity_type="emotion"), "test_user")
 
         relationship = Relationship(
             source_entity_id="entity_person",
             target_entity_id="entity_emotion",
             relationship_type="experienced",
-            confidence=0.9
+            confidence=0.9,
         )
 
         graph_store.add_relationship(relationship, "test_user")
@@ -174,27 +158,23 @@ class TestGraphStore:
     def test_traverse_graph(self, graph_store):
         """Should traverse connected entities."""
         # Create a simple graph: Person -> experiences -> Anxiety -> relates_to -> Stress
-        graph_store.upsert_entity(Entity(
-            id="entity_person", name="John", entity_type="person"
-        ), "test_user")
-        graph_store.upsert_entity(Entity(
-            id="entity_anxiety", name="anxiety", entity_type="emotion"
-        ), "test_user")
-        graph_store.upsert_entity(Entity(
-            id="entity_stress", name="stress", entity_type="emotion"
-        ), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_person", name="John", entity_type="person"), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_anxiety", name="anxiety", entity_type="emotion"), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_stress", name="stress", entity_type="emotion"), "test_user")
 
-        graph_store.add_relationship(Relationship(
-            source_entity_id="entity_person",
-            target_entity_id="entity_anxiety",
-            relationship_type="experienced"
-        ), "test_user")
+        graph_store.add_relationship(
+            Relationship(
+                source_entity_id="entity_person", target_entity_id="entity_anxiety", relationship_type="experienced"
+            ),
+            "test_user",
+        )
 
-        graph_store.add_relationship(Relationship(
-            source_entity_id="entity_anxiety",
-            target_entity_id="entity_stress",
-            relationship_type="relates_to"
-        ), "test_user")
+        graph_store.add_relationship(
+            Relationship(
+                source_entity_id="entity_anxiety", target_entity_id="entity_stress", relationship_type="relates_to"
+            ),
+            "test_user",
+        )
 
         # Traverse from person
         result = graph_store.traverse_graph("entity_person", "test_user", max_depth=2)
@@ -204,15 +184,9 @@ class TestGraphStore:
 
     def test_link_memory_to_entities(self, graph_store):
         """Should link memories to entities."""
-        graph_store.upsert_entity(Entity(
-            id="entity_anxiety", name="anxiety", entity_type="emotion"
-        ), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_anxiety", name="anxiety", entity_type="emotion"), "test_user")
 
-        graph_store.link_memory_to_entities(
-            memory_id="mem_123",
-            entity_ids=["entity_anxiety"],
-            user_id="test_user"
-        )
+        graph_store.link_memory_to_entities(memory_id="mem_123", entity_ids=["entity_anxiety"], user_id="test_user")
 
         # Verify link
         memories = graph_store.get_memories_for_entity("entity_anxiety", "test_user")
@@ -220,23 +194,20 @@ class TestGraphStore:
 
     def test_find_related_memories(self, graph_store):
         """Should find memories via graph traversal."""
-        graph_store.upsert_entity(Entity(
-            id="entity_anxiety", name="anxiety", entity_type="emotion"
-        ), "test_user")
-        graph_store.upsert_entity(Entity(
-            id="entity_stress", name="stress", entity_type="emotion"
-        ), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_anxiety", name="anxiety", entity_type="emotion"), "test_user")
+        graph_store.upsert_entity(Entity(id="entity_stress", name="stress", entity_type="emotion"), "test_user")
 
         # Link memories
         graph_store.link_memory_to_entities("mem_1", ["entity_anxiety"], "test_user")
         graph_store.link_memory_to_entities("mem_2", ["entity_stress"], "test_user")
 
         # Create relationship between entities
-        graph_store.add_relationship(Relationship(
-            source_entity_id="entity_anxiety",
-            target_entity_id="entity_stress",
-            relationship_type="relates_to"
-        ), "test_user")
+        graph_store.add_relationship(
+            Relationship(
+                source_entity_id="entity_anxiety", target_entity_id="entity_stress", relationship_type="relates_to"
+            ),
+            "test_user",
+        )
 
         # Find related memories
         related = graph_store.find_related_memories("entity_anxiety", "test_user", depth=1)

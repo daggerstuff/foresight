@@ -6,6 +6,7 @@ Adds temporal fields to existing memories table for:
 - Freshness trends (stable/strengthening/weakening/stale)
 - Time-based queries (created_at, accessed_at)
 """
+
 import sqlite3
 
 TEMPORAL_SCHEMA_SQL = """
@@ -103,12 +104,15 @@ def initialize_decay_config(db_path: str, user_id: str) -> None:
 
     try:
         # Copy default config for user
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR IGNORE INTO decay_config
             (user_id, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, stale_threshold)
             SELECT ?, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, stale_threshold
             FROM decay_config WHERE user_id = 'default'
-        """, (user_id,))
+        """,
+            (user_id,),
+        )
 
         conn.commit()
     finally:
@@ -118,5 +122,6 @@ def initialize_decay_config(db_path: str, user_id: str) -> None:
 if __name__ == "__main__":
     # Test migrations
     from .config import DB_PATH
+
     run_temporal_migrations(DB_PATH)
     print(f"Migrations applied to {DB_PATH}")

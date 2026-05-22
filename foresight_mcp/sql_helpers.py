@@ -3,24 +3,28 @@ SQL Helpers - Safe SQL generation utilities.
 
 These helpers validate identifiers and generate safe SQL with parameterized queries.
 """
-from typing import List, Tuple
 
 # Whitelist of valid relationship types - from graph_store.py schema
-VALID_RELATIONSHIP_TYPES = frozenset({
-    'mentions', 'located_at', 'experienced', 'caused',
-    'relates_to', 'contradicts', 'supports', 'part_of', 'created'
-})
+VALID_RELATIONSHIP_TYPES = frozenset(
+    {"mentions", "located_at", "experienced", "caused", "relates_to", "contradicts", "supports", "part_of", "created"}
+)
 
 # Whitelist of valid entity types - from graph_store.py schema
-VALID_ENTITY_TYPES = frozenset({
-    'person', 'place', 'concept', 'event', 'emotion', 'object'
-})
+VALID_ENTITY_TYPES = frozenset({"person", "place", "concept", "event", "emotion", "object"})
 
 # Whitelist of valid table names for internal use
-VALID_TABLE_NAMES = frozenset({
-    'memory_entities', 'entity_relationships', 'memory_entity_links',
-    'memories', 'tenants', 'decay_config', 'memory_versions', 'schema_migrations'
-})
+VALID_TABLE_NAMES = frozenset(
+    {
+        "memory_entities",
+        "entity_relationships",
+        "memory_entity_links",
+        "memories",
+        "tenants",
+        "decay_config",
+        "memory_versions",
+        "schema_migrations",
+    }
+)
 
 
 def build_type_filter(relationship_types: list[str]) -> tuple[str, list[str]]:
@@ -71,7 +75,7 @@ def validate_identifier(name: str, valid_set: frozenset, context: str = "value")
     return name
 
 
-def build_in_clause(values: List[str], valid_set: frozenset = None) -> Tuple[str, List[str]]:
+def build_in_clause(values: list[str], valid_set: frozenset = None) -> tuple[str, list[str]]:
     """Build a safe IN clause with placeholders.
 
     Args:

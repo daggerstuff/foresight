@@ -1,11 +1,11 @@
 """Tests for the SQLite ConnectionPool."""
+
 import threading
 import time
 
 import pytest
 from foresight_mcp.connection_pool import (
     ConnectionPool,
-    PooledConnection,
     get_pool,
     reset_pool,
 )

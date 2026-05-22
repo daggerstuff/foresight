@@ -68,7 +68,7 @@ class Entity:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Entity":
+    def from_dict(cls, data: dict) -> Entity:
         """Create from dictionary."""
         return cls(
             id=data["id"],
@@ -104,7 +104,7 @@ class Relationship:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Relationship":
+    def from_dict(cls, data: dict) -> Relationship:
         """Create from dictionary."""
         return cls(
             source_entity_id=data["source_entity_id"],
