@@ -3,21 +3,19 @@ Authentication System for Foresight MCP
 Provides API key-based authentication with secure password hashing.
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from enum import Enum
 import hashlib
 import logging
 import os
 import re
 import secrets
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
-from .tenant_context import get_current_tenant_id, set_current_tenant_id, reset_tenant_context
-from .connection_pool import get_pool
 from .config import DB_PATH
+from .connection_pool import get_pool
 from .tenant_middleware import resolve_tenant_id_from_message
 
 
@@ -39,7 +37,7 @@ class User:
     role: Role
     is_active: bool = True
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_login: Optional[datetime] = None
+    last_login: datetime | None = None
     # Hashed password (Argon2, bcrypt, or PBKDF2-SHA256)
     password_hash: str = ""
     # API key for programmatic access
@@ -50,8 +48,6 @@ class User:
 
 class AuthError(Exception):
     """Authentication-related errors."""
-
-    pass
 
 
 _VALID_TENANT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
@@ -219,7 +215,7 @@ class AuthManager:
         email: str,
         password: str,
         role: Role = Role.USER,
-        tenant_access: Optional[list[str]] = None,
+        tenant_access: list[str] | None = None,
     ) -> User:
         """Create a new user."""
         if tenant_access is None:
@@ -275,7 +271,7 @@ class AuthManager:
         finally:
             pool.release(conn)
 
-    def authenticate_user(self, username: str, password: str) -> Optional[User]:
+    def authenticate_user(self, username: str, password: str) -> User | None:
         """Authenticate a user with username/password."""
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -337,7 +333,7 @@ class AuthManager:
         finally:
             pool.release(conn)
 
-    def authenticate_api_key(self, api_key: str) -> Optional[User]:
+    def authenticate_api_key(self, api_key: str) -> User | None:
         """Authenticate a user by API key."""
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -432,7 +428,7 @@ class AuthManager:
         finally:
             pool.release(conn)
 
-    def validate_session(self, session_id: str) -> Optional[User]:
+    def validate_session(self, session_id: str) -> User | None:
         """Validate a session and return the associated user."""
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -506,7 +502,7 @@ class AuthManager:
 
 
 # Global auth manager instance
-_auth_manager: Optional[AuthManager] = None
+_auth_manager: AuthManager | None = None
 _auth_lock = __import__("threading").RLock()
 
 

@@ -1,6 +1,7 @@
 # @foresight/core
 
-TypeScript SDK for Foresight Memory Architecture - a domain-agnostic, composable memory system for AI agents.
+TypeScript SDK for Foresight Memory Architecture - a domain-agnostic, composable
+memory system for AI agents.
 
 ## Installation
 
@@ -15,13 +16,13 @@ yarn add @foresight/core
 ## Quick Start
 
 ```typescript
-import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core';
+import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core'
 
 // Initialize client
 const client = new ForesightClient({
   userId: 'my-user-id',
   bankId: 'default',
-});
+})
 
 // Store a memory
 const result = await client.storeMemory(
@@ -30,28 +31,28 @@ const result = await client.storeMemory(
     scope: MemoryScope.Fact,
     retention: RetentionPolicy.LongTerm,
     category: 'preference',
-  }
-);
+  },
+)
 
-console.log(`Stored memory: ${result.id}`);
+console.log(`Stored memory: ${result.id}`)
 
 // Query memories
-const memories = await client.queryMemories('TypeScript');
-console.log(`Found ${memories.length} memories`);
+const memories = await client.queryMemories('TypeScript')
+console.log(`Found ${memories.length} memories`)
 
 // List all memories
-const allMemories = await client.listMemories({ limit: 10 });
+const allMemories = await client.listMemories({ limit: 10 })
 
 // Get specific memory
-const memory = await client.getMemory(result.id);
+const memory = await client.getMemory(result.id)
 
 // Update memory
 await client.updateMemory(result.id, {
   content: 'Updated content',
-});
+})
 
 // Delete memory
-await client.deleteMemory(result.id);
+await client.deleteMemory(result.id)
 ```
 
 ## API
@@ -84,9 +85,9 @@ Main client for memory operations.
 Manage composable memory block schemas.
 
 ```typescript
-import { BlockManager, RetentionPolicy, MergeStrategy } from '@foresight/core';
+import { BlockManager, RetentionPolicy, MergeStrategy } from '@foresight/core'
 
-const blockManager = new BlockManager();
+const blockManager = new BlockManager()
 
 // Register schema
 blockManager.register({
@@ -94,10 +95,10 @@ blockManager.register({
   description: 'Active guidance for next session',
   retentionPolicy: RetentionPolicy.ShortTerm,
   mergeStrategy: MergeStrategy.Append,
-});
+})
 
 // Create block
-const block = blockManager.createBlock('guidance', 'Always use TDD');
+const block = blockManager.createBlock('guidance', 'Always use TDD')
 ```
 
 ### HookManager
@@ -105,9 +106,9 @@ const block = blockManager.createBlock('guidance', 'Always use TDD');
 Manage event hooks for extensibility.
 
 ```typescript
-import { HookManager, EventType } from '@foresight/core';
+import { HookManager, EventType } from '@foresight/core'
 
-const hookManager = new HookManager();
+const hookManager = new HookManager()
 
 // Register HTTP webhook
 await hookManager.registerHook({
@@ -116,13 +117,13 @@ await hookManager.registerHook({
   url: 'https://example.com/webhook',
   retryCount: 3,
   timeout: 30,
-});
+})
 
 // List hooks
-const hooks = await hookManager.listHooks();
+const hooks = await hookManager.listHooks()
 
 // Unregister hook
-await hookManager.unregisterHook(hookId);
+await hookManager.unregisterHook(hookId)
 ```
 
 ### EventStoreClient
@@ -130,21 +131,21 @@ await hookManager.unregisterHook(hookId);
 Access event audit trail.
 
 ```typescript
-import { EventStoreClient, EventType } from '@foresight/core';
+import { EventStoreClient, EventType } from '@foresight/core'
 
-const eventClient = new EventStoreClient();
+const eventClient = new EventStoreClient()
 
 // Get events by entity
-const events = await eventClient.getByEntity('memory-123');
+const events = await eventClient.getByEntity('memory-123')
 
 // Get events by type
-const storedEvents = await eventClient.getByType(EventType.MemoryStored);
+const storedEvents = await eventClient.getByType(EventType.MemoryStored)
 
 // Get events by time range
 const recent = await eventClient.getByTimeRange(
   new Date(Date.now() - 3600000),
-  new Date()
-);
+  new Date(),
+)
 ```
 
 ## Types

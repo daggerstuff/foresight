@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import json
 import logging
-from .connection_pool import get_pool
-from .tenant_context import get_current_tenant_id
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, TypeVar
-import threading
+from typing import Any, TypeVar
+
+from .connection_pool import get_pool
+from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 

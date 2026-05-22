@@ -1,6 +1,7 @@
 """
 Tests for hybrid retriever.
 """
+
 import sqlite3
 import sys
 import tempfile
@@ -102,11 +103,39 @@ def create_test_db():
     uid = "test_user"
 
     memories = [
-        ("mem_1", "Feeling anxious about the presentation tomorrow", "fact", 0.8, "strengthening", now - timedelta(hours=2)),
-        ("mem_2", "Started CBT therapy sessions for anxiety management", "fact", 0.7, "stable", now - timedelta(days=7)),
-        ("mem_3", "Meditation helped reduce stress levels significantly", "fact", 0.6, "stable", now - timedelta(days=30)),
+        (
+            "mem_1",
+            "Feeling anxious about the presentation tomorrow",
+            "fact",
+            0.8,
+            "strengthening",
+            now - timedelta(hours=2),
+        ),
+        (
+            "mem_2",
+            "Started CBT therapy sessions for anxiety management",
+            "fact",
+            0.7,
+            "stable",
+            now - timedelta(days=7),
+        ),
+        (
+            "mem_3",
+            "Meditation helped reduce stress levels significantly",
+            "fact",
+            0.6,
+            "stable",
+            now - timedelta(days=30),
+        ),
         ("mem_4", "Family dinner was pleasant and relaxing", "fact", 0.4, "stable", now - timedelta(days=14)),
-        ("mem_5", "Work deadline approaching, feeling overwhelmed", "fact", 0.9, "strengthening", now - timedelta(hours=1)),
+        (
+            "mem_5",
+            "Work deadline approaching, feeling overwhelmed",
+            "fact",
+            0.9,
+            "strengthening",
+            now - timedelta(hours=1),
+        ),
     ]
 
     for mid, content, cat, imp, trend, ts in memories:
@@ -149,6 +178,7 @@ def create_test_db():
     conn.close()
 
     import os
+
     os.close(fd)
     return path
 
@@ -158,6 +188,7 @@ def test_db():
     path = create_test_db()
     yield path
     import os
+
     os.unlink(path)
 
 
@@ -166,7 +197,9 @@ class TestKeywordSearch:
 
     def test_finds_matching_memories(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        result = retriever.search(
+            "anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
 
         # Should find mem_1 and mem_2 which mention anxiety
         ids = [r.memory_id for r in result.results]
@@ -174,13 +207,17 @@ class TestKeywordSearch:
 
     def test_no_results_for_nonexistent(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("xyznonexistent", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        result = retriever.search(
+            "xyznonexistent", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
 
         assert len(result.results) == 0
 
     def test_multi_term_query(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("feeling anxious", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        result = retriever.search(
+            "feeling anxious", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
 
         assert len(result.results) > 0
 
@@ -192,9 +229,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(
-                conn, "anxiety therapy", "test_user", "default", 10
-            )
+            ranking = retriever._semantic_search(conn, "anxiety therapy", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -211,9 +246,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(
-                conn, "anxiety management", "test_user", "default", 10
-            )
+            ranking = retriever._semantic_search(conn, "anxiety management", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -235,9 +268,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(
-                conn, "anxiety", "test_user", "default", 10
-            )
+            ranking = retriever._semantic_search(conn, "anxiety", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -247,9 +278,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(
-                conn, "   ", "test_user", "default", 10
-            )
+            ranking = retriever._semantic_search(conn, "   ", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -259,9 +288,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(
-                conn, "quantum physics superposition", "test_user", "default", 10
-            )
+            ranking = retriever._semantic_search(conn, "quantum physics superposition", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -272,9 +299,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(
-                conn, "feeling", "test_user", "default", 2
-            )
+            ranking = retriever._semantic_search(conn, "feeling", "test_user", "default", 2)
         finally:
             conn.close()
 
@@ -290,9 +315,7 @@ class TestCosineSimilarity:
         conn = retriever._get_connection()
         try:
             # Use the exact text from mem_1 as the query terms
-            ranking = retriever._semantic_search(
-                conn, "anxious presentation tomorrow", "test_user", "default", 10
-            )
+            ranking = retriever._semantic_search(conn, "anxious presentation tomorrow", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -307,9 +330,7 @@ class TestCosineSimilarity:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(
-                conn, "anxiety management therapy", "test_user", "default", 10
-            )
+            ranking = retriever._semantic_search(conn, "anxiety management therapy", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -325,7 +346,9 @@ class TestGraphSearch:
 
     def test_finds_memories_via_entity(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("anxiety", "test_user", limit=5, use_keyword=False, use_temporal=False, use_semantic=False)
+        result = retriever.search(
+            "anxiety", "test_user", limit=5, use_keyword=False, use_temporal=False, use_semantic=False
+        )
 
         # Should find mem_1 and mem_2 via entity_anxiety
         ids = [r.memory_id for r in result.results]
@@ -333,7 +356,9 @@ class TestGraphSearch:
 
     def test_no_graph_results_for_unknown_entity(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("xyztity", "test_user", limit=5, use_keyword=False, use_temporal=False, use_semantic=False)
+        result = retriever.search(
+            "xyztity", "test_user", limit=5, use_keyword=False, use_temporal=False, use_semantic=False
+        )
 
         assert len(result.results) == 0
 
@@ -343,7 +368,9 @@ class TestTemporalSearch:
 
     def test_ranks_by_importance_and_recency(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("", "test_user", limit=5, use_keyword=False, use_graph=False, use_temporal=True, use_semantic=False)
+        result = retriever.search(
+            "", "test_user", limit=5, use_keyword=False, use_graph=False, use_temporal=True, use_semantic=False
+        )
 
         # Should return memories, most important/recent first
         assert len(result.results) > 0
@@ -353,7 +380,16 @@ class TestTemporalSearch:
 
     def test_respects_min_importance(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("", "test_user", limit=5, min_importance=0.8, use_keyword=False, use_graph=False, use_temporal=True, use_semantic=False)
+        result = retriever.search(
+            "",
+            "test_user",
+            limit=5,
+            min_importance=0.8,
+            use_keyword=False,
+            use_graph=False,
+            use_temporal=True,
+            use_semantic=False,
+        )
 
         for r in result.results:
             assert r.importance >= 0.8
@@ -401,14 +437,18 @@ class TestHybridFusion:
 
     def test_all_signals_disabled(self, test_db):
         retriever = HybridRetriever(test_db)
-        result = retriever.search("anxiety", "test_user", limit=5, use_keyword=False, use_graph=False, use_temporal=False, use_semantic=False)
+        result = retriever.search(
+            "anxiety", "test_user", limit=5, use_keyword=False, use_graph=False, use_temporal=False, use_semantic=False
+        )
 
         assert len(result.results) == 0
 
     def test_semantic_only_search(self, test_db):
         """Search with only semantic signal should return results."""
         retriever = HybridRetriever(test_db)
-        result = retriever.search("anxiety", "test_user", limit=5, use_keyword=False, use_graph=False, use_temporal=False, use_semantic=True)
+        result = retriever.search(
+            "anxiety", "test_user", limit=5, use_keyword=False, use_graph=False, use_temporal=False, use_semantic=True
+        )
 
         ids = [r.memory_id for r in result.results]
         assert len(ids) > 0
@@ -482,9 +522,7 @@ class TestDefaultWeights:
 
     def test_all_four_weights_present(self):
         assert len(HybridRetriever.DEFAULT_WEIGHTS) == 4
-        assert set(HybridRetriever.DEFAULT_WEIGHTS.keys()) == {
-            "keyword", "semantic", "graph", "temporal"
-        }
+        assert set(HybridRetriever.DEFAULT_WEIGHTS.keys()) == {"keyword", "semantic", "graph", "temporal"}
 
 
 class TestSecurityFixes:

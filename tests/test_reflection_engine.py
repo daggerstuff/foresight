@@ -1,6 +1,7 @@
 """
 Tests for reflection engine.
 """
+
 import sqlite3
 import sys
 import tempfile
@@ -152,6 +153,7 @@ def create_test_db():
     conn.close()
 
     import os
+
     os.close(fd)
     return path
 
@@ -161,6 +163,7 @@ def test_db():
     path = create_test_db()
     yield path
     import os
+
     os.unlink(path)
 
 

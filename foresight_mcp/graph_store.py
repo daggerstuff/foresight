@@ -7,6 +7,7 @@ SQLite-backed graph storage with:
 - Graph traversal using recursive CTEs
 - Memory-to-entity linking
 """
+
 from __future__ import annotations
 
 import json
@@ -46,6 +47,7 @@ def _validate_input(user_id: str, tenant_id: str | None = None) -> None:
 @dataclass
 class GraphTraversalResult:
     """Result of graph traversal."""
+
     nodes: list[Entity]
     edges: list[Relationship]
     paths: list[dict[str, Any]] = field(default_factory=list)
@@ -236,9 +238,7 @@ class GraphStore:
                 elif table == "entity_relationships":
                     self._rebuild_relationships_table(conn)
                 else:
-                    conn.execute(
-                        "ALTER TABLE memory_entity_links ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
-                    )
+                    conn.execute("ALTER TABLE memory_entity_links ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
                 logger.info(f"Migration: added tenant_id to {table}")
 
     @staticmethod
@@ -312,7 +312,8 @@ class GraphStore:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            conn.execute("""
+            conn.execute(
+                """
             INSERT INTO memory_entities
             (id, tenant_id, user_id, name, entity_type, description, properties, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -320,15 +321,17 @@ class GraphStore:
                 description = excluded.description,
                 properties = excluded.properties,
                 updated_at = CURRENT_TIMESTAMP
-            """, (
-                entity.id,
-                tid,
-                user_id,
-                entity.name,
-                entity.entity_type,
-                entity.description,
-                json.dumps(entity.properties),
-            ))
+            """,
+                (
+                    entity.id,
+                    tid,
+                    user_id,
+                    entity.name,
+                    entity.entity_type,
+                    entity.description,
+                    json.dumps(entity.properties),
+                ),
+            )
 
             conn.commit()
             return entity.id
@@ -344,11 +347,14 @@ class GraphStore:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
             SELECT id, user_id, name, entity_type, description, properties
             FROM memory_entities
             WHERE id = ? AND tenant_id = ? AND user_id = ?
-            """, (entity_id, tid, user_id))
+            """,
+                (entity_id, tid, user_id),
+            )
 
             row = cursor.fetchone()
             if not row:
@@ -379,13 +385,16 @@ class GraphStore:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
             SELECT id, user_id, name, entity_type, description, properties
             FROM memory_entities
             WHERE tenant_id = ? AND user_id = ? AND entity_type = ?
             ORDER BY created_at DESC
             LIMIT ?
-            """, (tid, user_id, entity_type, limit))
+            """,
+                (tid, user_id, entity_type, limit),
+            )
 
             return [
                 Entity(
@@ -416,12 +425,15 @@ class GraphStore:
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             escaped = _escape_like(name)
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
             SELECT id, user_id, name, entity_type, description, properties
             FROM memory_entities
             WHERE tenant_id = ? AND user_id = ? AND name LIKE ? ESCAPE '!'
             LIMIT ?
-            """, (tid, user_id, f"%{escaped}%", limit))
+            """,
+                (tid, user_id, f"%{escaped}%", limit),
+            )
 
             return [
                 Entity(
@@ -449,19 +461,22 @@ class GraphStore:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            conn.execute("""
+            conn.execute(
+                """
             INSERT OR IGNORE INTO entity_relationships
             (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                tid,
-                user_id,
-                relationship.source_entity_id,
-                relationship.target_entity_id,
-                relationship.relationship_type,
-                relationship.confidence,
-                json.dumps(relationship.metadata),
-            ))
+            """,
+                (
+                    tid,
+                    user_id,
+                    relationship.source_entity_id,
+                    relationship.target_entity_id,
+                    relationship.relationship_type,
+                    relationship.confidence,
+                    json.dumps(relationship.metadata),
+                ),
+            )
 
             conn.commit()
 
@@ -483,23 +498,32 @@ class GraphStore:
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             if direction == "out":
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                 SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                 FROM entity_relationships
                 WHERE source_entity_id = ? AND tenant_id = ? AND user_id = ?
-                """, (entity_id, tid, user_id))
+                """,
+                    (entity_id, tid, user_id),
+                )
             elif direction == "in":
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                 SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                 FROM entity_relationships
                 WHERE target_entity_id = ? AND tenant_id = ? AND user_id = ?
-                """, (entity_id, tid, user_id))
+                """,
+                    (entity_id, tid, user_id),
+                )
             else:  # both
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                 SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                 FROM entity_relationships
                 WHERE (source_entity_id = ? OR target_entity_id = ?) AND tenant_id = ? AND user_id = ?
-                """, (entity_id, entity_id, tid, user_id))
+                """,
+                    (entity_id, entity_id, tid, user_id),
+                )
 
             return [
                 Relationship(
@@ -623,18 +647,21 @@ class GraphStore:
                 edge_rows = []
                 batch_size = 100  # Process nodes in batches to prevent huge IN clauses
                 for i in range(0, len(node_ids), batch_size):
-                    batch = node_ids[i:i+batch_size]
+                    batch = node_ids[i : i + batch_size]
                     if not batch:
                         continue
                     placeholders = ",".join("?" * len(batch))
-                    cursor = conn.execute(f"""
+                    cursor = conn.execute(
+                        f"""
                     SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                     FROM entity_relationships
                     WHERE (source_entity_id IN ({placeholders})
                     OR target_entity_id IN ({placeholders}))
                     AND tenant_id = ?
                     AND user_id = ?
-                    """, batch + batch + [tid, user_id])
+                    """,
+                        batch + batch + [tid, user_id],
+                    )
                     edge_rows.extend(cursor.fetchall())
 
                 edges = [
@@ -676,11 +703,14 @@ class GraphStore:
         try:
             for entity_id in entity_ids:
                 score = scores.get(entity_id, 1.0) if scores else 1.0
-                conn.execute("""
+                conn.execute(
+                    """
                 INSERT OR REPLACE INTO memory_entity_links
                 (memory_id, entity_id, tenant_id, user_id, relevance_score, created_at)
                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (memory_id, entity_id, tid, user_id, score))
+                """,
+                    (memory_id, entity_id, tid, user_id, score),
+                )
 
             conn.commit()
 
@@ -701,12 +731,15 @@ class GraphStore:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
             SELECT DISTINCT mel.memory_id
             FROM memory_entity_links mel
             WHERE mel.entity_id = ? AND mel.tenant_id = ? AND mel.user_id = ?
             LIMIT ?
-            """, (entity_id, tid, user_id, limit))
+            """,
+                (entity_id, tid, user_id, limit),
+            )
 
             return [row[0] for row in cursor.fetchall()]
 
@@ -728,7 +761,8 @@ class GraphStore:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
             WITH RECURSIVE connected AS (
                 SELECT entity_id, 0 as depth
                 FROM memory_entity_links
@@ -756,7 +790,9 @@ class GraphStore:
             AND mel.tenant_id = ?
             AND mel.user_id = ?
             LIMIT ?
-            """, (entity_id, tid, user_id, depth, tid, user_id, tid, user_id, limit))
+            """,
+                (entity_id, tid, user_id, depth, tid, user_id, tid, user_id, limit),
+            )
 
             return [row[0] for row in cursor.fetchall()]
 
@@ -793,6 +829,7 @@ def get_graph_store(db_path: str | None = None) -> GraphStore:
         if _graph_store is None:
             if db_path is None:
                 from .config import DB_PATH
+
                 db_path = DB_PATH
             _graph_store = GraphStore(db_path)
         return _graph_store

@@ -10,6 +10,7 @@ from foresight_mcp.auth import AuthManager, AuthMiddleware, Role
 def _tool_result_is_error(result) -> bool:
     return bool((result.meta or {}).get("isError"))
 
+
 @pytest.fixture(scope="function")
 def temp_db_path(tmp_path):
     # Create a temporary SQLite DB file
@@ -17,6 +18,7 @@ def temp_db_path(tmp_path):
     # Ensure the env variable points to this file
     os.environ["FORESIGHT_DB_PATH"] = str(db_file)
     return str(db_file)
+
 
 def test_user_creation_and_authentication(temp_db_path):
     # Ensure fresh manager uses temp DB

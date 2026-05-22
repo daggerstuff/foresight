@@ -19,10 +19,11 @@ import threading
 import time
 import uuid
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Mapping, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
@@ -1525,7 +1526,9 @@ def _row_to_curation_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
     }
 
 
-def _curation_run_output_bank(run_id: str, source_bank_id: str, output_mode: str, requested_output_bank: str | None) -> str:
+def _curation_run_output_bank(
+    run_id: str, source_bank_id: str, output_mode: str, requested_output_bank: str | None
+) -> str:
     """Resolve the effective output bank for a curation run."""
     if output_mode == "in_place":
         return f"curation:stage:{run_id}"
@@ -1665,7 +1668,7 @@ def _delete_existing_curation_outputs(uid: str, tenant_id: str, bank_id: str, ru
     try:
         conn.execute(
             "DELETE FROM memories WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND tags LIKE ?",
-            (uid, tenant_id, bank_id, f'%\"curation_run:{run_id}\"%'),
+            (uid, tenant_id, bank_id, f'%"curation_run:{run_id}"%'),
         )
         conn.commit()
     finally:
@@ -1891,9 +1894,7 @@ def _make_curated_entries(
         if synthesis and synthesis.get("insights"):
             entries.append(
                 {
-                    "content": "\n".join(
-                        f"- {insight['summary']}" for insight in synthesis["insights"][:5]
-                    ),
+                    "content": "\n".join(f"- {insight['summary']}" for insight in synthesis["insights"][:5]),
                     "category": "curation_insight",
                     "scope": "arc",
                     "retention": "long_term",
@@ -1970,6 +1971,7 @@ def _insert_curation_entries(
     finally:
         conn.close()
 
+
 def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     """Execute a queued curation run."""
     tenant_id = payload["tenant_id"]
@@ -2001,7 +2003,9 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
         source_rows = _load_source_bank_rows(uid, tenant_id, payload["source_bank_id"])
         block_snapshot = _context_block_snapshot(uid, tenant_id)
         synthesis = None if payload["tool_access"] == "disabled" else _build_synthesis_snapshot(source_rows, uid)
-        reflection = None if payload["tool_access"] == "disabled" else _build_reflection_snapshot(source_rows, uid, tenant_id)
+        reflection = (
+            None if payload["tool_access"] == "disabled" else _build_reflection_snapshot(source_rows, uid, tenant_id)
+        )
         run = {
             "id": run_id,
             "source_bank_id": payload["source_bank_id"],
@@ -2379,8 +2383,7 @@ def _extract_terms(text: str) -> list[str]:
 class _MemoryLike(Protocol):
     """Minimal row protocol for relevance scoring."""
 
-    def __getitem__(self, key: str, /) -> Any:
-        ...
+    def __getitem__(self, key: str, /) -> Any: ...
 
 
 def _score_memory_relevance(

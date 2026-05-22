@@ -2,14 +2,16 @@
 Subscription Manager for WebSocket connections
 Handles subscribe/unsubscribe and event routing
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from ..event_bus import EventType
 
@@ -35,6 +37,7 @@ class Subscription:
         created_at: Subscription creation timestamp
         status: Current subscription status
     """
+
     id: str
     connection_id: str
     event_types: set[EventType] = field(default_factory=set)
@@ -154,10 +157,7 @@ class SubscriptionManager:
 
     def get_matching_subscriptions(self, event_type: EventType, entity_id: str | None = None) -> list[Subscription]:
         """Get all subscriptions matching an event."""
-        return [
-            sub for sub in self._subscriptions.values()
-            if sub.matches_event(event_type, entity_id)
-        ]
+        return [sub for sub in self._subscriptions.values() if sub.matches_event(event_type, entity_id)]
 
     async def send_to_subscribers(
         self,

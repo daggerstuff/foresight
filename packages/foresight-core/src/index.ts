@@ -5,11 +5,11 @@
  */
 
 // Re-export all types and classes
-export * from './types';
-export * from './client';
-export * from './blocks';
-export * from './hooks';
-export * from './crdt';
-export * from './sync';
-export * from './events';
-export * from './websocket';
+export * from './types'
+export * from './client'
+export * from './blocks'
+export * from './hooks'
+export * from './crdt'
+export * from './sync'
+export * from './events'
+export * from './websocket'

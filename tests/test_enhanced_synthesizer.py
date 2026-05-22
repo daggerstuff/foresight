@@ -1,6 +1,7 @@
 """
 Tests for enhanced memory synthesizer.
 """
+
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,12 +19,7 @@ from foresight_mcp.enhanced_synthesizer import (
 from foresight_mcp.memory_types import EmotionalMetadata, MemoryObject
 
 
-def create_memory(
-    content: str,
-    timestamp: datetime,
-    intensity: float = 0.5,
-    tags = None
-) -> MemoryObject:
+def create_memory(content: str, timestamp: datetime, intensity: float = 0.5, tags=None) -> MemoryObject:
     """Helper to create test memories."""
     return MemoryObject(
         id=f"mem_{abs(hash(content)) % 10000}",
@@ -113,10 +109,7 @@ class TestTemporalTrendAnalysis:
         """Identical contents should have overlap score of 1.0."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        score = synthesizer._compute_overlap_score(
-            "I love therapy sessions",
-            "I love therapy sessions"
-        )
+        score = synthesizer._compute_overlap_score("I love therapy sessions", "I love therapy sessions")
 
         assert score == 1.0
 
@@ -124,10 +117,7 @@ class TestTemporalTrendAnalysis:
         """Completely different contents should have overlap score of 0.0."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        score = synthesizer._compute_overlap_score(
-            "alpha beta gamma",
-            "delta epsilon zeta"
-        )
+        score = synthesizer._compute_overlap_score("alpha beta gamma", "delta epsilon zeta")
 
         assert score == 0.0
 
@@ -135,10 +125,7 @@ class TestTemporalTrendAnalysis:
         """Partially overlapping contents should have 0 < score < 1."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        score = synthesizer._compute_overlap_score(
-            "I love therapy sessions",
-            "I hate therapy sessions"
-        )
+        score = synthesizer._compute_overlap_score("I love therapy sessions", "I hate therapy sessions")
 
         # Shared words: i, therapy, sessions = 3/5 unique = 0.6
         assert 0 < score < 1
@@ -148,10 +135,7 @@ class TestTemporalTrendAnalysis:
         """Should detect love/hate sentiment conflict."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        result = synthesizer._find_sentiment_conflict(
-            "I love therapy",
-            "I hate therapy"
-        )
+        result = synthesizer._find_sentiment_conflict("I love therapy", "I hate therapy")
 
         assert result is not None
         pos, neg = result
@@ -162,10 +146,7 @@ class TestTemporalTrendAnalysis:
         """Should return None when no sentiment conflict exists."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        result = synthesizer._find_sentiment_conflict(
-            "I enjoy therapy",
-            "I appreciate therapy"
-        )
+        result = synthesizer._find_sentiment_conflict("I enjoy therapy", "I appreciate therapy")
 
         assert result is None
 
@@ -173,10 +154,7 @@ class TestTemporalTrendAnalysis:
         """Should detect conflict regardless of which memory has which word."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        result = synthesizer._find_sentiment_conflict(
-            "Things are getting worse",
-            "Things are getting better"
-        )
+        result = synthesizer._find_sentiment_conflict("Things are getting worse", "Things are getting better")
 
         assert result is not None
         pos, neg = result
@@ -272,13 +250,15 @@ class TestInsightGeneration:
 
         insights = []
         if contradiction.confidence >= 0.7:
-            insights.append(Insight(
-                statement=synthesizer._format_contradiction_insight(contradiction),
-                insight_type="contradiction",
-                confidence=contradiction.confidence,
-                evidence_ids=contradiction.evidence_ids,
-                recommended_action="review",
-            ))
+            insights.append(
+                Insight(
+                    statement=synthesizer._format_contradiction_insight(contradiction),
+                    insight_type="contradiction",
+                    confidence=contradiction.confidence,
+                    evidence_ids=contradiction.evidence_ids,
+                    recommended_action="review",
+                )
+            )
 
         for insight in insights:
             assert len(insight.evidence_ids) > 0
@@ -290,6 +270,7 @@ class TestEnhancedSynthesis:
     def test_synthesize_with_few_memories(self):
         """Should return None for too few memories."""
         import asyncio
+
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [

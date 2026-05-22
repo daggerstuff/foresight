@@ -1,17 +1,18 @@
 """Tests for request-scoped tenant context (contextvars)."""
+
 import asyncio
 import os
 import sqlite3
 import tempfile
 from unittest.mock import patch
 
+from foresight_mcp.server import init_db, switch_tenant
 from foresight_mcp.tenant_context import (
     DEFAULT_TENANT_ID,
     get_current_tenant_id,
     reset_tenant_context,
     set_current_tenant_id,
 )
-from foresight_mcp.server import init_db, switch_tenant
 
 
 def _ephemeral_connection(db_path: str):

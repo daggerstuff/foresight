@@ -8,19 +8,20 @@ Provides offline-first sync capabilities:
 - Progress events for UI
 - Conflict resolution with CRDTs
 """
+
 from __future__ import annotations
 
 import json
 import logging
-
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .crdt import LWWRegister, ORSet, VectorClock
 from .connection_pool import get_pool
+from .crdt import LWWRegister, ORSet, VectorClock
 from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_sync")
@@ -28,6 +29,7 @@ logger = logging.getLogger("foresight_sync")
 
 class SyncStatus(str, Enum):
     """Sync status."""
+
     IDLE = "idle"
     SYNCING = "syncing"
     OFFLINE = "offline"
@@ -36,6 +38,7 @@ class SyncStatus(str, Enum):
 
 class OperationType(str, Enum):
     """Types of operations."""
+
     CREATE = "create"
     UPDATE = "update"
     DELETE = "delete"
@@ -44,6 +47,7 @@ class OperationType(str, Enum):
 @dataclass
 class Operation:
     """Represents a pending operation."""
+
     id: str
     type: OperationType
     entity_type: str
@@ -89,6 +93,7 @@ class Operation:
 @dataclass
 class SyncProgress:
     """Sync progress information."""
+
     status: SyncStatus
     total_operations: int
     pending_operations: int
@@ -165,22 +170,25 @@ class OperationQueue:
         tid = tenant_id or get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT OR REPLACE INTO operations
             (id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, last_attempt, vector_clock)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            operation.id,
-            tid,
-            operation.type.value,
-            operation.entity_type,
-            operation.entity_id,
-            json.dumps(operation.payload),
-            operation.created_at.isoformat(),
-            operation.retry_count,
-            operation.last_attempt.isoformat() if operation.last_attempt else None,
-            json.dumps(operation.vector_clock.to_dict()),
-        ))
+        """,
+            (
+                operation.id,
+                tid,
+                operation.type.value,
+                operation.entity_type,
+                operation.entity_id,
+                json.dumps(operation.payload),
+                operation.created_at.isoformat(),
+                operation.retry_count,
+                operation.last_attempt.isoformat() if operation.last_attempt else None,
+                json.dumps(operation.vector_clock.to_dict()),
+            ),
+        )
         conn.commit()
         pool.release(conn)
 
@@ -190,23 +198,24 @@ class OperationQueue:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         row = conn.execute(
-            "SELECT * FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1",
-            (tid,)
+            "SELECT * FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1", (tid,)
         ).fetchone()
         pool.release(conn)
 
         if row:
-            return Operation.from_dict({
-                "id": row[0],
-                "type": row[2],
-                "entity_type": row[3],
-                "entity_id": row[4],
-                "payload": json.loads(row[5]),
-                "created_at": row[6],
-                "retry_count": row[7],
-                "last_attempt": row[8],
-                "vector_clock": json.loads(row[9]),
-            })
+            return Operation.from_dict(
+                {
+                    "id": row[0],
+                    "type": row[2],
+                    "entity_type": row[3],
+                    "entity_id": row[4],
+                    "payload": json.loads(row[5]),
+                    "created_at": row[6],
+                    "retry_count": row[7],
+                    "last_attempt": row[8],
+                    "vector_clock": json.loads(row[9]),
+                }
+            )
         return None
 
     def remove(self, operation_id: str, tenant_id: str | None = None) -> None:
@@ -228,17 +237,21 @@ class OperationQueue:
 
         operations = []
         for row in rows:
-            operations.append(Operation.from_dict({
-                "id": row[0],
-                "type": row[2],
-                "entity_type": row[3],
-                "entity_id": row[4],
-                "payload": json.loads(row[5]),
-                "created_at": row[6],
-                "retry_count": row[7],
-                "last_attempt": row[8],
-                "vector_clock": json.loads(row[9]),
-            }))
+            operations.append(
+                Operation.from_dict(
+                    {
+                        "id": row[0],
+                        "type": row[2],
+                        "entity_type": row[3],
+                        "entity_id": row[4],
+                        "payload": json.loads(row[5]),
+                        "created_at": row[6],
+                        "retry_count": row[7],
+                        "last_attempt": row[8],
+                        "vector_clock": json.loads(row[9]),
+                    }
+                )
+            )
         return operations
 
     def count(self, tenant_id: str | None = None) -> int:

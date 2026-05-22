@@ -7,6 +7,7 @@ Extends the existing MemorySynthesizer with:
 - Entity-based clustering for synthesis
 - Evidence-anchored insights (prevents hallucination)
 """
+
 from __future__ import annotations
 
 import logging
@@ -32,6 +33,7 @@ class Contradiction:
     - evolution: Gradual improvement (e.g., anxiety 8/10 -> 5/10)
     - regression: Setback (e.g., anxiety 3/10 -> 7/10)
     """
+
     type: str  # 'direct_conflict' | 'evolution' | 'regression'
     attribute: str  # What changed (e.g., 'anxiety_severity', 'therapy_attitude')
     old_value: str
@@ -65,6 +67,7 @@ class TemporalTrend:
     - worsening: Negative change over time
     - stable: No significant change
     """
+
     topic: str
     direction: str  # 'improving' | 'worsening' | 'stable'
     slope: float  # Rate of change
@@ -93,6 +96,7 @@ class Insight:
 
     All insights must be evidence-anchored to prevent hallucination.
     """
+
     statement: str
     insight_type: str  # 'trend' | 'pattern' | 'contradiction' | 'breakthrough'
     confidence: float
@@ -122,6 +126,7 @@ class EnhancedSynthesisResult:
     - Temporal trends
     - Generated insights
     """
+
     merged_ids: list[str]
     new_memory_id: str
     stance_shifts: list[StanceShift]
@@ -240,11 +245,7 @@ class EnhancedMemorySynthesizer:
             temporal_trends = self._analyze_temporal_trends(memories)
 
             # Generate insights (evidence-anchored)
-            insights = self._generate_insights(
-                memories,
-                contradictions,
-                temporal_trends
-            )
+            insights = self._generate_insights(memories, contradictions, temporal_trends)
 
             return EnhancedSynthesisResult(
                 merged_ids=base_result.merged_ids,
@@ -260,10 +261,7 @@ class EnhancedMemorySynthesizer:
             logger.error(f"Enhanced synthesis failed: {e}")
             return None
 
-    def _detect_contradictions(
-        self,
-        memories: list[MemoryObject]
-    ) -> list[Contradiction]:
+    def _detect_contradictions(self, memories: list[MemoryObject]) -> list[Contradiction]:
         """
         Detect contradictions between memories using content overlap + sentiment.
 
@@ -281,7 +279,7 @@ class EnhancedMemorySynthesizer:
 
             # Keyword overlap contradiction detection
             for i, mem_a in enumerate(cluster):
-                for mem_b in cluster[i + 1:]:
+                for mem_b in cluster[i + 1 :]:
                     pair_key = tuple(sorted([mem_a.id, mem_b.id]))
                     if pair_key in seen_pairs:
                         continue
@@ -291,39 +289,32 @@ class EnhancedMemorySynthesizer:
                         continue
 
                     # Check for opposite sentiment words
-                    conflicting_pair = self._find_sentiment_conflict(
-                        mem_a.content, mem_b.content
-                    )
+                    conflicting_pair = self._find_sentiment_conflict(mem_a.content, mem_b.content)
                     if conflicting_pair is not None:
                         seen_pairs.add(pair_key)
                         pos_word, neg_word = conflicting_pair
 
                         # Calculate temporal distance
-                        time_a = datetime.fromisoformat(
-                            mem_a.timestamp.replace("Z", "+00:00")
-                        )
-                        time_b = datetime.fromisoformat(
-                            mem_b.timestamp.replace("Z", "+00:00")
-                        )
+                        time_a = datetime.fromisoformat(mem_a.timestamp.replace("Z", "+00:00"))
+                        time_b = datetime.fromisoformat(mem_b.timestamp.replace("Z", "+00:00"))
                         days_diff = abs((time_b - time_a).days)
 
-                        contradictions.append(Contradiction(
-                            type="direct_conflict",
-                            attribute=topic,
-                            old_value=pos_word,
-                            new_value=neg_word,
-                            delta=-(overlap),
-                            temporal_distance_days=days_diff,
-                            evidence_ids=[mem_a.id, mem_b.id],
-                            confidence=min(overlap * 1.5, 1.0),
-                        ))
+                        contradictions.append(
+                            Contradiction(
+                                type="direct_conflict",
+                                attribute=topic,
+                                old_value=pos_word,
+                                new_value=neg_word,
+                                delta=-(overlap),
+                                temporal_distance_days=days_diff,
+                                evidence_ids=[mem_a.id, mem_b.id],
+                                confidence=min(overlap * 1.5, 1.0),
+                            )
+                        )
 
         return contradictions
 
-    def _analyze_temporal_trends(
-        self,
-        memories: list[MemoryObject]
-    ) -> list[TemporalTrend]:
+    def _analyze_temporal_trends(self, memories: list[MemoryObject]) -> list[TemporalTrend]:
         """
         Analyze temporal trends in memories.
 
@@ -340,10 +331,7 @@ class EnhancedMemorySynthesizer:
 
             # Sort by timestamp
             sorted_cluster = sorted(
-                cluster,
-                key=lambda m: datetime.fromisoformat(
-                    m.timestamp.replace("Z", "+00:00")
-                ).timestamp()
+                cluster, key=lambda m: datetime.fromisoformat(m.timestamp.replace("Z", "+00:00")).timestamp()
             )
 
             # Extract values and calculate slope
@@ -353,23 +341,22 @@ class EnhancedMemorySynthesizer:
             if abs(slope) > self.trend_significance_threshold:
                 direction = "improving" if slope > 0 else "worsening"
 
-                trends.append(TemporalTrend(
-                    topic=topic,
-                    direction=direction,
-                    slope=slope,
-                    r_squared=r_squared,
-                    evidence_ids=[m.id for m in sorted_cluster],
-                    start_value=values[0],
-                    end_value=values[-1],
-                ))
+                trends.append(
+                    TemporalTrend(
+                        topic=topic,
+                        direction=direction,
+                        slope=slope,
+                        r_squared=r_squared,
+                        evidence_ids=[m.id for m in sorted_cluster],
+                        start_value=values[0],
+                        end_value=values[-1],
+                    )
+                )
 
         return trends
 
     def _generate_insights(
-        self,
-        _memories: list[MemoryObject],
-        contradictions: list[Contradiction],
-        temporal_trends: list[TemporalTrend]
+        self, _memories: list[MemoryObject], contradictions: list[Contradiction], temporal_trends: list[TemporalTrend]
     ) -> list[Insight]:
         """
         Generate evidence-anchored insights.
@@ -381,37 +368,38 @@ class EnhancedMemorySynthesizer:
         # Generate insights from contradictions
         for contradiction in contradictions:
             if contradiction.confidence >= 0.7:
-                insights.append(Insight(
-                    statement=self._format_contradiction_insight(contradiction),
-                    insight_type="contradiction",
-                    confidence=contradiction.confidence,
-                    evidence_ids=contradiction.evidence_ids,
-                    recommended_action="review",
-                    metadata={"contradiction_type": contradiction.type},
-                ))
+                insights.append(
+                    Insight(
+                        statement=self._format_contradiction_insight(contradiction),
+                        insight_type="contradiction",
+                        confidence=contradiction.confidence,
+                        evidence_ids=contradiction.evidence_ids,
+                        recommended_action="review",
+                        metadata={"contradiction_type": contradiction.type},
+                    )
+                )
 
         # Generate insights from trends
         for trend in temporal_trends:
             if trend.r_squared >= 0.5:  # Good fit
-                insights.append(Insight(
-                    statement=self._format_trend_insight(trend),
-                    insight_type="trend",
-                    confidence=trend.r_squared,
-                    evidence_ids=trend.evidence_ids,
-                    recommended_action="preserve" if trend.direction == "improving" else "review",
-                    metadata={
-                        "slope": trend.slope,
-                        "start_value": trend.start_value,
-                        "end_value": trend.end_value,
-                    },
-                ))
+                insights.append(
+                    Insight(
+                        statement=self._format_trend_insight(trend),
+                        insight_type="trend",
+                        confidence=trend.r_squared,
+                        evidence_ids=trend.evidence_ids,
+                        recommended_action="preserve" if trend.direction == "improving" else "review",
+                        metadata={
+                            "slope": trend.slope,
+                            "start_value": trend.start_value,
+                            "end_value": trend.end_value,
+                        },
+                    )
+                )
 
         return insights
 
-    def _cluster_by_topic(
-        self,
-        memories: list[MemoryObject]
-    ) -> dict[str, list[MemoryObject]]:
+    def _cluster_by_topic(self, memories: list[MemoryObject]) -> dict[str, list[MemoryObject]]:
         """
         Cluster memories by topic.
 
@@ -422,9 +410,17 @@ class EnhancedMemorySynthesizer:
 
         # Common topics to look for
         topics = [
-            "anxiety", "stress", "therapy", "mood",
-            "sleep", "work", "family", "health",
-            "coping", "progress", "challenge"
+            "anxiety",
+            "stress",
+            "therapy",
+            "mood",
+            "sleep",
+            "work",
+            "family",
+            "health",
+            "coping",
+            "progress",
+            "challenge",
         ]
 
         for memory in memories:
@@ -459,9 +455,7 @@ class EnhancedMemorySynthesizer:
 
         return len(intersection) / len(union)
 
-    def _find_sentiment_conflict(
-        self, content_a: str, content_b: str
-    ) -> tuple[str, str] | None:
+    def _find_sentiment_conflict(self, content_a: str, content_b: str) -> tuple[str, str] | None:
         """
         Check if two contents contain opposite sentiment words.
 
@@ -472,8 +466,7 @@ class EnhancedMemorySynthesizer:
         words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
 
         for pos_word, neg_word in self.SENTIMENT_OPPOSITES:
-            if (pos_word in words_a and neg_word in words_b) or \
-               (neg_word in words_a and pos_word in words_b):
+            if (pos_word in words_a and neg_word in words_b) or (neg_word in words_a and pos_word in words_b):
                 return (pos_word, neg_word)
 
         return None

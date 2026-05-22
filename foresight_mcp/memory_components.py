@@ -2,6 +2,7 @@
 Foresight Memory Components
 Restored from src/lib/ai/memory/ - Socratic Gate, Crisis Tagger, Synthesizer, Linker
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -42,10 +43,7 @@ class MemoryCrisisTagger:
         try:
             # Use anomaly detector for analysis
             result = self.detector.detect(
-                content=memory.content,
-                sensitivity_level="high",
-                user_id=user_id,
-                source="memory_tagger"
+                content=memory.content, sensitivity_level="high", user_id=user_id, source="memory_tagger"
             )
 
             if result.is_anomaly:
@@ -70,7 +68,7 @@ class MemoryCrisisTagger:
 
             return list(set(tags))
 
-        except Exception as e:
+        except Exception:
             # Log error but don't fail - return safe default
             return ["ERROR_ANALYSIS_FAILED"]
 
@@ -121,20 +119,15 @@ class SocraticGate:
                 decision = "active"
                 reason = "Permanent trait modification requires explicit supervisor confirmation."
 
-            return GateResult(
-                decision=decision,
-                reason=reason,
-                suggested_tags=tags,
-                anomaly_detected=is_anomaly
-            )
+            return GateResult(decision=decision, reason=reason, suggested_tags=tags, anomaly_detected=is_anomaly)
 
-        except Exception as e:
+        except Exception:
             # Safety first - block on errors
             return GateResult(
                 decision="block",
                 reason="Internal safety gate error. Blocking ingestion for security.",
                 suggested_tags=["ERROR_GATE_FAILURE"],
-                anomaly_detected=True
+                anomaly_detected=True,
             )
 
 
@@ -173,10 +166,7 @@ class MemorySynthesizer:
 
             if len(merge_candidates) < 2:
                 return SynthesisResult(
-                    merged_ids=[],
-                    new_memory_id="",
-                    stance_shifts=stance_shifts,
-                    compression_ratio=1.0
+                    merged_ids=[], new_memory_id="", stance_shifts=stance_shifts, compression_ratio=1.0
                 )
 
             # 3. Create synthesized "Abstract Memory"
@@ -186,23 +176,21 @@ class MemorySynthesizer:
                 merged_ids=merged_ids,
                 new_memory_id=self._generate_synthesis_id(),
                 stance_shifts=stance_shifts,
-                compression_ratio=len(memories) / (len(memories) - len(merge_candidates) + 1)
+                compression_ratio=len(memories) / (len(memories) - len(merge_candidates) + 1),
             )
 
-        except Exception as e:
+        except Exception:
             return None
 
     def _split_recent_and_historic(self, memories: list[MemoryObject]) -> tuple[list[MemoryObject], list[MemoryObject]]:
         """Splits memories into historic baseline and recent observations (last 20%)."""
         sorted_memories = sorted(
-            memories,
-            key=lambda m: datetime.fromisoformat(m.timestamp.replace("Z", "+00:00")).timestamp()
+            memories, key=lambda m: datetime.fromisoformat(m.timestamp.replace("Z", "+00:00")).timestamp()
         )
         split_idx = int(len(sorted_memories) * 0.8)
         return sorted_memories[:split_idx], sorted_memories[split_idx:]
 
-    def _detect_stance_shifts(self, historic: list[MemoryObject],
-                               recent: list[MemoryObject]) -> list[StanceShift]:
+    def _detect_stance_shifts(self, historic: list[MemoryObject], recent: list[MemoryObject]) -> list[StanceShift]:
         """Detects behavioral shifts in empathy and emotional metrics."""
         shifts = []
 
@@ -212,26 +200,30 @@ class MemorySynthesizer:
         # Check reciprocity shift
         reciprocity_delta = recent_empathy["reciprocity"] - historic_empathy["reciprocity"]
         if abs(reciprocity_delta) > self.shift_threshold:
-            shifts.append(StanceShift(
-                attribute="reciprocity",
-                old_value=historic_empathy["reciprocity"],
-                new_value=recent_empathy["reciprocity"],
-                delta=reciprocity_delta,
-                evidence_ids=[m.id for m in recent],
-                confidence=0.8
-            ))
+            shifts.append(
+                StanceShift(
+                    attribute="reciprocity",
+                    old_value=historic_empathy["reciprocity"],
+                    new_value=recent_empathy["reciprocity"],
+                    delta=reciprocity_delta,
+                    evidence_ids=[m.id for m in recent],
+                    confidence=0.8,
+                )
+            )
 
         # Check validation accuracy shift
         validation_delta = recent_empathy["validation_accuracy"] - historic_empathy["validation_accuracy"]
         if abs(validation_delta) > self.shift_threshold:
-            shifts.append(StanceShift(
-                attribute="validation_accuracy",
-                old_value=historic_empathy["validation_accuracy"],
-                new_value=recent_empathy["validation_accuracy"],
-                delta=validation_delta,
-                evidence_ids=[m.id for m in recent],
-                confidence=0.75
-            ))
+            shifts.append(
+                StanceShift(
+                    attribute="validation_accuracy",
+                    old_value=historic_empathy["validation_accuracy"],
+                    new_value=recent_empathy["validation_accuracy"],
+                    delta=validation_delta,
+                    evidence_ids=[m.id for m in recent],
+                    confidence=0.75,
+                )
+            )
 
         return shifts
 
@@ -259,7 +251,7 @@ class MemorySynthesizer:
         ts = memory.timestamp.replace("Z", "+00:00")
         try:
             memory_time = datetime.fromisoformat(ts).timestamp() * 1000
-        except Exception as e:
+        except Exception:
             memory_time = 0
 
         age_ms = now - memory_time
@@ -290,6 +282,7 @@ class MemorySynthesizer:
     def _generate_synthesis_id(self) -> str:
         """Generate a unique ID for synthesized memory."""
         import uuid
+
         return str(uuid.uuid4())
 
 

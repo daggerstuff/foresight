@@ -3,6 +3,7 @@
 Runs pending schema migrations in order, recording each in the
 schema_migrations table so they are idempotent across restarts.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 MIGRATIONS = [
     (1, "foresight_mcp.migrations.001_add_tenant_to_graph_tables"),
+    (2, "foresight_mcp.migrations.002_unified_schema"),
 ]
 
 
@@ -27,12 +29,7 @@ def run_migrations(db_path: str) -> None:
             )
         """)
 
-        applied = {
-            row[0]
-            for row in conn.execute(
-                "SELECT version FROM schema_migrations"
-            ).fetchall()
-        }
+        applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
 
         for version, module_path in MIGRATIONS:
             if version not in applied:

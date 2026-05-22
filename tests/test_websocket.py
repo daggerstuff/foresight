@@ -1,4 +1,5 @@
 """Tests for WebSocket server and subscriptions."""
+
 import asyncio
 
 import pytest
@@ -26,7 +27,6 @@ def event_loop():
 def reset_subscriptions():
     """Reset subscription manager before each test."""
     reset_subscription_manager()
-    yield
 
 
 class TestWebSocketHandler:
@@ -137,6 +137,7 @@ class TestWebSocketServer:
     @pytest.mark.asyncio
     async def test_server_with_auth_callback(self):
         """Test server with authentication callback."""
+
         def auth_func(token):
             return token == "valid-token"
 

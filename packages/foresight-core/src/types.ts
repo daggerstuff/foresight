@@ -1,7 +1,7 @@
 /**
  * Core type definitions for Foresight Memory Architecture
  */
-import { z } from 'zod';
+import { z } from 'zod'
 
 // ============================================================================
 // Enums
@@ -80,13 +80,13 @@ export const EmotionalMetadataSchema = z.object({
   dominance: z.number().optional(),
   primaryEmotion: z.string().optional(),
   intensity: z.number().optional(),
-});
+})
 
 export const EmpathyMetricsSchema = z.object({
   reciprocity: z.number().optional(),
   validationAccuracy: z.number().optional(),
   resistanceLevel: z.number().optional(),
-});
+})
 
 export const MemoryObjectSchema = z.object({
   id: z.string(),
@@ -105,7 +105,7 @@ export const MemoryObjectSchema = z.object({
   gist: z.string().optional(),
   isGhost: z.boolean(),
   synthesizedFrom: z.array(z.string()),
-});
+})
 
 export const MemoryBlockSchemaSchema = z.object({
   label: z.string(),
@@ -116,7 +116,7 @@ export const MemoryBlockSchemaSchema = z.object({
   scope: z.nativeEnum(BlockScope),
   charLimit: z.number(),
   metadata: z.record(z.unknown()),
-});
+})
 
 export const MemoryBlockSchema = z.object({
   schema: MemoryBlockSchemaSchema,
@@ -124,7 +124,7 @@ export const MemoryBlockSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   version: z.number(),
-});
+})
 
 export const HookRegistrationSchema = z.object({
   id: z.string(),
@@ -138,7 +138,7 @@ export const HookRegistrationSchema = z.object({
   metadata: z.record(z.unknown()),
   enabled: z.boolean(),
   createdAt: z.string(),
-});
+})
 
 export const EventSchema = z.object({
   id: z.string(),
@@ -148,9 +148,9 @@ export const EventSchema = z.object({
   entityId: z.string(),
   payload: z.record(z.unknown()),
   metadata: z.record(z.unknown()),
-});
+})
 
-export const VectorClockSchema = z.record(z.number());
+export const VectorClockSchema = z.record(z.number())
 
 export const OperationSchema = z.object({
   id: z.string(),
@@ -162,7 +162,7 @@ export const OperationSchema = z.object({
   retryCount: z.number(),
   lastAttempt: z.string().optional(),
   vectorClock: VectorClockSchema,
-});
+})
 
 export const SyncProgressSchema = z.object({
   status: z.nativeEnum(SyncStatus),
@@ -171,106 +171,106 @@ export const SyncProgressSchema = z.object({
   syncedOperations: z.number(),
   errors: z.array(z.string()),
   lastSync: z.string().optional(),
-});
+})
 
 // ============================================================================
 // Type exports
 // ============================================================================
 
-export type EmotionalMetadata = z.infer<typeof EmotionalMetadataSchema>;
-export type EmpathyMetrics = z.infer<typeof EmpathyMetricsSchema>;
-export type MemoryObject = z.infer<typeof MemoryObjectSchema>;
-export type MemoryBlockSchemaType = z.infer<typeof MemoryBlockSchemaSchema>;
-export type MemoryBlock = z.infer<typeof MemoryBlockSchema>;
-export type HookRegistration = z.infer<typeof HookRegistrationSchema>;
-export type Event = z.infer<typeof EventSchema>;
-export type VectorClockType = z.infer<typeof VectorClockSchema>;
-export type Operation = z.infer<typeof OperationSchema>;
-export type SyncProgress = z.infer<typeof SyncProgressSchema>;
+export type EmotionalMetadata = z.infer<typeof EmotionalMetadataSchema>
+export type EmpathyMetrics = z.infer<typeof EmpathyMetricsSchema>
+export type MemoryObject = z.infer<typeof MemoryObjectSchema>
+export type MemoryBlockSchemaType = z.infer<typeof MemoryBlockSchemaSchema>
+export type MemoryBlock = z.infer<typeof MemoryBlockSchema>
+export type HookRegistration = z.infer<typeof HookRegistrationSchema>
+export type Event = z.infer<typeof EventSchema>
+export type VectorClockType = z.infer<typeof VectorClockSchema>
+export type Operation = z.infer<typeof OperationSchema>
+export type SyncProgress = z.infer<typeof SyncProgressSchema>
 
 // ============================================================================
 // API Response Types
 // ============================================================================
 
 export interface StoreMemoryRequest {
-  content: string;
-  category?: string;
-  scope?: MemoryScope;
-  retention?: RetentionPolicy;
-  emotionalContext?: EmotionalMetadata;
-  metrics?: EmpathyMetrics;
-  userId?: string;
+  content: string
+  category?: string
+  scope?: MemoryScope
+  retention?: RetentionPolicy
+  emotionalContext?: EmotionalMetadata
+  metrics?: EmpathyMetrics
+  userId?: string
 }
 
 export interface StoreMemoryResponse {
-  id: string;
-  content: string;
-  decision: string;
-  reason: string;
-  tags?: string[];
-  anomalyDetected?: boolean;
+  id: string
+  content: string
+  decision: string
+  reason: string
+  tags?: string[]
+  anomalyDetected?: boolean
 }
 
 export interface QueryMemoriesRequest {
-  query: string;
-  userId?: string;
-  limit?: number;
-  offset?: number;
+  query: string
+  userId?: string
+  limit?: number
+  offset?: number
 }
 
 export interface ListMemoriesRequest {
-  userId?: string;
-  limit?: number;
-  offset?: number;
+  userId?: string
+  limit?: number
+  offset?: number
 }
 
 export interface GetMemoryRequest {
-  memoryId: string;
-  userId?: string;
+  memoryId: string
+  userId?: string
 }
 
 export interface UpdateMemoryRequest {
-  memoryId: string;
-  content?: string;
-  category?: string;
-  scope?: string;
-  retention?: string;
-  tags?: string[];
-  userId?: string;
+  memoryId: string
+  content?: string
+  category?: string
+  scope?: string
+  retention?: string
+  tags?: string[]
+  userId?: string
 }
 
 export interface DeleteMemoryRequest {
-  memoryId: string;
-  userId?: string;
+  memoryId: string
+  userId?: string
 }
 
 export interface SynthesizeMemoriesRequest {
-  userId?: string;
+  userId?: string
 }
 
 export interface ArchiveMemoryRequest {
-  memoryId: string;
-  userId?: string;
+  memoryId: string
+  userId?: string
 }
 
 export interface RegisterHookRequest {
-  name: string;
-  eventType: EventType;
-  url: string;
-  retryCount?: number;
-  timeout?: number;
+  name: string
+  eventType: EventType
+  url: string
+  retryCount?: number
+  timeout?: number
 }
 
 export interface ListHooksResponse {
-  hooks: HookRegistration[];
+  hooks: HookRegistration[]
 }
 
 export interface MemoryStatus {
-  status: string;
-  database: string;
-  bankId: string;
-  userId: string;
-  memoryCount: number;
-  crisisSignals: number;
-  byScope: Record<string, number>;
+  status: string
+  database: string
+  bankId: string
+  userId: string
+  memoryCount: number
+  crisisSignals: number
+  byScope: Record<string, number>
 }

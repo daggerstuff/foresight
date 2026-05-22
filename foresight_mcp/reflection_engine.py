@@ -13,13 +13,14 @@ stored as memories themselves for continuity across sessions.
 from __future__ import annotations
 
 import json
-import sqlite3
-import uuid
 import logging
+import sqlite3
 import threading
+import uuid
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
 from .connection_pool import PooledConnection, get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
@@ -32,9 +33,9 @@ class ReflectionInsight:
     insight_type: str  # 'trend' | 'contradiction' | 'pattern' | 'breakthrough' | 'warning'
     summary: str
     confidence: float
-    evidence_ids: List[str]
+    evidence_ids: list[str]
     recommended_action: str  # 'preserve' | 'review' | 'consolidate' | 'investigate'
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         self.confidence = max(0.0, min(1.0, self.confidence))
@@ -60,9 +61,9 @@ class ReflectionReport:
     start_date: str
     end_date: str
     memories_analyzed: int
-    insights: List[ReflectionInsight]
-    trend_summary: Dict[str, Any]
-    entity_summary: Dict[str, Any]
+    insights: list[ReflectionInsight]
+    trend_summary: dict[str, Any]
+    entity_summary: dict[str, Any]
     generated_at: str
 
     def to_dict(self) -> dict:
@@ -104,7 +105,7 @@ class ReflectionEngine:
         tenant_id: str = "default",
         period: str = "weekly",
         min_memories: int = 5,
-    ) -> Optional[ReflectionReport]:
+    ) -> ReflectionReport | None:
         """
         Run reflection analysis over a time period.
 
@@ -174,10 +175,10 @@ class ReflectionEngine:
         finally:
             get_pool(self.db_path).release(conn)
 
-    def _build_trend_summary(self, rows: list) -> Dict[str, Any]:
+    def _build_trend_summary(self, rows: list) -> dict[str, Any]:
         """Build summary of temporal trends from memory rows."""
         trend_counts = {"strengthening": 0, "stable": 0, "weakening": 0, "stale": 0}
-        category_importance: Dict[str, List[float]] = {}
+        category_importance: dict[str, list[float]] = {}
 
         for row in rows:
             _, _, category, importance, trend, _ = row[:6]
@@ -211,7 +212,7 @@ class ReflectionEngine:
 
     def _build_entity_summary(
         self, conn: sqlite3.Connection | PooledConnection, user_id: str, tenant_id: str = "default"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build summary of entity patterns from graph, scoped to tenant."""
         # Top entity types
         cursor = conn.execute(
@@ -248,9 +249,9 @@ class ReflectionEngine:
     def _generate_insights(
         self,
         rows: list,
-        trend_summary: Dict[str, Any],
-        entity_summary: Dict[str, Any],
-    ) -> List[ReflectionInsight]:
+        trend_summary: dict[str, Any],
+        entity_summary: dict[str, Any],
+    ) -> list[ReflectionInsight]:
         """
         Generate evidence-anchored insights from analysis.
 
@@ -260,7 +261,7 @@ class ReflectionEngine:
         - Risk/opportunity flagging
         - Specific, concrete action items
         """
-        insights: List[ReflectionInsight] = []
+        insights: list[ReflectionInsight] = []
         counts = trend_summary.get("trend_counts", {})
 
         # Content-anchored insights from memories grouped by category/trend
@@ -328,7 +329,7 @@ class ReflectionEngine:
 
         return insights
 
-    def _analyze_cross_category_patterns(self, rows: list) -> List[ReflectionInsight]:
+    def _analyze_cross_category_patterns(self, rows: list) -> list[ReflectionInsight]:
         """
         Detect patterns that span multiple life areas.
 
@@ -337,10 +338,10 @@ class ReflectionEngine:
         - Resource competition (one area draining another)
         - Synergistic relationships
         """
-        insights: List[ReflectionInsight] = []
+        insights: list[ReflectionInsight] = []
 
         # Group by category and calculate category health scores
-        by_category: Dict[str, list] = {}
+        by_category: dict[str, list] = {}
         for row in rows:
             cat = row[2]
             cat = cat or "general"
@@ -348,7 +349,7 @@ class ReflectionEngine:
                 by_category[cat] = []
             by_category[cat].append(row)
 
-        category_health: Dict[str, Dict] = {}
+        category_health: dict[str, dict] = {}
         for cat, cat_rows in by_category.items():
             strengthening = sum(1 for r in cat_rows if (r[4] or "stable") == "strengthening")
             weakening = sum(1 for r in cat_rows if (r[4] or "stable") == "weakening")
@@ -411,7 +412,7 @@ class ReflectionEngine:
 
         return insights
 
-    def _detect_causal_relationships(self, rows: list, trend_summary: Dict[str, Any]) -> List[ReflectionInsight]:
+    def _detect_causal_relationships(self, rows: list, trend_summary: dict[str, Any]) -> list[ReflectionInsight]:
         """
         Infer potential causal relationships from temporal patterns.
 
@@ -419,7 +420,7 @@ class ReflectionEngine:
         - Early improvements that preceded later changes
         - Consistent co-occurrence patterns
         """
-        insights: List[ReflectionInsight] = []
+        insights: list[ReflectionInsight] = []
 
         # Sort all rows by timestamp
         sorted_rows = sorted(
@@ -429,7 +430,7 @@ class ReflectionEngine:
         )
 
         # Look for "keystone" categories - early improvements that correlate with overall improvement
-        by_category: Dict[str, list] = {}
+        by_category: dict[str, list] = {}
         for row in sorted_rows:
             cat = row[2]
             cat = cat or "general"
@@ -469,7 +470,7 @@ class ReflectionEngine:
 
         return insights
 
-    def _detect_risks(self, rows: list, trend_summary: Dict[str, Any]) -> List[ReflectionInsight]:
+    def _detect_risks(self, rows: list, trend_summary: dict[str, Any]) -> list[ReflectionInsight]:
         """
         Flag potential risks before they escalate.
 
@@ -478,11 +479,11 @@ class ReflectionEngine:
         - Concentration risk (too much focus on one area)
         - Fragility indicators (high variance, low resilience)
         """
-        insights: List[ReflectionInsight] = []
+        insights: list[ReflectionInsight] = []
         counts = trend_summary.get("trend_counts", {})
 
         # Group by category
-        by_category: Dict[str, list] = {}
+        by_category: dict[str, list] = {}
         for row in rows:
             cat = row[2]
             cat = cat or "general"
@@ -537,7 +538,7 @@ class ReflectionEngine:
 
         return insights
 
-    def _detect_opportunities(self, rows: list, trend_summary: Dict[str, Any]) -> List[ReflectionInsight]:
+    def _detect_opportunities(self, rows: list, trend_summary: dict[str, Any]) -> list[ReflectionInsight]:
         """
         Identify underutilized strengths and opportunities.
 
@@ -546,10 +547,10 @@ class ReflectionEngine:
         - Stable areas ready for growth
         - Latent capacity indicators
         """
-        insights: List[ReflectionInsight] = []
+        insights: list[ReflectionInsight] = []
 
         # Group by category
-        by_category: Dict[str, list] = {}
+        by_category: dict[str, list] = {}
         for row in rows:
             cat = row[2]
             cat = cat or "general"
@@ -582,7 +583,7 @@ class ReflectionEngine:
 
         return insights
 
-    def _recommend_action_for_entity(self, entity: Dict[str, Any]) -> str:
+    def _recommend_action_for_entity(self, entity: dict[str, Any]) -> str:
         """
         Generate specific action recommendations based on entity type and connections.
         """
@@ -591,14 +592,13 @@ class ReflectionEngine:
 
         if connections >= 5:
             return "leverage"  # Major hub - use as change agent
-        elif entity_type == "emotion":
+        if entity_type == "emotion":
             return "review"  # Emotional hub - check for regulation needs
-        elif entity_type == "concept":
+        if entity_type == "concept":
             return "preserve"  # Conceptual hub - maintain and build on
-        else:
-            return "investigate"
+        return "investigate"
 
-    def _extract_content_insights(self, rows: list) -> List[ReflectionInsight]:
+    def _extract_content_insights(self, rows: list) -> list[ReflectionInsight]:
         """
         Extract content-anchored insights from memory rows.
 
@@ -606,10 +606,10 @@ class ReflectionEngine:
         strengthening and weakening memory per category to build
         evidence-anchored insight summaries.
         """
-        insights: List[ReflectionInsight] = []
+        insights: list[ReflectionInsight] = []
 
         # Group rows by category
-        by_category: Dict[str, list] = {}
+        by_category: dict[str, list] = {}
         for row in rows:
             category = row[2]
             cat = category or "general"
@@ -710,11 +710,11 @@ class ReflectionEngine:
 
 
 # Global instance management
-_reflection_engine: Optional[ReflectionEngine] = None
+_reflection_engine: ReflectionEngine | None = None
 _engine_lock = threading.Lock()
 
 
-def get_reflection_engine(db_path: Optional[str] = None) -> ReflectionEngine:
+def get_reflection_engine(db_path: str | None = None) -> ReflectionEngine:
     """Get or create global reflection engine instance (thread-safe)."""
     global _reflection_engine
     with _engine_lock:

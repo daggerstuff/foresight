@@ -1,4 +1,5 @@
 """Tests for graph store tenant isolation."""
+
 import os
 import sqlite3
 import tempfile
@@ -22,9 +23,7 @@ def test_entity_has_tenant_id():
         store.upsert_entity(entity, user_id="u1", tenant_id="acme-corp")
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT tenant_id FROM memory_entities WHERE id = ?", ("e1",)
-        ).fetchone()
+        row = conn.execute("SELECT tenant_id FROM memory_entities WHERE id = ?", ("e1",)).fetchone()
         conn.close()
         assert row is not None
         assert row[0] == "acme-corp"
@@ -77,8 +76,7 @@ def test_relationship_scoped_to_tenant():
         store.upsert_entity(e2, user_id="u1", tenant_id="tenant-a")
 
         rel = Relationship(
-            source_entity_id="e1", target_entity_id="e2",
-            relationship_type="experienced", confidence=0.9
+            source_entity_id="e1", target_entity_id="e2", relationship_type="experienced", confidence=0.9
         )
         store.add_relationship(rel, user_id="u1", tenant_id="tenant-a")
 
@@ -94,9 +92,7 @@ def test_relationship_scoped_to_tenant():
 def test_memory_entity_link_scoped_to_tenant():
     store, db_path = _fresh_store()
     try:
-        store.link_memory_to_entities(
-            "mem1", ["e1"], user_id="u1", tenant_id="tenant-a"
-        )
+        store.link_memory_to_entities("mem1", ["e1"], user_id="u1", tenant_id="tenant-a")
 
         results_a = store.get_memories_for_entity("e1", user_id="u1", tenant_id="tenant-a")
         assert "mem1" in results_a
@@ -116,9 +112,7 @@ def test_contextvar_used_as_default_tenant():
         store.upsert_entity(entity, user_id="u1")  # No explicit tenant_id
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT tenant_id FROM memory_entities WHERE id = ?", ("e1",)
-        ).fetchone()
+        row = conn.execute("SELECT tenant_id FROM memory_entities WHERE id = ?", ("e1",)).fetchone()
         conn.close()
         assert row[0] == "from-contextvar"
     finally:
@@ -150,6 +144,7 @@ def test_migration_adds_tenant_id_to_existing_db():
 
         # Run migration
         from foresight_mcp.migrations import run_migrations
+
         run_migrations(db_path)
 
         # Verify column exists

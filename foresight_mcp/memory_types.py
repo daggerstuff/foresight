@@ -2,6 +2,7 @@
 Foresight Memory Types - Rich memory objects with psychological safety features.
 Restored from src/lib/ai/memory/types.ts
 """
+
 from __future__ import annotations
 
 import uuid
@@ -19,6 +20,7 @@ RetentionPolicy = Literal["ephemeral", "short_term", "long_term", "permanent"]
 @dataclass
 class EmotionalMetadata:
     """Emotional Metadata based on Plutchik's Wheel + Big Five normalized scores."""
+
     valence: float = 0.0  # -1 (negative) to 1 (positive)
     arousal: float = 0.0  # 0 (calm) to 1 (intense)
     dominance: float = 0.0  # 0 (submissive) to 1 (dominant)
@@ -48,6 +50,7 @@ class EmotionalMetadata:
 @dataclass
 class EmpathyMetrics:
     """Empathy Metrics derived from the interaction."""
+
     reciprocity: float = 0.5  # How well the user matched empathy
     validation_accuracy: float = 0.5  # How accurately the user validated
     resistance_level: float = 0.0  # User's resistance to persona shift
@@ -74,6 +77,7 @@ class MemoryObject:
     Memory Object: The atomic unit of the memory system.
     Restored from src/lib/ai/memory/types.ts
     """
+
     id: str
     timestamp: str
     scope: MemoryScope
@@ -134,10 +138,14 @@ class MemoryObject:
         )
 
     @classmethod
-    def create(cls, content: str, scope: MemoryScope = "session",
-               retention: RetentionPolicy = "short_term",
-               emotional_context: EmotionalMetadata | None = None,
-               metrics: EmpathyMetrics | None = None) -> MemoryObject:
+    def create(
+        cls,
+        content: str,
+        scope: MemoryScope = "session",
+        retention: RetentionPolicy = "short_term",
+        emotional_context: EmotionalMetadata | None = None,
+        metrics: EmpathyMetrics | None = None,
+    ) -> MemoryObject:
         """Factory method to create a new memory with auto-generated ID and timestamp."""
         return cls(
             id=str(uuid.uuid4()),
@@ -156,6 +164,7 @@ class StanceShift:
     Stance Shift: Represents a detected change in user/persona behavior.
     Restored from src/lib/ai/memory/types.ts
     """
+
     attribute: str  # e.g., 'openness', 'defensiveness'
     old_value: float
     new_value: float
@@ -180,6 +189,7 @@ class SynthesisResult:
     Synthesis Result: The output of a reconciliation pass.
     Restored from src/lib/ai/memory/types.ts
     """
+
     merged_ids: list[str]
     new_memory_id: str
     stance_shifts: list[StanceShift]
@@ -204,6 +214,7 @@ class GateResult:
     Gate Result: The result of Socratic Gate evaluation.
     Restored from src/lib/ai/memory/types.ts
     """
+
     decision: GateDecision
     reason: str
     suggested_tags: list[str]

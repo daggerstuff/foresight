@@ -6,6 +6,7 @@ Implements:
 - Historical state queries
 - Trend analysis
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,10 +24,8 @@ logger = logging.getLogger("foresight_temporal_queries")
 
 def _is_missing_tenant_column_error(error: Exception) -> bool:
     message = str(error).lower()
-    return (
-        "no such column: tenant_id" in message
-        or "no column named tenant_id" in message
-    )
+    return "no such column: tenant_id" in message or "no column named tenant_id" in message
+
 
 TimeWindow = Literal["today", "week", "month", "year"]
 
@@ -34,6 +33,7 @@ TimeWindow = Literal["today", "week", "month", "year"]
 @dataclass
 class TemporalQueryResult:
     """Result of a temporal query."""
+
     memory_id: str
     content: str
     importance: float
@@ -73,7 +73,7 @@ class TemporalQueryBuilder:
         *,
         limit: int = 50,
         min_importance: float = 0.1,
-        category: str | None = None
+        category: str | None = None,
     ) -> list[TemporalQueryResult]:
         """
         Get memories from a time window, handling optional tenant column.
@@ -147,11 +147,7 @@ class TemporalQueryBuilder:
             pool.release(conn)
 
     def get_memories_as_of_time(
-        self,
-        user_id: str,
-        target_date: datetime,
-        category: str | None = None,
-        min_importance: float = 0.1
+        self, user_id: str, target_date: datetime, category: str | None = None, min_importance: float = 0.1
     ) -> list[TemporalQueryResult]:
         """
         Get memories as of a specific time, with optional tenant handling.
@@ -218,11 +214,7 @@ class TemporalQueryBuilder:
             pool.release(conn)
 
     def get_memories_by_trend(
-        self,
-        user_id: str,
-        trend: str,
-        limit: int = 50,
-        category: str | None = None
+        self, user_id: str, trend: str, limit: int = 50, category: str | None = None
     ) -> list[TemporalQueryResult]:
         """
         Get memories by trend, handling optional tenant column.
@@ -287,11 +279,7 @@ class TemporalQueryBuilder:
         finally:
             pool.release(conn)
 
-    def analyze_trends(
-        self,
-        user_id: str,
-        timeframe: str = "30 days"
-    ) -> dict:
+    def analyze_trends(self, user_id: str, timeframe: str = "30 days") -> dict:
         """
         Analyze memory trends over time.
 
@@ -309,7 +297,8 @@ class TemporalQueryBuilder:
         try:
             # Daily stats
             try:
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT
                         strftime('%Y-%m-%d', created_at) as date,
                         COUNT(*) as count,
@@ -321,10 +310,13 @@ class TemporalQueryBuilder:
                     AND created_at >= datetime('now', '-' || ?)
                     GROUP BY date
                     ORDER BY date
-                """, (user_id, tenant_id, timeframe))
+                """,
+                    (user_id, tenant_id, timeframe),
+                )
             except Exception as e:
                 if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute("""
+                    cursor = conn.execute(
+                        """
                         SELECT
                             strftime('%Y-%m-%d', created_at) as date,
                             COUNT(*) as count,
@@ -336,7 +328,9 @@ class TemporalQueryBuilder:
                         AND created_at >= datetime('now', '-' || ?)
                         GROUP BY date
                         ORDER BY date
-                    """, (user_id, timeframe))
+                    """,
+                        (user_id, timeframe),
+                    )
                 else:
                     raise
 
@@ -353,7 +347,8 @@ class TemporalQueryBuilder:
 
             # Category breakdown
             try:
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT
                         COALESCE(category, 'general') as category,
                         COUNT(*) as count,
@@ -364,10 +359,13 @@ class TemporalQueryBuilder:
                     AND created_at >= datetime('now', '-' || ?)
                     GROUP BY category
                     ORDER BY count DESC
-                """, (user_id, tenant_id, timeframe))
+                """,
+                    (user_id, tenant_id, timeframe),
+                )
             except Exception as e:
                 if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute("""
+                    cursor = conn.execute(
+                        """
                         SELECT
                             COALESCE(category, 'general') as category,
                             COUNT(*) as count,
@@ -378,7 +376,9 @@ class TemporalQueryBuilder:
                         AND created_at >= datetime('now', '-' || ?)
                         GROUP BY category
                         ORDER BY count DESC
-                    """, (user_id, timeframe))
+                    """,
+                        (user_id, timeframe),
+                    )
                 else:
                     raise
 
@@ -421,11 +421,7 @@ class TemporalQueryBuilder:
             return "declining"
         return "stable"
 
-    def get_time_weighted_scores(
-        self,
-        memory_ids: list[str],
-        user_id: str
-    ) -> dict:
+    def get_time_weighted_scores(self, memory_ids: list[str], user_id: str) -> dict:
         """
         Calculate time-weighted scores for memories.
 
@@ -444,11 +440,14 @@ class TemporalQueryBuilder:
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             placeholders = ",".join("?" * len(memory_ids))
-            cursor = conn.execute(f"""
+            cursor = conn.execute(
+                f"""
                 SELECT id, created_at, activation_count
                 FROM memories
                 WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?
-            """, [*memory_ids, user_id, tenant_id])
+            """,
+                [*memory_ids, user_id, tenant_id],
+            )
 
             scores = {}
             now = datetime.now(timezone.utc)

@@ -3,9 +3,10 @@
 Provides automated cleanup of ghost (archived) memories to prevent
 resource exhaustion from accumulated archived data.
 """
+
 import logging
-from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from .connection_pool import get_pool
 
@@ -15,6 +16,7 @@ logger = logging.getLogger("foresight_ghost_cleanup")
 @dataclass
 class CleanupStats:
     """Statistics from a cleanup run."""
+
     ghost_memories_found: int = 0
     ghost_memories_deleted: int = 0
     bytes_freed: int = 0

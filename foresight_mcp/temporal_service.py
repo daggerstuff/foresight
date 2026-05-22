@@ -10,7 +10,6 @@ Implements:
 from __future__ import annotations
 
 import logging
-
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,7 +40,7 @@ class DecayConfig:
     category_multiplier: float = 1.0
 
     @classmethod
-    def from_db_row(cls, row: tuple) -> "DecayConfig":
+    def from_db_row(cls, row: tuple) -> DecayConfig:
         """Create DecayConfig from database row."""
         return cls(
             half_life_hours=row[2],

@@ -6,6 +6,7 @@ Allows registering custom handlers for events with support for:
 - Async handlers
 - Conditional execution
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,19 +15,18 @@ import json
 import logging
 import sqlite3
 import threading
-
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Union
+from typing import Any
 
 import httpx
 
 from .circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerConfig,
-    CircuitBreakerOpenError,
     CircuitState,
 )
 from .connection_pool import get_pool
@@ -40,8 +40,10 @@ logger = logging.getLogger("foresight_hooks")
 # Hook Types
 # =============================================================================
 
+
 class HookType(str, Enum):
     """Types of hooks supported."""
+
     CALLABLE = "callable"  # Python function
     HTTP = "http"  # HTTP webhook
     ASYNC = "async"  # Async Python function
@@ -65,11 +67,12 @@ class HookRegistration:
         enabled: Whether hook is active
         created_at: Registration timestamp
     """
+
     id: str
     name: str
     event_type: EventType
     hook_type: HookType
-    handler: Union[Callable, str]  # str = URL
+    handler: Callable | str  # str = URL
     condition: Callable[[Event], bool] | None = None
     retry_count: int = 3
     timeout: int = 30
@@ -97,6 +100,7 @@ class HookRegistration:
 # =============================================================================
 # Hook Registry (SQLite-backed)
 # =============================================================================
+
 
 class HookRegistry:
     """
@@ -158,24 +162,27 @@ class HookRegistry:
         tid = tenant_id or get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        conn.execute("""
+        conn.execute(
+            """
         INSERT OR REPLACE INTO hooks
         (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            hook.id,
-            tid,
-            hook.name,
-            hook.event_type.value,
-            hook.hook_type.value,
-            hook.handler,
-            hook.condition.__name__ if hook.condition else None,
-            hook.retry_count,
-            hook.timeout,
-            json.dumps(hook.metadata),
-            1 if hook.enabled else 0,
-            hook.created_at.isoformat()
-        ))
+        """,
+            (
+                hook.id,
+                tid,
+                hook.name,
+                hook.event_type.value,
+                hook.hook_type.value,
+                hook.handler,
+                hook.condition.__name__ if hook.condition else None,
+                hook.retry_count,
+                hook.timeout,
+                json.dumps(hook.metadata),
+                1 if hook.enabled else 0,
+                hook.created_at.isoformat(),
+            ),
+        )
         conn.commit()
         pool.release(conn)
 
@@ -195,8 +202,7 @@ class HookRegistry:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         rows = conn.execute(
-            "SELECT * FROM hooks WHERE event_type = ? AND enabled = 1 AND tenant_id = ?",
-            (event_type.value, tid)
+            "SELECT * FROM hooks WHERE event_type = ? AND enabled = 1 AND tenant_id = ?", (event_type.value, tid)
         ).fetchall()
         pool.release(conn)
         return [self._row_to_hook(row) for row in rows]
@@ -230,13 +236,14 @@ class HookRegistry:
             timeout=row[7 + o],
             metadata=json.loads(row[8 + o]),
             enabled=bool(row[9 + o]),
-            created_at=datetime.fromisoformat(row[10 + o]) if len(row) > 10 + o else datetime.now(timezone.utc)
+            created_at=datetime.fromisoformat(row[10 + o]) if len(row) > 10 + o else datetime.now(timezone.utc),
         )
 
 
 # =============================================================================
 # Hook Executor
 # =============================================================================
+
 
 class HookExecutor:
     """
@@ -453,7 +460,7 @@ class HookExecutor:
                 # Record failure in circuit breaker
                 self._http_circuit_breaker._on_failure()
                 if attempt < hook.retry_count - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    await asyncio.sleep(2**attempt)  # Exponential backoff
 
         if self._http_circuit_breaker.state == CircuitState.OPEN:
             logger.warning(f"Circuit breaker opened after failures on hook {hook.name}")
@@ -478,7 +485,7 @@ class HookExecutor:
         url: str,
         retry_count: int = 3,
         timeout: int = 30,
-        metadata: dict[str, Any] | None = None
+        metadata: dict[str, Any] | None = None,
     ) -> HookRegistration:
         """Register an HTTP webhook hook."""
         hook_id = hashlib.sha256(f"{name}:{url}".encode()).hexdigest()[:16]
@@ -552,12 +559,7 @@ def list_hooks() -> str:
 
 @mcp.tool()
 def register_hook(
-    name: str,
-    event_type: str,
-    hook_type: str = "http",
-    url: str | None = None,
-    retry_count: int = 3,
-    timeout: int = 30
+    name: str, event_type: str, hook_type: str = "http", url: str | None = None, retry_count: int = 3, timeout: int = 30
 ) -> str:
     """
     Register a new hook.
@@ -580,13 +582,7 @@ def register_hook(
     if hook_type == "http":
         if not url:
             return "URL required for HTTP hooks"
-        hook = executor.register_http_hook(
-            name=name,
-            event_type=et,
-            url=url,
-            retry_count=retry_count,
-            timeout=timeout
-        )
+        hook = executor.register_http_hook(name=name, event_type=et, url=url, retry_count=retry_count, timeout=timeout)
         return f"Registered HTTP hook '{name}' (ID: {hook.id}) for event {et.value}"
 
     return f"Hook type '{hook_type}' not yet supported via MCP"
