@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from .subconscious import (
     DEFAULT_MEMORY_BLOCKS,
+    PENDING_ITEMS,
+    SESSION_PATTERNS,
+    USER_PREFERENCES,
     ContextBlockAgent,
+    ContextBlockState,
     MemoryBlock,
     get_context_block_agent as _get_context_block_agent,
 )
