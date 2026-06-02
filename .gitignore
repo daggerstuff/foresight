@@ -24,6 +24,9 @@ memory.db
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
 .dolt/
+.beads/backup/
+dolt-backup.json
+dolt-backup-state.json
 
 # Miscellaneous
 .coverage
