@@ -10,6 +10,7 @@ from __future__ import annotations
 from .subconscious import (
     DEFAULT_MEMORY_BLOCKS,
     PENDING_ITEMS,
+    PROJECT_CONTEXT,
     SESSION_PATTERNS,
     USER_PREFERENCES,
     ContextBlockAgent,
