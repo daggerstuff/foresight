@@ -260,8 +260,8 @@ class TestSynthesizeProfile:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        _seed_memory(conn, "PREFERS TYPESCRIPT", scope="trait", retention="permanent")
-        _seed_memory(conn, "CURRENTLY FIXING AUTH", scope="session", retention="short_term")
+        _seed_memory(conn, MemorySeed("PREFERS TYPESCRIPT", scope="trait", retention="permanent"))
+        _seed_memory(conn, MemorySeed("CURRENTLY FIXING AUTH", scope="session", retention="short_term"))
         conn.close()
 
         with _patched_profile_env(db_path):
@@ -275,7 +275,7 @@ class TestSynthesizeProfile:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        _seed_memory(conn, "Temporary preference", scope="trait", retention="short_term", importance=0.9)
+        _seed_memory(conn, MemorySeed("Temporary preference", scope="trait", retention="short_term", importance=0.9))
         conn.close()
 
         with _patched_profile_env(db_path):
