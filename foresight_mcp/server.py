@@ -60,7 +60,7 @@ from .event_bus import (
     memory_updated,
 )
 from .graph_store import get_graph_store
-from .hybrid_retriever import get_hybrid_retriever
+from .hybrid_retriever import HybridResult, get_hybrid_retriever
 from .memory_components import (
     MemoryCrisisTagger,
     MemoryLinker,
@@ -2583,84 +2583,82 @@ def inject_context(
     user_id: str | None = None,
     max_memories: int = 5,
     min_relevance: float = 0.3,
+    include_details: bool = False,
 ) -> str:
     """Surface relevant memories based on conversation context.
 
     Analyzes conversation text to find and return the most relevant memories
-    for grounding the AI's responses in prior context.
+    for grounding the AI's responses in prior context. Uses HybridRetriever
+    (keyword + TF-IDF + graph + temporal signals via RRF) for ranking.
 
     Args:
         conversation_text: The current conversation text to analyze for context
         user_id: Optional user ID override
         max_memories: Maximum number of memories to return (default: 5)
         min_relevance: Minimum relevance score threshold (default: 0.3)
+        include_details: If True, return JSON with formatted text plus structured
+            memories and context blocks grouped by InjectionPoint (default: False)
 
     Returns:
-        Structured context block with relevant memories and continuity patterns
+        Formatted string with relevant memories and context block signals.
+        If include_details=True, returns a JSON string with keys:
+        - formatted: the formatted text
+        - memories: list of dicts with memory_id, content, score, signals
+        - context_blocks: dict grouped by InjectionPoint
     """
     uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
     terms = _extract_terms(conversation_text)
-    now = datetime.now(timezone.utc)
+    retriever = get_hybrid_retriever()
+    query_text = conversation_text if conversation_text else " ".join(terms)
 
-    conn = get_db_connection()
-    candidates: list[sqlite3.Row] = []
+    hybrid_result = retriever.search(
+        query=query_text,
+        user_id=uid,
+        tenant_id=tenant_id,
+        limit=max(50, max_memories * 3),
+        min_importance=0.1,
+    )
 
-    if terms:
-        conditions = []
-        params: list[str] = []
-        for term in terms:
-            escaped = term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-            conditions.append("content LIKE ? ESCAPE '!'")
-            params.append(f"%{escaped}%")
+    memories: list[HybridResult] = [
+        r for r in hybrid_result.results if r.combined_score >= min_relevance
+    ][:max_memories]
 
-        where_clause = " OR ".join(conditions)
-        query = (
-            f"SELECT * FROM memories "
-            f"WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
-            f"AND ({where_clause}) "
-            f"ORDER BY importance DESC, created_at DESC LIMIT 50"
-        )
-        candidates = conn.execute(
-            query,
-            [uid, get_current_tenant_id(), *params],
-        ).fetchall()
+    formatted = _format_injection_output(memories, uid, tenant_id, terms)
 
-    fallback = conn.execute(
-        "SELECT * FROM memories "
-        "WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
-        "AND importance >= ? "
-        "ORDER BY importance DESC, created_at DESC LIMIT 20",
-        (uid, get_current_tenant_id(), min_relevance),
-    ).fetchall()
+    if not include_details:
+        return formatted
 
-    conn.close()
+    blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
+    payload = {
+        "formatted": formatted,
+        "memories": [m.to_dict() for m in memories],
+        "context_blocks": blocks_by_point,
+    }
+    return json.dumps(payload, indent=2)
 
-    seen_ids: set[str] = set()
-    all_rows: list[sqlite3.Row] = []
-    for row in candidates + fallback:
-        if row["id"] not in seen_ids:
-            seen_ids.add(row["id"])
-            all_rows.append(row)
 
-    scored = [(row, _score_memory_relevance(row, terms, now)) for row in all_rows]
-    scored.sort(key=lambda pair: pair[1], reverse=True)
-
-    top = [(row, score) for row, score in scored if score >= min_relevance]
-    top = top[:max_memories]
-
+def _format_injection_output(
+    memories: list[HybridResult],
+    uid: str,
+    tenant_id: str,
+    terms: list[str],
+) -> str:
+    """Format memories and context block signals into a human-readable string."""
     lines: list[str] = []
-    if top:
-        lines.append(f"[Relevant Context - {len(top)} memories surfaced]")
-        for row, _ in top:
-            importance_val = row["importance"] if row["importance"] is not None else 1.0
-            snippet = (row["content"] or "")[:120]
-            if len(row["content"] or "") > 120:
+    if memories:
+        lines.append(f"[Relevant Context - {len(memories)} memories surfaced]")
+        for mem in memories:
+            snippet = (mem.content or "")[:120]
+            if len(mem.content or "") > 120:
                 snippet += "..."
-            lines.append(f"- [{row['id']}] (importance: {importance_val:.1f}) {snippet}")
+            lines.append(
+                f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}"
+            )
 
     sub_lines = _context_block_notes_for_terms(uid, terms)
     if sub_lines:
-        if not top:
+        if not memories:
             lines.append("[Relevant Context - 0 memories surfaced]")
         lines.append("")
         lines.append("[Context Block Signals]")
@@ -2672,34 +2670,75 @@ def inject_context(
     return "\n".join(lines)
 
 
+def _format_context_blocks_by_injection_point(
+    uid: str,
+    tenant_id: str,
+    terms: list[str],
+) -> dict[str, list[dict]]:
+    """Group matching context block entries by their schema's InjectionPoint.
+
+    Returns a dict mapping InjectionPoint value to matching block entries:
+    {"pre_prompt": [...], "post_prompt": [...], "whisper_only": [...]}
+
+    Each entry contains: label, content, matched_terms.
+    """
+    from .block_registry import InjectionPoint, initialize_default_blocks
+
+    agent = get_context_block_agent(uid, tenant_id)
+    registry = initialize_default_blocks()
+    relevant_labels = [USER_PREFERENCES, SESSION_PATTERNS, PENDING_ITEMS]
+
+    grouped: dict[str, list[dict]] = {
+        InjectionPoint.PRE_PROMPT.value: [],
+        InjectionPoint.POST_PROMPT.value: [],
+        InjectionPoint.WHISPER_ONLY.value: [],
+    }
+
+    for label in relevant_labels:
+        schema = registry.get_schema(label)
+        if schema is None:
+            continue
+        block = agent.state.get_block(label)
+        if not block or block.is_empty():
+            continue
+        content = block.content
+        content_lower = content.lower()
+        if not terms or not any(re.search(rf"\b{re.escape(t)}\b", content_lower) for t in terms):
+            continue
+        for line in content.splitlines():
+            line_lower = line.lower().strip()
+            if not line_lower:
+                continue
+            matched = [t for t in terms if re.search(rf"\b{re.escape(t)}\b", line_lower)]
+            if matched:
+                grouped[schema.injection_point.value].append(
+                    {"label": label, "content": line.strip(), "matched_terms": matched}
+                )
+
+    return grouped
+
+
 def _context_block_notes_for_terms(
     uid: str,
     terms: list[str],
 ) -> list[str]:
     """Check context blocks for content relevant to the search terms.
 
-    Returns a list of formatted lines with matching block content.
+    Returns a list of formatted lines with matching block content,
+    grouped by InjectionPoint (PRE_PROMPT first, then POST_PROMPT, then WHISPER_ONLY).
     """
-    agent = get_context_block_agent(uid, get_current_tenant_id())
-    relevant_labels = [USER_PREFERENCES, SESSION_PATTERNS, PENDING_ITEMS]
-    lines: list[str] = []
+    tenant_id = get_current_tenant_id()
+    grouped = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
 
-    for label in relevant_labels:
-        block = agent.state.get_block(label)
-        if not block or block.is_empty():
+    lines: list[str] = []
+    for point_value, entries in grouped.items():
+        matching_entries = [e for e in entries if any(
+            re.search(rf"\b{re.escape(t)}\b", e["content"].lower()) for t in terms
+        )]
+        if not matching_entries:
             continue
-        content = block.content
-        content_lower = content.lower()
-        if terms and any(re.search(rf"\b{re.escape(t)}\b", content_lower) for t in terms):
-            matching = []
-            for line in content.splitlines():
-                line_lower = line.lower().strip()
-                if line_lower and any(re.search(rf"\b{re.escape(t)}\b", line_lower) for t in terms):
-                    matching.append(line.strip())
-            if matching:
-                lines.append(f"[{label}]")
-                for m in matching[:3]:
-                    lines.append(f"  {m}")
+        for entry in matching_entries[:3]:
+            lines.append(f"  [{entry['label']} / {point_value}] {entry['content']}")
 
     return lines
 
@@ -2707,6 +2746,55 @@ def _context_block_notes_for_terms(
 def _subconscious_context_for_terms(uid: str, terms: list[str]) -> list[str]:
     """Compatibility alias for the older helper name."""
     return _context_block_notes_for_terms(uid, terms)
+
+
+@mcp.tool(output_schema=None)
+def get_relevant_memories(
+    query: str,
+    user_id: str | None = None,
+    limit: int = 5,
+    min_relevance: float = 0.1,
+) -> str:
+    """Return structured list of relevant memories for a query.
+
+    Clean memories-only API (no context blocks). Uses HybridRetriever
+    (keyword + TF-IDF + graph + temporal signals via RRF) for ranking.
+
+    Args:
+        query: Search query string
+        user_id: Optional user ID override
+        limit: Maximum number of memories to return (default: 5)
+        min_relevance: Minimum combined_score threshold (default: 0.1)
+
+    Returns:
+        JSON string with:
+        - memories: list of dicts with memory_id, content, category, importance,
+          created_at, keyword_score, tfidf_cosine_score, semantic_score,
+          graph_score, temporal_score, combined_score, source_signals
+        - total_candidates: number of candidates considered
+        - signal_counts: dict of how many results each signal contributed
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+    retriever = get_hybrid_retriever()
+
+    result = retriever.search(
+        query=query,
+        user_id=uid,
+        tenant_id=tenant_id,
+        limit=max(limit * 2, 20),
+        min_importance=0.0,
+    )
+
+    memories = [
+        m.to_dict() for m in result.results if m.combined_score >= min_relevance
+    ][:limit]
+    payload = {
+        "memories": memories,
+        "total_candidates": result.total_candidates,
+        "signal_counts": result.signal_counts,
+    }
+    return json.dumps(payload, indent=2)
 
 
 def _resume_pending_curation_runs() -> None:
