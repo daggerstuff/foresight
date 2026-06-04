@@ -210,6 +210,21 @@ class UnifiedMemory(BaseModel):
     emotional_context: EmotionalContext | None = Field(None)
     empathy_metrics: EmpathyMetrics | None = Field(None)
 
+    # ── Relationships (MEM-4) ──────────────────────────────────────────────
+    relation_type: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "Optional typed relationship to another memory. "
+            "Allowed values: 'updates', 'extends', 'derives', 'contradicts', 'supports', 'related'."
+        ),
+    )
+    related_memory_id: str | None = Field(
+        None,
+        max_length=128,
+        description="ID of the memory this one is related to (paired with relation_type).",
+    )
+
     # ── Timestamps ────────────────────────────────────────────────────────
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str | None = Field(None)
@@ -236,6 +251,8 @@ class UnifiedMemory(BaseModel):
         source_service: SourceService = SourceService.FORESIGHT,
         emotional_context: EmotionalContext | None = None,
         empathy_metrics: EmpathyMetrics | None = None,
+        relation_type: str | None = None,
+        related_memory_id: str | None = None,
     ) -> UnifiedMemory:
         """Factory — creates a new UnifiedMemory with auto-generated id and timestamp."""
         return cls(
@@ -251,6 +268,8 @@ class UnifiedMemory(BaseModel):
             source_service=source_service,
             emotional_context=emotional_context,
             empathy_metrics=empathy_metrics,
+            relation_type=relation_type,
+            related_memory_id=related_memory_id,
         )
 
     # -------------------------------------------------------------------------
@@ -287,6 +306,8 @@ class UnifiedMemory(BaseModel):
             "retrieval_count": self.retrieval_count,
             "accessed_at": self.accessed_at,
             "last_retrieved_at": self.last_retrieved_at,
+            "relation_type": self.relation_type,
+            "related_memory_id": self.related_memory_id,
         }
 
     @classmethod
@@ -334,6 +355,8 @@ class UnifiedMemory(BaseModel):
             updated_at=row.get("updated_at"),
             accessed_at=row.get("accessed_at"),
             last_retrieved_at=row.get("last_retrieved_at"),
+            relation_type=row.get("relation_type"),
+            related_memory_id=row.get("related_memory_id"),
         )
 
     # -------------------------------------------------------------------------
