@@ -1,6 +1,7 @@
 ---
 
-sidebar_label: TypeScript API title: TypeScript API Reference
+sidebar_label: TypeScript API
+title: TypeScript API Reference
 
 ---
 
@@ -24,6 +25,13 @@ interface ForesightClientOptions {
   userId?: string
   bankId?: string
   timeout?: number
+  fetch?: FetchLike
+  retry?: {
+    attempts?: number
+    initialDelayMs?: number
+    maxDelayMs?: number
+    backoffFactor?: number
+  }
 }
 ```
 
@@ -87,10 +95,20 @@ async updateMemory(
 async deleteMemory(memoryId: string): Promise<void>
 ```
 
+### Runtime behavior
+
+- Request payloads are serialized to `snake_case` before transport.
+- Responses are validated with Zod before they reach callers.
+- Transient HTTP failures retry with exponential backoff.
+- `fetch` can be injected for tests or non-browser runtimes.
+
 ## BlockManager
 
 ```typescript
 class BlockManager {
+  createSchema(options: CreateBlockOptions): MemoryBlockSchema
+  getSchema(label: string): MemoryBlockSchema | undefined
+  listSchemas(): MemoryBlockSchema[]
   register(schema: MemoryBlockSchema): void
   get(label: string): MemoryBlock | undefined
   list(): MemoryBlock[]

@@ -1,6 +1,7 @@
 ---
 
-sidebar_label: Introduction title: Foresight Memory Architecture
+sidebar_label: Introduction
+title: Foresight Memory Architecture
 
 ---
 
