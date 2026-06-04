@@ -14,13 +14,17 @@ import pytest
 from fastmcp import Client
 from foresight_cli.cli import _decode_tool_result
 from foresight_mcp import memory_status, store_memory
-from foresight_mcp.block_registry import MemoryBlockSchema
+from foresight_mcp.block_registry import InjectionPoint, MemoryBlockSchema
 from foresight_mcp.context_blocks import register_context_block_schema
+from foresight_mcp.hybrid_retriever import HybridResult, HybridSearchResult
 from foresight_mcp.server import (
     ContextBlockAction,
     CurationRunAction,
     _extract_terms,
+    _format_context_blocks_by_injection_point,
+    _format_injection_output,
     _score_memory_relevance,
+    get_relevant_memories,
     inject_context,
     manage_context_blocks,
     manage_curation_runs,
@@ -445,6 +449,36 @@ def _mock_db_with_rows(db_path):
     return conn
 
 
+def _make_hybrid_result(memory_id, content, combined_score=0.8, **kwargs):
+    """Build a HybridResult for testing."""
+    return HybridResult(
+        memory_id=memory_id,
+        content=content,
+        category=kwargs.get("category", "fact"),
+        importance=kwargs.get("importance", 1.0),
+        strength_trend=kwargs.get("strength_trend", "stable"),
+        created_at=kwargs.get("created_at", datetime.now(timezone.utc).isoformat()),
+        keyword_score=kwargs.get("keyword_score", 0.0),
+        tfidf_cosine_score=kwargs.get("tfidf_cosine_score", 0.0),
+        semantic_score=kwargs.get("semantic_score", 0.0),
+        graph_score=kwargs.get("graph_score", 0.0),
+        temporal_score=kwargs.get("temporal_score", 0.0),
+        combined_score=combined_score,
+        source_signals=kwargs.get("source_signals", []),
+    )
+
+
+def _patch_hybrid_retriever(results, total_candidates=None, signal_counts=None):
+    """Patch get_hybrid_retriever to return a mock with given HybridResults."""
+    mock_retriever = MagicMock()
+    mock_retriever.search.return_value = HybridSearchResult(
+        results=results,
+        total_candidates=total_candidates if total_candidates is not None else len(results),
+        signal_counts=signal_counts or {},
+    )
+    return patch("foresight_mcp.server.get_hybrid_retriever", return_value=mock_retriever)
+
+
 def test_extract_terms_filters_stop_words():
     """_extract_terms removes stop words and short tokens."""
     text = "The user is very interested in authentication and database performance"
@@ -475,26 +509,13 @@ def test_extract_terms_empty():
 
 def test_inject_context_returns_formatted_output():
     """inject_context returns structured context block with matching memories."""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    db_path = _make_inject_test_db(
-        memories=[
-            {
-                "id": "mem1",
-                "content": "User prefers Python type hints in all functions",
-                "importance": 0.8,
-                "created_at": now_iso,
-            },
-            {
-                "id": "mem2",
-                "content": "Session discussed database migration strategies",
-                "importance": 0.6,
-                "created_at": now_iso,
-            },
-        ]
-    )
+    results = [
+        _make_hybrid_result("mem1", "User prefers Python type hints in all functions", combined_score=0.85, importance=0.8),
+        _make_hybrid_result("mem2", "Session discussed database migration strategies", combined_score=0.7, importance=0.6),
+    ]
 
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        _patch_hybrid_retriever(results),
         patch("foresight_mcp.server.USER_ID", "inject_test_user"),
         patch("foresight_mcp.server.get_context_block_agent"),
     ):
@@ -506,41 +527,30 @@ def test_inject_context_returns_formatted_output():
 
 def test_inject_context_respects_max_memories():
     """inject_context respects the max_memories limit."""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    memories = [
-        {"id": f"mem{i}", "content": f"Memory about python topic number {i}", "importance": 0.9, "created_at": now_iso}
+    results = [
+        _make_hybrid_result(f"mem{i}", f"Memory about python topic number {i}", combined_score=0.9)
         for i in range(10)
     ]
-    db_path = _make_inject_test_db(memories=memories)
 
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        _patch_hybrid_retriever(results),
         patch("foresight_mcp.server.USER_ID", "inject_test_user"),
         patch("foresight_mcp.server.get_context_block_agent"),
     ):
         result = inject_context("python topic", max_memories=2)
 
-    # Count memory lines (lines starting with "- [")
     memory_lines = [l for l in result.splitlines() if l.startswith("- [")]
     assert len(memory_lines) <= 2
 
 
 def test_inject_context_no_match():
     """inject_context with no matching memories returns empty context message."""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    db_path = _make_inject_test_db(
-        memories=[
-            {
-                "id": "mem1",
-                "content": "Completely unrelated content about sailing",
-                "importance": 0.1,
-                "created_at": now_iso,
-            },
-        ]
-    )
+    results = [
+        _make_hybrid_result("mem1", "Completely unrelated content about sailing", combined_score=0.1, importance=0.1),
+    ]
 
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        _patch_hybrid_retriever(results),
         patch("foresight_mcp.server.USER_ID", "inject_test_user"),
         patch("foresight_mcp.server.get_context_block_agent"),
     ):
@@ -551,16 +561,117 @@ def test_inject_context_no_match():
 
 def test_inject_context_empty_conversation_text():
     """inject_context with empty conversation text still works (no terms to match)."""
-    db_path = _make_inject_test_db(memories=[])
-
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        _patch_hybrid_retriever([]),
         patch("foresight_mcp.server.USER_ID", "inject_test_user"),
         patch("foresight_mcp.server.get_context_block_agent"),
     ):
         result = inject_context("")
 
     assert "0 memories surfaced" in result
+
+
+def test_inject_context_include_details_returns_json():
+    """inject_context with include_details=True returns JSON with memories, context_blocks, formatted keys."""
+    results = [
+        _make_hybrid_result("mem1", "User prefers Python type hints", combined_score=0.85, importance=0.8),
+    ]
+    with (
+        _patch_hybrid_retriever(results, total_candidates=5, signal_counts={"keyword": 3}),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight_mcp.server.get_context_block_agent"),
+    ):
+        result = inject_context("python type hints", include_details=True)
+
+    payload = json.loads(result)
+    assert "formatted" in payload
+    assert "memories" in payload
+    assert "context_blocks" in payload
+    assert len(payload["memories"]) == 1
+    assert payload["memories"][0]["memory_id"] == "mem1"
+    assert "pre_prompt" in payload["context_blocks"]
+    assert "post_prompt" in payload["context_blocks"]
+    assert "whisper_only" in payload["context_blocks"]
+
+
+def test_get_relevant_memories_returns_structured_data():
+    """get_relevant_memories returns JSON with memories, total_candidates, signal_counts."""
+    results = [
+        _make_hybrid_result("mem1", "User prefers Python type hints", combined_score=0.85),
+        _make_hybrid_result("mem2", "Session discussed database migrations", combined_score=0.7),
+    ]
+    with (
+        _patch_hybrid_retriever(results, total_candidates=5, signal_counts={"keyword": 3, "graph": 2}),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+    ):
+        result = get_relevant_memories("python type hints")
+
+    payload = json.loads(result)
+    assert "memories" in payload
+    assert "total_candidates" in payload
+    assert "signal_counts" in payload
+    assert len(payload["memories"]) == 2
+    assert payload["memories"][0]["memory_id"] == "mem1"
+    assert payload["total_candidates"] == 5
+    assert payload["signal_counts"] == {"keyword": 3, "graph": 2}
+
+
+def test_get_relevant_memories_filters_by_min_relevance():
+    """get_relevant_memories filters out results below min_relevance threshold."""
+    results = [
+        _make_hybrid_result("mem1", "High relevance memory", combined_score=0.9),
+        _make_hybrid_result("mem2", "Low relevance memory", combined_score=0.1),
+    ]
+    with (
+        _patch_hybrid_retriever(results),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+    ):
+        result = get_relevant_memories("test query", min_relevance=0.5)
+
+    payload = json.loads(result)
+    assert len(payload["memories"]) == 1
+    assert payload["memories"][0]["memory_id"] == "mem1"
+
+
+def test_get_relevant_memories_respects_limit():
+    """get_relevant_memories respects the limit parameter."""
+    results = [
+        _make_hybrid_result(f"mem{i}", f"Memory {i}", combined_score=0.9 - i * 0.05)
+        for i in range(10)
+    ]
+    with (
+        _patch_hybrid_retriever(results),
+        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+    ):
+        result = get_relevant_memories("test query", limit=3)
+
+    payload = json.loads(result)
+    assert len(payload["memories"]) == 3
+
+
+def test_format_context_blocks_by_injection_point_groups_by_schema():
+    """_format_context_blocks_by_injection_point groups matching entries by InjectionPoint."""
+    mock_agent = MagicMock()
+
+    def fake_block(label):
+        block = MagicMock()
+        block.is_empty = lambda: False
+        block.content = f"{label}: user mentioned python in session"
+        return block
+
+    mock_agent.state.get_block.side_effect = fake_block
+
+    with patch("foresight_mcp.server.get_context_block_agent", return_value=mock_agent):
+        result = _format_context_blocks_by_injection_point("test_user", "default", ["python"])
+
+    total_entries = sum(len(v) for v in result.values())
+    assert total_entries >= 1
+    for entries in result.values():
+        for entry in entries:
+            assert "label" in entry
+            assert "content" in entry
+            assert "matched_terms" in entry
+            assert entry["matched_terms"] == ["python"]
 
 
 def test_score_memory_relevance():
