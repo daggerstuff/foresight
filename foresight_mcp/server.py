@@ -48,6 +48,7 @@ from .context_blocks import (
     get_context_block_agent,
 )
 from .crisis_detection import get_crisis_service
+from .decay_model import get_decay_model
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .entity_extractor import get_entity_extractor
 from .event_bus import (
@@ -271,7 +272,7 @@ def get_db_connection():
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 9
 
 
 def _seed_default_tenant(conn) -> None:
@@ -403,6 +404,25 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE curation_runs ADD COLUMN transcript_bundle_json TEXT",
         "ALTER TABLE curation_runs ADD COLUMN session_id TEXT",
         "ALTER TABLE curation_runs ADD COLUMN project_path TEXT",
+    ],
+    9: [
+        "ALTER TABLE memories ADD COLUMN current_strength REAL",
+        "ALTER TABLE memories ADD COLUMN last_decay_at TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_memories_strength ON memories(tenant_id, user_id, current_strength)",
+        """CREATE TABLE IF NOT EXISTS memory_decay_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            memory_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            old_strength REAL,
+            new_strength REAL,
+            decay_factor REAL,
+            reason TEXT,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_lookup ON memory_decay_events (tenant_id, user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_memory ON memory_decay_events (memory_id, created_at DESC)",
     ],
 }
 
@@ -3088,3 +3108,208 @@ def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str
 # =============================================================================
 # Reflection Engine Tools
 # =============================================================================
+
+
+# =============================================================================
+# Decay Model Tools (MEM-8: Memory Strength Decay Model)
+# =============================================================================
+
+
+@mcp.tool(output_schema=None)
+def get_memory_strength(
+    memory_id: str,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+) -> str:
+    """Read the dynamic strength and trend for a memory.
+
+    Returns the importance (creator-set), the current_strength (decayed),
+    the strength_trend, activation_count, last_decay_at, and timestamps.
+    The dynamic strength decays over time per the user's
+    decay_config; the static importance is preserved.
+
+    Args:
+        memory_id: Memory ID to look up.
+        user_id: Optional user ID override; defaults to the active user.
+        tenant_id: Optional tenant ID override; defaults to the active tenant.
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+    result = get_decay_model().get_memory_strength(
+        memory_id=memory_id, user_id=uid, tenant_id=tid
+    )
+    if result is None:
+        return f"Memory {memory_id} not found for user {uid} in tenant {tid}."
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool(output_schema=None)
+def apply_memory_decay(
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    batch_size: int = 500,
+) -> str:
+    """Run a decay batch for a user's memories.
+
+    Applies the Ebbinghaus-based decay to current_strength for every
+    memory in (tenant, user), updates the trend, and records a
+    memory_decay_events audit-log row per affected memory.
+
+    Args:
+        user_id: Optional user ID override; defaults to the active user.
+        tenant_id: Optional tenant ID override; defaults to the active tenant.
+        batch_size: Pagination size for the underlying query (default 500).
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+    stats = get_decay_model().apply_decay_batch(
+        user_id=uid, tenant_id=tid, batch_size=batch_size
+    )
+    return json.dumps(
+        {
+            "ok": True,
+            "action": "apply_memory_decay",
+            "user_id": uid,
+            "tenant_id": tid,
+            **stats.to_dict(),
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def reinforce_memory(
+    memory_id: str,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    activation_boost: float | None = None,
+) -> str:
+    """Boost a memory's strength on access.
+
+    Increments activation_count, multiplies current_strength by
+    activation_boost (capped at 1.0), updates accessed_at /
+    last_retrieved_at / last_decay_at, sets strength_trend, and writes
+    a 'reinforce' event to memory_decay_events.
+
+    Args:
+        memory_id: Memory ID to reinforce.
+        user_id: Optional user ID override.
+        tenant_id: Optional tenant ID override.
+        activation_boost: Optional override; defaults to the user's
+            decay_config.activation_boost.
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+    result = get_decay_model().reinforce_memory(
+        memory_id=memory_id,
+        user_id=uid,
+        tenant_id=tid,
+        activation_boost=activation_boost,
+    )
+    if result is None:
+        return f"Memory {memory_id} not found for user {uid} in tenant {tid}."
+    return json.dumps({"ok": True, "action": "reinforce_memory", **result}, indent=2)
+
+
+@mcp.tool(output_schema=None)
+def get_decay_config(
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    category: str = "general",
+) -> str:
+    """Return the decay config for a (tenant, user, category) triple.
+
+    Falls back to system defaults when no row exists in decay_config:
+    half_life_hours=168, min_importance=0.1, activation_boost=1.2,
+    strengthening_threshold=5, stale_threshold=0.2.
+
+    Args:
+        user_id: Optional user ID override.
+        tenant_id: Optional tenant ID override.
+        category: Memory category (default 'general').
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+    cfg = get_decay_model().get_decay_config(
+        user_id=uid, tenant_id=tid, category=category
+    )
+    return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
+
+
+@mcp.tool(output_schema=None)
+def set_decay_config(
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    category: str = "general",
+    half_life_hours: float | None = None,
+    min_importance: float | None = None,
+    activation_boost: float | None = None,
+    strengthening_threshold: int | None = None,
+    stale_threshold: float | None = None,
+) -> str:
+    """Upsert a decay config row for (tenant, user, category).
+
+    None values for individual fields keep whatever the existing row
+    holds (or the system default if no row exists). Validation:
+    half_life_hours > 0, all thresholds and importance bounds in [0, 1],
+    activation_boost in [0, 10].
+
+    Args:
+        user_id: Optional user ID override.
+        tenant_id: Optional tenant ID override.
+        category: Memory category (default 'general').
+        half_life_hours: New Ebbinghaus half-life in hours.
+        min_importance: Floor for current_strength.
+        activation_boost: Multiplier applied on each access.
+        strengthening_threshold: Activation count to mark 'strengthening'.
+        stale_threshold: Below this strength, trend becomes 'stale'.
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+    cfg = get_decay_model().set_decay_config(
+        user_id=uid,
+        tenant_id=tid,
+        category=category,
+        half_life_hours=half_life_hours,
+        min_importance=min_importance,
+        activation_boost=activation_boost,
+        strengthening_threshold=strengthening_threshold,
+        stale_threshold=stale_threshold,
+    )
+    return json.dumps({"ok": True, "action": "set_decay_config", **cfg.to_dict()}, indent=2)
+
+
+@mcp.tool(output_schema=None)
+def get_decay_events(
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    memory_id: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Read recent memory_decay_events audit-log rows for a user.
+
+    Each row records a single 'decay' or 'reinforce' event with the
+    old/new strength, the decay_factor or boost, a human-readable
+    reason, and an ISO timestamp. Useful for compliance review and
+    debugging unexpected strength changes.
+
+    Args:
+        user_id: Optional user ID override.
+        tenant_id: Optional tenant ID override.
+        memory_id: Optional filter to a single memory.
+        limit: Maximum number of events to return (default 50).
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+    events = get_decay_model().get_decay_events(
+        user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit
+    )
+    return json.dumps(
+        {
+            "ok": True,
+            "action": "get_decay_events",
+            "count": len(events),
+            "events": [e.to_dict() for e in events],
+        },
+        indent=2,
+    )

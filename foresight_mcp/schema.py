@@ -197,6 +197,8 @@ class UnifiedMemory(BaseModel):
     strength_trend: StrengthTrend = Field(StrengthTrend.STABLE)
     activation_count: int = Field(0, ge=0)
     retrieval_count: int = Field(0, ge=0)
+    current_strength: float | None = Field(None, ge=0.0, le=1.0)
+    last_decay_at: str | None = Field(None)
 
     # ── Ghost / Synthesis ─────────────────────────────────────────────────
     is_ghost: bool = Field(False)
@@ -285,6 +287,8 @@ class UnifiedMemory(BaseModel):
             "strength_trend": self.strength_trend.value,
             "activation_count": self.activation_count,
             "retrieval_count": self.retrieval_count,
+            "current_strength": self.current_strength,
+            "last_decay_at": self.last_decay_at,
             "accessed_at": self.accessed_at,
             "last_retrieved_at": self.last_retrieved_at,
         }
@@ -324,6 +328,8 @@ class UnifiedMemory(BaseModel):
             strength_trend=StrengthTrend(row.get("strength_trend", "stable")),
             activation_count=row.get("activation_count", 0),
             retrieval_count=row.get("retrieval_count", 0),
+            current_strength=row.get("current_strength"),
+            last_decay_at=row.get("last_decay_at"),
             is_ghost=bool(row.get("is_ghost", False)),
             gist=row.get("gist"),
             synthesized_from=synth,
