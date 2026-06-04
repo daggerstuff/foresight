@@ -45,6 +45,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'examples/basic-usage',
         'examples/event-hooks',
+        'examples/sdk-projects',
         'examples/websocket-client',
       ],
     },

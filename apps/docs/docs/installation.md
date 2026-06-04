@@ -1,6 +1,7 @@
 ---
 
-sidebar_label: Installation title: Installation Guide
+sidebar_label: Installation
+title: Installation Guide
 
 ---
 
@@ -34,11 +35,21 @@ pip install foresight-mcp
 
 ```bash
 # Install the SDK
-npm install @foresight/core
-# or
 pnpm add @foresight/core
 # or
+npm install @foresight/core
+# or
 yarn add @foresight/core
+```
+
+### Package readiness check
+
+The SDK package is verified locally with pnpm before release preparation:
+
+```bash
+cd packages/foresight-core
+pnpm build
+pnpm pack --pack-destination /tmp/foresight-core-pack
 ```
 
 ### TypeScript Configuration
