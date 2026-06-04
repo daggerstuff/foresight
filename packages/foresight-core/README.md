@@ -6,9 +6,9 @@ memory system for AI agents.
 ## Installation
 
 ```bash
-npm install @foresight/core
-# or
 pnpm add @foresight/core
+# or
+npm install @foresight/core
 # or
 yarn add @foresight/core
 ```
@@ -67,6 +67,8 @@ Main client for memory operations.
 - `userId` - User identifier
 - `bankId` - Memory bank identifier
 - `timeout` - Request timeout in ms
+- `fetch` - Optional fetch implementation for tests and Node runtimes
+- `retry` - Retry/backoff configuration for transient request failures
 
 #### Methods
 
