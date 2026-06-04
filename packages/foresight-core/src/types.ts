@@ -115,7 +115,7 @@ export const MemoryBlockSchemaSchema = z.object({
   injectionPoint: z.nativeEnum(InjectionPoint),
   scope: z.nativeEnum(BlockScope),
   charLimit: z.number(),
-  metadata: z.record(z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
 })
 
 export const MemoryBlockSchema = z.object({
@@ -135,7 +135,7 @@ export const HookRegistrationSchema = z.object({
   condition: z.string().optional(),
   retryCount: z.number(),
   timeout: z.number(),
-  metadata: z.record(z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
   enabled: z.boolean(),
   createdAt: z.string(),
 })
@@ -146,18 +146,18 @@ export const EventSchema = z.object({
   timestamp: z.string(),
   actor: z.string(),
   entityId: z.string(),
-  payload: z.record(z.unknown()),
-  metadata: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
 })
 
-export const VectorClockSchema = z.record(z.number())
+export const VectorClockSchema = z.record(z.string(), z.number())
 
 export const OperationSchema = z.object({
   id: z.string(),
   type: z.nativeEnum(OperationType),
   entityType: z.string(),
   entityId: z.string(),
-  payload: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
   createdAt: z.string(),
   retryCount: z.number(),
   lastAttempt: z.string().optional(),

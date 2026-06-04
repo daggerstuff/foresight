@@ -163,13 +163,12 @@ export class SyncManager {
     type: OperationType
     entityType: string
     entityId: string
-    payload: Record<string, any>
+    payload: Record<string, unknown>
   }): Promise<string> {
-    const id =
-      crypto?.randomUUID
-        ? crypto.randomUUID()
-        : Math.random().toString(36).substring(2, 15) +
-          Math.random().toString(36).substring(2, 15)
+    const id = crypto?.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).substring(2, 15) +
+        Math.random().toString(36).substring(2, 15)
     const vc = new VectorClock()
     vc.increment(this.nodeId)
 
@@ -224,11 +223,12 @@ export class SyncManager {
           await this.storage.remove(operation.id)
         }
         this.lastSync = new Date().toISOString()
-      } catch (e: any) {
+      } catch (error) {
         operation.retryCount += 1
         operation.lastAttempt = new Date().toISOString()
         await this.storage.enqueue(operation)
-        errors.push(`Operation ${operation.id} failed: ${e.message}`)
+        const message = error instanceof Error ? error.message : String(error)
+        errors.push(`Operation ${operation.id} failed: ${message}`)
       }
     }
 
@@ -266,7 +266,7 @@ export class SyncManager {
     }
   }
 
-  async getStatus(): Promise<any> {
+  async getStatus(): Promise<SyncProgress> {
     return this.getProgress()
   }
 }
@@ -278,7 +278,7 @@ export class SyncManager {
 let globalSyncManager: SyncManager | null = null
 
 export function getSyncManager(nodeId: string = 'default'): SyncManager {
-  globalSyncManager ??= new SyncManager({ nodeId });
+  globalSyncManager ??= new SyncManager({ nodeId })
   return globalSyncManager
 }
 
