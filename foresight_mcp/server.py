@@ -66,6 +66,14 @@ from .memory_components import (
     MemorySynthesizer,
     SocraticGate,
 )
+from .memory_relationships import (
+    VALID_RELATIONSHIP_TYPES,
+    MemoryRelationship,
+    MemoryRelationshipError,
+    MemoryRelationshipStore,
+    get_memory_relationship_store,
+    reset_memory_relationship_store,
+)
 from .memory_types import (
     EmotionalMetadata,
     EmpathyMetrics,
@@ -271,7 +279,7 @@ def get_db_connection():
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _seed_default_tenant(conn) -> None:
@@ -403,6 +411,32 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE curation_runs ADD COLUMN transcript_bundle_json TEXT",
         "ALTER TABLE curation_runs ADD COLUMN session_id TEXT",
         "ALTER TABLE curation_runs ADD COLUMN project_path TEXT",
+    ],
+    6: [
+        """CREATE TABLE IF NOT EXISTS memory_relationships (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            source_memory_id TEXT NOT NULL,
+            target_memory_id TEXT NOT NULL,
+            relationship_type TEXT NOT NULL
+                CHECK(relationship_type IN (
+                    'updates', 'extends', 'derives',
+                    'contradicts', 'supports', 'related'
+                )),
+            confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE(tenant_id, user_id, source_memory_id, target_memory_id, relationship_type),
+            FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_source ON memory_relationships(tenant_id, user_id, source_memory_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_target ON memory_relationships(tenant_id, user_id, target_memory_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_type ON memory_relationships(tenant_id, user_id, relationship_type)",
+        "ALTER TABLE memories ADD COLUMN relation_type TEXT",
+        "ALTER TABLE memories ADD COLUMN related_memory_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_memories_relation ON memories(tenant_id, user_id, relation_type)",
     ],
 }
 
@@ -3006,9 +3040,123 @@ def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
 
 
 # =============================================================================
-# Enhanced Synthesis Tools
+# Memory Relationship Tools (MEM-4)
 # =============================================================================
 
+
+@mcp.tool(output_schema=None)
+def link_memories(
+    source_memory_id: str,
+    target_memory_id: str,
+    relationship_type: str,
+    user_id: str | None = None,
+    confidence: float = 1.0,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """
+    Create or update a typed relationship between two memories.
+
+    Relationship types: 'updates', 'extends', 'derives', 'contradicts',
+    'supports', 'related'.
+
+    Args:
+        source_memory_id: ID of the source memory (the "from" side).
+        target_memory_id: ID of the target memory (the "to" side).
+        relationship_type: One of the supported relationship types.
+        user_id: Optional user ID override.
+        confidence: Confidence score in [0.0, 1.0].
+        metadata: Optional JSON-serializable metadata.
+    """
+    uid = user_id or USER_ID
+    store = get_memory_relationship_store()
+    try:
+        rel = store.link_memories(
+            source_memory_id=source_memory_id,
+            target_memory_id=target_memory_id,
+            relationship_type=relationship_type,
+            user_id=uid,
+            confidence=confidence,
+            metadata=metadata,
+        )
+    except MemoryRelationshipError as exc:
+        return f"Error: {exc}"
+    return json.dumps(rel.to_dict(), indent=2)
+
+
+@mcp.tool(output_schema=None)
+def get_memory_relationships(
+    memory_id: str,
+    user_id: str | None = None,
+    direction: str = "both",
+    relationship_type: str | None = None,
+) -> str:
+    """
+    Return relationships touching a memory.
+
+    Args:
+        memory_id: The memory to query.
+        user_id: Optional user ID override.
+        direction: 'out' (source=memory), 'in' (target=memory), or 'both'.
+        relationship_type: Optional filter, e.g. 'updates' or 'extends'.
+    """
+    uid = user_id or USER_ID
+    store = get_memory_relationship_store()
+    try:
+        rels = store.get_relationships_for_memory(
+            memory_id=memory_id,
+            user_id=uid,
+            direction=direction,
+            relationship_type=relationship_type,
+        )
+    except MemoryRelationshipError as exc:
+        return f"Error: {exc}"
+    return json.dumps([r.to_dict() for r in rels], indent=2)
+
+
+@mcp.tool(output_schema=None)
+def traverse_memory_graph(
+    root_memory_id: str,
+    user_id: str | None = None,
+    max_depth: int = 2,
+    limit: int = 100,
+) -> str:
+    """
+    BFS-traverse the memory relationship graph from a root memory.
+
+    Walks edges in both directions up to max_depth and returns the set of
+    reachable memory IDs plus the edges traversed.
+
+    Args:
+        root_memory_id: Starting memory ID.
+        user_id: Optional user ID override.
+        max_depth: Maximum traversal depth (0-5).
+        limit: Maximum number of nodes to return (1-1000).
+    """
+    uid = user_id or USER_ID
+    store = get_memory_relationship_store()
+    try:
+        result = store.traverse_memory_graph(
+            root_memory_id=root_memory_id,
+            user_id=uid,
+            max_depth=max_depth,
+            limit=limit,
+        )
+    except MemoryRelationshipError as exc:
+        return f"Error: {exc}"
+    return json.dumps(
+        {
+            "root_memory_id": result.root_memory_id,
+            "depth": result.depth,
+            "nodes": result.nodes,
+            "edges": result.edges,
+        },
+        indent=2,
+    )
+
+
+# =============================================================================
+# Enhanced Synthesis Tools
+# =============================================================================
 
 def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction) -> str:
     """Helper for analyze synthesize action."""
