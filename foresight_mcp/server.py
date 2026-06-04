@@ -84,6 +84,16 @@ from .memory_types import (
 from .profile_synthesizer import ProfileConfig, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .reflection_engine import get_reflection_engine
+from .semantic_search import (
+    DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
+    LocalHashEmbedder as _LocalHashEmbedder,
+    SemanticSearch as _SemanticSearch,
+    SemanticSearchError as _SemanticSearchError,
+    cosine_similarity as _cosine_similarity,
+    get_embedder as _get_embedder,
+    get_semantic_search as get_semantic_search,
+    reset_semantic_search as reset_semantic_search,
+)
 from .stream_producer import (
     KafkaProducer,
     KinesisProducer,
@@ -279,7 +289,7 @@ def get_db_connection():
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _seed_default_tenant(conn) -> None:
@@ -437,6 +447,21 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE memories ADD COLUMN relation_type TEXT",
         "ALTER TABLE memories ADD COLUMN related_memory_id TEXT",
         "CREATE INDEX IF NOT EXISTS idx_memories_relation ON memories(tenant_id, user_id, relation_type)",
+    ],
+    7: [
+        """CREATE TABLE IF NOT EXISTS memory_embeddings (
+            memory_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            dimension INTEGER NOT NULL,
+            vector BLOB NOT NULL,
+            model_version TEXT DEFAULT '1',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, user_id, memory_id, provider)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_user ON memory_embeddings(tenant_id, user_id, provider)",
     ],
 }
 
@@ -3152,6 +3177,101 @@ def traverse_memory_graph(
         },
         indent=2,
     )
+
+
+# =============================================================================
+# Semantic Vector Search Tools (MEM-5)
+# =============================================================================
+
+
+@mcp.tool(output_schema=None)
+def index_memory_embedding(
+    memory_id: str,
+    text: str,
+    user_id: str | None = None,
+    provider: str | None = None,
+) -> str:
+    """
+    Compute and store an embedding vector for a memory's text.
+
+    Args:
+        memory_id: The memory ID to index.
+        text: The text content to embed.
+        user_id: Optional user ID override.
+        provider: Embedder provider name (default 'local-hash').
+    """
+    uid = user_id or USER_ID
+    prov = provider or _SEMANTIC_DEFAULT_PROVIDER
+    try:
+        store = get_semantic_search(provider=prov)
+        dim = store.index_memory(memory_id=memory_id, text=text, user_id=uid)
+    except _SemanticSearchError as exc:
+        return f"Error: {exc}"
+    return json.dumps(
+        {
+            "memory_id": memory_id,
+            "user_id": uid,
+            "provider": prov,
+            "dimension": dim,
+            "indexed": True,
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def delete_memory_embedding(
+    memory_id: str,
+    user_id: str | None = None,
+    provider: str | None = None,
+) -> str:
+    """Remove a memory's stored embedding vector."""
+    uid = user_id or USER_ID
+    prov = provider or _SEMANTIC_DEFAULT_PROVIDER
+    try:
+        store = get_semantic_search(provider=prov)
+        deleted = store.delete_memory_embedding(memory_id=memory_id, user_id=uid)
+    except _SemanticSearchError as exc:
+        return f"Error: {exc}"
+    return json.dumps(
+        {
+            "memory_id": memory_id,
+            "user_id": uid,
+            "provider": prov,
+            "deleted": deleted,
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def semantic_search_memories(
+    query: str,
+    user_id: str | None = None,
+    limit: int = 10,
+    min_score: float = 0.0,
+    provider: str | None = None,
+) -> str:
+    """
+    Semantic vector search over stored memory embeddings.
+
+    Args:
+        query: Free-text query to embed and match against stored vectors.
+        user_id: Optional user ID override.
+        limit: Maximum matches to return (1-1000).
+        min_score: Minimum cosine similarity threshold in [-1.0, 1.0].
+        provider: Embedder provider name (default 'local-hash').
+    """
+    uid = user_id or USER_ID
+    prov = provider or _SEMANTIC_DEFAULT_PROVIDER
+    try:
+        store = get_semantic_search(provider=prov)
+        result = store.search(
+            query=query, user_id=uid, limit=limit, min_score=min_score
+        )
+    except _SemanticSearchError as exc:
+        return f"Error: {exc}"
+    return json.dumps(result.to_dict(), indent=2)
 
 
 # =============================================================================
