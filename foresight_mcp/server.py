@@ -530,6 +530,10 @@ _SCHEMA_MIGRATIONS = {
         "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_lookup ON memory_decay_events (tenant_id, user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_memory ON memory_decay_events (memory_id, created_at DESC)",
     ],
+    10: [
+        "ALTER TABLE memories ADD COLUMN content_hash TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(tenant_id, user_id, content_hash)",
+    ],
 }
 
 
@@ -575,6 +579,17 @@ def init_db():
         if cols and "tenant_id" not in cols:
             conn.execute("ALTER TABLE decay_config ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)")
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Table doesn't exist yet; will be created by migrations
+
+    # Backfill content_hash for existing memories (v10 migration)
+    try:
+        rows = conn.execute("SELECT id, content FROM memories WHERE content_hash IS NULL").fetchall()
+        if rows:
+            for row in rows:
+                h = _content_hash(row["content"])
+                conn.execute("UPDATE memories SET content_hash = ? WHERE id = ?", (h, row["id"]))
             conn.commit()
     except sqlite3.OperationalError:
         pass  # Table doesn't exist yet; will be created by migrations
@@ -978,20 +993,21 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
 
     opts = options.options or MemoryOptions()
     memory_id = hashlib.sha256(f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+    content_h = _content_hash(options.content.strip())
 
-    # Deduplication
     conn = get_db_connection()
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
-        "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
+        "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
         "ORDER BY created_at DESC LIMIT 1",
-        (uid, tenant_id, options.content.strip()),
+        (uid, tenant_id, content_h),
     ).fetchone()
 
     if existing:
         conn.execute(
-            "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), existing["id"]),
+            "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (datetime.now(timezone.utc).isoformat(), existing["id"], uid, tenant_id),
         )
         conn.commit()
         conn.close()
@@ -1020,8 +1036,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     # Store
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
-        "content, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "content, content_hash, emotional_context, metrics, importance, activation_count, "
+        "created_at, updated_at, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             memory_id,
             uid,
@@ -1030,6 +1046,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             memory.scope,
             memory.retention,
             options.content.strip(),
+            content_h,
             json.dumps(opts.emotional_context) if opts.emotional_context else None,
             json.dumps(opts.metrics) if opts.metrics else None,
             opts.importance,
@@ -1544,17 +1561,19 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
         for line in recent:
             content = f"[{block_name}] {line}"
             tenant_id = get_current_tenant_id()
+            content_h = _content_hash(content)
             conn = get_db_connection()
             existing = conn.execute(
                 "SELECT id, activation_count FROM memories "
-                "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
+                "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
                 "ORDER BY created_at DESC LIMIT 1",
-                (uid, tenant_id, content),
+                (uid, tenant_id, content_h),
             ).fetchone()
             if existing:
                 conn.execute(
-                    "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? WHERE id = ?",
-                    (now, existing["id"]),
+                    "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
+                    "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                    (now, existing["id"], uid, tenant_id),
                 )
                 conn.commit()
                 conn.close()
@@ -1563,11 +1582,11 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
             mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
             conn.execute(
                 "INSERT OR IGNORE INTO memories "
-                "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
+                "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
                 "created_at, updated_at, tags, emotional_context, metrics, "
                 "is_ghost, synthesized_from) "
-                "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
-                (mid, content, category, uid, BANK_ID, tenant_id, now, now),
+                "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
+                (mid, content, content_h, category, uid, BANK_ID, tenant_id, now, now),
             )
             conn.commit()
             conn.close()
