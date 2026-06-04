@@ -44,6 +44,151 @@ def test_store_memory_dedup():
     assert "Duplicate detected" in result2
 
 
+# ====== PIX-2083 content_hash dedup tests ======
+
+def test_memories_content_hash_backfill_computes_correct_hash():
+    """v10 backfill: existing rows get content_hash = sha256(content)."""
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """CREATE TABLE memories (
+                id TEXT PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                user_id TEXT DEFAULT 'default', is_ghost INTEGER DEFAULT 0
+            )"""
+        )
+        from foresight_mcp.document_layer import content_hash
+        test_content = "backfill test content 123"
+        expected_hash = content_hash(test_content)
+        conn.execute(
+            "INSERT INTO memories (id, content, content_hash) VALUES (?, ?, NULL)",
+            ("mem-backfill-1", test_content),
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'"
+        ).fetchone()
+        assert row[0] is None, "precondition: content_hash starts NULL"
+
+        rows = conn.execute(
+            "SELECT id, content FROM memories WHERE content_hash IS NULL"
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                "UPDATE memories SET content_hash = ? WHERE id = ?",
+                (content_hash(r[1]), r[0]),
+            )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'"
+        ).fetchone()
+        assert row[0] == expected_hash, f"expected {expected_hash}, got {row[0]}"
+
+        conn.close()
+    finally:
+        os.unlink(db_path)
+
+
+def test_store_memory_uses_content_hash_for_dedup():
+    """Storing same content twice with different timestamps must still dedup.
+
+    Regression: old code used 'content = ?' exact match. New code uses
+    content_hash index for deterministic, index-based dedup.
+    """
+    from foresight_mcp import store_memory
+    from foresight_mcp.document_layer import content_hash
+
+    unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:8]
+    content = f"hash_dedup_test_{unique_marker}"
+
+    result1 = store_memory(content)
+    assert "Stored" in result1, f"first store should succeed: {result1}"
+
+    result2 = store_memory(content)
+    assert "Duplicate detected" in result2, f"second store should dedup: {result2}"
+
+
+def test_store_memory_dedup_increments_activation_count():
+    """Duplicate store must bump activation_count, not create a new row."""
+    from foresight_mcp import store_memory
+
+    unique = f"activation_bump_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
+    r1 = store_memory(unique)
+    assert "Stored" in r1
+    r2 = store_memory(unique)
+    assert "Duplicate detected" in r2
+
+    import sqlite3 as _sql
+    from foresight_mcp.config import DB_PATH
+    conn = _sql.connect(str(DB_PATH))
+    conn.row_factory = _sql.Row
+    row = conn.execute(
+        "SELECT activation_count FROM memories WHERE content = ?",
+        (unique,),
+    ).fetchone()
+    assert row is not None
+    assert row["activation_count"] >= 2, f"expected >=2, got {row['activation_count']}"
+    conn.close()
+
+
+def test_store_memory_tenant_isolation_on_dedup():
+    """Same content in two tenants produces two separate rows.
+
+    Regression: content_hash is scoped by (tenant_id, user_id). If the
+    dedup query omitted tenant_id, identical content across tenants
+    would incorrectly collide.
+    """
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """CREATE TABLE memories (
+                id TEXT PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                user_id TEXT DEFAULT 'default',
+                activation_count INTEGER DEFAULT 0, is_ghost INTEGER DEFAULT 0,
+                created_at TEXT, updated_at TEXT, scope TEXT, retention TEXT,
+                category TEXT, bank_id TEXT, tags TEXT, emotional_context TEXT,
+                metrics TEXT, vector_id TEXT, gist TEXT, synthesized_from TEXT,
+                version INTEGER, importance REAL
+            )"""
+        )
+        from foresight_mcp.document_layer import content_hash
+        shared_content = "cross-tenant dedup test"
+        h = content_hash(shared_content)
+        now = datetime.now(timezone.utc).isoformat()
+
+        for tenant, mid in [("tenant-a", "mem-a-1"), ("tenant-b", "mem-b-1")]:
+            conn.execute(
+                """INSERT INTO memories
+                   (id, content, content_hash, tenant_id, user_id, activation_count,
+                    is_ghost, created_at, updated_at, scope, retention, category,
+                    bank_id, tags, emotional_context, metrics, vector_id, gist,
+                    synthesized_from, version, importance)
+                   VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, 'session', 'short_term', 'fact',
+                           'default', '[]', '{}', '{}', NULL, NULL, '[]', 1, 0.5)""",
+                (mid, shared_content, h, tenant, "user-1", now, now),
+            )
+        conn.commit()
+
+        rows = conn.execute(
+            "SELECT tenant_id FROM memories WHERE content_hash = ? AND user_id = ?",
+            (h, "user-1"),
+        ).fetchall()
+        assert len(rows) == 2, f"expected 2 rows across tenants, got {len(rows)}"
+        tenants = {r[0] for r in rows}
+        assert tenants == {"tenant-a", "tenant-b"}
+
+        conn.close()
+    finally:
+        os.unlink(db_path)
+
+
 def test_status():
     result = memory_status()
     assert "healthy" in result.lower()
@@ -56,7 +201,7 @@ def _make_test_db():
     conn = sqlite3.connect(tmp.name)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY, content TEXT NOT NULL,
+        id TEXT PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT,
         tenant_id TEXT NOT NULL DEFAULT 'default',
         scope TEXT DEFAULT 'session', retention TEXT DEFAULT 'short_term',
         category TEXT DEFAULT 'fact', user_id TEXT DEFAULT 'default',
@@ -258,7 +403,7 @@ def _make_inject_test_db(memories=None):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY, content TEXT NOT NULL,
+        id TEXT PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT,
         tenant_id TEXT NOT NULL DEFAULT 'default',
         scope TEXT DEFAULT 'session', retention TEXT DEFAULT 'short_term',
         category TEXT DEFAULT 'fact', user_id TEXT DEFAULT 'default',
