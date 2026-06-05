@@ -50,6 +50,7 @@ import logging
 import time
 from typing import Any, Callable
 
+from .narrative_cache import NarrativeCache
 from .reflection_engine import ReflectionReport
 
 logger = logging.getLogger("foresight_reflection_narrative")
@@ -99,6 +100,15 @@ Write a 2-4 paragraph narrative summary suitable for surfacing in a clinical coa
 # ============================================================
 
 
+def _compute_insights_hash(report: ReflectionReport) -> str:
+    return hashlib.sha256(
+        "|".join(
+            f"{i.insight_type}:{i.summary}:{i.confidence:.3f}:{i.recommended_action}"
+            for i in report.insights
+        ).encode("utf-8"),
+    ).hexdigest()[:16]
+
+
 def _compute_cache_key(
     report: ReflectionReport,
     model_version: str,
@@ -112,12 +122,7 @@ def _compute_cache_key(
 
         tenant_id:user_id:report_id:model_version:insights_hash
     """
-    insights_hash = hashlib.sha256(
-        "|".join(
-            f"{i.insight_type}:{i.summary}:{i.confidence:.3f}:{i.recommended_action}"
-            for i in report.insights
-        ).encode("utf-8"),
-    ).hexdigest()[:16]
+    insights_hash = _compute_insights_hash(report)
     return f"{tenant_id}:{user_id}:{report.report_id}:{model_version}:{insights_hash}"
 
 
@@ -220,7 +225,7 @@ def generate_insight_narrative(
     user_id: str,
     llm_call: LLMCallable,
     model_version: str = "caller-default",
-    cache: dict[str, str] | None = None,
+    cache: dict[str, str] | NarrativeCache | None = None,
 ) -> str:
     """Generate a natural-language narrative summary of a reflection report.
 
@@ -265,14 +270,33 @@ def generate_insight_narrative(
         raise ValueError("user_id is required and must be a non-empty string")
     if not callable(llm_call):
         raise TypeError("llm_call must be callable")
+    if cache is not None and not isinstance(cache, (dict, NarrativeCache)):
+        raise TypeError(
+            f"cache must be a dict or NarrativeCache, "
+            f"got {type(cache).__name__}"
+        )
 
     if cache is None:
         cache = _default_cache
 
-    cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
-    if cache_key in cache:
-        logger.debug("reflection_narrative_cache_hit", extra={"cache_key": cache_key})
-        return cache[cache_key]
+    insights_hash = _compute_insights_hash(reflection_report)
+    if isinstance(cache, NarrativeCache):
+        cached = cache.get(
+            reflection_report.report_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            model_version=model_version,
+            insights_hash=insights_hash,
+        )
+    else:
+        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
+        cached = cache.get(cache_key)
+
+    if cached is not None:
+        logger.debug(
+            "reflection_narrative_cache_hit", extra={"cache_key": insights_hash}
+        )
+        return cached
 
     prompt = _build_phi_safe_prompt(reflection_report)
     prompt_hash = _hash_payload(prompt)
@@ -312,7 +336,18 @@ def generate_insight_narrative(
         outcome="success",
     )
 
-    cache[cache_key] = response
+    if isinstance(cache, NarrativeCache):
+        cache.put(
+            reflection_report.report_id,
+            response,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            model_version=model_version,
+            insights_hash=insights_hash,
+        )
+    else:
+        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
+        cache[cache_key] = response
     return response
 
 
