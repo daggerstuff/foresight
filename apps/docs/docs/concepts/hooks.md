@@ -1,8 +1,6 @@
 ---
-
 sidebar_label: Hooks
 title: Event Hooks
-
 ---
 
 # Event Hooks

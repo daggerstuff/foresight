@@ -1,8 +1,6 @@
 ---
-
 sidebar_label: Introduction
 title: Foresight Memory Architecture
-
 ---
 
 # Welcome to Foresight

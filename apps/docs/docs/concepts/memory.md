@@ -1,8 +1,6 @@
 ---
-
 sidebar_label: Memory
 title: Memory Architecture
-
 ---
 
 # Memory Architecture

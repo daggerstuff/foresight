@@ -1,8 +1,6 @@
 ---
-
 sidebar_label: WebSocket
 title: WebSocket Subscriptions
-
 ---
 
 # WebSocket Subscriptions
