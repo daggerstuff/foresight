@@ -1,8 +1,6 @@
 ---
-
 sidebar_label: Basic Usage
 title: Basic Usage Examples
-
 ---
 
 # Basic Usage Examples

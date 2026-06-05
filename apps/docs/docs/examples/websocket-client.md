@@ -1,8 +1,6 @@
 ---
-
 sidebar_label: WebSocket Client
 title: WebSocket Client Example
-
 ---
 
 # WebSocket Client Example
