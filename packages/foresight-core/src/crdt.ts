@@ -140,7 +140,7 @@ export class LWWRegister<T> {
     }
   }
 
-  static fromDict<T>(data: any): LWWRegister<T> {
+  static fromDict<T>(data: { value: T | null; timestamp?: number; nodeId?: string; vectorClock?: Record<string, number> }): LWWRegister<T> {
     return new LWWRegister<T>(
       data.value,
       data.timestamp ?? 0,
@@ -321,7 +321,7 @@ export class ORSet<T> {
     }
   }
 
-  static fromDict<T>(data: any): ORSet<T> {
+  static fromDict<T>(data: { nodeId?: string; vectorClock?: Record<string, number>; adds?: Record<string, string[]>; removes?: Record<string, string[]> }): ORSet<T> {
     const orset = new ORSet<T>()
     orset.nodeId = data.nodeId ?? 'default'
     if (data.vectorClock) {
@@ -432,7 +432,7 @@ export class LWWMap<T> {
     }
   }
 
-  static fromDict<T>(data: any): LWWMap<T> {
+  static fromDict<T>(data: { nodeId?: string; vectorClock?: Record<string, number>; entries?: Record<string, { value: T | null; timestamp?: number; nodeId?: string; vectorClock?: Record<string, number> }> }): LWWMap<T> {
     const lwwMap = new LWWMap<T>()
     lwwMap.nodeId = data.nodeId ?? 'default'
     if (data.vectorClock) {
