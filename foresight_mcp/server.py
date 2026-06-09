@@ -88,11 +88,13 @@ from .memory_types import (
 from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .reflection_engine import get_reflection_engine
+from .reflection_narrative import _default_cache as _reflection_narrative_cache
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
     SemanticSearchError as _SemanticSearchError,
     get_semantic_search,
 )
+from .narrative_cache import NarrativeCache, DEFAULT_MAX_ENTRIES as NARRATIVE_MAX_ENTRIES
 from .stream_producer import (
     KafkaProducer,
     KinesisProducer,
@@ -105,8 +107,19 @@ from .temporal_service import get_temporal_service
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
 from .websocket.subscriptions import SubscriptionManager
-
-
+DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
+DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
+DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
+# Global narrative cache instance for metrics (lazy initialization)
+_narrative_cache: NarrativeCache | None = None
+def get_narrative_cache() -> NarrativeCache:
+    """Get or create global narrative cache instance."""
+    global _narrative_cache
+    if _narrative_cache is None:
+        from .config import DB_PATH
+        cache_path = Path(DB_PATH).parent / "narrative_cache.sqlite"
+        _narrative_cache = NarrativeCache(cache_path)
+    return _narrative_cache
 # Tool argument grouping models
 class MemoryOptions(BaseModel):
     category: str = Field(default="fact", description="Category label")
@@ -123,12 +136,13 @@ class MemoryOptions(BaseModel):
     )
     relation_type: str | None = Field(
         default=None,
-        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related"
+        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
     )
     related_memory_id: str | None = Field(
-        default=None,
-        description="ID of the memory this one relates to (paired with relation_type)"
+        default=None, description="ID of the memory this one relates to (paired with relation_type)"
     )
+
+
 class MemoryUpdateOptions(BaseModel):
     content: str | None = Field(default=None, description="New memory content")
     category: str | None = Field(default=None, description="New category label")
@@ -137,12 +151,12 @@ class MemoryUpdateOptions(BaseModel):
     tags: list[str] | None = Field(default=None, description="New list of tags")
     relation_type: str | None = Field(
         default=None,
-        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related"
+        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
     )
     related_memory_id: str | None = Field(
-        default=None,
-        description="ID of the memory this one relates to (paired with relation_type)"
+        default=None, description="ID of the memory this one relates to (paired with relation_type)"
     )
+
 
 class SearchOptions(BaseModel):
     query_type: Literal["id", "keyword", "list"] = Field(default="keyword", description="Type of search/retrieval")
@@ -209,6 +223,10 @@ class TemporalWindow(BaseModel):
 class SystemStatusOptions(BaseModel):
     include_trends: bool = Field(default=False, description="Whether to include temporal trend analysis")
     timeframe: str = Field(default="30 days", description="Timeframe for trend analysis")
+    include_cache_metrics: bool = Field(default=False, description="Whether to include cache and budget metrics")
+    enforce_hard_caps: bool = Field(
+        default=False, description="Whether to enforce hard caps on memory and cache counts"
+    )
 
 
 class EntityAction(BaseModel):
@@ -990,9 +1008,17 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if not options.content:
         return "Error: Content is required for 'store' action"
     opts = options.options or MemoryOptions()
+    # Hard cap enforcement: check memory count per tenant
+    conn = get_db_connection()
+    current_count = conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+        (uid, tenant_id),
+    ).fetchone()[0]
+    if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
+        conn.close()
+        return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
     memory_id = hashlib.sha256(f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
     content_h = _content_hash(options.content.strip())
-    conn = get_db_connection()
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
         "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
@@ -2957,43 +2983,81 @@ def query_memories_temporal(options: TemporalWindow, user_id: str | None = None)
 def get_system_status(options: SystemStatusOptions | None = None, user_id: str | None = None) -> str:
     """
     Get system health, memory statistics, and temporal trends.
-
     Args:
         options: Optional status and trend parameters
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
     opts = options or SystemStatusOptions()
+    tenant_id = get_current_tenant_id()
     conn = get_db_connection()
-
     # Basic stats
     count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, get_current_tenant_id())
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, tenant_id)
     ).fetchone()[0]
-
     scope_counts = conn.execute(
         "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
-        (uid, get_current_tenant_id()),
+        (uid, tenant_id),
     ).fetchall()
     conn.close()
-
     result = {
         "status": "healthy",
         "memory_count": count,
         "by_scope": {r[0]: r[1] for r in scope_counts},
-        "tenant_id": get_current_tenant_id(),
+        "tenant_id": tenant_id,
     }
-
     # Add temporal stats/trends if requested
     if opts.include_trends:
         builder = get_temporal_query_builder()
         service = get_temporal_service()
         result["temporal_stats"] = service.get_memory_stats(user_id=uid)
         result["trend_analysis"] = builder.analyze_trends(user_id=uid, timeframe=opts.timeframe)
-
+    # Add cache and budget metrics if requested
+    if opts.include_cache_metrics:
+        # Memory budget status
+        result["memory_budget"] = {
+            "current_count": count,
+            "max_per_tenant": DEFAULT_MAX_MEMORY_PER_TENANT,
+            "utilization_pct": round((count / DEFAULT_MAX_MEMORY_PER_TENANT) * 100, 2),
+            "hard_cap_enforced": opts.enforce_hard_caps,
+        }
+        # Narrative cache metrics (persistent)
+        try:
+            narrative_cache = get_narrative_cache()
+            cache_stats = narrative_cache.stats()
+            result["cache_metrics"] = {
+                "narrative_cache": {
+                    "type": "persistent",
+                    "size": cache_stats["size"],
+                    "max_entries": cache_stats["max_entries"],
+                    "ttl_seconds": cache_stats["ttl_seconds"],
+                    "hits": cache_stats["hits"],
+                    "misses": cache_stats["misses"],
+                    "evictions": cache_stats["eviction_count"],
+                    "utilization_pct": round((cache_stats["size"] / cache_stats["max_entries"]) * 100, 2),
+                },
+                "reflection_narrative_in_process_cache": {
+                    "type": "in_process",
+                    "size": len(_reflection_narrative_cache),
+                },
+            }
+        except Exception:
+            result["cache_metrics"] = {
+                "narrative_cache": {"type": "persistent", "error": "Unable to retrieve narrative cache metrics"},
+                "reflection_narrative_in_process_cache": {"type": "in_process", "size": len(_reflection_narrative_cache)},
+            }
+        # TF-IDF cache metrics
+        try:
+            retriever = get_hybrid_retriever()
+            tfidf_cache_size = len(retriever._tfidf_cache)
+            result["cache_metrics"]["tfidf_cache"] = {
+                "size": tfidf_cache_size,
+                "max_size": DEFAULT_MAX_TFIDF_CACHE_SIZE,
+                "utilization_pct": round((tfidf_cache_size / DEFAULT_MAX_TFIDF_CACHE_SIZE) * 100, 2),
+            }
+        except Exception:
+            result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
     return json.dumps(result, indent=2)
-
-
 @mcp.tool(output_schema=None)
 def memory_status(
     user_id: str | None = None,
@@ -3086,9 +3150,18 @@ def update_memory(
     related_memory_id: str | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="update")."""
-    updates = MemoryUpdateOptions(content=content, category=category, scope=scope, retention=retention, tags=tags, relation_type=relation_type, related_memory_id=related_memory_id)
+    updates = MemoryUpdateOptions(
+        content=content,
+        category=category,
+        scope=scope,
+        retention=retention,
+        tags=tags,
+        relation_type=relation_type,
+        related_memory_id=related_memory_id,
+    )
     options = MemoryAction(action="update", memory_id=memory_id, updates=updates)
     return manage_memories(options, user_id=user_id)
+
 
 @mcp.tool(output_schema=None)
 def delete_memory(memory_id: str, user_id: str | None = None) -> str:
