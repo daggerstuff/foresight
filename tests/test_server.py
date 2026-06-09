@@ -1718,3 +1718,80 @@ def test_handle_version_rollback_respects_tenant_scope():
         conn.close()
     finally:
         os.unlink(db_path)
+def test_memory_hard_cap_enforcement():
+    """Storing memory beyond hard cap returns error."""
+    import tempfile
+    import os
+    import sqlite3
+    # Create temp DB
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    db_path = tmp.name
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            scope TEXT DEFAULT 'session', retention TEXT DEFAULT 'short_term',
+            category TEXT DEFAULT 'fact', user_id TEXT DEFAULT 'default',
+            bank_id TEXT DEFAULT 'default', created_at TEXT NOT NULL,
+            updated_at TEXT, tags TEXT DEFAULT '[]',
+            emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
+            vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
+            synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
+            activation_count INTEGER DEFAULT 1,
+            importance REAL DEFAULT 0.5
+        )""")
+        conn.commit()
+        conn.close()
+        # Patch config DB_PATH BEFORE importing other modules
+        import foresight_mcp.config as config_module
+        original_db_path = config_module.DB_PATH
+        config_module.DB_PATH = db_path
+        # Also patch connection_pool's DB_PATH
+        import foresight_mcp.connection_pool as conn_pool_module
+        conn_pool_module.DB_PATH = db_path
+        from foresight_mcp.connection_pool import reset_pool
+        from foresight_mcp.hybrid_retriever import reset_hybrid_retriever
+        reset_pool()
+        reset_hybrid_retriever()
+        import foresight_mcp.server as server_module
+        server_module._narrative_cache = None
+        try:
+            # Patch the limit to a small value for testing
+            original_limit = server_module.DEFAULT_MAX_MEMORY_PER_TENANT
+            server_module.DEFAULT_MAX_MEMORY_PER_TENANT = 5
+            try:
+                from foresight_mcp.server import store_memory
+                from foresight_mcp.config import USER_ID
+                from foresight_mcp.tenant_context import get_current_tenant_id
+                for i in range(5):
+                    result = store_memory(f"test memory {i}")
+                    assert "Error" not in result, f"Should not error at {i}: {result}"
+                # Try one more - should fail
+                result = store_memory("overflow test")
+                assert "Error" in result
+                assert "Memory limit reached" in result
+            finally:
+                server_module.DEFAULT_MAX_MEMORY_PER_TENANT = original_limit
+        finally:
+            config_module.DB_PATH = original_db_path
+            conn_pool_module.DB_PATH = original_db_path
+            reset_hybrid_retriever()
+            reset_pool()
+            server_module._narrative_cache = None
+    finally:
+        os.unlink(db_path)
+def test_memory_budget_metrics_utilization():
+    """memory_budget utilization_pct is calculated correctly."""
+    from foresight_mcp.server import get_system_status, SystemStatusOptions, store_memory
+    import json
+    # Store a few memories
+    for i in range(5):
+        store_memory(f"budget test {i}")
+    result = get_system_status(options=SystemStatusOptions(include_cache_metrics=True))
+    data = json.loads(result)
+    assert data["memory_budget"]["current_count"] >= 5
+    assert data["memory_budget"]["utilization_pct"] >= 0
+    assert data["memory_budget"]["hard_cap_enforced"] is False

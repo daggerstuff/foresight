@@ -381,7 +381,7 @@ def test_tenant_llm_client_retry_on_provider_error(monkeypatch: pytest.MonkeyPat
 
     call_count = 0
 
-    def flaky_complete(_prompt: str, *, _max_tokens: int = 1024) -> str:
+    def flaky_complete(_prompt: str, *, max_tokens: int = 1024) -> str:
         nonlocal call_count
         call_count += 1
         if call_count < 3:
@@ -405,6 +405,7 @@ def test_tenant_llm_client_rate_limit_not_retried(monkeypatch: pytest.MonkeyPatc
     client = TenantLLMClient.from_env("t1")
 
     fake = MagicMock()
+    fake.complete.side_effect = LLMRateLimitError("rate limited")
     with patch.object(TenantLLMClient, "_build_provider", return_value=fake):
         with pytest.raises(LLMRateLimitError, match="rate limited"):
             client.generate("prompt", user_id="u1")
