@@ -254,9 +254,21 @@ def server_env(temp_db, monkeypatch):
 
     monkeypatch.setattr(server_module, "USER_ID", "test_user")
 
+    from foresight_mcp.tenant_context import (
+        set_current_account_id,
+        set_current_user_id,
+    )
+
+    set_current_user_id("test_user")
+    set_current_account_id("_test_")
+
     yield
     reset_pool()
     reset_graph_store()
+
+    from foresight_mcp.tenant_context import reset_tenant_context
+
+    reset_tenant_context()
 
 
 @pytest.fixture

@@ -33,7 +33,12 @@ from foresight_mcp.server import (
 
 @pytest.fixture(autouse=True)
 def setup_test_db(tmp_path, monkeypatch):
-    """Isolate DB per test function to prevent tenant memory limit issues."""
+    """Isolate DB per test function to prevent tenant memory limit issues.
+
+    Patches:
+    1. DB_PATH → temp file (so writes never hit ~/.foresight/memory.db)
+    2. Tenant context → '_test_' account (so queries never mix with production data)
+    """
     db_file = tmp_path / "test_memory.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
@@ -46,9 +51,22 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
     reset_pool()
 
+    # Isolate tenant context so test data never lands in the 'default' tenant
+    from foresight_mcp.tenant_context import (
+        set_current_account_id,
+        set_current_user_id,
+    )
+
+    set_current_user_id("_test_user_")
+    set_current_account_id("_test_")
+
     init_db()
     yield
     reset_pool()
+
+    from foresight_mcp.tenant_context import reset_tenant_context
+
+    reset_tenant_context()
 
 
 def test_store_memory():
@@ -365,45 +383,10 @@ def test_bridge_transcript_entities():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
 
-    # Set up graph store schema directly
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""CREATE TABLE IF NOT EXISTS memory_entities (
-        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
-        entity_type TEXT NOT NULL, description TEXT,
-        properties TEXT DEFAULT '{}',
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, name, entity_type)
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS entity_relationships (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
-        source_entity_id TEXT NOT NULL, target_entity_id TEXT NOT NULL,
-        relationship_type TEXT NOT NULL, confidence REAL DEFAULT 1.0,
-        metadata TEXT DEFAULT '{}',
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, source_entity_id, target_entity_id, relationship_type)
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS memory_entity_links (
-        memory_id TEXT NOT NULL, entity_id TEXT NOT NULL,
-        user_id TEXT NOT NULL, relevance_score REAL DEFAULT 1.0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (memory_id, entity_id)
-    )""")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_user ON memory_entities(user_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_type ON memory_entities(entity_type)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_relationships_source ON entity_relationships(source_entity_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_relationships_target ON entity_relationships(target_entity_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_links_memory ON memory_entity_links(memory_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_links_entity ON memory_entity_links(entity_id)")
-    conn.commit()
-    conn.close()
-
-    # Patch get_graph_store at its source module (it's imported lazily)
-    with patch("foresight_mcp.graph_store.get_graph_store", lambda: GraphStore(db_path)):
+    # GraphStore.__init__ creates the correct schema including tenant_id
+    with patch("foresight_mcp.server.get_graph_store", lambda: GraphStore(db_path)):
         count = _bridge_transcript_entities(messages, "entity_test_user")
 
-    # The rule-based extractor finds "anxiety" (emotion) and "work" (concept)
     assert count >= 1
 
 
