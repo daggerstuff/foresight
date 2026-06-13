@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from .auth import AuthMiddleware
 from .block_registry import InjectionPoint, initialize_default_blocks
+from .clustering import ClusterResult, cluster_memories
 from .config import (
     BANK_ID,
     DB_PATH,
@@ -58,31 +59,14 @@ from .document_layer import (
 )
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .entity_extractor import Entity, get_entity_extractor
-from .clustering import cluster_memories
 from .event_bus import (
-    Event as Event,
-    EventType as EventType,
-    EventBus as EventBus,
-    curation_status_changed as curation_status_changed,
-    get_event_bus as get_event_bus,
-    memory_deleted as memory_deleted,
-    memory_retrieved as memory_retrieved,
-    memory_stored as memory_stored,
-    memory_updated as memory_updated,
+    curation_status_changed,
+    get_event_bus,
+    memory_deleted,
+    memory_retrieved,
+    memory_stored,
+    memory_updated,
 )
-from .hooks import (
-    HookExecutor as HookExecutor,
-    HookRegistration as HookRegistration,
-    HookRegistry as HookRegistry,
-    HookType as HookType,
-    get_hook_executor as get_hook_executor,
-    list_hooks as list_hooks,
-    register_hook as register_hook,
-    unregister_hook as unregister_hook,
-)
-
-# WebSocket imports
-from .websocket.server import WebSocketServer as WebSocketServer
 from .graph_store import get_graph_store
 from .hybrid_retriever import HybridResult, get_hybrid_retriever
 from .memory_components import (
@@ -102,6 +86,7 @@ from .memory_types import (
     MemoryScope,
     RetentionPolicy,
 )
+from .narrative_cache import NarrativeCache
 from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .reflection_engine import get_reflection_engine
@@ -111,7 +96,6 @@ from .semantic_search import (
     SemanticSearchError as _SemanticSearchError,
     get_semantic_search,
 )
-from .narrative_cache import NarrativeCache, DEFAULT_MAX_ENTRIES as NARRATIVE_MAX_ENTRIES
 from .stream_producer import (
     KafkaProducer,
     KinesisProducer,
@@ -123,6 +107,9 @@ from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
+
+# WebSocket imports
+from .websocket.server import WebSocketServer
 from .websocket.subscriptions import SubscriptionManager
 
 DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
@@ -1275,6 +1262,11 @@ def manage_memories(
     """
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
+
+    if options.action == "store" and tenant_id == "default" and os.environ.get("PYTEST_CURRENT_TEST"):
+        return (
+            "Error: refusing to store to the 'default' tenant under pytest; set FORESIGHT_DB_PATH or use a test tenant"
+        )
 
     if options.action == "store":
         return _handle_memory_store(uid, tenant_id, options)
