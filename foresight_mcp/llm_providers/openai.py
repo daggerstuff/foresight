@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from foresight_mcp.llm_errors import LLMError
+from foresight_mcp.llm_errors import LLMError, LLMRateLimitError
 
 DEFAULT_MODEL = "gpt-4o-mini"
 API_URL = "https://api.openai.com/v1/chat/completions"
@@ -64,6 +64,8 @@ class OpenAIClient:
                 payload = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 429:
+                raise LLMRateLimitError(f"OpenAI API rate limit (429): {detail}") from exc
             raise LLMError(
                 f"OpenAI API returned HTTP {exc.code}: {detail}"
             ) from exc
