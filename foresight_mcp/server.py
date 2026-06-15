@@ -69,13 +69,21 @@ from .event_bus import (
     memory_updated,
 )
 from .graph_store import get_graph_store
-from .hybrid_retriever import HybridResult, HybridSearchOptions, get_hybrid_retriever
+from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
+from .injection_budget import (
+    BudgetResult,
+    InjectionBudget,
+    Lane,
+    LaneItem,
+    format_budgeted_payload,
+)
 from .memory_components import (
     MemoryCrisisTagger,
     MemoryLinker,
     MemorySynthesizer,
     SocraticGate,
 )
+from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -189,6 +197,10 @@ class SearchOptions(BaseModel):
     use_cascade: bool = Field(default=False, description="Enable cascade search across related entities")
     cascade_depth: int = Field(default=2, description="Maximum depth for cascade traversal")
     cascade_limit: int = Field(default=100, description="Maximum results per cascade level")
+    debug: bool = Field(
+        default=False,
+        description="Return structured trace with timing and signal metadata instead of formatted results",
+    )
 
 
 class ContextBlockAction(BaseModel):
@@ -294,6 +306,18 @@ class AnalysisAction(BaseModel):
     period: str = Field(default="weekly", description="Period for reflection")
     limit: int = Field(default=50, description="Limit for synthesis")
     enhanced: bool = Field(default=False, description="Whether to use enhanced synthesis")
+
+
+class MaintenanceAction(BaseModel):
+    modes: list[str] = Field(
+        default=["consolidate", "contradict", "archive_stale", "synthesize"],
+        description="Maintenance modes to run",
+    )
+    duplicate_threshold: float = Field(default=0.25, description="Minimum Jaccard similarity to consider duplicate")
+    stale_strength_threshold: float = Field(default=0.2, description="Archive memories below this strength")
+    stale_importance_threshold: float = Field(default=0.1, description="Archive memories below this importance")
+    batch_size: int = Field(default=200, description="Max memories to process per mode")
+    max_runtime_seconds: float = Field(default=300, description="Wall-clock budget in seconds")
 
 
 def _run_async(coro):
@@ -1295,6 +1319,65 @@ def manage_memories(
     return f"Unknown action: {options.action}"
 
 
+@dataclass
+class SearchTrace:
+    """Structured trace of a retrieval operation for performance observability."""
+
+    query: str
+    latency_ms: float
+    result_count: int
+    total_candidates: int
+    signal_counts: dict[str, Any]
+    fast_path: int | str | None
+    response_bytes: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "latency_ms": self.latency_ms,
+            "result_count": self.result_count,
+            "total_candidates": self.total_candidates,
+            "signal_counts": self.signal_counts,
+            "fast_path": self.fast_path,
+            "response_bytes": self.response_bytes,
+        }
+
+
+def _trace_retrieval(
+    query: str,
+    uid: str,
+    tenant_id: str,
+    options: HybridSearchOptions,
+) -> tuple[HybridSearchResult, SearchTrace]:
+    """Run hybrid search and return (result, trace) pair."""
+    t0 = time.perf_counter()
+    retriever = get_hybrid_retriever()
+    result = retriever.search(query, uid, options)
+    latency_ms = (time.perf_counter() - t0) * 1000
+    fast_path = result.signal_counts.get("fast_path")
+    trace = SearchTrace(
+        query=query,
+        latency_ms=round(latency_ms, 2),
+        result_count=len(result.results),
+        total_candidates=result.total_candidates,
+        signal_counts=result.signal_counts,
+        fast_path=fast_path,
+        response_bytes=0,
+    )
+    logger.debug(
+        "search_memories trace: query=%r user=%s tenant=%s latency_ms=%.2f results=%d candidates=%d fast_path=%s signals=%s",
+        query,
+        uid,
+        tenant_id,
+        trace.latency_ms,
+        trace.result_count,
+        trace.total_candidates,
+        fast_path,
+        result.signal_counts,
+    )
+    return result, trace
+
+
 @mcp.tool(output_schema=None)
 def search_memories(
     options: SearchOptions,
@@ -1340,21 +1423,23 @@ def search_memories(
     # 2. Hybrid search if enabled and query provided
     if options.use_hybrid and options.query:
         try:
-            retriever = get_hybrid_retriever()
-            hybrid_result = retriever.search(
+            hybrid_result, trace = _trace_retrieval(
                 options.query,
                 uid,
+                tenant_id,
                 HybridSearchOptions(
                     tenant_id=tenant_id,
                     limit=options.limit,
                     min_importance=options.min_importance,
                     use_keyword=True,
                     use_tfidf_cosine=True,
-                    use_semantic=None,  # Let the search method handle the semantic/tfidf_cosine alias
+                    use_semantic=None,
                     use_graph=True,
                     use_temporal=True,
                 ),
             )
+            if options.debug:
+                return json.dumps(trace.to_dict(), indent=2)
             if hybrid_result.results:
                 results = []
                 for r in hybrid_result.results:
@@ -2685,6 +2770,7 @@ def inject_context(
     max_memories: int = 5,
     min_relevance: float = 0.3,
     include_details: bool = False,
+    max_chars: int | None = None,
 ) -> str:
     """Surface relevant memories based on conversation context.
 
@@ -2699,6 +2785,11 @@ def inject_context(
          min_relevance: Minimum relevance score threshold (default: 0.3)
          include_details: If True, return JSON with formatted text plus structured
              memories and context blocks grouped by InjectionPoint (default: False)
+         max_chars: Optional character budget for the formatted payload.
+             When set, output is truncated at sentence boundaries per lane
+             priority (static > dynamic > memories > blocks > safety).
+             Items that don't fit are progressively summarized or stubbed.
+             Default None = unbounded (legacy behavior).
 
      Returns:
          Formatted string with relevant memories and context block signals.
@@ -2706,6 +2797,7 @@ def inject_context(
          - formatted: the formatted text
          - memories: list of dicts with memory_id, content, score, signals
          - context_blocks: dict grouped by InjectionPoint
+         - budget: lane allocation details (only when max_chars is set)
     """
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
@@ -2713,6 +2805,7 @@ def inject_context(
     retriever = get_hybrid_retriever()
     query_text = conversation_text if conversation_text else " ".join(terms)
 
+    t0 = time.perf_counter()
     hybrid_result = retriever.search(
         query=query_text,
         user_id=uid,
@@ -2722,27 +2815,44 @@ def inject_context(
             min_importance=0.1,
             use_keyword=True,
             use_tfidf_cosine=True,
-            use_semantic=None,  # Let the search method handle the semantic/tfidf_cosine alias
+            use_semantic=None,
             use_graph=True,
             use_temporal=True,
         ),
     )
-
+    latency_ms = (time.perf_counter() - t0) * 1000
     memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
         :max_memories
     ]
+    logger.debug(
+        "inject_context: query_len=%d latency_ms=%.2f fetched=%d filtered=%d fast_path=%s signals=%s",
+        len(conversation_text),
+        latency_ms,
+        len(hybrid_result.results),
+        len(memories),
+        hybrid_result.signal_counts.get("fast_path"),
+        hybrid_result.signal_counts,
+    )
 
-    formatted = _format_injection_output(memories, uid, tenant_id, terms)
+    budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else None
+
+    if budget is not None and budget.is_bounded:
+        budgeted = _format_injection_output_budgeted(memories, uid, tenant_id, terms, budget)
+    else:
+        budgeted = None
 
     if not include_details:
-        return formatted
+        return budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
 
     blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
-    payload = {
-        "formatted": formatted,
+    legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms)
+    payload: dict[str, Any] = {
+        "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
         "memories": [m.to_dict() for m in memories],
         "context_blocks": blocks_by_point,
     }
+    if budgeted is not None:
+        payload["budget"] = budgeted.to_dict()
     return json.dumps(payload, indent=2)
 
 
@@ -2772,6 +2882,52 @@ def _format_injection_output(
         return "[Relevant Context - 0 memories surfaced]\nNo relevant memories found for this conversation."
 
     return "\n".join(lines)
+
+
+def _format_injection_output_budgeted(
+    memories: list[HybridResult],
+    uid: str,
+    tenant_id: str,
+    terms: list[str],
+    budget: InjectionBudget,
+) -> BudgetResult:
+    lane_items: dict[Lane, list[LaneItem]] = {lane: [] for lane in Lane}
+
+    user_prefs = get_context_block_agent(uid, tenant_id).state.get_block(USER_PREFERENCES)
+    if user_prefs and not user_prefs.is_empty():
+        lane_items[Lane.STATIC].append(
+            LaneItem(id="user_preferences", content=user_prefs.content, score=0.9, lane=Lane.STATIC)
+        )
+
+    project_ctx = get_context_block_agent(uid, tenant_id).state.get_block("project_context")
+    pending = get_context_block_agent(uid, tenant_id).state.get_block(PENDING_ITEMS)
+    if project_ctx and not project_ctx.is_empty():
+        lane_items[Lane.DYNAMIC].append(
+            LaneItem(id="project_context", content=project_ctx.content, score=0.8, lane=Lane.DYNAMIC)
+        )
+    if pending and not pending.is_empty():
+        lane_items[Lane.DYNAMIC].append(
+            LaneItem(id="pending_items", content=pending.content, score=0.7, lane=Lane.DYNAMIC)
+        )
+
+    for mem in memories:
+        lane_items[Lane.MEMORIES].append(
+            LaneItem(
+                id=mem.memory_id,
+                content=mem.content or "",
+                score=mem.combined_score,
+                lane=Lane.MEMORIES,
+                metadata={"category": mem.category, "importance": mem.importance},
+            )
+        )
+
+    sub_lines = _context_block_notes_for_terms(uid, terms)
+    if sub_lines:
+        lane_items[Lane.BLOCKS].append(
+            LaneItem(id="block_signals", content="\n".join(sub_lines), score=0.5, lane=Lane.BLOCKS)
+        )
+
+    return format_budgeted_payload(lane_items, budget, header="[Relevant Context]")
 
 
 def _format_context_blocks_by_injection_point(
@@ -2856,6 +3012,7 @@ def get_relevant_memories(
     user_id: str | None = None,
     limit: int = 5,
     min_relevance: float = 0.1,
+    max_chars: int | None = None,
 ) -> str:
     """Return structured list of relevant memories for a query.
 
@@ -2867,6 +3024,10 @@ def get_relevant_memories(
         user_id: Optional user ID override
         limit: Maximum number of memories to return (default: 5)
         min_relevance: Minimum combined_score threshold (default: 0.1)
+        max_chars: Optional character budget for memory content. When set,
+            each memory's content is truncated at sentence boundaries
+            if the total payload would exceed this limit. Default None
+            = unbounded (legacy behavior).
 
     Returns:
         JSON string with:
@@ -2875,11 +3036,13 @@ def get_relevant_memories(
           graph_score, temporal_score, combined_score, source_signals
         - total_candidates: number of candidates considered
         - signal_counts: dict of how many results each signal contributed
+        - budget: lane allocation details (only when max_chars is set)
     """
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
     retriever = get_hybrid_retriever()
 
+    t0 = time.perf_counter()
     result = retriever.search(
         query=query,
         user_id=uid,
@@ -2889,13 +3052,51 @@ def get_relevant_memories(
             min_importance=0.0,
         ),
     )
+    latency_ms = (time.perf_counter() - t0) * 1000
+    filtered_results = [m for m in result.results if m.combined_score >= min_relevance][:limit]
+    memories = [m.to_dict() for m in filtered_results]
 
-    memories = [m.to_dict() for m in result.results if m.combined_score >= min_relevance][:limit]
-    payload = {
+    payload: dict[str, Any] = {
         "memories": memories,
         "total_candidates": result.total_candidates,
         "signal_counts": result.signal_counts,
+        "_trace": {
+            "latency_ms": round(latency_ms, 2),
+            "fast_path": result.signal_counts.get("fast_path"),
+        },
     }
+
+    if max_chars is not None:
+        budget = InjectionBudget(max_chars=max_chars)
+        lane_items = {
+            Lane.MEMORIES: [
+                LaneItem(id=m.memory_id, content=m.content or "", score=m.combined_score, lane=Lane.MEMORIES)
+                for m in filtered_results
+            ]
+        }
+        budgeted = format_budgeted_payload(lane_items, budget, header="[Relevant Memories]")
+        payload["budget"] = budgeted.to_dict()
+        mem_alloc = budgeted.allocations.get(Lane.MEMORIES)
+        if mem_alloc is not None:
+            for item, _ in mem_alloc.summary_items:
+                for mem_dict in payload["memories"]:
+                    if mem_dict.get("memory_id") == item.id:
+                        mem_dict["_truncation"] = "summary"
+            for item, _ in mem_alloc.stub_items:
+                for mem_dict in payload["memories"]:
+                    if mem_dict.get("memory_id") == item.id:
+                        mem_dict["_truncation"] = "stub"
+
+    logger.debug(
+        "get_relevant_memories: query=%r latency_ms=%.2f candidates=%d returned=%d fast_path=%s signals=%s budget=%s",
+        query,
+        latency_ms,
+        result.total_candidates,
+        len(memories),
+        result.signal_counts.get("fast_path"),
+        result.signal_counts,
+        max_chars,
+    )
     return json.dumps(payload, indent=2)
 
 
@@ -4239,6 +4440,53 @@ def get_decay_events(
             "action": "get_decay_events",
             "count": len(events),
             "events": [e.to_dict() for e in events],
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def run_maintenance(
+    options: MaintenanceAction,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+) -> str:
+    """Run a conservative memory maintenance job.
+
+    Performs background memory quality operations: duplicate consolidation,
+    contradiction detection, stale archival, and cross-memory synthesis.
+    High-impact changes (contradictions) are flagged for admin review and
+    never auto-applied.
+
+    Args:
+        options: Maintenance configuration (modes, thresholds, budget)
+        user_id: Optional user ID override
+        tenant_id: Optional tenant ID override
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+
+    _check_rate_limit(tid)
+
+    config = MaintenanceConfig(
+        tenant_id=tid,
+        user_id=uid,
+        modes=options.modes,
+        duplicate_threshold=options.duplicate_threshold,
+        stale_strength_threshold=options.stale_strength_threshold,
+        stale_importance_threshold=options.stale_importance_threshold,
+        batch_size=options.batch_size,
+        max_runtime_seconds=options.max_runtime_seconds,
+    )
+
+    job = MemoryMaintenanceJob()
+    stats = job.run(config)
+
+    return json.dumps(
+        {
+            "ok": True,
+            "action": "run_maintenance",
+            **stats.to_dict(),
         },
         indent=2,
     )

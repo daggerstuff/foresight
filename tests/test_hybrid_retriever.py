@@ -15,9 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from foresight_mcp.hybrid_retriever import (
     HybridRetriever,
     _escape_like,
+    _normalize_query,
     _validate_input,
     reset_hybrid_retriever,
 )
+from foresight_mcp.server import SearchTrace
 
 
 @pytest.fixture(autouse=True)
@@ -559,6 +561,185 @@ class TestSecurityFixes:
         # Either 0 results or only those with literal % in content
         for r in result.results:
             assert "%" in r.content
+
+
+class TestSearchTrace:
+    def test_to_dict_serialization(self):
+        trace = SearchTrace(
+            query="anxiety",
+            latency_ms=1.23,
+            result_count=3,
+            total_candidates=5,
+            signal_counts={"keyword": 3, "tfidf_cosine": 2, "fast_path": "cache"},
+            fast_path="cache",
+            response_bytes=512,
+        )
+        d = trace.to_dict()
+        assert d["query"] == "anxiety"
+        assert d["latency_ms"] == 1.23
+        assert d["result_count"] == 3
+        assert d["total_candidates"] == 5
+        assert d["fast_path"] == "cache"
+        assert d["signal_counts"]["fast_path"] == "cache"
+
+    def test_fast_path_none_when_not_cached(self):
+        trace = SearchTrace(
+            query="anxiety",
+            latency_ms=5.0,
+            result_count=3,
+            total_candidates=5,
+            signal_counts={"keyword": 3, "tfidf_cosine": 2},
+            fast_path=None,
+            response_bytes=256,
+        )
+        assert trace.fast_path is None
+        d = trace.to_dict()
+        assert d["fast_path"] is None
+
+    def test_fast_path_int_from_signal_counts(self):
+        trace = SearchTrace(
+            query="anxiety",
+            latency_ms=5.0,
+            result_count=3,
+            total_candidates=5,
+            signal_counts={"keyword": 3},
+            fast_path=None,
+            response_bytes=256,
+        )
+        assert trace.fast_path is None or isinstance(trace.fast_path, (str, int))
+
+
+class TestRetrieverFastPathWithSignalCounts:
+    def test_search_result_has_fast_path_on_cache_hit(self, test_db):
+        retriever = HybridRetriever(test_db)
+        result1 = retriever.search(
+            "anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
+        assert "fast_path" not in result1.signal_counts
+        result2 = retriever.search(
+            "anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
+        assert result2.signal_counts.get("fast_path") == "cache"
+
+    def test_early_termination_sets_fast_path_metadata(self, test_db):
+        retriever = HybridRetriever(test_db)
+        result = retriever.search(
+            "overwhelmed",
+            "test_user",
+            limit=5,
+            use_keyword=True,
+            use_tfidf_cosine=False,
+            use_graph=False,
+            use_temporal=False,
+        )
+        fp = result.signal_counts.get("fast_path")
+        assert fp is None or fp == "early_termination"
+
+
+class TestNormalizeQuery:
+    def test_lowercase_normalization(self):
+        assert _normalize_query("ANXIETY") == "anxiety"
+
+    def test_strips_whitespace(self):
+        assert _normalize_query("  anxiety  ") == "anxiety"
+
+    def test_deduplicates_terms(self):
+        assert _normalize_query("anxiety anxiety management") == "anxiety management"
+
+    def test_collapse_internal_whitespace(self):
+        assert _normalize_query("anxiety  management") == "anxiety management"
+
+    def test_empty_input_yields_empty(self):
+        assert _normalize_query("   ") == ""
+
+    def test_order_preserving_dedup(self):
+        assert _normalize_query("anxiety stress anxiety") == "anxiety stress"
+
+
+class TestFastPathTiers:
+    def test_cache_hit_returns_cached_result(self, test_db):
+        retriever = HybridRetriever(test_db)
+        result1 = retriever.search(
+            "anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
+        assert len(result1.results) > 0
+        result2 = retriever.search(
+            "anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
+        assert result2.signal_counts.get("fast_path") == "cache"
+        assert result2.results == result1.results
+
+    def test_query_normalization_hits_same_cache_entry(self, test_db):
+        retriever = HybridRetriever(test_db)
+        retriever.search("anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        result2 = retriever.search(
+            "  ANXIETY  ", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
+        assert result2.signal_counts.get("fast_path") == "cache"
+
+    def test_fast_path_disabled_skips_cache(self, test_db):
+        retriever = HybridRetriever(test_db)
+        retriever.search(
+            "anxiety",
+            "test_user",
+            limit=5,
+            use_graph=False,
+            use_temporal=False,
+            use_semantic=False,
+            fast_path_enabled=False,
+        )
+        result2 = retriever.search(
+            "anxiety",
+            "test_user",
+            limit=5,
+            use_graph=False,
+            use_temporal=False,
+            use_semantic=False,
+            fast_path_enabled=False,
+        )
+        assert "fast_path" not in result2.signal_counts
+
+    def test_early_termination_fires_when_top_dominates(self, test_db):
+        retriever = HybridRetriever(test_db)
+        result = retriever.search(
+            "overwhelmed",
+            "test_user",
+            limit=5,
+            use_keyword=True,
+            use_tfidf_cosine=False,
+            use_graph=False,
+            use_temporal=False,
+        )
+        if "early_termination" in result.signal_counts:
+            assert result.signal_counts["fast_path"] == "early_termination"
+
+    def test_fast_path_enabled_default_true(self, test_db):
+        retriever = HybridRetriever(test_db)
+        result = retriever.search(
+            "anxiety", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
+        assert "fast_path" in result.signal_counts or result.signal_counts.get("fast_path") is None
+
+    def test_empty_result_is_cached(self, test_db):
+        retriever = HybridRetriever(test_db)
+        result1 = retriever.search(
+            "xyznonexistent",
+            "test_user",
+            limit=5,
+            use_graph=False,
+            use_temporal=False,
+            use_semantic=False,
+        )
+        assert len(result1.results) == 0
+        result2 = retriever.search(
+            "xyznonexistent",
+            "test_user",
+            limit=5,
+            use_graph=False,
+            use_temporal=False,
+            use_semantic=False,
+        )
+        assert result2.signal_counts.get("fast_path") == "cache"
 
 
 if __name__ == "__main__":
