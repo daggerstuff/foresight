@@ -42,11 +42,10 @@ Caching
 -------
 
 The default cache is an in-process ``dict`` keyed by
-``tenant_id:user_id:report_id:model_version:insights_hash``. Callers
-may pass a persistent :class:`foresight_mcp.narrative_cache.NarrativeCache`
-via the ``cache`` parameter for durability across restarts (PIX-3740).
-The dispatch between in-process dict and SQLite-backed cache is
-internal to :func:`generate_insight_narrative`.
+``tenant_id:user_id:report_id:model_version:insights_hash``. The caller
+may pass an external cache (e.g. a persistent dict) via the ``cache``
+parameter for testability and durability. The companion ticket GAP-6b
+(PIX-3740) adds a SQLite-backed persistent cache.
 """
 
 from __future__ import annotations
@@ -55,8 +54,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Callable
-from typing import Any
+from typing import Any, Callable
 
 from .audit import (
     NARRATIVE_CACHE_HIT,
@@ -116,12 +114,6 @@ Write a 2-4 paragraph narrative summary suitable for surfacing in a clinical coa
 
 
 def _compute_insights_hash(report: ReflectionReport) -> str:
-    """SHA-256 hex digest of the structured insights, truncated to 16 chars.
-
-    Used as part of the cache key and as a parameter to the persistent
-    :class:`NarrativeCache` so cache lookups can verify the stored
-    entry still matches the current insight payload.
-    """
     return hashlib.sha256(
         "|".join(
             f"{i.insight_type}:{i.summary}:{i.confidence:.3f}:{i.recommended_action}" for i in report.insights
@@ -195,7 +187,7 @@ def _hash_payload(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _audit(  # noqa: PLR0913
+def _audit(
     *,
     event_type: str,
     tenant_id: str,
@@ -237,7 +229,7 @@ def _audit(  # noqa: PLR0913
                 )
             )
             return
-        except Exception as exc:
+        except OSError as exc:
             logger.warning(
                 "audit_log.record failed; falling back to logger.info: %s",
                 exc,
@@ -264,11 +256,11 @@ def _audit(  # noqa: PLR0913
 
 
 # Module-level in-process cache. Lost on restart. Sufficient as a stopgap;
-# callers may supply a persistent NarrativeCache via the ``cache`` parameter.
+# callers may supply a persistent cache via the ``cache`` parameter.
 _default_cache: dict[str, str] = {}
 
 
-def generate_insight_narrative(  # noqa: PLR0913,PLR0912
+def generate_insight_narrative(
     reflection_report: ReflectionReport,
     *,
     tenant_id: str,
@@ -294,11 +286,12 @@ def generate_insight_narrative(  # noqa: PLR0913,PLR0912
         model_version: Model identifier used for cache keying and audit.
             Defaults to ``"caller-default"`` if the caller does not
             specify.
-        cache: Optional cache. May be an in-process ``dict`` for tests
-            or a persistent :class:`NarrativeCache` (PIX-3740) for
-            durability across restarts. If ``None``, the module-level
-            in-process dict is used. The cache key always includes
-            ``tenant_id`` and ``user_id`` to enforce isolation.
+        cache: Optional cache. Either a plain ``dict[str, str]`` for
+            in-process caching, or a :class:`NarrativeCache` for
+            tenant-isolated persistent storage that survives restarts.
+            If ``None``, the module-level in-process dict is used. The
+            cache key includes ``tenant_id`` and ``user_id`` to enforce
+            isolation.
         audit_log: Optional :class:`foresight_mcp.audit.AuditLog`. If
             provided, success / error / cache-hit events are persisted
             as queryable, tenant-isolated rows. If ``None`` (the
@@ -310,9 +303,9 @@ def generate_insight_narrative(  # noqa: PLR0913,PLR0912
         A natural-language narrative string.
 
     Raises:
-        TypeError: If ``reflection_report`` is not a :class:`ReflectionReport`,
-            ``llm_call`` is not callable, or ``cache`` is neither ``None``,
-            a ``dict``, nor a :class:`NarrativeCache`.
+        TypeError: If ``reflection_report`` is not a :class:`ReflectionReport``
+            or ``llm_call`` is not callable, or ``cache`` is not a
+            ``dict`` or :class:`NarrativeCache`.
         ValueError: If ``tenant_id`` or ``user_id`` is empty.
         ReflectionNarrativeError: If the LLM callable raises. The original
             exception is preserved on ``__cause__``. The caller may catch
@@ -417,8 +410,8 @@ def generate_insight_narrative(  # noqa: PLR0913,PLR0912
 
 
 __all__ = [
-    "NARRATIVE_PROMPT_TEMPLATE",
     "LLMCallable",
+    "NARRATIVE_PROMPT_TEMPLATE",
     "ReflectionNarrativeError",
     "generate_insight_narrative",
 ]
