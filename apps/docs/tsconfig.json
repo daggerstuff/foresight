@@ -1,10 +1,8 @@
 {
-  "extends": "@docusaurus/tsconfig",
   "compilerOptions": {
     "strict": true,
     "noImplicitAny": true,
-    "strictNullChecks": true,
-    "baseUrl": undefined
+    "strictNullChecks": true
   },
   "exclude": ["node_modules"]
 }
