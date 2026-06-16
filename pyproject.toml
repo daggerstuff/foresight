@@ -4,12 +4,7 @@ version = "1.2.0"
 description = "Persistent memory for AI agents — CLI, TUI, MCP server, and Python SDK"
 readme = "README.md"
 license = "MIT"
-<<<<<<< HEAD
 requires-python = ">=3.13"
-authors = [{ name = "Foresight Team", email = "team@vectorize.io" }]
-keywords = ["mcp", "claude", "memory", "ai", "foresight"]
-=======
-requires-python = ">=3.11"
 authors = [
     { name = "Foresight Team", email = "team@vectorize.io" },
 ]
@@ -34,7 +29,6 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
->>>>>>> 732fd8c1f91c988a134ea18dfec63cad11802164
 dependencies = ["fastmcp>=3.2.0"]
 
 [project.optional-dependencies]
