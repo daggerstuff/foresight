@@ -81,6 +81,9 @@ class Rankings:
     graph: dict[str, int] = field(default_factory=dict)
     temporal: dict[str, int] = field(default_factory=dict)
     semantic_label: str = "tfidf_cosine"
+    # Entity salience: per-memory entity hit count and avg confidence
+    entity_hits: dict[str, int] = field(default_factory=dict)
+    entity_confidence: dict[str, float] = field(default_factory=dict)
 
 
 MAX_QUERY_LENGTH = 500
@@ -120,6 +123,10 @@ class HybridResult:
 
     source_signals: list[str] = field(default_factory=list)
 
+    # Entity salience metadata
+    entity_hits: int = 0
+    entity_confidence_avg: float = 0.0
+
     def to_dict(self) -> dict:
         return {
             "memory_id": self.memory_id,
@@ -135,6 +142,8 @@ class HybridResult:
             "temporal_score": round(self.temporal_score, 4),
             "combined_score": round(self.combined_score, 4),
             "source_signals": self.source_signals,
+            "entity_hits": self.entity_hits,
+            "entity_confidence_avg": round(self.entity_confidence_avg, 4),
         }
 
 
@@ -183,6 +192,24 @@ class HybridRetriever:
         "temporal": 0.6,
     }
 
+    # Trend modifiers applied to temporal score per strength_trend value.
+    # These can be overridden via `weights["trend_mod_strengthening"]` etc.
+    DEFAULT_TREND_MODS: ClassVar[dict[str, float]] = {
+        "strengthening": 1.2,
+        "stable": 1.0,
+        "weakening": 0.8,
+        "stale": 0.5,
+    }
+
+    # Category half-life multipliers (applied on top of base half-life).
+    # Categories not listed use multiplier=1.0.
+    DEFAULT_CATEGORY_MULTIPLIERS: ClassVar[dict[str, float]] = {
+        "session": 0.5,  # session memories decay twice as fast
+        "fact": 1.0,
+        "preference": 1.5,  # preferences decay more slowly
+        "trait": 2.0,  # traits/personality decay the slowest
+    }
+
     def __init__(
         self,
         db_path: str,
@@ -198,6 +225,20 @@ class HybridRetriever:
             merged["tfidf_cosine"] = merged["semantic"]
         self.weights = merged
 
+        # Trend modifiers: read from weights or fall back to defaults.
+        # Prefix each trend key with "trend_mod_" for explicit override.
+        self.trend_mods: dict[str, float] = {}
+        for trend in ("strengthening", "stable", "weakening", "stale"):
+            weight_key = f"trend_mod_{trend}"
+            self.trend_mods[trend] = self.weights.get(weight_key, self.DEFAULT_TREND_MODS[trend])
+
+        # Category half-life multipliers.
+        self.category_multipliers: dict[str, float] = dict(self.DEFAULT_CATEGORY_MULTIPLIERS)
+        for cat_key in self.DEFAULT_CATEGORY_MULTIPLIERS:
+            weight_key = f"category_mult_{cat_key}"
+            if weight_key in self.weights:
+                self.category_multipliers[cat_key] = self.weights[weight_key]
+
         # TF-IDF cache: maps (user_id, tenant_id) -> {"idf": dict, "doc_count": int,
         #   "docs": dict[id, list[str]]}
         # Invalidated when doc_count changes (new/deleted memories).
@@ -206,6 +247,10 @@ class HybridRetriever:
         self._schema_cache: dict[str, set[str]] = {}
         self._result_cache: OrderedDict[tuple[str, str, str], Any] = OrderedDict()
         self._result_cache_lock = threading.Lock()
+
+        # Entity metadata side-channel (set by _run_graph_search, consumed by _build_results)
+        self._entity_hits: dict[str, int] = {}
+        self._entity_confidence: dict[str, float] = {}
 
     def _get_connection(self) -> Any:
         """Get a database connection with WAL mode for concurrent safety."""
@@ -295,6 +340,8 @@ class HybridRetriever:
             graph=graph_ranking,
             temporal=temporal_ranking,
             semantic_label=semantic_label,
+            entity_hits=dict(self._entity_hits),
+            entity_confidence=dict(self._entity_confidence),
         )
 
         all_ids = set()
@@ -590,36 +637,50 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
-    ) -> dict[str, int]:
+    ) -> tuple[dict[str, int], dict[str, int], dict[str, float]]:
         """
         Graph-based search: find entities matching query, traverse to
-        find related memories.
+        find related memories with confidence-weighted scoring.
 
-        Returns dict of {memory_id: rank} (1-based, lower = better).
+        Scoring factors:
+            1. Number of distinct matching entities per memory
+            2. Entity confidence (higher confidence = stronger signal)
+            3. Edge decay_factor (fresher relationships weighted more)
+
+        Returns:
+            Tuple of (rankings, entity_hits, entity_confidence):
+            - rankings: {memory_id: rank} 1-based, lower=better
+            - entity_hits: {memory_id: int} matched entities count
+            - entity_confidence: {memory_id: float} avg entity confidence
         """
         terms = query.lower().split()
         if not terms:
-            return {}
+            return ({}, {}, {})
 
         escaped_terms = [_escape_like(t) for t in terms]
 
-        # Find entities whose name matches query terms
         like_clauses = " OR ".join(["e.name LIKE ? ESCAPE '!'" for _ in terms])
         entity_cols = self._schema_cache.get("memory_entities")
         if entity_cols is None:
             entity_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entities)").fetchall()}
             self._schema_cache["memory_entities"] = entity_cols
-        if "tenant_id" in entity_cols:
+
+        has_confidence = "confidence" in entity_cols
+        has_tenant = "tenant_id" in entity_cols
+
+        if has_tenant:
             sql = f"""
                 SELECT DISTINCT e.id
+                {", e.confidence" if has_confidence else ""}
                 FROM memory_entities e
                 WHERE e.user_id = ? AND e.tenant_id = ?
                   AND ({like_clauses})
             """
-            params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
+            params: list[Any] = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
         else:
             sql = f"""
                 SELECT DISTINCT e.id
+                {", e.confidence" if has_confidence else ""}
                 FROM memory_entities e
                 WHERE e.user_id = ?
                   AND ({like_clauses})
@@ -627,32 +688,101 @@ class HybridRetriever:
             params = [user_id] + [f"%{t}%" for t in escaped_terms]
 
         cursor = conn.execute(sql, params)
+        entity_rows = cursor.fetchall()
 
-        entity_ids = [row[0] for row in cursor.fetchall()]
+        if not entity_rows:
+            return ({}, {}, {})
 
-        if not entity_ids:
-            return {}
+        entity_ids: list[str] = []
+        entity_conf: dict[str, float] = {}
+        for row in entity_rows:
+            eid = row[0]
+            conf = float(row[1]) if has_confidence and len(row) > 1 and row[1] is not None else 1.0
+            entity_ids.append(eid)
+            entity_conf[eid] = conf
 
-        # Find memories linked to these entities
-        # Filter by tenant via memories table join
         entity_placeholders = ",".join("?" * len(entity_ids))
         cursor = conn.execute(
             f"""
-            SELECT mel.memory_id, COUNT(DISTINCT mel.entity_id) as entity_hits
+            SELECT
+                mel.memory_id,
+                COUNT(DISTINCT mel.entity_id) as entity_hits,
+                COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf,
+                COALESCE(AVG(er.confidence * er.decay_factor), 1.0) as avg_edge_quality
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id
-            AND m.tenant_id = ? AND m.user_id = ?
+                AND m.tenant_id = ? AND m.user_id = ? AND m.is_ghost = 0
+            LEFT JOIN memory_entities me ON me.id = mel.entity_id
+                AND me.user_id = ?
+            LEFT JOIN entity_relationships er ON (
+                (er.source_entity_id = mel.entity_id OR er.target_entity_id = mel.entity_id)
+                AND er.user_id = ?
+            )
             WHERE mel.entity_id IN ({entity_placeholders})
             AND mel.user_id = ?
             GROUP BY mel.memory_id
-            ORDER BY entity_hits DESC
+            ORDER BY
+                entity_hits DESC,
+                avg_edge_quality DESC
             LIMIT ?
         """,
-            [tenant_id, user_id, *entity_ids, user_id, limit],
+            [tenant_id, user_id, user_id, user_id, *entity_ids, user_id, limit],
         )
 
         rows = cursor.fetchall()
-        return {mid: rank + 1 for rank, (mid, _) in enumerate(rows)}
+        if not rows:
+            return ({}, {}, {})
+
+        scored: list[tuple[str, float]] = []
+        hits_map: dict[str, int] = {}
+        conf_map: dict[str, float] = {}
+        for row in rows:
+            mid = row[0]
+            entity_hits = row[1] or 1
+            avg_entity_conf = row[2] or 1.0
+            avg_edge_quality = row[3] or 1.0
+            graph_score = entity_hits * avg_entity_conf * avg_edge_quality
+            scored.append((mid, graph_score))
+            hits_map[mid] = entity_hits
+            conf_map[mid] = avg_entity_conf
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        rankings = {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
+        return (rankings, hits_map, conf_map)
+
+    def _compute_burst_boost(self, activation_count: int, last_retrieved_at: str | None, now: datetime) -> float:
+        """Compute a super-linear boost for recently-active memories.
+
+        Uses a sqrt curve so that 1-2 activations give modest boost while
+        many retrievals in a short window compound non-linearly. The boost
+        is further amplified when the last retrieval was very recent.
+        """
+        if activation_count <= 0:
+            return 1.0
+
+        base_boost = 1.0 + (activation_count**0.5) * 0.1
+
+        # Amplify if last retrieval was within the past hour (burst signal)
+        if last_retrieved_at:
+            try:
+                last_ret = datetime.fromisoformat(last_retrieved_at.replace("Z", "+00:00"))
+                hours_since_retrieval = max((now - last_ret).total_seconds() / 3600, 0.0)
+                if hours_since_retrieval < 1.0:
+                    # Burst: recent retrieval within the hour — extra 1.5x max
+                    burst_factor = 1.0 + (1.0 - hours_since_retrieval) * 0.5
+                    base_boost *= burst_factor
+            except (ValueError, AttributeError):
+                pass
+
+        return min(base_boost, 3.0)  # cap at 3x
+
+    def _compute_time_score(self, hours_old: float, category: str | None) -> float:
+        """Compute exponential decay time score with category-aware half-life."""
+        half_life = 168.0  # base: 1 week
+        if category:
+            cat_mult = self.category_multipliers.get(category, 1.0)
+            half_life *= cat_mult
+        return pow(0.5, max(0.0, hours_old) / half_life)
 
     def _temporal_search(
         self,
@@ -663,20 +793,25 @@ class HybridRetriever:
         min_importance: float,
     ) -> dict[str, int]:
         """
-        Temporal search: rank memories by recency and importance.
+        Temporal search: rank memories by recency, importance, and decay state.
 
-        Query-independent signal -- returns most important/recent memories
-        to provide recency context to the fusion.
+        Query-independent signal that provides recency context to the fusion.
+        Uses three components:
+        1. current_strength (from decay model) OR importance as baseline
+        2. Exponential recency decay with category-aware half-life
+        3. Activation burst boost for recently-retrieved memories
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
         cursor = conn.execute(
             """
-            SELECT id, importance, created_at, activation_count,
-                   COALESCE(strength_trend, 'stable')
+            SELECT id, importance, current_strength, created_at,
+                   activation_count, COALESCE(strength_trend, 'stable'),
+                   last_retrieved_at, category
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND importance >= ?
+            AND is_ghost = 0
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
         """,
@@ -691,7 +826,7 @@ class HybridRetriever:
         scored = []
 
         for row in rows:
-            mid, importance, created_at, activation_count, trend = row
+            mid, importance, current_strength, created_at, activation_count, trend, last_retrieved_at, category = row
 
             try:
                 created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
@@ -699,16 +834,20 @@ class HybridRetriever:
             except (ValueError, AttributeError):
                 hours_old = 168.0
 
-            time_score = pow(0.5, hours_old / 168.0)
-            activation_boost = 1 + ((activation_count or 0) * 0.05)
-            trend_mod = {
-                "strengthening": 1.2,
-                "stable": 1.0,
-                "weakening": 0.8,
-                "stale": 0.5,
-            }.get(trend, 1.0)
+            # 1. Baseline: use current_strength if available (from decay model),
+            #    otherwise fall back to creator-set importance.
+            strength = current_strength if current_strength is not None else importance
 
-            score = min(1.0, importance * time_score * activation_boost * trend_mod)
+            # 2. Exponential recency with category-aware half-life
+            time_score = self._compute_time_score(hours_old, category)
+
+            # 3. Activation burst boost
+            burst_boost = self._compute_burst_boost(activation_count or 0, last_retrieved_at, now)
+
+            # 4. Trend modifier
+            trend_mod = self.trend_mods.get(trend, 1.0)
+
+            score = min(1.0, strength * time_score * burst_boost * trend_mod)
             scored.append((mid, score))
 
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -809,10 +948,14 @@ class HybridRetriever:
             conn.close()
 
     def _run_graph_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
-        """Run graph search and return ranking dict."""
+        """Run graph search and return ranking dict with entity metadata side-channel."""
         conn = self._get_connection()
         try:
-            return self._graph_search(conn, query, user_id, tenant_id, limit * 3)
+            rankings, hits, conf = self._graph_search(conn, query, user_id, tenant_id, limit * 3)
+            # Store entity metadata on the instance for _build_results to consume
+            self._entity_hits = hits
+            self._entity_confidence = conf
+            return rankings
         finally:
             conn.close()
 
@@ -864,6 +1007,8 @@ class HybridRetriever:
             if memory_id in rankings.graph:
                 result.graph_score = self._rank_to_score(rankings.graph[memory_id], len(rankings.graph))
                 result.source_signals.append("graph")
+                result.entity_hits = rankings.entity_hits.get(memory_id, 0)
+                result.entity_confidence_avg = rankings.entity_confidence.get(memory_id, 0.0)
             if memory_id in rankings.temporal:
                 result.temporal_score = self._rank_to_score(rankings.temporal[memory_id], len(rankings.temporal))
                 result.source_signals.append("temporal")
