@@ -69,6 +69,13 @@ from .event_bus import (
     memory_updated,
 )
 from .graph_store import get_graph_store
+from .hooks import (
+    MemoryHookContext,
+    MemoryHookType,
+    _audit_hook,
+    _cache_invalidation_hook,
+    get_memory_hook_registry,
+)
 from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
 from .injection_budget import (
     BudgetResult,
@@ -1059,6 +1066,28 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if not options.content:
         return "Error: Content is required for 'store' action"
     opts = options.options or MemoryOptions()
+
+    # ── PRE_STORE hook ─────────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="store",
+        user_id=uid,
+        tenant_id=tenant_id,
+        content=options.content,
+        category=opts.category,
+        scope=getattr(opts, "scope", None),
+        retention=getattr(opts, "retention", None),
+        importance=getattr(opts, "importance", 0.5),
+        tags=getattr(opts, "tags", None),
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_STORE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted store: {r.message}"
+        if r.modified_context:
+            if "content" in r.modified_context:
+                options.content = r.modified_context["content"]
+            if "category" in r.modified_context:
+                opts.category = r.modified_context["category"]
+
     # Hard cap enforcement: check memory count per tenant
     conn = get_db_connection()
     current_count = conn.execute(
@@ -1144,6 +1173,11 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             logger.warning(f"Failed to create memory relationship: {exc}")
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=options.content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+
+    # ── POST_STORE hook ────────────────────────────────────────────────
+    hook_ctx.memory_id = memory_id
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
+
     return f"Stored memory {memory_id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
 
 
@@ -1151,6 +1185,22 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     """Helper to handle memory updates."""
     if not options.memory_id or not options.updates:
         return "Error: memory_id and updates required for 'update' action"
+
+    # ── PRE_UPDATE hook ────────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="update",
+        memory_id=options.memory_id,
+        user_id=uid,
+        tenant_id=tenant_id,
+        content=options.updates.content,
+        category=options.updates.category,
+        scope=options.updates.scope,
+        retention=options.updates.retention,
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_UPDATE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted update: {r.message}"
+
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
@@ -1206,6 +1256,11 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
     )
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+
+    # ── POST_UPDATE hook ───────────────────────────────────────────────
+    hook_ctx.old_content = row["content"]
+    hook_ctx.content = options.updates.content or row["content"]
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_UPDATE, hook_ctx)
     # Create memory relationship if specified
     if options.updates.relation_type and options.updates.related_memory_id:
         store = get_memory_relationship_store()
@@ -1227,6 +1282,17 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     if not memory_id:
         return "Error: memory_id required for 'delete' action"
 
+    # ── PRE_DELETE hook ────────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="delete",
+        memory_id=memory_id,
+        user_id=uid,
+        tenant_id=tenant_id,
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_DELETE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted delete: {r.message}"
+
     conn = get_db_connection()
     if not conn.execute(
         "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
@@ -1239,6 +1305,10 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     conn.commit()
     conn.close()
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+
+    # ── POST_DELETE hook ───────────────────────────────────────────────
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_DELETE, hook_ctx)
+
     return f"Deleted memory {memory_id}"
 
 
@@ -1394,6 +1464,21 @@ def search_memories(
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
 
+    # ── PRE_RETRIEVE hook ──────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="retrieve",
+        user_id=uid,
+        tenant_id=tenant_id,
+        query=options.query,
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_RETRIEVE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted retrieval: {r.message}"
+        if r.modified_context:
+            query_override = r.modified_context.get("query", options.query)
+            if query_override:
+                options.query = query_override
+
     # 1. Direct ID lookup
     if options.query_type == "id" or options.memory_id:
         mid = options.memory_id or options.query
@@ -1406,6 +1491,8 @@ def search_memories(
         conn.close()
 
         if not row:
+            # ── POST_RETRIEVE hook (no results) ────────────────────────
+            get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
             return f"Memory {mid} not found."
 
         # Emit event
@@ -1418,6 +1505,10 @@ def search_memories(
         result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
         if row["is_ghost"]:
             result += "[GHOST NODE - Content archived]"
+
+        # ── POST_RETRIEVE hook (ID lookup) ─────────────────────────────
+        hook_ctx.memory_id = mid
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return result
 
     # 2. Hybrid search if enabled and query provided
@@ -1447,6 +1538,8 @@ def search_memories(
                     results.append(
                         f"- [{r.memory_id}] {r.content[:100]}... (score={r.combined_score:.3f}, signals={signals})"
                     )
+                # ── POST_RETRIEVE hook (hybrid search) ─────────────────
+                get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
         except Exception as e:
             logger.debug(f"Hybrid search failed: {e}")
@@ -1469,9 +1562,13 @@ def search_memories(
     conn.close()
 
     if not rows:
+        # ── POST_RETRIEVE hook (no results) ────────────────────────────
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return "No memories found."
 
     results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
+    # ── POST_RETRIEVE hook (fallback) ─────────────────────────────────
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
 
 
@@ -3273,6 +3370,17 @@ def main():
     initialize_stream_producer()
     _resume_pending_curation_runs()
 
+    reg = get_memory_hook_registry()
+    reg.register(MemoryHookType.PRE_STORE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_STORE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.PRE_RETRIEVE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_RETRIEVE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.PRE_UPDATE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_UPDATE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.PRE_DELETE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_DELETE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_DELETE, _cache_invalidation_hook, name="cache_invalidation")
+
     # Initialize WebSocket server
     async def websocket_auth_callback(token: str) -> tuple[str, str] | None:
         """Auth callback for WebSocket connections."""
@@ -3291,8 +3399,11 @@ def main():
 
         return None
 
-    # Create and start WebSocket server
-    websocket_server = WebSocketServer(auth_callback=cast(Any, websocket_auth_callback))
+    # Create and start WebSocket server with event bus for real-time push
+    websocket_server = WebSocketServer(
+        event_bus=get_event_bus(),
+        auth_callback=cast(Any, websocket_auth_callback),
+    )
     _run_async(websocket_server.start())
 
     mcp.run(show_banner=False)
