@@ -184,12 +184,12 @@ class HybridRetriever:
 
     # keyword=1.0 (primary relevance), graph=0.8 (indirect expansion),
     # semantic=0.7 (topical similarity beyond exact match),
-    # temporal=0.6 (recency context, not relevance by itself)
+    # temporal=0.8 (recency context with decay-aware scoring)
     DEFAULT_WEIGHTS: ClassVar[dict[str, float]] = {
         "keyword": 1.0,
         "semantic": 0.7,
         "graph": 0.8,
-        "temporal": 0.6,
+        "temporal": 0.8,
     }
 
     # Trend modifiers applied to temporal score per strength_trend value.
@@ -646,6 +646,8 @@ class HybridRetriever:
             1. Number of distinct matching entities per memory
             2. Entity confidence (higher confidence = stronger signal)
             3. Edge decay_factor (fresher relationships weighted more)
+            4. Link relevance_score (context-specific importance of the
+               memory-entity association)
 
         Returns:
             Tuple of (rankings, entity_hits, entity_confidence):
@@ -702,13 +704,20 @@ class HybridRetriever:
             entity_conf[eid] = conf
 
         entity_placeholders = ",".join("?" * len(entity_ids))
+        link_cols = self._schema_cache.get("memory_entity_links")
+        if link_cols is None:
+            link_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entity_links)").fetchall()}
+            self._schema_cache["memory_entity_links"] = link_cols
+        has_relevance = "relevance_score" in link_cols
+
+        relevance_col = ", COALESCE(AVG(mel.relevance_score), 1.0) as avg_relevance" if has_relevance else ""
         cursor = conn.execute(
             f"""
             SELECT
                 mel.memory_id,
                 COUNT(DISTINCT mel.entity_id) as entity_hits,
                 COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf,
-                COALESCE(AVG(er.confidence * er.decay_factor), 1.0) as avg_edge_quality
+                COALESCE(AVG(er.confidence * er.decay_factor), 1.0) as avg_edge_quality{relevance_col}
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id
                 AND m.tenant_id = ? AND m.user_id = ? AND m.is_ghost = 0
@@ -741,7 +750,8 @@ class HybridRetriever:
             entity_hits = row[1] or 1
             avg_entity_conf = row[2] or 1.0
             avg_edge_quality = row[3] or 1.0
-            graph_score = entity_hits * avg_entity_conf * avg_edge_quality
+            avg_relevance = row[4] if has_relevance else 1.0
+            graph_score = entity_hits * avg_entity_conf * avg_edge_quality * avg_relevance
             scored.append((mid, graph_score))
             hits_map[mid] = entity_hits
             conf_map[mid] = avg_entity_conf
@@ -812,7 +822,7 @@ class HybridRetriever:
             WHERE user_id = ? AND tenant_id = ?
             AND importance >= ?
             AND is_ghost = 0
-            ORDER BY importance DESC, created_at DESC
+            ORDER BY created_at DESC
             LIMIT ?
         """,
             (user_id, tenant_id, min_importance, limit),
@@ -912,7 +922,7 @@ class HybridRetriever:
         cursor = conn.execute(
             f"""
             SELECT id, content, category, importance,
-                   strength_trend, created_at
+                   strength_trend, created_at, current_strength
             FROM memories
             WHERE id IN ({placeholders})
             AND user_id = ? AND tenant_id = ?
@@ -927,6 +937,7 @@ class HybridRetriever:
                 "importance": row[3] or 0.5,
                 "strength_trend": row[4],
                 "created_at": row[5],
+                "current_strength": row[6],
             }
             for row in cursor.fetchall()
         }
@@ -975,18 +986,20 @@ class HybridRetriever:
         rankings: Rankings,
     ) -> list[HybridResult]:
         """Build HybridResult objects from merged rankings."""
-        # Build results with scores
         results = []
         for memory_id, rrf_score in merged[:limit]:
             mem = memories.get(memory_id)
             if not mem:
                 continue
 
+            importance = mem.get("importance", 0.5)
+            current_strength = mem.get("current_strength")
+
             result = HybridResult(
                 memory_id=memory_id,
                 content=mem["content"],
                 category=mem.get("category"),
-                importance=mem.get("importance", 0.5),
+                importance=importance,
                 strength_trend=mem.get("strength_trend"),
                 created_at=mem["created_at"],
                 combined_score=rrf_score,
@@ -1013,7 +1026,19 @@ class HybridRetriever:
                 result.temporal_score = self._rank_to_score(rankings.temporal[memory_id], len(rankings.temporal))
                 result.source_signals.append("temporal")
 
+            # Cross-cutting decay multiplier: penalize memories whose current strength
+            # has decayed below their original importance. This applies decay as a
+            # post-RRF factor so it affects ALL signals, not just temporal.
+            decay_multiplier = 1.0
+            if current_strength is not None and importance > 0:
+                ratio = current_strength / importance
+                decay_multiplier = max(0.0, min(1.0, ratio))
+            result.combined_score = rrf_score * decay_multiplier
+
             results.append(result)
+
+        # Re-sort by decay-adjusted combined score
+        results.sort(key=lambda r: r.combined_score, reverse=True)
         return results
 
     def _fetch_memories_for_top_ids(
