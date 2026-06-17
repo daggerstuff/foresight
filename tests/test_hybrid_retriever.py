@@ -32,7 +32,7 @@ def cleanup():
 
 def create_test_db():
     """Create a temp DB with schema and test data."""
-    fd, path = tempfile.mkstemp(suffix=".db")
+    _, path = tempfile.mkstemp(suffix=".db")
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
 
@@ -189,7 +189,7 @@ def create_test_db():
 
     import os
 
-    os.close(fd)
+    os.close(_)
     return path
 
 
@@ -403,6 +403,46 @@ class TestTemporalSearch:
 
         for r in result.results:
             assert r.importance >= 0.8
+
+    def test_finds_recent_low_importance_memory(self):
+        """Temporal should find recent memories even if they have low importance."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, category TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "test_user"
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, created_at) "
+            "VALUES ('old_important', ?, 'old important memory', 0.9, ?)",
+            (uid, (now - timedelta(days=30)).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, created_at) "
+            "VALUES ('recent_trivial', ?, 'recent trivial memory', 0.2, ?)",
+            (uid, (now - timedelta(minutes=5)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        conn2 = retriever._get_connection()
+        try:
+            rankings = retriever._temporal_search(conn2, uid, "default", 10, 0.0)
+        finally:
+            conn2.close()
+        os.unlink(path)
+
+        # Both should appear in temporal results
+        assert "recent_trivial" in rankings, "Recent low-importance memory should be in temporal results"
+        assert "old_important" in rankings, "Old important memory should be in temporal results"
 
 
 class TestHybridFusion:
@@ -806,7 +846,7 @@ class TestTemporalSignalHardening:
 
     def test_temporal_uses_current_strength(self):
         """Build a minimal DB with current_strength set to verify it's used."""
-        fd, path = tempfile.mkstemp(suffix=".db")
+        _, path = tempfile.mkstemp(suffix=".db")
         conn = sqlite3.connect(path)
         conn.execute("""
             CREATE TABLE memories (
@@ -850,7 +890,7 @@ class TestTemporalSignalHardening:
 
     def test_temporal_trend_modifier(self):
         """Trend modifiers should boost 'strengthening' and penalize 'weakening'."""
-        fd, path = tempfile.mkstemp(suffix=".db")
+        _, path = tempfile.mkstemp(suffix=".db")
         conn = sqlite3.connect(path)
         conn.execute("""
             CREATE TABLE memories (
@@ -885,12 +925,69 @@ class TestTemporalSignalHardening:
         )
 
 
+class TestDecayCrossCutting:
+    """Tests for cross-cutting decay multiplier in RRF fusion.
+
+    Decay (current_strength) should penalize the combined RRF score of
+    decayed memories, not just their temporal signal rank.
+    """
+
+    def test_decayed_memory_penalized_in_rrf(self):
+        """A heavily decayed memory should rank lower despite identical content matching."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, category TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        # Both memories have identical content (same keyword matching), same importance
+        # but mem_fresh has high current_strength, mem_decayed has low current_strength
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
+            "VALUES ('mem_fresh', ?, 'anxiety therapy session today', 0.8, 0.8, ?)",
+            (uid, (now - timedelta(hours=1)).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
+            "VALUES ('mem_decayed', ?, 'anxiety therapy session today', 0.8, 0.15, ?)",
+            (uid, (now - timedelta(hours=1)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        result = retriever.search("anxiety", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+
+        import os
+
+        os.unlink(path)
+
+        # Both memories should be found by keyword search
+        ids = [r.memory_id for r in result.results]
+        assert "mem_fresh" in ids
+        assert "mem_decayed" in ids
+
+        # mem_fresh should rank higher (combined_score penalized for decayed)
+        fresh_result = next(r for r in result.results if r.memory_id == "mem_fresh")
+        decayed_result = next(r for r in result.results if r.memory_id == "mem_decayed")
+        assert fresh_result.combined_score > decayed_result.combined_score, (
+            f"Fresh memory ({fresh_result.combined_score}) should outrank decayed ({decayed_result.combined_score})"
+        )
+
+
 class TestGraphSignalHardening:
     """Tests for the new graph/entity signal hardening."""
 
     def test_graph_composite_scoring(self):
-        """Entity hits × confidence × edge quality determines graph ranking."""
-        fd, path = tempfile.mkstemp(suffix=".db")
+        """Entity hits x confidence x edge quality determines graph ranking."""
+        _, path = tempfile.mkstemp(suffix=".db")
         conn = sqlite3.connect(path)
         # Create minimal schema with entity_relationships
         conn.executescript("""
@@ -949,21 +1046,21 @@ class TestGraphSignalHardening:
         conn.close()
 
         retriever = HybridRetriever(path)
-        rankings, hits, conf = retriever._graph_search(
+        rankings, hits, _ = retriever._graph_search(
             retriever._get_connection(), "anxiety therapy stress", uid, "default", 10
         )
         os.unlink(path)
 
         assert "m_high" in rankings
         assert "m_low" in rankings
-        # m_high (2 entities × ~0.85 conf × ~high edge qual) >> m_low (1 × 0.2 × 1.0)
+        # m_high (2 entities x ~0.85 conf x ~high edge qual) >> m_low (1 x 0.2 x 1.0)
         assert rankings["m_high"] < rankings["m_low"]
         assert hits.get("m_high", 0) >= 2
         assert hits.get("m_low", 0) == 1
 
     def test_graph_entity_confidence_empty_db(self):
         """Graph search on empty DB returns empty rankings."""
-        fd, path = tempfile.mkstemp(suffix=".db")
+        _, path = tempfile.mkstemp(suffix=".db")
         conn = sqlite3.connect(path)
         conn.executescript("""
             CREATE TABLE memories (id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
@@ -987,6 +1084,62 @@ class TestGraphSignalHardening:
         assert rankings == {}
         assert hits == {}
         assert conf == {}
+
+    def test_graph_uses_relevance_score(self):
+        """relevance_score from memory_entity_links must factor into graph scoring."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, is_ghost INTEGER DEFAULT 0
+            );
+            CREATE TABLE memory_entities (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                name TEXT, entity_type TEXT, confidence REAL DEFAULT 1.0
+            );
+            CREATE TABLE entity_relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_entity_id TEXT, target_entity_id TEXT,
+                user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                confidence REAL DEFAULT 1.0, decay_factor REAL DEFAULT 1.0
+            );
+            CREATE TABLE memory_entity_links (
+                memory_id TEXT, entity_id TEXT,
+                user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                relevance_score REAL DEFAULT 1.0,
+                PRIMARY KEY (memory_id, entity_id)
+            );
+        """)
+        uid = "u1"
+        # Two memories, both linked to the same entity, identical hits and confidence
+        conn.execute("INSERT INTO memories (id, user_id) VALUES ('m_high_rel', ?)", (uid,))
+        conn.execute("INSERT INTO memories (id, user_id) VALUES ('m_low_rel', ?)", (uid,))
+        conn.execute(
+            "INSERT INTO memory_entities (id, user_id, name, confidence) VALUES ('e_rel', ?, 'anxiety', 0.9)", (uid,)
+        )
+        # Same entity, different relevance_score
+        conn.execute(
+            "INSERT INTO memory_entity_links (memory_id, entity_id, user_id, relevance_score) "
+            "VALUES ('m_high_rel', 'e_rel', ?, 0.95)",
+            (uid,),
+        )
+        conn.execute(
+            "INSERT INTO memory_entity_links (memory_id, entity_id, user_id, relevance_score) "
+            "VALUES ('m_low_rel', 'e_rel', ?, 0.25)",
+            (uid,),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        rankings, _, _ = retriever._graph_search(retriever._get_connection(), "anxiety", uid, "default", 10)
+        os.unlink(path)
+
+        assert "m_high_rel" in rankings
+        assert "m_low_rel" in rankings
+        # m_high_rel (relevance=0.95) should rank better than m_low_rel (relevance=0.25)
+        assert rankings["m_high_rel"] < rankings["m_low_rel"], f"Higher relevance_score should rank better: {rankings}"
 
 
 class TestEntityMetadataInResults:
