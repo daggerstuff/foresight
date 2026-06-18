@@ -52,6 +52,21 @@ def status(
             ("Memory Count", str(result.get("memory_count", result.get("count", 0)))),
             ("Crisis Signals", str(result.get("crisis_signals", 0))),
         ]
+
+        # Maintenance stats
+        maint = result.get("maintenance_stats")
+        if isinstance(maint, dict):
+            last_run = maint.get("last_maintenance_run", "")
+            total = maint.get("total_events", 0)
+            pairs.append(("Maintenance Events", str(total)))
+            if last_run:
+                pairs.append(("Last Maintenance", str(last_run)[:19]))
+
+        # Last capture time
+        lct = result.get("last_capture_time")
+        if lct:
+            pairs.append(("Last Capture", str(lct)[:19]))
+
         out.kv_table(pairs, title="Foresight Status")
 
         by_scope = result.get("by_scope", {})
@@ -60,6 +75,53 @@ def status(
                 [f"{k}: {v}" for k, v in by_scope.items()],
                 title="Memories by Scope",
             )
+
+        # Maintenance details
+        if isinstance(maint, dict):
+            maint_items = []
+            for k in (
+                "duplicates_auto_consolidated",
+                "duplicates_flagged_review",
+                "contradictions_flagged_review",
+                "stale_archived",
+                "insights_generated",
+                "errors",
+                "reviews_flagged",
+            ):
+                v = maint.get(k)
+                if v is not None:
+                    label = k.replace("_", " ").title()
+                    maint_items.append(f"{label}: {v}")
+            if maint_items:
+                out.bullet_list(maint_items, title="Maintenance Details")
+
+            by_type = maint.get("by_type", {})
+            if isinstance(by_type, dict) and by_type:
+                out.bullet_list(
+                    [f"{k}: {v}" for k, v in by_type.items()],
+                    title="Maintenance by Type",
+                )
+
+        # Payload budget
+        budget = result.get("payload_budget")
+        if isinstance(budget, dict):
+            budget_items = [f"Min Lane Chars: {budget.get('min_lane_chars', '?')}"]
+            weights = budget.get("default_lane_weights", {})
+            if isinstance(weights, dict):
+                for lane_name, pct in sorted(weights.items()):
+                    budget_items.append(f"{lane_name}: {pct}%")
+            out.bullet_list(budget_items, title="Payload Budget")
+
+        # Cache / retrieval debug
+        cache = result.get("cache_metrics")
+        if isinstance(cache, dict):
+            debug_items = []
+            debug = cache.get("retrieval_debug", {})
+            if isinstance(debug, dict):
+                for k, v in debug.items():
+                    debug_items.append(f"{k}: {v}")
+            if debug_items:
+                out.bullet_list(debug_items, title="Retrieval Debug")
     else:
         out.stdout(str(result))
 
@@ -208,9 +270,10 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
+        from foresight_mcp.server import TemporalWindow
         from foresight_mcp import query_memories_temporal
 
-        temporal = query_memories_temporal(options={"window": "month", "limit": 100})
+        temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:
         temporal = None
 
@@ -225,13 +288,23 @@ def stats(
     elif isinstance(health_raw, dict):
         health = health_raw
 
+    maint = health.get("maintenance_stats")
+    lct = health.get("last_capture_time")
+    budget = health.get("payload_budget")
+
     if out.get_settings().mode == "agent":
-        stats_data = {
+        stats_data: dict[str, Any] = {
             "memory_count": health.get("memory_count", health.get("count", 0)),
             "crisis_signals": health.get("crisis_signals", 0),
             "by_scope": health.get("by_scope", {}),
             "temporal": temporal if isinstance(temporal, dict) else None,
         }
+        if isinstance(maint, dict):
+            stats_data["maintenance_stats"] = maint
+        if lct:
+            stats_data["last_capture_time"] = str(lct)[:19]
+        if isinstance(budget, dict):
+            stats_data["payload_budget"] = budget
         out.print_json(stats_data)
         return
 
@@ -241,10 +314,30 @@ def stats(
     out.stderr(f"Memory Count: {mem_count}", style="bold")
     out.stderr(f"Crisis Signals: {crisis}")
 
+    if lct:
+        out.stderr(f"Last Capture: {str(lct)[:19]}")
+
     by_scope = health.get("by_scope", {})
     if isinstance(by_scope, dict) and by_scope:
         rows = [[k, str(v)] for k, v in by_scope.items()]
         out.print_table(["Scope", "Count"], rows, title="By Scope")
+
+    if isinstance(maint, dict):
+        maint_rows = [
+            [
+                str(maint.get("total_events", 0)),
+                str(maint.get("duplicates_auto_consolidated", 0)),
+                str(maint.get("duplicates_flagged_review", 0)),
+                str(maint.get("contradictions_flagged_review", 0)),
+                str(maint.get("stale_archived", 0)),
+                str(maint.get("insights_generated", 0)),
+            ]
+        ]
+        out.print_table(
+            ["Total", "Consolidated", "Flagged", "Contradictions", "Archived", "Insights"],
+            maint_rows,
+            title="Maintenance Stats",
+        )
 
     if temporal:
         out.result_block(temporal if isinstance(temporal, dict) else {"raw": str(temporal)}, title="Temporal Trends")
@@ -309,18 +402,20 @@ def history(
     try:
         from foresight_mcp import get_decay_events
 
-        events = get_decay_events(user_id=resolved_uid, limit=limit)
+        raw = get_decay_events(user_id=resolved_uid, limit=limit)
+        parsed: dict = json.loads(raw) if isinstance(raw, str) else raw
+        events_list: list = parsed.get("events", []) if parsed.get("ok") else []
     except (json.JSONDecodeError, TypeError, OSError) as e:
         out.error(f"Failed to retrieve history: {e}")
         raise typer.Exit(1)
 
     if out.get_settings().mode == "agent":
-        out.print_json({"events": events})
+        out.print_json({"events": events_list})
         return
 
-    if isinstance(events, list) and events:
+    if events_list:
         rows = []
-        for ev in events:
+        for ev in events_list:
             eid = ev.get("memory_id", "?")[:12]
             etype = ev.get("event_type", ev.get("type", "?"))
             strength = ev.get("old_strength", ev.get("strength", "?"))

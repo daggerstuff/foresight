@@ -17,6 +17,10 @@ from pathlib import Path
 DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
 DB_PATH = os.environ.get("FORESIGHT_DB_PATH", DEFAULT_DB_PATH)
 
+# Neon / PostgreSQL connection string (overrides DB_PATH when set)
+# Format: postgresql://user:password@host:port/dbname?sslmode=require
+DB_URL = os.environ.get("FORESIGHT_DB_URL", "")
+
 # Identity defaults (used when FORESIGHT_IDENTITY not set)
 DEFAULT_USER_ID = os.environ.get("USER", "user")
 DEFAULT_ACCOUNT_ID = "default"
