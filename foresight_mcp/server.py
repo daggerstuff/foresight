@@ -42,6 +42,7 @@ from .config import (
     DEFAULT_TENANT_ID,
     USER_ID,
 )
+from .capture import get_capture_pipeline
 from .connection_pool import get_pool
 from .context_blocks import (
     PENDING_ITEMS,
@@ -1915,7 +1916,10 @@ def process_session_transcript(
     _bridge_context_blocks_to_memories(agent, uid)
     _bridge_transcript_entities(messages, uid)
 
-    return f"Processed transcript for session {session_id}"
+    pipeline = get_capture_pipeline()
+    stats = pipeline.run(session_id=session_id, messages=messages, user_id=uid, tenant_id=tenant_id)
+
+    return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
 
 
 @mcp.tool(output_schema=None)
