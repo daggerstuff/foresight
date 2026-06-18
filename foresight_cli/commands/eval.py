@@ -65,3 +65,53 @@ def run(
             )
         if report:
             out.info(f"Report written to {report}")
+
+
+@app.command()
+def maintenance_eval(
+    db_path: str | None = typer.Option(None, "--db-path", help="Path to temp database (default: auto tempfile)"),
+    report: str | None = typer.Option(None, "--report", "-r", help="Write JSON report to file"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output report as JSON"),
+):
+    """Run the maintenance evaluation harness and print a summary report (PIX-3952).
+
+    Seeds fixture memories designed to trigger all 4 maintenance modes
+    (consolidate, contradict, archive_stale, synthesize), runs each mode
+    individually plus a combined run, and reports payload reduction metrics.
+    """
+    from foresight_mcp.maintenance_eval import run_maintenance_eval
+
+    report_obj = run_maintenance_eval(
+        db_path=db_path,
+        report_path=report,
+        json_output=json_output or out.get_settings().mode == "json",
+    )
+
+    passed = report_obj.summary["passed"]
+    total = report_obj.summary["total"]
+    pct = report_obj.summary["pass_rate_pct"]
+
+    if out.get_settings().mode == "json":
+        out.print_json(report_obj.to_dict())
+    elif out.get_settings().mode == "agent":
+        out.data(
+            "maintenance_eval_result",
+            {
+                "passed": passed,
+                "total": total,
+                "pass_rate_pct": pct,
+            },
+        )
+    else:
+        out.done(f"{passed}/{total} scenarios passed ({pct:.1f}%)")
+        for sr in report_obj.scenarios:
+            status = "✓" if sr.passed else "✗"
+            icon = "green" if sr.passed else "red"
+            out.stderr(
+                f"  [{icon}]{status}[/] {sr.id}: "
+                f"pre={sr.pre_stats.memory_count}→post={sr.post_stats.memory_count}, "
+                f"{'latency=' + f'{sr.latency_ms:.1f}ms' if sr.latency_ms else 'N/A'}",
+                style=icon,
+            )
+        if report:
+            out.info(f"Maintenance eval report written to {report}")

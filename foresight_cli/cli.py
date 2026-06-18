@@ -119,6 +119,21 @@ def callback(  # noqa: PLR0913
     }
 
 
+def _decode_tool_result(result: str | dict) -> dict:
+    """Wrap plain-text errors into JSON format for CLI JSON output mode.
+
+    Args:
+        result: Either a plain text error string or an already-parsed dict.
+
+    Returns:
+        A dict with ``{"ok": True, ...}`` for raw dict passthrough,
+        or ``{"ok": False, "error": {"message": text}}`` for plain text.
+    """
+    if isinstance(result, dict):
+        return result
+    return {"ok": False, "error": {"message": result}}
+
+
 try:
     from .tui.app import ForesightTUI
 except ImportError:

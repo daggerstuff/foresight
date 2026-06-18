@@ -79,9 +79,11 @@ from .hooks import (
 from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
 from .injection_budget import (
     BudgetResult,
+    DEFAULT_LANE_WEIGHTS,
     InjectionBudget,
     Lane,
     LaneItem,
+    MIN_LANE_CHARS,
     format_budgeted_payload,
 )
 from .memory_components import (
@@ -104,6 +106,7 @@ from .memory_types import (
     RetentionPolicy,
 )
 from .narrative_cache import NarrativeCache
+from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
 from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
 from .reflection_engine import get_reflection_engine
@@ -1065,6 +1068,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     """Helper to handle memory storage."""
     if not options.content:
         return "Error: Content is required for 'store' action"
+    content = options.content.strip()
+    if not content:
+        return "Error: Content is required for 'store' action"
     opts = options.options or MemoryOptions()
 
     # ── PRE_STORE hook ─────────────────────────────────────────────────
@@ -1072,7 +1078,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         action="store",
         user_id=uid,
         tenant_id=tenant_id,
-        content=options.content,
+        content=content,
         category=opts.category,
         scope=getattr(opts, "scope", None),
         retention=getattr(opts, "retention", None),
@@ -1097,8 +1103,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
         conn.close()
         return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
-    memory_id = hashlib.sha256(f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
-    content_h = _content_hash(options.content.strip())
+    memory_id = hashlib.sha256(f"{content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+    content_h = _content_hash(content)
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
         "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
@@ -1118,7 +1124,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     emo_ctx = EmotionalMetadata.from_dict(opts.emotional_context) if opts.emotional_context else None
     met = EmpathyMetrics.from_dict(opts.metrics) if opts.metrics else None
     memory = MemoryObject.create(
-        content=options.content,
+        content=content,
         scope=cast(MemoryScope, opts.scope),
         retention=cast(RetentionPolicy, opts.retention),
         emotional_context=emo_ctx,
@@ -1143,7 +1149,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             opts.category,
             memory.scope,
             memory.retention,
-            options.content.strip(),
+            content,
             content_h,
             json.dumps(opts.emotional_context) if opts.emotional_context else None,
             json.dumps(opts.metrics) if opts.metrics else None,
@@ -1171,7 +1177,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             )
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
-    get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=options.content, actor=uid))
+    get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
 
     # ── POST_STORE hook ────────────────────────────────────────────────
@@ -1910,6 +1916,63 @@ def process_session_transcript(
     _bridge_transcript_entities(messages, uid)
 
     return f"Processed transcript for session {session_id}"
+
+
+@mcp.tool(output_schema=None)
+def capture_triggered_memories(
+    text: str,
+    user_id: str | None = None,
+) -> str:
+    uid = user_id or USER_ID
+    matches = extract_triggered_memories(text, triggers=DEFAULT_TRIGGERS)
+
+    if not matches:
+        return json.dumps(
+            {
+                "ok": True,
+                "match_count": 0,
+                "stored_count": 0,
+                "results": [],
+                "message": "No phrase triggers detected.",
+            },
+            indent=2,
+        )
+
+    results: list[dict[str, Any]] = []
+    stored_count = 0
+
+    for match in matches:
+        options = MemoryAction(
+            action="store",
+            content=match.content,
+            options=MemoryOptions(
+                category=match.metadata.get("category", "fact"),
+                scope=match.metadata.get("scope", "session"),
+                retention=match.metadata.get("retention", "short_term"),
+                importance=match.metadata.get("importance", 0.5),
+            ),
+        )
+        store_result = manage_memories(options, user_id=uid)
+        stored_count += 1
+        results.append(
+            {
+                "trigger": match.trigger,
+                "content": match.content,
+                "position": match.position,
+                "metadata": match.metadata,
+                "store_result": store_result,
+            }
+        )
+
+    return json.dumps(
+        {
+            "ok": True,
+            "match_count": len(matches),
+            "stored_count": stored_count,
+            "results": results,
+        },
+        indent=2,
+    )
 
 
 # =============================================================================
@@ -3544,12 +3607,52 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
         "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
         (uid, tenant_id),
     ).fetchall()
+    # Maintenance stats (lightweight — uses existing open conn)
+    try:
+        maintenance_rows = conn.execute(
+            "SELECT event_type, COUNT(*) as cnt FROM events WHERE event_type LIKE ? GROUP BY event_type",
+            ("maintenance%",),
+        ).fetchall()
+        last_maint = conn.execute(
+            "SELECT MAX(timestamp) FROM events WHERE event_type LIKE ?",
+            ("maintenance%",),
+        ).fetchone()[0]
+        by_event_type = {r["event_type"]: r["cnt"] for r in maintenance_rows}
+        total_events = sum(by_event_type.values())
+        reviews = sum(v for k, v in by_event_type.items() if "maintenance_review" in k)
+        insights = by_event_type.get("maintenance_insight", 0)
+        maintenance_stats = {
+            "total_events": total_events,
+            "reviews_flagged": reviews,
+            "insights_generated": insights,
+            "last_maintenance_run": last_maint,
+            "by_type": by_event_type,
+        }
+    except Exception:
+        maintenance_stats = {"error": "Cannot query maintenance events"}
+
+    # Last capture time (lightweight — uses existing open conn)
+    try:
+        last_cap = conn.execute(
+            "SELECT MAX(created_at) FROM memories WHERE user_id = ? AND tenant_id = ?",
+            (uid, tenant_id),
+        ).fetchone()[0]
+        last_capture_time = last_cap
+    except Exception:
+        last_capture_time = None
+
     conn.close()
     result = {
         "status": "healthy",
         "memory_count": count,
         "by_scope": {r[0]: r[1] for r in scope_counts},
         "tenant_id": tenant_id,
+        "maintenance_stats": maintenance_stats,
+        "last_capture_time": last_capture_time,
+        "payload_budget": {
+            "default_lane_weights": {k.name.lower(): v for k, v in DEFAULT_LANE_WEIGHTS.items()},
+            "min_lane_chars": MIN_LANE_CHARS,
+        },
     }
     # Add temporal stats/trends if requested
     if opts.include_trends:
@@ -3602,6 +3705,11 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
                 "size": tfidf_cache_size,
                 "max_size": DEFAULT_MAX_TFIDF_CACHE_SIZE,
                 "utilization_pct": round((tfidf_cache_size / DEFAULT_MAX_TFIDF_CACHE_SIZE) * 100, 2),
+            }
+            # Retrieval debug info
+            result["retrieval_debug"] = {
+                "tfidf_cache_size": tfidf_cache_size,
+                "fast_path_enabled": True,
             }
         except Exception:
             result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}

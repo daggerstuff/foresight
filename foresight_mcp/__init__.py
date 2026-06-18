@@ -122,6 +122,8 @@ from .hybrid_retriever import (
     reset_hybrid_retriever as reset_hybrid_retriever,
 )
 from .injection_budget import (
+    DEFAULT_LANE_WEIGHTS as DEFAULT_LANE_WEIGHTS,
+    MIN_LANE_CHARS as MIN_LANE_CHARS,
     BudgetResult as BudgetResult,
     InjectionBudget as InjectionBudget,
     Lane as Lane,
@@ -130,6 +132,9 @@ from .injection_budget import (
     TruncationLevel as TruncationLevel,
     allocate_lane as allocate_lane,
     format_budgeted_payload as format_budgeted_payload,
+)
+from .maintenance_eval import (
+    run_maintenance_eval as run_maintenance_eval,
 )
 from .memory_relationships import (
     VALID_RELATIONSHIP_TYPES as VALID_RELATIONSHIP_TYPES,
@@ -140,6 +145,11 @@ from .memory_relationships import (
     MemoryRelationshipStore as MemoryRelationshipStore,
     get_memory_relationship_store as get_memory_relationship_store,
     reset_memory_relationship_store as reset_memory_relationship_store,
+)
+from .phrase_triggers import (
+    DEFAULT_TRIGGERS as DEFAULT_TRIGGERS,
+    PhraseTriggerMatch as PhraseTriggerMatch,
+    extract_triggered_memories as extract_triggered_memories,
 )
 from .profile_synthesizer import (
     ProfileConfig as ProfileConfig,
@@ -186,6 +196,7 @@ from .server import (
     analyze_memories as analyze_memories,
     apply_memory_decay as apply_memory_decay,
     archive_memory as archive_memory,
+    capture_triggered_memories as capture_triggered_memories,
     create_document as create_document,
     delete_document as delete_document,
     delete_memory as delete_memory,
@@ -348,6 +359,9 @@ __version__ = "1.2.0"
 __all__ = [
     "DEFAULT_BLOCK_SCHEMAS",
     "DEFAULT_CHUNK_CHAR_BUDGET",
+    "DEFAULT_LANE_WEIGHTS",
+    "DEFAULT_TRIGGERS",
+    "MIN_LANE_CHARS",
     "SEMANTIC_DEFAULT_PROVIDER",
     "SEMANTIC_VALID_PROVIDERS",
     "VALID_DOCUMENT_SOURCES",
@@ -422,6 +436,7 @@ __all__ = [
     "Operation",
     "OperationQueue",
     "OperationType",
+    "PhraseTriggerMatch",
     "ReflectionEngine",
     "ReflectionInsight",
     "ReflectionReport",
@@ -461,6 +476,7 @@ __all__ = [
     "analyze_memories",
     "apply_memory_decay",
     "archive_memory",
+    "capture_triggered_memories",
     "chunk_text",
     "clear_context_block",
     "clear_subconscious_block",
@@ -472,6 +488,7 @@ __all__ = [
     "delete_memory",
     "delete_memory_embedding",
     "deserialize_vector",
+    "extract_triggered_memories",
     "format_budgeted_payload",
     "get_context_block",
     "get_context_block_agent",
@@ -543,6 +560,7 @@ __all__ = [
     "reset_temporal_query_builder",
     "reset_temporal_service",
     "run_clustering",
+    "run_maintenance_eval",
     "run_temporal_migrations",
     "search_memories",
     "semantic_search_memories",
