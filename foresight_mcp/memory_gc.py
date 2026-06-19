@@ -68,7 +68,7 @@ class MemoryGC:
     Performs cheap, frequent cleanup operations:
     1. Delete memories past retention TTL (ephemeral >24h, short_term >7d)
     2. Prune old memory_decay_events log
-    3. Prune old maintenance events from events table
+    3. Prune old maintenance events (>60d)
     4. Clean orphaned memory_entity_links and memory_embeddings
     """
 
@@ -150,9 +150,9 @@ class MemoryGC:
             cursor = conn.execute(
                 """
                 DELETE FROM memory_decay_events
-                WHERE created_at < ?
+                WHERE created_at < ? AND tenant_id = ?
                 """,
-                (decay_cutoff,),
+                (decay_cutoff, tenant_id),
             )
             stats.decay_events_pruned = cursor.rowcount
             conn.commit()
@@ -164,9 +164,9 @@ class MemoryGC:
             cursor = conn.execute(
                 """
                 DELETE FROM events
-                WHERE event_type LIKE 'maintenance%' AND timestamp < ?
+                WHERE event_type LIKE 'maintenance%' AND timestamp < ? AND tenant_id = ?
                 """,
-                (maint_cutoff,),
+                (maint_cutoff, tenant_id),
             )
             stats.maintenance_events_pruned = cursor.rowcount
             conn.commit()
