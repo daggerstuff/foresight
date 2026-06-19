@@ -14,9 +14,12 @@ import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
+from .backend.base import DatabaseBackend
 from .config import DB_PATH
 from .connection_pool import get_pool
 from .entity_extractor import Entity, EntityType, ExtractionResult, Relationship, RelationshipType
@@ -65,22 +68,79 @@ class GraphStore:
     - Memory-to-entity linking
     """
 
-    def __init__(self, db_path: str):
-        """
-        Initialize graph store.
-
-        Args:
-            db_path: Path to SQLite database
-        """
+    def __init__(self, db_path: str, backend: DatabaseBackend | None = None):
         self.db_path = db_path
-        self._init_db()
+        self.backend = backend
+        if backend is None:
+            self._init_db()
+
+    def _fetch_rows(self, sql: str, params: tuple | list | None = None) -> list[dict[str, Any]]:
+        if self.backend is not None:
+            p: tuple | dict = tuple(params) if isinstance(params, list) else (params or ())
+            rows = self.backend.fetch(sql, p)
+            return [dict(row) for row in rows]
+        _pool = get_pool(self.db_path)
+        conn = _pool.acquire()
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            cursor = conn.execute(sql, params or [])
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            _pool.release(conn)
+
+    def _execute_sql(self, sql: str, params: tuple | list | None = None) -> None:
+        if self.backend is not None:
+            p: tuple | dict = tuple(params) if isinstance(params, list) else (params or ())
+            self.backend.execute(sql, p)
+            return
+        _pool = get_pool(self.db_path)
+        conn = _pool.acquire()
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            conn.execute(sql, params or [])
+            conn.commit()
+        finally:
+            _pool.release(conn)
+
+    @contextmanager
+    def _connection(self) -> Generator[Any]:
+        if self.backend is not None:
+            raise RuntimeError(
+                "_connection() not available when backend is set. "
+                "Use _fetch_rows/_execute_sql for backend-agnostic access."
+            )
+        _pool = get_pool(self.db_path)
+        conn = _pool.acquire()
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            yield conn
+        finally:
+            _pool.release(conn)
+
+    def _detect_columns(self, table: str) -> list[str]:
+        """Detect column names for a table, backend-aware."""
+        if self.backend is not None:
+            return [
+                "id",
+                "user_id",
+                "tenant_id",
+                "name",
+                "entity_type",
+                "description",
+                "properties",
+                "created_at",
+                "updated_at",
+            ]
+        with self._connection() as conn:
+            cursor = conn.execute(f"PRAGMA table_info({table})")
+            return [row["name"] for row in cursor.fetchall()]
 
     def _init_db(self) -> None:
-        """Initialize database schema."""
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        cursor = conn.cursor()
+        """Initialize database schema (SQLite only)."""
+        with self._connection() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
 
         try:
             # Entities table
@@ -184,7 +244,7 @@ class GraphStore:
             """)
 
             # Migrate existing tables that lack tenant_id before creating indexes
-            self._migrate_add_tenant_id(cast(sqlite3.Connection, conn))
+            self._migrate_add_tenant_id(conn)
 
             conn.commit()
 
@@ -212,24 +272,17 @@ class GraphStore:
             conn.rollback()
             logger.error(f"Failed to initialize graph store: {e}")
             raise
-        finally:
-            pool.release(conn)
 
     # =========================================================================
     # Schema Migration
     # =========================================================================
 
-    def _migrate_add_tenant_id(self, conn: sqlite3.Connection) -> None:
-        """Add tenant_id column to tables that lack it (for existing databases).
-
-        SQLite doesn't support ALTER TABLE to add/modify constraints, so we
-        recreate tables when the UNIQUE constraint needs updating.
-        """
+    def _migrate_add_tenant_id(self, conn) -> None:
         for table in ("memory_entities", "entity_relationships", "memory_entity_links"):
             try:
                 # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query
                 cursor = conn.execute(f"PRAGMA table_info({table})")
-                columns = [row[1] for row in cursor.fetchall()]
+                columns = [row["name"] for row in cursor.fetchall()]
             except sqlite3.OperationalError:
                 continue  # Table doesn't exist yet, CREATE TABLE IF NOT EXISTS will handle it
 
@@ -306,71 +359,52 @@ class GraphStore:
     # =========================================================================
 
     def upsert_entity(self, entity: Entity, user_id: str, tenant_id: str | None = None) -> str:
-        """Insert or update an entity."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            conn.execute(
-                """
-            INSERT INTO memory_entities
-            (id, tenant_id, user_id, name, entity_type, description, properties, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(tenant_id, user_id, name, entity_type) DO UPDATE SET
-                description = excluded.description,
-                properties = excluded.properties,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-                (
-                    entity.id,
-                    tid,
-                    user_id,
-                    entity.name,
-                    entity.entity_type,
-                    entity.description,
-                    json.dumps(entity.properties),
-                ),
-            )
-
-            conn.commit()
-            return entity.id
-
-        finally:
-            pool.release(conn)
+        self._execute_sql(
+            """
+        INSERT INTO memory_entities
+        (id, tenant_id, user_id, name, entity_type, description, properties, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(tenant_id, user_id, name, entity_type) DO UPDATE SET
+            description = excluded.description,
+            properties = excluded.properties,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+            (
+                entity.id,
+                tid,
+                user_id,
+                entity.name,
+                entity.entity_type,
+                entity.description,
+                json.dumps(entity.properties),
+            ),
+        )
+        return entity.id
 
     def get_entity(self, entity_id: str, user_id: str, tenant_id: str | None = None) -> Entity | None:
-        """Get an entity by ID, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            cursor = conn.execute(
-                """
-            SELECT id, user_id, name, entity_type, description, properties
-            FROM memory_entities
-            WHERE id = ? AND tenant_id = ? AND user_id = ?
-            """,
-                (entity_id, tid, user_id),
-            )
+        rows = self._fetch_rows(
+            """
+        SELECT id, user_id, name, entity_type, description, properties
+        FROM memory_entities
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+        """,
+            (entity_id, tid, user_id),
+        )
+        if not rows:
+            return None
 
-            row = cursor.fetchone()
-            if not row:
-                return None
-
-            return Entity(
-                id=row[0],
-                name=row[2],
-                entity_type=cast(Literal["person", "place", "concept", "event", "emotion", "object"], row[3]),
-                description=row[4],
-                properties=json.loads(row[5] or "{}"),
-            )
-
-        finally:
-            pool.release(conn)
+        row = rows[0]
+        return Entity(
+            id=row["id"],
+            name=row["name"],
+            entity_type=cast(Literal["person", "place", "concept", "event", "emotion", "object"], row["entity_type"]),
+            description=row["description"],
+            properties=json.loads(row["properties"] or "{}"),
+        )
 
     def get_entities_by_type(
         self,
@@ -379,37 +413,30 @@ class GraphStore:
         limit: int = 100,
         tenant_id: str | None = None,
     ) -> list[Entity]:
-        """Get all entities of a type for a user, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            cursor = conn.execute(
-                """
-            SELECT id, user_id, name, entity_type, description, properties
-            FROM memory_entities
-            WHERE tenant_id = ? AND user_id = ? AND entity_type = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-                (tid, user_id, entity_type, limit),
+        rows = self._fetch_rows(
+            """
+        SELECT id, user_id, name, entity_type, description, properties
+        FROM memory_entities
+        WHERE tenant_id = ? AND user_id = ? AND entity_type = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+            (tid, user_id, entity_type, limit),
+        )
+        return [
+            Entity(
+                id=row["id"],
+                name=row["name"],
+                entity_type=cast(
+                    Literal["person", "place", "concept", "event", "emotion", "object"], row["entity_type"]
+                ),
+                description=row["description"],
+                properties=json.loads(row["properties"] or "{}"),
             )
-
-            return [
-                Entity(
-                    id=row[0],
-                    name=row[2],
-                    entity_type=cast(Literal["person", "place", "concept", "event", "emotion", "object"], row[3]),
-                    description=row[4],
-                    properties=json.loads(row[5] or "{}"),
-                )
-                for row in cursor.fetchall()
-            ]
-
-        finally:
-            pool.release(conn)
+            for row in rows
+        ]
 
     def find_entities_by_name(
         self,
@@ -418,71 +445,54 @@ class GraphStore:
         limit: int = 10,
         tenant_id: str | None = None,
     ) -> list[Entity]:
-        """Find entities by name (partial match), scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            escaped = _escape_like(name)
-            cursor = conn.execute(
-                """
-            SELECT id, user_id, name, entity_type, description, properties
-            FROM memory_entities
-            WHERE tenant_id = ? AND user_id = ? AND name LIKE ? ESCAPE '!'
-            LIMIT ?
-            """,
-                (tid, user_id, f"%{escaped}%", limit),
+        escaped = _escape_like(name)
+        rows = self._fetch_rows(
+            """
+        SELECT id, user_id, name, entity_type, description, properties
+        FROM memory_entities
+        WHERE tenant_id = ? AND user_id = ? AND name LIKE ? ESCAPE '!'
+        LIMIT ?
+        """,
+            (tid, user_id, f"%{escaped}%", limit),
+        )
+        return [
+            Entity(
+                id=row["id"],
+                name=row["name"],
+                entity_type=cast(
+                    Literal["person", "place", "concept", "event", "emotion", "object"], row["entity_type"]
+                ),
+                description=row["description"],
+                properties=json.loads(row["properties"] or "{}"),
             )
-
-            return [
-                Entity(
-                    id=row[0],
-                    name=row[2],
-                    entity_type=cast(Literal["person", "place", "concept", "event", "emotion", "object"], row[3]),
-                    description=row[4],
-                    properties=json.loads(row[5] or "{}"),
-                )
-                for row in cursor.fetchall()
-            ]
-
-        finally:
-            pool.release(conn)
+            for row in rows
+        ]
 
     # =========================================================================
     # Relationship Operations
     # =========================================================================
 
     def add_relationship(self, relationship: Relationship, user_id: str, tenant_id: str | None = None) -> None:
-        """Add a relationship between entities, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            conn.execute(
-                """
-            INSERT OR IGNORE INTO entity_relationships
-            (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    tid,
-                    user_id,
-                    relationship.source_entity_id,
-                    relationship.target_entity_id,
-                    relationship.relationship_type,
-                    relationship.confidence,
-                    json.dumps(relationship.metadata),
-                ),
-            )
-
-            conn.commit()
-
-        finally:
-            pool.release(conn)
+        self._execute_sql(
+            """
+        INSERT OR IGNORE INTO entity_relationships
+        (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                tid,
+                user_id,
+                relationship.source_entity_id,
+                relationship.target_entity_id,
+                relationship.relationship_type,
+                relationship.confidence,
+                json.dumps(relationship.metadata),
+            ),
+        )
 
     def get_relationships(
         self,
@@ -491,54 +501,46 @@ class GraphStore:
         direction: str = "both",
         tenant_id: str | None = None,
     ) -> list[Relationship]:
-        """Get relationships for an entity, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            if direction == "out":
-                cursor = conn.execute(
-                    """
-                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                FROM entity_relationships
-                WHERE source_entity_id = ? AND tenant_id = ? AND user_id = ?
-                """,
-                    (entity_id, tid, user_id),
-                )
-            elif direction == "in":
-                cursor = conn.execute(
-                    """
-                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                FROM entity_relationships
-                WHERE target_entity_id = ? AND tenant_id = ? AND user_id = ?
-                """,
-                    (entity_id, tid, user_id),
-                )
-            else:  # both
-                cursor = conn.execute(
-                    """
-                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                FROM entity_relationships
-                WHERE (source_entity_id = ? OR target_entity_id = ?) AND tenant_id = ? AND user_id = ?
-                """,
-                    (entity_id, entity_id, tid, user_id),
-                )
+        if direction == "out":
+            rows = self._fetch_rows(
+                """
+            SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+            FROM entity_relationships
+            WHERE source_entity_id = ? AND tenant_id = ? AND user_id = ?
+            """,
+                (entity_id, tid, user_id),
+            )
+        elif direction == "in":
+            rows = self._fetch_rows(
+                """
+            SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+            FROM entity_relationships
+            WHERE target_entity_id = ? AND tenant_id = ? AND user_id = ?
+            """,
+                (entity_id, tid, user_id),
+            )
+        else:  # both
+            rows = self._fetch_rows(
+                """
+            SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+            FROM entity_relationships
+            WHERE (source_entity_id = ? OR target_entity_id = ?) AND tenant_id = ? AND user_id = ?
+            """,
+                (entity_id, entity_id, tid, user_id),
+            )
 
-            return [
-                Relationship(
-                    source_entity_id=row[0],
-                    target_entity_id=row[1],
-                    relationship_type=cast(RelationshipType, row[2]),
-                    confidence=row[3],
-                    metadata=json.loads(row[4] or "{}"),
-                )
-                for row in cursor.fetchall()
-            ]
-
-        finally:
-            pool.release(conn)
+        return [
+            Relationship(
+                source_entity_id=row["source_entity_id"],
+                target_entity_id=row["target_entity_id"],
+                relationship_type=cast(RelationshipType, row["relationship_type"]),
+                confidence=row["confidence"],
+                metadata=json.loads(row["metadata"] or "{}"),
+            )
+            for row in rows
+        ]
 
     # =========================================================================
     # Graph Traversal
@@ -552,138 +554,127 @@ class GraphStore:
         tenant_id: str | None = None,
         **kwargs: Any,
     ) -> GraphTraversalResult:
-        """Traverse graph from a starting entity, scoped to tenant."""
         max_depth = kwargs.get("max_depth", args[0] if len(args) > 0 else 2)
         max_results = kwargs.get("max_results", args[1] if len(args) > 1 else 50)
         relationship_types: list[str] | None = kwargs.get("relationship_types", args[2] if len(args) > 2 else None)
         tid = tenant_id or kwargs.get("tenant_id", args[3] if len(args) > 3 else None) or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            type_filter, type_params = build_type_filter(relationship_types or [])
+        type_filter, type_params = build_type_filter(relationship_types or [])
 
-            query = f"""
-            WITH RECURSIVE graph_traversal AS (
-                SELECT
-                    id as entity_id,
-                    entity_type,
-                    name,
-                    description,
-                    properties,
-                    0 as depth
-                FROM memory_entities
-                WHERE id = ? AND tenant_id = ? AND user_id = ?
+        query = f"""
+        WITH RECURSIVE graph_traversal AS (
+            SELECT
+                id as entity_id,
+                entity_type,
+                name,
+                description,
+                properties,
+                0 as depth
+            FROM memory_entities
+            WHERE id = ? AND tenant_id = ? AND user_id = ?
 
-                UNION ALL
+            UNION ALL
 
-                SELECT
-                    CASE
-                        WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
-                        ELSE r.source_entity_id
-                    END as entity_id,
-                    e.entity_type,
-                    e.name,
-                    e.description,
-                    e.properties,
-                    gt.depth + 1
-                FROM graph_traversal gt
-                JOIN entity_relationships r ON (
-                    (gt.entity_id = r.source_entity_id OR gt.entity_id = r.target_entity_id)
-                    AND r.tenant_id = ?
-                    {type_filter}
-                    AND r.confidence * r.decay_factor >= 0.1
-                )
-                JOIN memory_entities e ON e.id = CASE
+            SELECT
+                CASE
                     WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
                     ELSE r.source_entity_id
-                END
-                WHERE gt.depth < ?
-                AND e.tenant_id = ?
-                AND e.user_id = ?
+                END as entity_id,
+                e.entity_type,
+                e.name,
+                e.description,
+                e.properties,
+                gt.depth + 1
+            FROM graph_traversal gt
+            JOIN entity_relationships r ON (
+                (gt.entity_id = r.source_entity_id OR gt.entity_id = r.target_entity_id)
+                AND r.tenant_id = ?
+                {type_filter}
+                AND r.confidence * r.decay_factor >= 0.1
             )
-            SELECT DISTINCT entity_id, entity_type, name, description, properties, depth
-            FROM graph_traversal
-            WHERE depth > 0
-            LIMIT ?
-            """
-            cursor = conn.execute(
-                query,
-                [
-                    start_entity_id,
-                    tid,
-                    user_id,
-                    tid,
-                    *type_params,
-                    max_depth,
-                    tid,
-                    user_id,
-                    max_results,
-                ],
-            )
+            JOIN memory_entities e ON e.id = CASE
+                WHEN gt.entity_id = r.source_entity_id THEN r.target_entity_id
+                ELSE r.source_entity_id
+            END
+            WHERE gt.depth < ?
+            AND e.tenant_id = ?
+            AND e.user_id = ?
+        )
+        SELECT DISTINCT entity_id, entity_type, name, description, properties, depth
+        FROM graph_traversal
+        WHERE depth > 0
+        LIMIT ?
+        """
+        node_rows = self._fetch_rows(
+            query,
+            [
+                start_entity_id,
+                tid,
+                user_id,
+                tid,
+                *type_params,
+                max_depth,
+                tid,
+                user_id,
+                max_results,
+            ],
+        )
 
-            nodes = [
-                Entity(
-                    id=row[0],
-                    name=row[2],
-                    entity_type=cast(EntityType, row[1]),
-                    description=row[3],
-                    properties=json.loads(row[4] or "{}"),
+        nodes = [
+            Entity(
+                id=row["entity_id"],
+                name=row["name"],
+                entity_type=cast(EntityType, row["entity_type"]),
+                description=row["description"],
+                properties=json.loads(row["properties"] or "{}"),
+            )
+            for row in node_rows
+        ]
+
+        node_ids = [n.id for n in nodes]
+        if node_ids:
+            if len(node_ids) > MAX_NODE_IDS_IN_CLAUSE:
+                logger.warning(
+                    f"Truncating node_ids from {len(node_ids)} to {MAX_NODE_IDS_IN_CLAUSE} "
+                    "to prevent excessively large IN clause"
                 )
-                for row in cursor.fetchall()
+                node_ids = node_ids[:MAX_NODE_IDS_IN_CLAUSE]
+
+            edges = []
+            edge_rows = []
+            batch_size = 100
+            for i in range(0, len(node_ids), batch_size):
+                batch = node_ids[i : i + batch_size]
+                if not batch:
+                    continue
+                placeholders = ",".join("?" * len(batch))
+                batch_edge_rows = self._fetch_rows(
+                    f"""
+                SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
+                FROM entity_relationships
+                WHERE (source_entity_id IN ({placeholders})
+                OR target_entity_id IN ({placeholders}))
+                AND tenant_id = ?
+                AND user_id = ?
+                """,
+                    batch + batch + [tid, user_id],
+                )
+                edge_rows.extend(batch_edge_rows)
+
+            edges = [
+                Relationship(
+                    source_entity_id=row["source_entity_id"],
+                    target_entity_id=row["target_entity_id"],
+                    relationship_type=cast(RelationshipType, row["relationship_type"]),
+                    confidence=row["confidence"],
+                    metadata=json.loads(row["metadata"] or "{}"),
+                )
+                for row in edge_rows
             ]
+        else:
+            edges = []
 
-            node_ids = [n.id for n in nodes]
-            if node_ids:
-                # Limit IN clause size to prevent SQL parser issues
-                if len(node_ids) > MAX_NODE_IDS_IN_CLAUSE:
-                    logger.warning(
-                        f"Truncating node_ids from {len(node_ids)} to {MAX_NODE_IDS_IN_CLAUSE} "
-                        "to prevent excessively large IN clause"
-                    )
-                    node_ids = node_ids[:MAX_NODE_IDS_IN_CLAUSE]
-
-                # CRITICAL FIX: Batch edge lookups to avoid O(n²) explosion
-                # Instead of large IN clause, process in batches
-                edges = []
-                edge_rows = []
-                batch_size = 100  # Process nodes in batches to prevent huge IN clauses
-                for i in range(0, len(node_ids), batch_size):
-                    batch = node_ids[i : i + batch_size]
-                    if not batch:
-                        continue
-                    placeholders = ",".join("?" * len(batch))
-                    cursor = conn.execute(
-                        f"""
-                    SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
-                    FROM entity_relationships
-                    WHERE (source_entity_id IN ({placeholders})
-                    OR target_entity_id IN ({placeholders}))
-                    AND tenant_id = ?
-                    AND user_id = ?
-                    """,
-                        batch + batch + [tid, user_id],
-                    )
-                    edge_rows.extend(cursor.fetchall())
-
-                edges = [
-                    Relationship(
-                        source_entity_id=row[0],
-                        target_entity_id=row[1],
-                        relationship_type=cast(RelationshipType, row[2]),
-                        confidence=row[3],
-                        metadata=json.loads(row[4] or "{}"),
-                    )
-                    for row in edge_rows
-                ]
-            else:
-                edges = []
-
-            return GraphTraversalResult(nodes=nodes, edges=edges)
-
-        finally:
-            pool.release(conn)
+        return GraphTraversalResult(nodes=nodes, edges=edges)
 
     # =========================================================================
     # Memory Integration
@@ -697,28 +688,18 @@ class GraphStore:
         scores: dict[str, float] | None = None,
         tenant_id: str | None = None,
     ) -> None:
-        """Link a memory to entities, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            for entity_id in entity_ids:
-                score = scores.get(entity_id, 1.0) if scores else 1.0
-                conn.execute(
-                    """
-                INSERT OR REPLACE INTO memory_entity_links
-                (memory_id, entity_id, tenant_id, user_id, relevance_score, created_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """,
-                    (memory_id, entity_id, tid, user_id, score),
-                )
-
-            conn.commit()
-
-        finally:
-            pool.release(conn)
+        for entity_id in entity_ids:
+            score = scores.get(entity_id, 1.0) if scores else 1.0
+            self._execute_sql(
+                """
+            INSERT OR REPLACE INTO memory_entity_links
+            (memory_id, entity_id, tenant_id, user_id, relevance_score, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+                (memory_id, entity_id, tid, user_id, score),
+            )
 
     def get_memories_for_entity(
         self,
@@ -727,27 +708,18 @@ class GraphStore:
         limit: int = 50,
         tenant_id: str | None = None,
     ) -> list[str]:
-        """Get memory IDs linked to an entity, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            cursor = conn.execute(
-                """
-            SELECT DISTINCT mel.memory_id
-            FROM memory_entity_links mel
-            WHERE mel.entity_id = ? AND mel.tenant_id = ? AND mel.user_id = ?
-            LIMIT ?
-            """,
-                (entity_id, tid, user_id, limit),
-            )
-
-            return [row[0] for row in cursor.fetchall()]
-
-        finally:
-            pool.release(conn)
+        rows = self._fetch_rows(
+            """
+        SELECT DISTINCT mel.memory_id
+        FROM memory_entity_links mel
+        WHERE mel.entity_id = ? AND mel.tenant_id = ? AND mel.user_id = ?
+        LIMIT ?
+        """,
+            (entity_id, tid, user_id, limit),
+        )
+        return [row["memory_id"] for row in rows]
 
     def find_related_memories(
         self,
@@ -757,50 +729,41 @@ class GraphStore:
         limit: int = 20,
         tenant_id: str | None = None,
     ) -> list[str]:
-        """Find memories related to an entity via graph traversal, scoped to tenant."""
         tid = tenant_id or get_current_tenant_id()
         _validate_input(user_id, tid)
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            cursor = conn.execute(
-                """
-            WITH RECURSIVE connected AS (
-                SELECT entity_id, 0 as depth
-                FROM memory_entity_links
-                WHERE entity_id = ? AND tenant_id = ? AND user_id = ?
+        rows = self._fetch_rows(
+            """
+        WITH RECURSIVE connected AS (
+            SELECT entity_id, 0 as depth
+            FROM memory_entity_links
+            WHERE entity_id = ? AND tenant_id = ? AND user_id = ?
 
-                UNION
+            UNION
 
-                SELECT CASE
-                    WHEN c.entity_id = r.source_entity_id THEN r.target_entity_id
-                    ELSE r.source_entity_id
-                END as entity_id,
-                c.depth + 1
-                FROM connected c
-                JOIN entity_relationships r ON (
-                    c.entity_id = r.source_entity_id OR c.entity_id = r.target_entity_id
-                )
-                WHERE c.depth < ?
-                AND r.tenant_id = ?
-                AND r.user_id = ?
+            SELECT CASE
+                WHEN c.entity_id = r.source_entity_id THEN r.target_entity_id
+                ELSE r.source_entity_id
+            END as entity_id,
+            c.depth + 1
+            FROM connected c
+            JOIN entity_relationships r ON (
+                c.entity_id = r.source_entity_id OR c.entity_id = r.target_entity_id
             )
-            SELECT DISTINCT mel.memory_id
-            FROM memory_entity_links mel
-            JOIN connected c ON mel.entity_id = c.entity_id
-            WHERE c.depth > 0
-            AND mel.tenant_id = ?
-            AND mel.user_id = ?
-            LIMIT ?
-            """,
-                (entity_id, tid, user_id, depth, tid, user_id, tid, user_id, limit),
-            )
-
-            return [row[0] for row in cursor.fetchall()]
-
-        finally:
-            pool.release(conn)
+            WHERE c.depth < ?
+            AND r.tenant_id = ?
+            AND r.user_id = ?
+        )
+        SELECT DISTINCT mel.memory_id
+        FROM memory_entity_links mel
+        JOIN connected c ON mel.entity_id = c.entity_id
+        WHERE c.depth > 0
+        AND mel.tenant_id = ?
+        AND mel.user_id = ?
+        LIMIT ?
+        """,
+            (entity_id, tid, user_id, depth, tid, user_id, tid, user_id, limit),
+        )
+        return [row["memory_id"] for row in rows]
 
     # =========================================================================
     # Batch Operations
@@ -825,13 +788,12 @@ _state: dict[str, Any] = {"graph_store": None}
 _lock = threading.Lock()
 
 
-def get_graph_store(db_path: str | None = None) -> GraphStore:
-    """Get or create global graph store instance."""
+def get_graph_store(db_path: str | None = None, backend: DatabaseBackend | None = None) -> GraphStore:
     with _lock:
         if _state["graph_store"] is None:
             if db_path is None:
                 db_path = DB_PATH
-            _state["graph_store"] = GraphStore(db_path)
+            _state["graph_store"] = GraphStore(db_path, backend=backend)
         return _state["graph_store"]
 
 
