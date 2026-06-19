@@ -19,6 +19,9 @@ from .config import DB_PATH
 from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 
+if True:  # TYPE_CHECKING-compatible import guard for backend protocol
+    from .backend.base import DatabaseBackend
+
 logger = logging.getLogger("foresight_temporal_queries")
 
 
@@ -51,11 +54,39 @@ class TemporalQueryBuilder:
     Builder for temporal memory queries.
 
     Provides fluent interface for time-based memory retrieval.
+    Supports both direct SQLite (via ``db_path``) and any
+    ``DatabaseBackend`` for backend-agnostic access.
     """
 
-    def __init__(self, db_path: str):
-        """Initialize query builder."""
+    def __init__(self, db_path: str, backend: DatabaseBackend | None = None):
+        """Initialize query builder.
+
+        Parameters
+        ----------
+        db_path :
+            Path to SQLite database (used when ``backend`` is ``None``).
+        backend :
+            Optional backend instance.  When set, all queries route through
+            ``backend.fetch()`` instead of the SQLite pool.
+        """
         self.db_path = db_path
+        self._backend = backend
+
+    def _fetch_rows(self, sql: str, params: tuple | list = ()) -> list[dict]:
+        """Execute a read query and return rows as dicts.
+
+        Routes through the backend when available, otherwise falls back to the
+        SQLite connection pool (with ``PRAGMA journal_mode=WAL``).
+        """
+        if self._backend is not None:
+            return self._backend.fetch(sql, tuple(params) if isinstance(params, list) else params)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+        finally:
+            pool.release(conn)
 
     def _get_window_hours(self, window: TimeWindow) -> int:
         """Get hours for time window."""
@@ -75,330 +106,284 @@ class TemporalQueryBuilder:
         min_importance: float = 0.1,
         category: str | None = None,
     ) -> list[TemporalQueryResult]:
-        """
-        Get memories from a time window, handling optional tenant column.
-        """
+        """Get memories from a time window."""
         tenant_id = get_current_tenant_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
+        window_hours = self._get_window_hours(window)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+
+        category_clause = "AND category = ?" if category else ""
+        base_params: list = [user_id, tenant_id, cutoff.isoformat(), min_importance]
+        if category:
+            base_params.append(category)
+        base_params.append(limit)
+
+        sql = f"""
+            SELECT
+                id, content, importance, strength_trend,
+                activation_count, created_at, accessed_at, category
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND created_at >= ?
+            AND importance >= ?
+            {category_clause}
+            ORDER BY importance DESC, created_at DESC
+            LIMIT ?
+        """
         try:
-            window_hours = self._get_window_hours(window)
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-
-            category_clause = "AND category = ?" if category else ""
-            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance]
+            rows = self._fetch_rows(sql, base_params)
+        except Exception as e:
+            if self._backend is not None:
+                raise
+            if not _is_missing_tenant_column_error(e):
+                raise
+            params: list = [user_id, cutoff.isoformat(), min_importance]
             if category:
-                base_params.append(category)
-            base_params.append(limit)
-
-            sql = f"""
+                params.append(category)
+            params.append(limit)
+            sql_no_tenant = f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
-                WHERE user_id = ? AND tenant_id = ?
+                WHERE user_id = ?
                 AND created_at >= ?
                 AND importance >= ?
                 {category_clause}
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
             """
-            try:
-                cursor = conn.execute(sql, base_params)
-            except Exception as e:
-                if _is_missing_tenant_column_error(e):
-                    # Retry without tenant filter
-                    params = [user_id, cutoff.isoformat(), min_importance]
-                    if category:
-                        params.append(category)
-                    params.append(limit)
-                    sql_no_tenant = f"""
-                        SELECT
-                            id, content, importance, strength_trend,
-                            activation_count, created_at, accessed_at, category
-                        FROM memories
-                        WHERE user_id = ?
-                        AND created_at >= ?
-                        AND importance >= ?
-                        {category_clause}
-                        ORDER BY importance DESC, created_at DESC
-                        LIMIT ?
-                    """
-                    cursor = conn.execute(sql_no_tenant, params)
-                else:
-                    raise
+            rows = self._fetch_rows(sql_no_tenant, params)
 
-            rows = cursor.fetchall()
-            return [
-                TemporalQueryResult(
-                    memory_id=row[0],
-                    content=row[1],
-                    importance=row[2],
-                    strength_trend=row[3],
-                    activation_count=row[4],
-                    created_at=row[5],
-                    accessed_at=row[6],
-                    category=row[7],
-                )
-                for row in rows
-            ]
-        finally:
-            pool.release(conn)
+        return [
+            TemporalQueryResult(
+                memory_id=row["id"],
+                content=row["content"],
+                importance=row["importance"],
+                strength_trend=row["strength_trend"],
+                activation_count=row["activation_count"],
+                created_at=row["created_at"],
+                accessed_at=row["accessed_at"],
+                category=row["category"],
+            )
+            for row in rows
+        ]
 
     def get_memories_as_of_time(
         self, user_id: str, target_date: datetime, category: str | None = None, min_importance: float = 0.1
     ) -> list[TemporalQueryResult]:
-        """
-        Get memories as of a specific time, with optional tenant handling.
-        """
+        """Get memories as of a specific time."""
         tenant_id = get_current_tenant_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            category_clause = "AND category = ?" if category else ""
-            base_params = [user_id, tenant_id, target_date.isoformat(), min_importance]
-            if category:
-                base_params = [user_id, tenant_id, category, target_date.isoformat(), min_importance]
+        category_clause = "AND category = ?" if category else ""
+        base_params: list = [user_id, tenant_id, target_date.isoformat(), min_importance]
+        if category:
+            base_params = [user_id, tenant_id, category, target_date.isoformat(), min_importance]
 
-            sql = f"""
+        sql = f"""
+            SELECT
+                id, content, importance, strength_trend,
+                activation_count, created_at, accessed_at, category
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND created_at <= ?
+            AND importance > ?
+            {category_clause}
+            ORDER BY created_at DESC
+        """
+        try:
+            rows = self._fetch_rows(sql, base_params)
+        except Exception as e:
+            if self._backend is not None:
+                raise
+            if not _is_missing_tenant_column_error(e):
+                raise
+            params: list = [user_id, target_date.isoformat(), min_importance]
+            if category:
+                params = [user_id, category, target_date.isoformat(), min_importance]
+            sql_no_tenant = f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
-                WHERE user_id = ? AND tenant_id = ?
+                WHERE user_id = ?
                 AND created_at <= ?
                 AND importance > ?
                 {category_clause}
                 ORDER BY created_at DESC
             """
-            try:
-                cursor = conn.execute(sql, base_params)
-            except Exception as e:
-                if _is_missing_tenant_column_error(e):
-                    # Retry without tenant filter
-                    params = [user_id, target_date.isoformat(), min_importance]
-                    if category:
-                        params = [user_id, category, target_date.isoformat(), min_importance]
-                    sql_no_tenant = f"""
-                        SELECT
-                            id, content, importance, strength_trend,
-                            activation_count, created_at, accessed_at, category
-                        FROM memories
-                        WHERE user_id = ?
-                        AND created_at <= ?
-                        AND importance > ?
-                        {category_clause}
-                        ORDER BY created_at DESC
-                    """
-                    cursor = conn.execute(sql_no_tenant, params)
-                else:
-                    raise
+            rows = self._fetch_rows(sql_no_tenant, params)
 
-            rows = cursor.fetchall()
-            return [
-                TemporalQueryResult(
-                    memory_id=row[0],
-                    content=row[1],
-                    importance=row[2],
-                    strength_trend=row[3],
-                    activation_count=row[4],
-                    created_at=row[5],
-                    accessed_at=row[6],
-                    category=row[7],
-                )
-                for row in rows
-            ]
-        finally:
-            pool.release(conn)
+        return [
+            TemporalQueryResult(
+                memory_id=row["id"],
+                content=row["content"],
+                importance=row["importance"],
+                strength_trend=row["strength_trend"],
+                activation_count=row["activation_count"],
+                created_at=row["created_at"],
+                accessed_at=row["accessed_at"],
+                category=row["category"],
+            )
+            for row in rows
+        ]
 
     def get_memories_by_trend(
         self, user_id: str, trend: str, limit: int = 50, category: str | None = None
     ) -> list[TemporalQueryResult]:
-        """
-        Get memories by trend, handling optional tenant column.
-        """
+        """Get memories by trend."""
         tenant_id = get_current_tenant_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            category_clause = "AND category = ?" if category else ""
-            base_params = [user_id, tenant_id, trend, limit]
-            if category:
-                base_params = [user_id, tenant_id, category, trend, limit]
+        category_clause = "AND category = ?" if category else ""
+        base_params: list = [user_id, tenant_id, trend, limit]
+        if category:
+            base_params = [user_id, tenant_id, category, trend, limit]
 
-            sql = f"""
+        sql = f"""
+            SELECT
+                id, content, importance, strength_trend,
+                activation_count, created_at, accessed_at, category
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND strength_trend = ?
+            {category_clause}
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        try:
+            rows = self._fetch_rows(sql, base_params)
+        except Exception as e:
+            if self._backend is not None:
+                raise
+            if not _is_missing_tenant_column_error(e):
+                raise
+            params: list = [user_id, trend, limit]
+            if category:
+                params = [user_id, category, trend, limit]
+            sql_no_tenant = f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
-                WHERE user_id = ? AND tenant_id = ?
+                WHERE user_id = ?
                 AND strength_trend = ?
                 {category_clause}
                 ORDER BY created_at DESC
                 LIMIT ?
             """
-            try:
-                cursor = conn.execute(sql, base_params)
-            except Exception as e:
-                if _is_missing_tenant_column_error(e):
-                    params = [user_id, trend, limit]
-                    if category:
-                        params = [user_id, category, trend, limit]
-                    sql_no_tenant = f"""
-                        SELECT
-                            id, content, importance, strength_trend,
-                            activation_count, created_at, accessed_at, category
-                        FROM memories
-                        WHERE user_id = ?
-                        AND strength_trend = ?
-                        {category_clause}
-                        ORDER BY created_at DESC
-                        LIMIT ?
-                    """
-                    cursor = conn.execute(sql_no_tenant, params)
-                else:
-                    raise
+            rows = self._fetch_rows(sql_no_tenant, params)
 
-            rows = cursor.fetchall()
-            return [
-                TemporalQueryResult(
-                    memory_id=row[0],
-                    content=row[1],
-                    importance=row[2],
-                    strength_trend=row[3],
-                    activation_count=row[4],
-                    created_at=row[5],
-                    accessed_at=row[6],
-                    category=row[7],
-                )
-                for row in rows
-            ]
-        finally:
-            pool.release(conn)
+        return [
+            TemporalQueryResult(
+                memory_id=row["id"],
+                content=row["content"],
+                importance=row["importance"],
+                strength_trend=row["strength_trend"],
+                activation_count=row["activation_count"],
+                created_at=row["created_at"],
+                accessed_at=row["accessed_at"],
+                category=row["category"],
+            )
+            for row in rows
+        ]
 
     def analyze_trends(self, user_id: str, timeframe: str = "30 days") -> dict:
-        """
-        Analyze memory trends over time.
-
-        Args:
-            user_id: User ID
-            timeframe: Timeframe for analysis (e.g., '30 days', '7 days')
-
-        Returns:
-            Dictionary with trend analysis
-        """
+        """Analyze memory trends over time."""
         tenant_id = get_current_tenant_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
+
+        # Daily stats
+        daily_sql = """
+            SELECT
+                strftime('%Y-%m-%d', created_at) as date,
+                COUNT(*) as count,
+                AVG(importance) as avg_importance,
+                SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND created_at >= datetime('now', '-' || ?)
+            GROUP BY date
+            ORDER BY date
+        """
         try:
-            # Daily stats
-            try:
-                cursor = conn.execute(
-                    """
-                    SELECT
-                        strftime('%Y-%m-%d', created_at) as date,
-                        COUNT(*) as count,
-                        AVG(importance) as avg_importance,
-                        SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
-                        SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
-                    FROM memories
-                    WHERE user_id = ? AND tenant_id = ?
-                    AND created_at >= datetime('now', '-' || ?)
-                    GROUP BY date
-                    ORDER BY date
-                """,
-                    (user_id, tenant_id, timeframe),
-                )
-            except Exception as e:
-                if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute(
-                        """
-                        SELECT
-                            strftime('%Y-%m-%d', created_at) as date,
-                            COUNT(*) as count,
-                            AVG(importance) as avg_importance,
-                            SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
-                            SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
-                        FROM memories
-                        WHERE user_id = ?
-                        AND created_at >= datetime('now', '-' || ?)
-                        GROUP BY date
-                        ORDER BY date
-                    """,
-                        (user_id, timeframe),
-                    )
-                else:
-                    raise
+            daily_rows = self._fetch_rows(daily_sql, (user_id, tenant_id, timeframe))
+        except Exception as e:
+            if self._backend is not None:
+                raise
+            if not _is_missing_tenant_column_error(e):
+                raise
+            daily_no_tenant = """
+                SELECT
+                    strftime('%Y-%m-%d', created_at) as date,
+                    COUNT(*) as count,
+                    AVG(importance) as avg_importance,
+                    SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                    SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+                FROM memories
+                WHERE user_id = ?
+                AND created_at >= datetime('now', '-' || ?)
+                GROUP BY date
+                ORDER BY date
+            """
+            daily_rows = self._fetch_rows(daily_no_tenant, (user_id, timeframe))
 
-            daily_stats = [
-                {
-                    "date": row[0],
-                    "count": row[1],
-                    "avg_importance": row[2] or 0,
-                    "strengthening": row[3] or 0,
-                    "stale": row[4] or 0,
-                }
-                for row in cursor.fetchall()
-            ]
-
-            # Category breakdown
-            try:
-                cursor = conn.execute(
-                    """
-                    SELECT
-                        COALESCE(category, 'general') as category,
-                        COUNT(*) as count,
-                        AVG(importance) as avg_importance,
-                        SUM(activation_count) as total_activations
-                    FROM memories
-                    WHERE user_id = ? AND tenant_id = ?
-                    AND created_at >= datetime('now', '-' || ?)
-                    GROUP BY category
-                    ORDER BY count DESC
-                """,
-                    (user_id, tenant_id, timeframe),
-                )
-            except Exception as e:
-                if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute(
-                        """
-                        SELECT
-                            COALESCE(category, 'general') as category,
-                            COUNT(*) as count,
-                            AVG(importance) as avg_importance,
-                            SUM(activation_count) as total_activations
-                        FROM memories
-                        WHERE user_id = ?
-                        AND created_at >= datetime('now', '-' || ?)
-                        GROUP BY category
-                        ORDER BY count DESC
-                    """,
-                        (user_id, timeframe),
-                    )
-                else:
-                    raise
-
-            category_breakdown = [
-                {
-                    "category": row[0],
-                    "count": row[1],
-                    "avg_importance": row[2] or 0,
-                    "total_activations": row[3] or 0,
-                }
-                for row in cursor.fetchall()
-            ]
-
-            return {
-                "daily_stats": daily_stats,
-                "category_breakdown": category_breakdown,
-                "overall_trend": self._calculate_overall_trend(daily_stats),
+        daily_stats = [
+            {
+                "date": row["date"],
+                "count": row["count"],
+                "avg_importance": row["avg_importance"] or 0,
+                "strengthening": row["strengthening"] or 0,
+                "stale": row["stale"] or 0,
             }
-        finally:
-            pool.release(conn)
+            for row in daily_rows
+        ]
+
+        # Category breakdown
+        cat_sql = """
+            SELECT
+                COALESCE(category, 'general') as category,
+                COUNT(*) as count,
+                AVG(importance) as avg_importance,
+                SUM(activation_count) as total_activations
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND created_at >= datetime('now', '-' || ?)
+            GROUP BY category
+            ORDER BY count DESC
+        """
+        try:
+            cat_rows = self._fetch_rows(cat_sql, (user_id, tenant_id, timeframe))
+        except Exception as e:
+            if self._backend is not None:
+                raise
+            if not _is_missing_tenant_column_error(e):
+                raise
+            cat_no_tenant = """
+                SELECT
+                    COALESCE(category, 'general') as category,
+                    COUNT(*) as count,
+                    AVG(importance) as avg_importance,
+                    SUM(activation_count) as total_activations
+                FROM memories
+                WHERE user_id = ?
+                AND created_at >= datetime('now', '-' || ?)
+                GROUP BY category
+                ORDER BY count DESC
+            """
+            cat_rows = self._fetch_rows(cat_no_tenant, (user_id, timeframe))
+
+        category_breakdown = [
+            {
+                "category": row["category"],
+                "count": row["count"],
+                "avg_importance": row["avg_importance"] or 0,
+                "total_activations": row["total_activations"] or 0,
+            }
+            for row in cat_rows
+        ]
+
+        return {
+            "daily_stats": daily_stats,
+            "category_breakdown": category_breakdown,
+            "overall_trend": self._calculate_overall_trend(daily_stats),
+        }
 
     def _calculate_overall_trend(self, daily_stats: list[dict]) -> str:
         """Calculate overall trend from daily stats."""
@@ -422,54 +407,35 @@ class TemporalQueryBuilder:
         return "stable"
 
     def get_time_weighted_scores(self, memory_ids: list[str], user_id: str) -> dict:
-        """
-        Calculate time-weighted scores for memories.
-
-        Used for re-ranking vector search results with recency bias.
-
-        Args:
-            memory_ids: List of memory IDs
-            user_id: User ID
-
-        Returns:
-            Dictionary mapping memory_id to time_score
-        """
+        """Calculate time-weighted scores for memories."""
+        if not memory_ids:
+            return {}
         tenant_id = get_current_tenant_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            placeholders = ",".join("?" * len(memory_ids))
-            cursor = conn.execute(
-                f"""
+        placeholders = ",".join("?" * len(memory_ids))
+        rows = self._fetch_rows(
+            f"""
                 SELECT id, created_at, activation_count
                 FROM memories
                 WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?
             """,
-                [*memory_ids, user_id, tenant_id],
-            )
+            [*memory_ids, user_id, tenant_id],
+        )
 
-            scores = {}
-            now = datetime.now(timezone.utc)
+        scores = {}
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            memory_id = row["id"]
+            created_at_str = row["created_at"]
+            activation_count = row["activation_count"] or 0
+            created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+            hours_old = (now - created).total_seconds() / 3600
 
-            for row in cursor:
-                memory_id, created_at, activation_count = row
-                created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                hours_old = (now - created).total_seconds() / 3600
+            time_score = pow(0.5, hours_old / 168)
+            activation_boost = 1 + (activation_count * 0.05)
+            time_score = min(1.0, time_score * activation_boost)
+            scores[memory_id] = time_score
 
-                # Exponential decay for recency score (1 = very recent, 0 = very old)
-                # 168 hours = 1 week half-life
-                time_score = pow(0.5, hours_old / 168)
-
-                # Boost for activation
-                activation_boost = 1 + (activation_count * 0.05)
-                time_score = min(1.0, time_score * activation_boost)
-
-                scores[memory_id] = time_score
-
-            return scores
-        finally:
-            pool.release(conn)
+        return scores
 
 
 # Global instance management (thread-safe) using state dictionary
@@ -479,13 +445,16 @@ _MODULE_STATE: dict[str, Any] = {
 _temporal_query_lock = threading.Lock()
 
 
-def get_temporal_query_builder(db_path: str | None = None) -> TemporalQueryBuilder:
+def get_temporal_query_builder(
+    db_path: str | None = None,
+    backend: DatabaseBackend | None = None,
+) -> TemporalQueryBuilder:
     """Get or create global temporal query builder instance (thread-safe)."""
     with _temporal_query_lock:
         if _MODULE_STATE["temporal_query_builder"] is None:
             if db_path is None:
                 db_path = DB_PATH
-            _MODULE_STATE["temporal_query_builder"] = TemporalQueryBuilder(db_path)
+            _MODULE_STATE["temporal_query_builder"] = TemporalQueryBuilder(db_path, backend=backend)
     return _MODULE_STATE["temporal_query_builder"]
 
 

@@ -32,7 +32,9 @@ from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
 from .auth import AuthMiddleware
+from .backend import RedisCompanion, create_backend
 from .block_registry import InjectionPoint, initialize_default_blocks
+from .capture import get_capture_pipeline
 from .clustering import ClusterResult, cluster_memories
 from .config import (
     BANK_ID,
@@ -40,9 +42,9 @@ from .config import (
     DEFAULT_BURST_LIMIT,
     DEFAULT_RATE_LIMIT,
     DEFAULT_TENANT_ID,
+    REDIS_URL,
     USER_ID,
 )
-from .capture import get_capture_pipeline
 from .connection_pool import get_pool
 from .context_blocks import (
     PENDING_ITEMS,
@@ -79,12 +81,12 @@ from .hooks import (
 )
 from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
 from .injection_budget import (
-    BudgetResult,
     DEFAULT_LANE_WEIGHTS,
+    MIN_LANE_CHARS,
+    BudgetResult,
     InjectionBudget,
     Lane,
     LaneItem,
-    MIN_LANE_CHARS,
     format_budgeted_payload,
 )
 from .memory_components import (
@@ -140,6 +142,12 @@ DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
 
 # Last injection tracking for system status visibility (PIX-3955)
 _last_injection_stats: dict[str, Any] = {}
+
+# Global database backend (set during main() startup, PIX-3994)
+_global_backend: Any = None
+
+# Global Redis companion (set during main() startup, PIX-3995)
+_redis_companion: RedisCompanion | None = None
 
 
 # Global narrative cache instance for metrics (lazy initialization)
@@ -677,6 +685,48 @@ def init_db():
         pass  # Table doesn't exist yet; will be created by migrations
 
     conn.close()
+
+
+def _initialize_backend() -> None:
+    """Create and connect the global database backend (PIX-3994).
+
+    Reads ``FORESIGHT_DB_URL`` via ``create_backend()``.  The backend is stored
+    as ``_global_backend`` and passed to service initializers.
+
+    Fail-fast: if ``FORESIGHT_DB_URL`` is explicitly set but the backend
+    fails to connect, the server aborts with a clear error message.
+    """
+    global _global_backend  # noqa: PLW0603
+    try:
+        backend = create_backend()
+        backend.connect()
+        _global_backend = backend
+        logger.info("Database backend initialised (type=%s)", type(backend).__name__)
+    except Exception:
+        if os.environ.get("FORESIGHT_DB_URL"):
+            logger.exception(
+                "FATAL: FORESIGHT_DB_URL is set (%s) but the backend failed to connect. "
+                "Aborting startup. Fix the connection string or unset FORESIGHT_DB_URL.",
+                os.environ.get("FORESIGHT_DB_URL"),
+            )
+            raise
+        logger.debug("No FORESIGHT_DB_URL set; skipping backend initialisation (SQLite pool will be used).")
+
+
+def _initialize_redis() -> None:
+    """Create and connect the global RedisCompanion (PIX-3995).
+
+    If ``REDIS_URL`` is set, creates a ``RedisCompanion`` and eagerly
+    connects.  The companion is stored as ``_redis_companion`` and
+    gracefully degrades if Redis is unreachable.
+    """
+    global _redis_companion  # noqa: PLW0603
+    if not REDIS_URL:
+        logger.debug("No REDIS_URL set; RedisCompanion disabled")
+        return
+    companion = RedisCompanion(REDIS_URL)
+    _run_async(companion._ensure_connected())  # eager connect
+    _redis_companion = companion
 
 
 # Initialize database on module load - deferred to runtime in main()
@@ -3452,6 +3502,17 @@ def _resume_pending_curation_runs() -> None:
 
 def main():
     init_db()
+
+    # Create and connect the database backend (PIX-3994)
+    _initialize_backend()
+
+    # Eagerly initialise services with the backend so lazy singletons
+    # already have it when tool handlers call get_*() without args.
+    if _global_backend is not None:
+        get_hybrid_retriever(backend=_global_backend)
+        get_graph_store(backend=_global_backend)
+        get_temporal_query_builder(backend=_global_backend)
+
     initialize_stream_producer()
     _resume_pending_curation_runs()
 
