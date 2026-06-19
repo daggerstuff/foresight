@@ -43,7 +43,7 @@ def create_backend(db_url: str | None = None) -> DatabaseBackend:
 
         db_url = os.environ.get("FORESIGHT_DB_URL", "")
 
-    if db_url and db_url.startswith("postgresql://"):
+    if db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
         return PostgresBackend(dsn=db_url)
 
     return SqliteBackend()
