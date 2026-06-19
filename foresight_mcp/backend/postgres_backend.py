@@ -202,13 +202,12 @@ class PostgresBackend(DatabaseBackend):
     def stats(self) -> dict:
         if self._pool is None:
             return {"idle": 0, "in_use": 0, "max_size": self._max_pool_size}
-        return {
-            "idle": self._pool.get_stats().pool_size - len(self._pool.get_stats().request_count)
-            if hasattr(self._pool, "get_stats")
-            else 0,
-            "in_use": 0,
-            "max_size": self._max_pool_size,
-        }
+        try:
+            idle = self._pool._pool.free()
+            in_use = self._pool._pool.size() - idle
+        except Exception:
+            idle, in_use = 0, 0
+        return {"idle": idle, "in_use": in_use, "max_size": self._max_pool_size}
 
     # ------------------------------------------------------------------
     # Internal helpers
