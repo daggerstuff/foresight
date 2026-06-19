@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import BANK_ID, DB_PATH
+from .config import BANK_ID
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
 from .tenant_context import get_current_tenant_id
@@ -110,7 +110,6 @@ _TOOL_RECIPE_PATTERNS = [
     re.compile(r"```"),  # code blocks
     re.compile(r"\bsolved\s+it\b", re.IGNORECASE),
     re.compile(r"\bworked\s+for\s+me\b", re.IGNORECASE),
-    re.compile(r"\b(?:run|execute|install)\s+", re.IGNORECASE),
     re.compile(r"[`]\S+[`]"),  # inline code ticks
     re.compile(r"\w+\.\w+/"),  # file paths with extension
     re.compile(r"\w+:\d+:"),  # file:line references (nano style)
@@ -132,7 +131,6 @@ _PENDING_PATTERNS = [
     re.compile(r"\bNEED\s+TO\b"),
     re.compile(r"\bSHOULD\b"),
     re.compile(r"\bMUST\b"),
-    re.compile(r"\bnext\s+step\b", re.IGNORECASE),
     re.compile(r"\bi\s+need\s+to\b", re.IGNORECASE),
     re.compile(r"\bwe\s+need\s+to\b", re.IGNORECASE),
     re.compile(r"\bfollow[\s-]+up\b", re.IGNORECASE),
@@ -238,7 +236,6 @@ class MemoryExtractor:
 
         for msg in messages:
             content = (msg.get("content", "") or "").strip()
-            role = msg.get("role", "")
             if not content:
                 continue
 
@@ -380,7 +377,7 @@ class DedupeEngine:
     @staticmethod
     def _tokenize(text: str) -> list[str]:
         """Split text into lowercased word tokens."""
-        return re.findall(r"[a-zA-Z0-9_]+", text.lower())
+        return re.findall(r"\w+", text.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -497,8 +494,10 @@ class CapturePipeline:
                                VALUES (?, ?, ?, ?, ?, 'derives', 1.0, '{}', ?)""",
                             (rel_id, tid, user_id, mid, dedupe.existing_id, now),
                         )
+                        conn.commit()
 
-                    stats.stored += 1
+                    if dedupe.status != "DUPLICATE":
+                        stats.stored += 1
         finally:
             pool.release(conn)
             conn.close()
