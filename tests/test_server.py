@@ -1850,3 +1850,101 @@ def test_search_options_cascade_fields():
     assert opts2.use_cascade is False
     assert opts2.cascade_depth == 2
     assert opts2.cascade_limit == 100
+
+
+class TestSystemStatusHealth:
+    """Tests for PIX-3955 system status enhancements."""
+
+    def test_injection_stats_tracked(self):
+        """inject_context updates _last_injection_stats with metadata."""
+        from foresight_mcp.server import _last_injection_stats, inject_context
+
+        results = [
+            _make_hybrid_result("mem1", "Python type hints discussion", combined_score=0.85),
+            _make_hybrid_result("mem2", "Database migration planning", combined_score=0.7),
+        ]
+
+        with (
+            _patch_hybrid_retriever(results, total_candidates=4, signal_counts={"keyword": 2, "graph": 1}),
+            patch("foresight_mcp.server.USER_ID", "test_user"),
+            patch("foresight_mcp.server.get_context_block_agent"),
+        ):
+            inject_context("python type hints and database")
+
+        assert "last_run_at" in _last_injection_stats
+        assert _last_injection_stats["memories_returned"] == 2
+        assert _last_injection_stats["memories_fetched"] == 2
+        assert "fast_path" in _last_injection_stats
+        assert "signal_counts" in _last_injection_stats
+        assert "latency_ms" in _last_injection_stats
+
+    def test_injection_stats_no_memory_content_leak(self):
+        """_last_injection_stats does not include raw memory content (privacy-safe)."""
+        from foresight_mcp.server import _last_injection_stats, inject_context
+
+        results = [
+            _make_hybrid_result("mem1", "sensitive clinical note about patient X", combined_score=0.9),
+        ]
+
+        with (
+            _patch_hybrid_retriever(results),
+            patch("foresight_mcp.server.USER_ID", "test_user"),
+            patch("foresight_mcp.server.get_context_block_agent"),
+        ):
+            inject_context("clinical note")
+
+        stats_keys = set(_last_injection_stats.keys())
+        # Verify no keys that could contain raw memory content
+        assert "content" not in stats_keys
+        assert "memories" not in stats_keys
+        assert "results" not in stats_keys
+        # Verify expected metadata keys are present
+        assert "memories_returned" in stats_keys
+        assert "memories_fetched" in stats_keys
+
+    def test_system_status_contains_stale_count(self):
+        """get_system_status returns stale_count metric."""
+        from foresight_mcp.server import get_system_status, store_memory
+
+        result = get_system_status()
+        data = json.loads(result)
+        assert "stale_count" in data
+        assert isinstance(data["stale_count"], int)
+
+    def test_system_status_contains_by_category(self):
+        """get_system_status returns by_category breakdown."""
+        from foresight_mcp.server import get_system_status
+
+        # Store memories with different categories
+        store_memory("fact memory one", category="fact", scope="session")
+        store_memory("preference about cats", category="preference", scope="trait")
+        store_memory("decision to use Python", category="decision", scope="arc")
+
+        result = get_system_status()
+        data = json.loads(result)
+        assert "by_category" in data
+        assert isinstance(data["by_category"], dict)
+
+    def test_system_status_contains_last_injection(self):
+        """get_system_status returns last_injection field (may be null)."""
+        from foresight_mcp.server import get_system_status
+
+        result = get_system_status()
+        data = json.loads(result)
+        assert "last_injection" in data
+        # May be None if no injection has run this session
+
+    def test_system_status_no_memory_content_in_output(self):
+        """get_system_status output does not include raw memory content (privacy-safe)."""
+        from foresight_mcp.server import get_system_status
+
+        store_memory("very personal therapeutic session content that should be private")
+        result = get_system_status()
+        data = json.loads(result)
+        serialized = json.dumps(data)
+        # The memory content should NOT appear anywhere in the status output
+        assert "very personal therapeutic session" not in serialized
+        # Verify safe metadata fields exist instead
+        assert "memory_count" in data
+        assert "by_scope" in data
+        assert "stale_count" in data

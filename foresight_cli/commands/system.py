@@ -52,6 +52,9 @@ def status(
             ("Memory Count", str(result.get("memory_count", result.get("count", 0)))),
             ("Crisis Signals", str(result.get("crisis_signals", 0))),
         ]
+        stale_count = result.get("stale_count")
+        if stale_count is not None:
+            pairs.append(("Stale Memories", str(stale_count)))
 
         # Maintenance stats
         maint = result.get("maintenance_stats")
@@ -74,6 +77,12 @@ def status(
             out.bullet_list(
                 [f"{k}: {v}" for k, v in by_scope.items()],
                 title="Memories by Scope",
+            )
+        by_category = result.get("by_category", {})
+        if isinstance(by_category, dict) and by_category:
+            out.bullet_list(
+                [f"{k}: {v}" for k, v in by_category.items()],
+                title="Memories by Category",
             )
 
         # Maintenance details
@@ -111,6 +120,23 @@ def status(
                 for lane_name, pct in sorted(weights.items()):
                     budget_items.append(f"{lane_name}: {pct}%")
             out.bullet_list(budget_items, title="Payload Budget")
+
+        # Last injection stats
+        inj = result.get("last_injection")
+        if isinstance(inj, dict):
+            inj_items = [
+                f"Last Run: {str(inj.get('last_run_at', '?'))[:19]}",
+                f"Latency: {inj.get('latency_ms', '?')}ms",
+                f"Fetched: {inj.get('memories_fetched', '?')}",
+                f"Returned: {inj.get('memories_returned', '?')}",
+            ]
+            fps = inj.get("fast_path")
+            if fps is not None:
+                inj_items.append(f"Fast Path: {fps}")
+            mc = inj.get("max_chars")
+            if mc is not None:
+                inj_items.append(f"Budget: {mc} chars")
+            out.bullet_list(inj_items, title="Last Injection")
 
         # Cache / retrieval debug
         cache = result.get("cache_metrics")

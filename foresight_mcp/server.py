@@ -138,6 +138,9 @@ DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
 DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
 DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
 
+# Last injection tracking for system status visibility (PIX-3955)
+_last_injection_stats: dict[str, Any] = {}
+
 
 # Global narrative cache instance for metrics (lazy initialization)
 class _NarrativeCacheSingleton:
@@ -2988,6 +2991,21 @@ def inject_context(
     memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
         :max_memories
     ]
+    # Track last injection for system status visibility (PIX-3955)
+    _last_injection_stats.update(
+        {
+            "last_run_at": datetime.now(timezone.utc).isoformat(),
+            "query_length": len(conversation_text),
+            "latency_ms": round(latency_ms, 2),
+            "memories_fetched": len(hybrid_result.results),
+            "memories_returned": len(memories),
+            "fast_path": hybrid_result.signal_counts.get("fast_path"),
+            "signal_counts": dict(hybrid_result.signal_counts),
+            "max_memories_requested": max_memories,
+            "min_relevance": min_relevance,
+            "max_chars": max_chars,
+        }
+    )
     logger.debug(
         "inject_context: query_len=%d latency_ms=%.2f fetched=%d filtered=%d fast_path=%s signals=%s",
         len(conversation_text),
@@ -3645,11 +3663,33 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
     except Exception:
         last_capture_time = None
 
+    # Stale/decayed memory count (PIX-3955)
+    try:
+        stale_count = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND strength_trend = 'stale'",
+            (uid, tenant_id),
+        ).fetchone()[0]
+    except Exception:
+        stale_count = 0
+
+    # Category breakdown (PIX-3955)
+    try:
+        category_rows = conn.execute(
+            "SELECT category, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY category",
+            (uid, tenant_id),
+        ).fetchall()
+        by_category = {r[0]: r[1] for r in category_rows}
+    except Exception:
+        by_category = {}
+
     conn.close()
     result = {
         "status": "healthy",
         "memory_count": count,
         "by_scope": {r[0]: r[1] for r in scope_counts},
+        "stale_count": stale_count,
+        "by_category": by_category,
+        "last_injection": dict(_last_injection_stats) if _last_injection_stats else None,
         "tenant_id": tenant_id,
         "maintenance_stats": maintenance_stats,
         "last_capture_time": last_capture_time,
