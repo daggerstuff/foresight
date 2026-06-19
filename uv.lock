@@ -472,11 +472,13 @@ version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
+    { name = "redis" },
 ]
 
 [package.optional-dependencies]
 all = [
     { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "redis" },
     { name = "rich" },
     { name = "textual" },
     { name = "typer" },
@@ -499,6 +501,9 @@ dev = [
 postgres = [
     { name = "psycopg", extra = ["binary", "pool"] },
 ]
+redis = [
+    { name = "redis" },
+]
 tui = [
     { name = "textual" },
 ]
@@ -517,12 +522,14 @@ dev = [
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "fastmcp", specifier = ">=3.2.0" },
-    { name = "foresight-mcp", extras = ["cli", "tui", "postgres"], marker = "extra == 'all'" },
+    { name = "foresight-mcp", extras = ["cli", "tui", "postgres", "redis"], marker = "extra == 'all'" },
     { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "redis", specifier = ">=5.0" },
+    { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
     { name = "rich", marker = "extra == 'cli'", specifier = ">=13.0" },
     { name = "rich", marker = "extra == 'dev'", specifier = ">=13.0" },
     { name = "textual", marker = "extra == 'dev'", specifier = ">=1.0.0" },
@@ -531,7 +538,7 @@ requires-dist = [
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9.0" },
     { name = "typer", marker = "extra == 'dev'", specifier = ">=0.9.0" },
 ]
-provides-extras = ["cli", "tui", "postgres", "all", "dev"]
+provides-extras = ["cli", "tui", "postgres", "redis", "all", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1320,6 +1327,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/02/51/d3a6ea424652c60f05600d8c2e01a55c913755e7cdad64afabbd1aa16f44/readme_renderer-45.0.tar.gz", hash = "sha256:030a8fac74904f8fba11ad1bb6964e3f76e896dc7e5e71f16af190c9056696d1", size = 36172, upload-time = "2026-06-09T21:05:17.37Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/97/1b/295bf2fa3e740131778065e5ffa2c481f0e7210182d408e9a2c244ff5b0c/readme_renderer-45.0-py3-none-any.whl", hash = "sha256:3385ed220117104a2bceb4a9dac8c5fdf6d1f96890d7ea2a9c7174fd5c84091f", size = 14134, upload-time = "2026-06-09T21:05:15.85Z" },
+]
+
+[[package]]
+name = "redis"
+version = "8.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/ae/ed461cca5780b5fc8b9fe8ca0ed98d89508645fb9d880c24cc42c087678f/redis-8.0.0.tar.gz", hash = "sha256:a00c5355432051ac14e593b8b197fc76c887ee12d55a0984f69328a1115fdc49", size = 5101591, upload-time = "2026-05-28T12:45:13.5Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/e3/b519734372d305bd547534a9f32e4ce9f98552af753dce72cf3483a0ff0b/redis-8.0.0-py3-none-any.whl", hash = "sha256:c938c18338585009f0bc310f4c7e4e4b4d37639356c4ac072cedf3af570c8dc7", size = 499870, upload-time = "2026-05-28T12:45:11.697Z" },
 ]
 
 [[package]]

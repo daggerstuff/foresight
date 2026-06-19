@@ -21,6 +21,10 @@ DB_PATH = os.environ.get("FORESIGHT_DB_PATH", DEFAULT_DB_PATH)
 # Format: postgresql://user:password@host:port/dbname?sslmode=require
 DB_URL = os.environ.get("FORESIGHT_DB_URL", "")
 
+# Redis connection string (optional, enables cross-process caching and rate limiting)
+# Format: redis://[[username]:[password]]@host:port[/db]
+REDIS_URL = os.environ.get("REDIS_URL", "")
+
 # Identity defaults (used when FORESIGHT_IDENTITY not set)
 DEFAULT_USER_ID = os.environ.get("USER", "user")
 DEFAULT_ACCOUNT_ID = "default"
