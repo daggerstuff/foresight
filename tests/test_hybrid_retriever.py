@@ -803,17 +803,17 @@ class TestTemporalSignalHardening:
         retriever = HybridRetriever(":memory:")
         now = datetime.now(timezone.utc)
         boost = retriever._compute_burst_boost(4, None, now)
-        # sqrt(4) = 2, base_boost = 1 + 2 * 0.1 = 1.2
-        assert boost == 1.2
+        # sqrt(4) = 2, base_boost = 1 + 2 * 0.15 = 1.3
+        assert boost == 1.3
 
     def test_burst_boost_recent_retrieval(self):
         retriever = HybridRetriever(":memory:")
         now = datetime.now(timezone.utc)
         recent = (now - timedelta(minutes=5)).isoformat()
         boost = retriever._compute_burst_boost(1, recent, now)
-        # base = 1 + 1 * 0.1 = 1.1; burst = 1 + (1 - 5/60) * 0.5 ≈ 1.458
-        # => 1.1 * 1.458 ≈ 1.604
-        assert 1.5 < boost < 1.7
+        # base = 1 + 1 * 0.15 = 1.15; burst_window 4h now
+        # burst = 1 + (1 - 5/240) * 0.5 ≈ 1.49; 1.15 * 1.49 ≈ 1.714
+        assert 1.6 < boost < 1.85
 
     def test_burst_boost_capped(self):
         retriever = HybridRetriever(":memory:")
@@ -1350,6 +1350,234 @@ class TestEntityBoostConsistency:
         assert len(graph_results) > 0, "No graph results found in search"
         graph_avg = sum(r.combined_score for r in graph_results) / len(graph_results)
         assert graph_avg > 0, "Graph results should have positive scores"
+
+
+class TestTrendAwareDecayFloor:
+    """Trend-aware decay floor: stale/weakening < stable (PIX-3950)."""
+
+    def test_stale_memory_has_lower_floor(self):
+        """Stale memories get floor=0.10 instead of 0.20."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, category TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        # Both severely decayed (strength=0.01) — only trend differs
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, strength_trend, created_at) "
+            "VALUES ('m_stale', ?, 'anxiety therapy session today', 0.8, 0.01, 'stale', ?)",
+            (uid, (now - timedelta(hours=48)).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, strength_trend, created_at) "
+            "VALUES ('m_stable', ?, 'anxiety therapy session today', 0.8, 0.01, 'stable', ?)",
+            (uid, (now - timedelta(hours=48)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        result = retriever.search("anxiety", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        os.unlink(path)
+
+        stale_res = next(r for r in result.results if r.memory_id == "m_stale")
+        stable_res = next(r for r in result.results if r.memory_id == "m_stable")
+
+        # Stale floor 0.10, stable floor 0.20
+        assert stale_res.decay_multiplier < stable_res.decay_multiplier, (
+            f"Stale ({stale_res.decay_multiplier}) should have lower multiplier than stable ({stable_res.decay_multiplier})"
+        )
+        # Sanity checks
+        assert 0.05 <= stale_res.decay_multiplier <= 0.15, f"Unexpected stale multiplier: {stale_res.decay_multiplier}"
+        assert 0.15 <= stable_res.decay_multiplier <= 0.25, (
+            f"Unexpected stable multiplier: {stable_res.decay_multiplier}"
+        )
+
+    def test_weakening_floor_between_stale_and_stable(self):
+        """Weakening memories get floor=0.15 — between stale (0.10) and stable (0.20)."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, category TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, strength_trend, created_at) "
+            "VALUES ('m_weak', ?, 'anxiety therapy session today', 0.8, 0.01, 'weakening', ?)",
+            (uid, (now - timedelta(hours=48)).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, strength_trend, created_at) "
+            "VALUES ('m_stable2', ?, 'anxiety therapy session today', 0.8, 0.01, 'stable', ?)",
+            (uid, (now - timedelta(hours=48)).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, strength_trend, created_at) "
+            "VALUES ('m_stale2', ?, 'anxiety therapy session today', 0.8, 0.01, 'stale', ?)",
+            (uid, (now - timedelta(hours=48)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        result = retriever.search("anxiety", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        os.unlink(path)
+
+        weak_res = next(r for r in result.results if r.memory_id == "m_weak")
+        stable_res = next(r for r in result.results if r.memory_id == "m_stable2")
+        stale_res = next(r for r in result.results if r.memory_id == "m_stale2")
+
+        # weakening < stable, weakening > stale
+        assert weak_res.decay_multiplier < stable_res.decay_multiplier, (
+            f"Weakening ({weak_res.decay_multiplier}) should be less than stable ({stable_res.decay_multiplier})"
+        )
+        assert weak_res.decay_multiplier > stale_res.decay_multiplier, (
+            f"Weakening ({weak_res.decay_multiplier}) should be greater than stale ({stale_res.decay_multiplier})"
+        )
+        assert 0.10 <= weak_res.decay_multiplier <= 0.20, (
+            f"Unexpected weakening multiplier: {weak_res.decay_multiplier}"
+        )
+
+
+class TestEntitySalienceBoost:
+    """Entity salience as post-RRF cross-cutting boost (PIX-3950)."""
+
+    def test_entity_salience_boost_in_results(self):
+        """entity_salience_boost should be set on graph results and in to_dict."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, is_ghost INTEGER DEFAULT 0,
+                importance REAL DEFAULT 0.5, current_strength REAL,
+                strength_trend TEXT DEFAULT 'stable', category TEXT,
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT
+            );
+            CREATE TABLE memory_entities (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                name TEXT, entity_type TEXT, confidence REAL DEFAULT 1.0
+            );
+            CREATE TABLE entity_relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_entity_id TEXT, target_entity_id TEXT,
+                user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                confidence REAL DEFAULT 1.0, decay_factor REAL DEFAULT 1.0
+            );
+            CREATE TABLE memory_entity_links (
+                memory_id TEXT, entity_id TEXT,
+                user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                PRIMARY KEY (memory_id, entity_id)
+            );
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        # Memory with 2 high-confidence entity links
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
+            "VALUES ('m_multi_entity', ?, 'anxiety therapy session today', 0.8, 0.8, ?)",
+            (uid, (now - timedelta(hours=1)).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
+            "VALUES ('m_single', ?, 'feeling anxious about therapy', 0.8, 0.8, ?)",
+            (uid, (now - timedelta(hours=1)).isoformat()),
+        )
+        # Entity: high confidence
+        conn.execute(
+            "INSERT INTO memory_entities (id, user_id, name, confidence) VALUES ('e_anx', ?, 'anxiety', 0.95)", (uid,)
+        )
+        conn.execute(
+            "INSERT INTO memory_entities (id, user_id, name, confidence) VALUES ('e_ther', ?, 'therapy', 0.9)", (uid,)
+        )
+        conn.execute(
+            "INSERT INTO memory_entities (id, user_id, name, confidence) VALUES ('e_feel', ?, 'feeling', 0.5)", (uid,)
+        )
+        # m_multi_entity linked to 2 high-conf entities
+        conn.execute(
+            "INSERT INTO memory_entity_links (memory_id, entity_id, user_id) VALUES ('m_multi_entity', 'e_anx', ?)",
+            (uid,),
+        )
+        conn.execute(
+            "INSERT INTO memory_entity_links (memory_id, entity_id, user_id) VALUES ('m_multi_entity', 'e_ther', ?)",
+            (uid,),
+        )
+        # m_single linked to 1 low-conf entity
+        conn.execute(
+            "INSERT INTO memory_entity_links (memory_id, entity_id, user_id) VALUES ('m_single', 'e_feel', ?)", (uid,)
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        # Use graph-only search to isolate entity salience effects
+        result = retriever.search(
+            "anxiety therapy feeling", uid, limit=10, use_keyword=False, use_temporal=False, use_semantic=False
+        )
+        os.unlink(path)
+
+        multi_res = next((r for r in result.results if r.memory_id == "m_multi_entity"), None)
+        single_res = next((r for r in result.results if r.memory_id == "m_single"), None)
+
+        assert multi_res is not None, "m_multi_entity should appear in graph results"
+        assert single_res is not None, "m_single should appear in graph results"
+
+        # entity_salience_boost should be > 1.0 for multi-entity result
+        assert multi_res.entity_salience_boost > 1.0, (
+            f"Multi-entity result should have boost > 1.0, got {multi_res.entity_salience_boost}"
+        )
+        # entity_salience_boost should be in to_dict
+        d = multi_res.to_dict()
+        assert "entity_salience_boost" in d, "entity_salience_boost missing from to_dict"
+        assert isinstance(d["entity_salience_boost"], float)
+
+    def test_non_graph_results_have_default_entity_boost(self):
+        """Keyword-only results should have entity_salience_boost=1.0."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, category TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
+            "VALUES ('m1', ?, 'memory content here', 0.8, 0.8, ?)",
+            (uid, (now - timedelta(hours=1)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        result = retriever.search("memory", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        os.unlink(path)
+
+        for r in result.results:
+            assert r.entity_salience_boost == 1.0, (
+                f"Non-graph result should have entity_salience_boost=1.0, got {r.entity_salience_boost}"
+            )
 
 
 if __name__ == "__main__":
