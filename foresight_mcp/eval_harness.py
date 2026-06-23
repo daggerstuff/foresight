@@ -157,6 +157,52 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
         "importance": 0.65,
         "strength_trend": "stable",
     },
+    # --- S6: Entity salience ---
+    {
+        "id": "entity_rich_session",
+        "content": "The user discussed integrating authentication, database configuration, and deployment automation in a single session. Multiple architectural concerns were covered.",
+        "scope": "session",
+        "retention": "short_term",
+        "category": "fact",
+        "importance": 0.75,
+        "strength_trend": "strengthening",
+        "created_at_offset_hours": -12,
+    },
+    {
+        "id": "entity_sparse_note",
+        "content": "A quick note about the deployment script location.",
+        "scope": "fact",
+        "retention": "short_term",
+        "category": "fact",
+        "importance": 0.3,
+        "strength_trend": "weakening",
+        "created_at_offset_hours": -12,
+    },
+    # --- S7: Decay priority ---
+    {
+        "id": "decay_priority_high",
+        "content": "Security incident response plan: first verify the breach scope, then rotate all credentials, and finally notify stakeholders. This is a critical procedure.",
+        "scope": "fact",
+        "retention": "short_term",
+        "category": "plan",
+        "importance": 0.9,
+        "strength_trend": "strengthening",
+        "current_strength": 0.85,
+        "activation_count": 5,
+        "created_at_offset_hours": -48,
+    },
+    {
+        "id": "decay_priority_low",
+        "content": "Old security incident response procedure notes. The breach was contained but the documentation is outdated and incomplete.",
+        "scope": "fact",
+        "retention": "short_term",
+        "category": "fact",
+        "importance": 0.5,
+        "strength_trend": "stale",
+        "current_strength": 0.35,
+        "activation_count": 0,
+        "created_at_offset_hours": -720,
+    },
     # --- S5: Session / discussion memories ---
     {
         "id": "session_deploy",
@@ -259,6 +305,22 @@ SCENARIOS: list[EvalScenario] = [
         expected_memory_ids={"session_deploy"},
         pass_condition="session_deploy appears in results",
         min_expected=1,
+    ),
+    EvalScenario(
+        id="S6_entity_salience",
+        description="Entity-rich memories rank higher than entity-sparse ones",
+        query="What configuration and deployment topics were discussed recently?",
+        expected_memory_ids={"entity_rich_session", "entity_sparse_note"},
+        pass_condition="entity_rich_session ranks higher than entity_sparse_note",
+        min_expected=2,
+    ),
+    EvalScenario(
+        id="S7_decay_priority",
+        description="Strengthening priority memories outrank stale ones",
+        query="What's the security incident response procedure?",
+        expected_memory_ids={"decay_priority_high", "decay_priority_low"},
+        pass_condition="decay_priority_high ranks higher than decay_priority_low",
+        min_expected=2,
     ),
 ]
 
@@ -534,8 +596,8 @@ class EvalHarness:
                     (id, content, content_hash, tenant_id, user_id, scope, retention,
                      category, bank_id, created_at, updated_at, tags, emotional_context,
                      metrics, is_ghost, synthesized_from, version,
-                     importance, activation_count, strength_trend)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     importance, current_strength, activation_count, strength_trend)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         mem_id,
                         content,
@@ -555,6 +617,7 @@ class EvalHarness:
                         mem.get("synthesized_from", "[]"),
                         mem.get("version", 1),
                         mem.get("importance", 0.5),
+                        mem.get("current_strength"),
                         mem.get("activation_count", 1),
                         mem.get("strength_trend", "stable"),
                     ),
@@ -637,6 +700,12 @@ class EvalHarness:
             ("entity_deploy_script", "ent_deploy"),
             ("entity_deploy_script", "ent_config"),
             ("session_deploy", "ent_deploy"),
+            # S6 entity salience: rich memory linked to 3 entities
+            ("entity_rich_session", "ent_auth"),
+            ("entity_rich_session", "ent_db"),
+            ("entity_rich_session", "ent_config"),
+            # S6 entity salience: sparse memory linked to only 1 entity
+            ("entity_sparse_note", "ent_deploy"),
         ]
         for mid, eid in links:
             conn.execute(
@@ -759,6 +828,26 @@ class EvalHarness:
                     None,
                 )
                 passed = idx_current is not None and idx_stale is not None and idx_current < idx_stale
+            elif scenario.id == "S6_entity_salience":
+                idx_rich = next(
+                    (i for i, mid in enumerate(found_ids) if mid == "entity_rich_session"),
+                    None,
+                )
+                idx_sparse = next(
+                    (i for i, mid in enumerate(found_ids) if mid == "entity_sparse_note"),
+                    None,
+                )
+                passed = idx_rich is not None and idx_sparse is not None and idx_rich < idx_sparse
+            elif scenario.id == "S7_decay_priority":
+                idx_high = next(
+                    (i for i, mid in enumerate(found_ids) if mid == "decay_priority_high"),
+                    None,
+                )
+                idx_low = next(
+                    (i for i, mid in enumerate(found_ids) if mid == "decay_priority_low"),
+                    None,
+                )
+                passed = idx_high is not None and idx_low is not None and idx_high < idx_low
             else:
                 # General: at least min_expected expected memories in the results
                 passed = len(found_set & scenario.expected_memory_ids) >= scenario.min_expected
@@ -766,6 +855,14 @@ class EvalHarness:
             # Signal counts
             signal_counts = grm_result.get("signal_counts", {})
             total_candidates = grm_result.get("total_candidates", 0)
+
+            # Per-signal metric extraction (PIX-3953)
+            signal_metrics: dict[str, float] = {}
+            for mem_data in memories:
+                mid = mem_data.get("memory_id", "")
+                signal_metrics[f"{mid}_entity_salience_boost"] = mem_data.get("entity_salience_boost", 1.0)
+                signal_metrics[f"{mid}_decay_multiplier"] = mem_data.get("decay_multiplier", 1.0)
+                signal_metrics[f"{mid}_entity_hits"] = mem_data.get("entity_hits", 0)
 
             # PII scan
             pii_findings = scan_for_pii(formatted)
@@ -775,6 +872,7 @@ class EvalHarness:
                 "grm_latency_ms": round(grm_latency, 2),
                 "grm_result_count": len(grm_result.get("memories", [])),
                 "budget_chars": budget_chars,
+                "signal_metrics": signal_metrics,
             }
 
             return ScenarioResult(
