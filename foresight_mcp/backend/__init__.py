@@ -23,11 +23,11 @@ from .schema_ddl import MIGRATIONS as SCHEMA_MIGRATIONS
 from .sqlite_backend import SqliteBackend
 
 __all__ = [
+    "SCHEMA_MIGRATIONS",
     "DatabaseBackend",
+    "PostgresBackend",
     "RedisCompanion",
     "SqliteBackend",
-    "PostgresBackend",
     "create_backend",
     "run_migrations",
-    "SCHEMA_MIGRATIONS",
 ]

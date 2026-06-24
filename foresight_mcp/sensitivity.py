@@ -22,6 +22,7 @@ skip set.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 from dataclasses import dataclass
@@ -78,11 +79,12 @@ def _compile_default_patterns() -> list[re.Pattern[str]]:
     ]
 
 
+@functools.lru_cache(maxsize=1)
 def _load_keywords() -> tuple[str, ...]:
     override = os.environ.get("FORESIGHT_SENSITIVITY_KEYWORDS", "").strip()
     if not override:
         return DEFAULT_CLINICAL_KEYWORDS
-    extras = tuple(k.strip().lower() for k in override.split(",") if k.strip())
+    extras = tuple(k.strip().lower() for k in override.split(",") if k.strip() and len(k.strip()) >= 3)
     if not extras:
         return DEFAULT_CLINICAL_KEYWORDS
     return tuple(sorted(set(DEFAULT_CLINICAL_KEYWORDS) | set(extras)))
@@ -139,14 +141,18 @@ def resolve_is_sensitive(
     """Combine caller override with detector verdict.
 
     - ``opts_is_sensitive is True`` wins (forced-on). Reason recorded as
-      ``"caller_override"``.
+      ``"caller_override_true"``.
     - ``opts_is_sensitive is False`` wins (forced-off). Returned reason is
-      ``None`` so callers can short-circuit inspecting the detector.
+      ``"caller_override_false"`` so there's an audit trail.
     - ``opts_is_sensitive is None`` defers to the detector verdict.
     """
     if opts_is_sensitive is True:
         return True, "caller_override"
     if opts_is_sensitive is False:
         return False, None
+
+    if isinstance(content, str) and len(content) < 20:
+        return False, None
+
     verdict = detect_sensitivity(content)
     return verdict.is_sensitive, verdict.reason

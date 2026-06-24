@@ -35,6 +35,13 @@ class DatabaseBackend(ABC):
             conn.commit()
     """
 
+    def __init__(self) -> None:
+        self._backend_type: str | None = None
+
+    @property
+    def backend_type(self) -> str | None:
+        return self._backend_type
+
     @abstractmethod
     def connect(self) -> None:
         """Initialise the backend (create pool, connect, run migrations, etc.)."""
@@ -86,6 +93,19 @@ class DatabaseBackend(ABC):
     # ------------------------------------------------------------------
 
     def table_exists(self, table_name: str) -> bool:
+        if self._backend_type == "postgresql":
+            rows = self.fetch(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1",
+                (table_name,),
+            )
+            return bool(rows)
+        if self._backend_type == "sqlite":
+            rows = self.fetch(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,),
+            )
+            return bool(rows)
+        # Fallback to original behavior if backend type not detected yet
         try:
             rows = self.fetch(
                 "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1",

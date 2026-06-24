@@ -96,7 +96,6 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
-from .sensitivity import resolve_is_sensitive
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -121,6 +120,7 @@ from .semantic_search import (
     SemanticSearchOptions,
     get_semantic_search,
 )
+from .sensitivity import resolve_is_sensitive
 from .stream_producer import (
     KafkaProducer,
     KinesisProducer,
@@ -207,6 +207,13 @@ class MemoryUpdateOptions(BaseModel):
     scope: str | None = Field(default=None, description="New memory scope")
     retention: str | None = Field(default=None, description="New retention policy")
     tags: list[str] | None = Field(default=None, description="New list of tags")
+    is_sensitive: bool | None = Field(
+        default=None,
+        description=(
+            "Sensitivity override on update. None defers to the detector on memory.content;"
+            " True forces is_sensitive=1; False forces is_sensitive=0."
+        ),
+    )
     relation_type: str | None = Field(
         default=None,
         description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
@@ -913,10 +920,11 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
 
     # Emit rollback event
     event_bus = get_event_bus_with_stream()
+    # Redact sensitive content from event bus publishes
+    content_redacted = "[REDACTED - sensitive]" if current.get("is_sensitive") else current["content"]
+    new_content_redacted = "[REDACTED - sensitive]" if version_row.get("is_sensitive") else version_row["content"]
     event_bus.publish(
-        memory_updated(
-            memory_id=memory_id, old_content=current["content"], new_content=version_row["content"], actor=uid
-        )
+        memory_updated(memory_id=memory_id, old_content=content_redacted, new_content=new_content_redacted, actor=uid)
     )
 
     return f"Rolled back memory {memory_id} to version {target_version}"
@@ -1253,7 +1261,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             )
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
-    get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=content, actor=uid))
+    event_content = "[REDACTED - sensitive]" if is_sensitive_bit else content
+    get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=event_content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
 
     # ── POST_STORE hook ────────────────────────────────────────────────
@@ -1306,7 +1315,9 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
         updates_list.extend(["content = ?", "version = ?"])
         values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
-        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, options.updates.content.strip())
+        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(
+            options.updates.is_sensitive, options.updates.content.strip()
+        )
         updates_list.extend(["is_sensitive = ?", "sensitivity_reason = ?"])
         values.extend([1 if is_sensitive_bit else 0, sensitivity_reason])
     if options.updates.category:
@@ -1332,11 +1343,14 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     )
     conn.commit()
     conn.close()
+    was_sensitive = bool(row.get("is_sensitive", 0))
+    old_evt = "[REDACTED - sensitive]" if was_sensitive else (row["content"] or "")
+    new_evt = "[REDACTED - sensitive]" if was_sensitive else (options.updates.content or row["content"] or "")
     get_event_bus_with_stream().publish(
         memory_updated(
             memory_id=options.memory_id,
-            old_content=row["content"],
-            new_content=options.updates.content or row["content"],
+            old_content=old_evt,
+            new_content=new_evt,
             actor=uid,
         )
     )
@@ -1718,10 +1732,11 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     )
     conn.commit()
     conn.close()
+    was_sensitive = bool(row.get("is_sensitive", 0))
+    old_evt = "[REDACTED - sensitive]" if was_sensitive else (row["content"] or "")
+    new_evt = "[REDACTED - sensitive]" if was_sensitive else (version_row["content"] or "")
     get_event_bus_with_stream().publish(
-        memory_updated(
-            memory_id=options.memory_id, old_content=row["content"], new_content=version_row["content"], actor=uid
-        )
+        memory_updated(memory_id=options.memory_id, old_content=old_evt, new_content=new_evt, actor=uid)
     )
     return f"Rolled back memory {options.memory_id} to version {options.to_version} (now at {new_version})"
 
@@ -1926,13 +1941,26 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                 continue
 
             mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
+            is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, content)
             conn.execute(
                 "INSERT OR IGNORE INTO memories "
                 "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
                 "created_at, updated_at, tags, emotional_context, metrics, "
-                "is_ghost, synthesized_from) "
-                "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
-                (mid, content, content_h, category, uid, BANK_ID, tenant_id, now, now),
+                "is_ghost, synthesized_from, is_sensitive, sensitivity_reason) "
+                "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?)",
+                (
+                    mid,
+                    content,
+                    content_h,
+                    category,
+                    uid,
+                    BANK_ID,
+                    tenant_id,
+                    now,
+                    now,
+                    1 if is_sensitive_bit else 0,
+                    sensitivity_reason,
+                ),
             )
             conn.commit()
             conn.close()

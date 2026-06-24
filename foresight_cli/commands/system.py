@@ -323,8 +323,8 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight_mcp.server import TemporalWindow
         from foresight_mcp import query_memories_temporal
+        from foresight_mcp.server import TemporalWindow
 
         temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:
