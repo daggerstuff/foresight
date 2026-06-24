@@ -17,8 +17,15 @@ def main() -> None:
         return
 
     if "--health" in sys.argv:
+        import json as _json
+
         init_db()
-        print(get_system_status())
+        result = get_system_status()
+        if "--json" in sys.argv:
+            parsed = _json.loads(result) if isinstance(result, str) else result
+            print(_json.dumps(parsed, indent=2))
+        else:
+            print(result)
         return
 
     if "--version" in sys.argv:

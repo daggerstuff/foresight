@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 _IDEMPOTENT_SQLITE_HINTS: tuple[str, ...] = (
     "duplicate column",
     "already exists",
-    "table",
 )
 _IDEMPOTENT_PG_HINTS: tuple[str, ...] = (
     "already exists",
@@ -104,6 +103,10 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
         statements = MIGRATIONS[version]
         try:
             with backend.connection() as conn:
+                # SQLite requires BEGIN IMMEDIATE for schema DDL to prevent
+                # "database is locked" errors under concurrent write access.
+                if backend.backend_type == "sqlite":
+                    conn.execute("BEGIN IMMEDIATE")
                 for stmt in statements:
                     try:
                         conn.execute(stmt)
