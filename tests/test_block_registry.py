@@ -161,3 +161,141 @@ def test_initialize_default_blocks():
     registry2 = initialize_default_blocks()
     assert registry is registry2
     assert len(registry.list_schemas()) == len(DEFAULT_BLOCK_SCHEMAS)
+
+def test_schema_validate_content_char_limit(test_schema):
+    """Test validation fails when char limit is exceeded."""
+    test_schema.char_limit = 10
+    is_valid, msg = test_schema.validate_content("This is longer than 10 characters")
+    assert is_valid is False
+    assert "Content exceeds char limit" in msg
+
+
+def test_schema_validate_content_custom_validator(test_schema):
+    """Test custom validator logic."""
+    test_schema.validator = lambda c: "valid" in c
+    is_valid, msg = test_schema.validate_content("This is bad content")
+    assert is_valid is False
+    assert msg == "Custom validation failed"
+
+    is_valid, msg = test_schema.validate_content("This is valid content")
+    assert is_valid is True
+    assert msg == ""
+
+
+def test_schema_validate_content_valid(test_schema):
+    """Test validation passes for valid content."""
+    is_valid, msg = test_schema.validate_content("Some valid content")
+    assert is_valid is True
+    assert msg == ""
+
+
+def test_schema_to_dict(test_schema):
+    """Test serialization of schema."""
+    d = test_schema.to_dict()
+    assert d["label"] == "test_block"
+    assert d["description"] == "A test block schema"
+    assert d["content"] == "Default content"
+    assert d["retention_policy"] == "short_term"
+    assert d["merge_strategy"] == "append"
+    assert d["injection_point"] == "pre_prompt"
+    assert d["scope"] == "session"
+    assert d["char_limit"] == 0
+    assert d["metadata"] == {}
+
+
+def test_schema_from_dict():
+    """Test deserialization of schema."""
+    data = {
+        "label": "deserialized",
+        "description": "Deserialized schema",
+        "content": "Initial",
+        "retention_policy": "long_term",
+        "merge_strategy": "replace",
+        "injection_point": "whisper_only",
+        "scope": "project",
+        "char_limit": 100,
+        "metadata": {"key": "value"}
+    }
+    schema = MemoryBlockSchema.from_dict(data)
+
+    assert schema.label == "deserialized"
+    assert schema.description == "Deserialized schema"
+    assert schema.content == "Initial"
+    assert schema.retention_policy == RetentionPolicy.LONG_TERM
+    assert schema.merge_strategy == MergeStrategy.REPLACE
+    assert schema.injection_point == InjectionPoint.WHISPER_ONLY
+    assert schema.scope == BlockScope.PROJECT
+    assert schema.char_limit == 100
+    assert schema.metadata == {"key": "value"}
+
+
+def test_block_update_content_replace(registry, test_schema):
+    """Test update_content with REPLACE strategy."""
+    test_schema.merge_strategy = MergeStrategy.REPLACE
+    registry.register(test_schema)
+    block = registry.create_block("test_block", "Old content")
+
+    initial_version = block.version
+
+    block.update_content("New content")
+
+    assert block.content == "New content"
+    assert block.version == initial_version + 1
+
+
+def test_block_update_content_append(registry, test_schema):
+    """Test update_content with APPEND strategy."""
+    test_schema.merge_strategy = MergeStrategy.APPEND
+    registry.register(test_schema)
+
+    # Appending to empty block
+    block_empty = registry.create_block("test_block", "")
+    block_empty.update_content("New content")
+    assert block_empty.content == "New content"
+
+    # Appending to non-empty block
+    block_non_empty = registry.create_block("test_block", "Old content")
+    block_non_empty.update_content("New content")
+    assert block_non_empty.content == "Old content\nNew content"
+
+
+def test_block_update_content_synthesize(registry, test_schema):
+    """Test update_content with SYNTHESIZE strategy falls back to replace."""
+    test_schema.merge_strategy = MergeStrategy.SYNTHESIZE
+    registry.register(test_schema)
+    block = registry.create_block("test_block", "Old content")
+
+    block.update_content("New content")
+
+    assert block.content == "New content"
+
+
+def test_block_is_empty(registry, test_schema):
+    """Test is_empty logic."""
+    registry.register(test_schema)
+
+    block_empty = registry.create_block("test_block", "")
+    assert block_empty.is_empty() is True
+
+    block_spaces = registry.create_block("test_block", "   \n  ")
+    assert block_spaces.is_empty() is True
+
+    block_default = registry.create_block("test_block", "(No guidance provided yet)")
+    assert block_default.is_empty() is True
+
+    block_valid = registry.create_block("test_block", "Actual content")
+    assert block_valid.is_empty() is False
+
+
+def test_block_to_dict(registry, test_schema):
+    """Test serialization of a block."""
+    registry.register(test_schema)
+    block = registry.create_block("test_block", "Content")
+
+    d = block.to_dict()
+    assert d["content"] == "Content"
+    assert "schema" in d
+    assert d["schema"]["label"] == "test_block"
+    assert "created_at" in d
+    assert "updated_at" in d
+    assert d["version"] == 0
