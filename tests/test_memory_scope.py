@@ -1,4 +1,5 @@
 """Tests for explicit memory scoping (PIX-317)."""
+import os
 
 import asyncio
 
@@ -196,7 +197,6 @@ def test_reset_clears_all_context():
 
 def test_workspace_id_synonym():
     """Test workspace_id is treated as synonym for account_id in middleware."""
-import os
 
     # This is tested at middleware level, but verify the concept
     scope = MemoryScope(user_id="u1", account_id="workspace-123")
