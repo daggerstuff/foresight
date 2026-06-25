@@ -15,6 +15,8 @@ def run(
     db_path: str | None = typer.Option(None, "--db-path", help="Path to temp database (default: auto tempfile)"),
     report: str | None = typer.Option(None, "--report", "-r", help="Write JSON report to file"),
     budget: int = typer.Option(2000, "--budget", "-b", help="Character budget for injection payloads"),
+    compare: str | None = typer.Option(None, "--compare", "-c", help="Path to a baseline JSON report to diff against"),
+    save_baseline: str | None = typer.Option(None, "--save-baseline", help="Save the report as a baseline JSON at this path"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output report as JSON"),
 ):
     """Run the full evaluation harness and print a summary report.
@@ -30,6 +32,8 @@ def run(
         db_path=db_path,
         report_path=report,
         budget_chars=budget,
+        compare_path=compare,
+        save_baseline=save_baseline,
         json_output=json_output or out.get_settings().mode == "json",
     )
 
@@ -55,7 +59,7 @@ def run(
             icon = "green" if sr.passed else "red"
             out.stderr(
                 f"  [{icon}]{status}[/] {sr.scenario_id}: "
-                f"pre={sr.pre_memory_count}→post={sr.post_memory_count}, "
+                f"found={len(sr.found_memory_ids)}, missing={len(sr.missing_expected)}, "
                 f"{'latency=' + f'{sr.latency_ms:.1f}ms' if sr.latency_ms else 'N/A'}",
                 style=icon,
             )

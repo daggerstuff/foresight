@@ -532,6 +532,44 @@ public surface.
 Compatibility aliases remain in place for older clients, but new integrations
 should use the Foresight-native names above.
 
+## Evaluation harness (PIX-3953)
+
+A reproducible end-to-end harness that measures **payload size**, **retrieval
+quality**, **latency**, and **PII/secret safety** for `inject_context` and
+`get_relevant_memories`. Seven seeded scenarios exercise preferences, pending
+items, stale-vs-current facts, entity references, session recall, entity
+salience, and decay priority.
+
+### Run the harness
+
+```bash
+# Local run (text report on stdout)
+foresight eval run
+
+# Write a JSON report for CI / baseline diffs
+foresight eval run --report eval-report.json --json
+```
+
+### Compare against a baseline
+
+```bash
+foresight eval run -r baseline.json -j
+foresight eval run --compare baseline.json -r new.json
+```
+
+### Run the unit tests
+
+```bash
+uv run pytest tests/test_eval_harness.py -v
+```
+
+### Acceptance checks
+
+- `7/7` scenarios pass with the default seed corpus.
+- Avg injection payload stays under the configurable character budget.
+- `scan_for_pii()` flags any leaked email, phone, SSN, API key, IP, or
+  credit-card number in the formatted injection output.
+
 ## License
 
 MIT
