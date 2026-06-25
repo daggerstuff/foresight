@@ -1,5 +1,5 @@
+"""Tests for the BlockRegistry singleton and MemoryBlockSchema lifecycle."""
 import pytest
-from datetime import datetime, timezone
 from foresight_mcp.block_registry import (
     BlockRegistry,
     MemoryBlockSchema,
