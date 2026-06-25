@@ -1,3 +1,4 @@
+from foresight_mcp.config import DEFAULT_USER_ID
 """Tests for explicit memory scoping (PIX-317)."""
 
 import asyncio
@@ -22,11 +23,11 @@ def test_memory_scope_defaults():
     """Test default scope construction."""
     reset_tenant_context()
     scope = get_current_scope()
-    assert scope.user_id == "vivi"
+    assert scope.user_id == DEFAULT_USER_ID
     assert scope.account_id == "default"
     assert scope.app_id is None
     assert scope.integration_id is None
-    assert scope.namespace() == "vivi:default"
+    assert scope.namespace() == f"{DEFAULT_USER_ID}:default"
 
 
 def test_memory_scope_user_account_only():
@@ -186,12 +187,12 @@ def test_reset_clears_all_context():
 
     reset_tenant_context()
 
-    assert get_current_user_id() == "vivi"
+    assert get_current_user_id() == DEFAULT_USER_ID
     assert get_current_account_id() == "default"
     assert get_current_app_id() is None
     assert get_current_integration_id() is None
     scope = get_current_scope()
-    assert scope.namespace() == "vivi:default"
+    assert scope.namespace() == f"{DEFAULT_USER_ID}:default"
 
 
 def test_workspace_id_synonym():
