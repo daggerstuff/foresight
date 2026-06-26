@@ -21,6 +21,11 @@ DB_PATH = os.environ.get("FORESIGHT_DB_PATH", DEFAULT_DB_PATH)
 # Format: postgresql://user:password@host:port/dbname?sslmode=require
 DB_URL = os.environ.get("FORESIGHT_DB_URL", "")
 
+# Optional Redis companion cache (overrides the in-process dict cache when set).
+# See foresight_mcp/redis_cache.RedisCache for the consuming API.
+# Format: redis://[:password@]host:port[/db]
+REDIS_URL = os.environ.get("FORESIGHT_REDIS_URL", "")
+
 # Identity defaults (used when FORESIGHT_IDENTITY not set)
 DEFAULT_USER_ID = os.environ.get("USER", "user")
 DEFAULT_ACCOUNT_ID = "default"
