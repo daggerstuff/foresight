@@ -31,7 +31,7 @@ classifiers = [
 
 dependencies = [
     "fastmcp>=3.2.0",
-    "redis>=8.0.1",
+    "redis>=5.0,<6.0",
 ]
 
 [project.optional-dependencies]
@@ -108,4 +108,5 @@ exclude_dirs = ["tests"]
 [tool.radarlint]
 exclude_dirs = ["tests"]
 skip_rules = ["python:S1244"]
+
 

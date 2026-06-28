@@ -17,6 +17,16 @@ if TYPE_CHECKING:
     from ..backend.base import DatabaseBackend
 
 
+
+import re as _re
+
+def _safe_identifier(name: str) -> str:
+    """Whitelist: only allow alphanumeric + underscore identifiers."""
+    if not _re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+        raise ValueError(f"Unsafe identifier: {name!r}")
+    return name
+
+
 def migrate(backend: DatabaseBackend) -> None:
     """Add unified schema tracking columns to the memories table."""
     if backend.table_exists("memories"):
@@ -41,4 +51,5 @@ def migrate(backend: DatabaseBackend) -> None:
 def _add_column_if_missing(backend: DatabaseBackend, table: str, column: str, definition: str) -> None:
     """Add a column to a table only if it does not already exist."""
     if not backend.column_exists(table, column):
-        backend.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        backend.execute(f"ALTER TABLE {_safe_identifier(table)} ADD COLUMN {_safe_identifier(column)} {definition}")
+
