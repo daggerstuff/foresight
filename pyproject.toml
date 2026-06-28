@@ -4,7 +4,7 @@ version = "1.2.0"
 description = "Persistent memory for AI agents — CLI, TUI, MCP server, and Python SDK"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 authors = [
     { name = "Foresight Team", email = "team@vectorize.io" },
 ]
@@ -38,7 +38,8 @@ dependencies = [
 cli = ["typer>=0.9.0", "rich>=13.0"]
 tui = ["textual>=1.0.0"]
 postgres = ["psycopg[binary,pool]>=3.2"]
-all = ["foresight-mcp[cli,tui,postgres]"]
+redis = ["redis>=5.0"]
+all = ["foresight-mcp[cli,tui,postgres,redis]"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -97,3 +98,14 @@ include = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+
+
+
+[tool.radarlint]
+exclude_dirs = ["tests"]
+skip_rules = ["python:S1244"]
+

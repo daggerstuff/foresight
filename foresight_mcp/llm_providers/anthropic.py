@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from foresight_mcp.llm_errors import LLMError
+from foresight_mcp.llm_errors import LLMError, LLMRateLimitError
 
 DEFAULT_MODEL = "claude-3-5-sonnet-latest"
 API_URL = "https://api.anthropic.com/v1/messages"
@@ -22,21 +22,19 @@ ANTHROPIC_VERSION = "2023-06-01"
 class AnthropicClient:
     provider: str = "anthropic"
 
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, timeout: int = 60) -> None:
+    def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         if not api_key:
             raise LLMError("Anthropic API key is required. Set ANTHROPIC_API_KEY or pass api_key=... explicitly.")
         if not model:
             raise LLMError("model is required and must be a non-empty string")
         self._api_key = api_key
         self.model = model
-        self._timeout = timeout
 
     @classmethod
     def from_env(cls) -> AnthropicClient:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         model = os.environ.get("FORESIGHT_LLM_MODEL", DEFAULT_MODEL).strip()
-        timeout_s = int(os.environ.get("FORESIGHT_LLM_TIMEOUT_MS", "60000")) // 1000
-        return cls(api_key=api_key, model=model, timeout=timeout_s)
+        return cls(api_key=api_key, model=model)
 
     def complete(self, prompt: str, *, max_tokens: int = 1024) -> str:
         if not isinstance(prompt, str) or not prompt:
@@ -61,10 +59,12 @@ class AnthropicClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 429:
+                raise LLMRateLimitError(f"Anthropic API rate limit (429): {detail}") from exc
             raise LLMError(f"Anthropic API returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(f"Anthropic API request failed: {exc.reason}") from exc

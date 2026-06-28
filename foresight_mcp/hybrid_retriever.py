@@ -138,8 +138,12 @@ class HybridResult:
     entity_hits: int = 0
     entity_confidence_avg: float = 0.0
 
-    # Decay metadata (debug only — not used in scoring)
+    # Decay metadata
     decay_multiplier: float = 1.0
+
+    # Entity salience boost factor (cross-cutting post-RRF)
+    entity_salience_boost: float = 1.0
+
     temporal_category: str = ""
 
     def to_dict(self) -> dict:
@@ -159,6 +163,7 @@ class HybridResult:
             "source_signals": self.source_signals,
             "entity_hits": self.entity_hits,
             "entity_confidence_avg": round(self.entity_confidence_avg, 4),
+            "entity_salience_boost": round(self.entity_salience_boost, 4),
             "decay_multiplier": round(self.decay_multiplier, 4),
         }
         temporal_category = self.temporal_category
@@ -849,22 +854,24 @@ class HybridRetriever:
         """Compute a super-linear boost for recently-active memories.
 
         Uses a sqrt curve so that 1-2 activations give modest boost while
-        many retrievals in a short window compound non-linearly. The boost
-        is further amplified when the last retrieval was very recent.
+        many retrievals compound non-linearly. The boost is further
+        amplified when the last retrieval was recent (4-hour window with
+        smooth linear taper instead of a hard 1-hour cutoff).
         """
         if activation_count <= 0:
             return 1.0
 
-        base_boost = 1.0 + (activation_count**0.5) * 0.1
+        # More responsive to multiple activations: 0.15 vs previously 0.1
+        base_boost = 1.0 + (activation_count**0.5) * 0.15
 
-        # Amplify if last retrieval was within the past hour (burst signal)
+        # Amplify if last retrieval was within the past 4 hours (burst signal)
+        # Smooth linear taper from 1.5x at time 0 to 1.0x at 4 hours.
         if last_retrieved_at:
             try:
                 last_ret = datetime.fromisoformat(last_retrieved_at.replace("Z", "+00:00"))
                 hours_since_retrieval = max((now - last_ret).total_seconds() / 3600, 0.0)
-                if hours_since_retrieval < 1.0:
-                    # Burst: recent retrieval within the hour — extra 1.5x max
-                    burst_factor = 1.0 + (1.0 - hours_since_retrieval) * 0.5
+                if hours_since_retrieval < 4.0:
+                    burst_factor = 1.0 + (1.0 - hours_since_retrieval / 4.0) * 0.5
                     base_boost *= burst_factor
             except (ValueError, AttributeError):
                 pass
@@ -1132,14 +1139,33 @@ class HybridRetriever:
             # Cross-cutting decay multiplier: penalize memories whose current strength
             # has decayed below their original importance. This applies decay as a
             # post-RRF factor so it affects ALL signals, not just temporal.
-            # Floor at 0.2 so even heavily decayed memories can still surface
-            # when strongly relevant (decay/reinforcement cannot fully suppress).
+            # Trend-aware floor so stale/weakening memories get proportionally more
+            # penalty while stable/strengthening ones retain a higher minimum.
             decay_multiplier = 1.0
             if current_strength is not None and importance > 0:
                 ratio = current_strength / importance
-                decay_multiplier = max(0.2, min(1.0, ratio))
-            result.combined_score = rrf_score * decay_multiplier
+                _trend = strength_trend or ""
+                if _trend == "stale":
+                    floor = 0.10
+                elif _trend == "weakening":
+                    floor = 0.15
+                else:
+                    floor = 0.20
+                decay_multiplier = max(floor, min(1.0, ratio))
             result.decay_multiplier = decay_multiplier
+
+            # Entity salience boost: memories with many high-confidence entity
+            # connections get a cross-cutting post-RRF boost. This complements the
+            # RRF-level graph signal by rewarding entity richness even when graph
+            # ranking is not the dominant signal in the fusion.
+            entity_boost = 1.0
+            _eh = rankings.entity_hits.get(memory_id, 0)
+            _ec = rankings.entity_confidence.get(memory_id, 0.0)
+            if _eh > 0 and _ec > 0:
+                entity_boost = 1.0 + min(0.25, _eh * _ec * 0.06)
+            result.entity_salience_boost = entity_boost
+
+            result.combined_score = rrf_score * decay_multiplier * entity_boost
 
             results.append(result)
 

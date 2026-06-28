@@ -172,6 +172,22 @@ def test_anthropic_client_handles_http_error() -> None:
         client.complete("p")
 
 
+def test_anthropic_client_handles_rate_limit() -> None:
+    client = AnthropicClient(api_key="test-key")
+    http_err = urllib.error.HTTPError(
+        url="https://api.anthropic.com/v1/messages",
+        code=429,
+        msg="Too Many Requests",
+        hdrs=MagicMock(),
+        fp=io.BytesIO(b"rate limit"),
+    )
+    with (
+        patch("urllib.request.urlopen", side_effect=http_err),
+        pytest.raises(LLMRateLimitError, match="Anthropic API rate limit \\(429\\)"),
+    ):
+        client.complete("p")
+
+
 def test_anthropic_client_handles_empty_content() -> None:
     client = AnthropicClient(api_key="test-key")
     payload = {"id": "msg_123", "content": []}
@@ -225,6 +241,22 @@ def test_openai_client_handles_http_error() -> None:
     client = OpenAIClient(api_key="test-key")
     http_err = urllib.error.HTTPError(
         url="https://api.openai.com/v1/chat/completions",
+        code=500,
+        msg="Internal Server Error",
+        hdrs=MagicMock(),
+        fp=io.BytesIO(b"internal error"),
+    )
+    with (
+        patch("urllib.request.urlopen", side_effect=http_err),
+        pytest.raises(LLMError, match="OpenAI API returned HTTP 500"),
+    ):
+        client.complete("p")
+
+
+def test_openai_client_handles_rate_limit() -> None:
+    client = OpenAIClient(api_key="test-key")
+    http_err = urllib.error.HTTPError(
+        url="https://api.openai.com/v1/chat/completions",
         code=429,
         msg="Too Many Requests",
         hdrs=MagicMock(),
@@ -232,7 +264,7 @@ def test_openai_client_handles_http_error() -> None:
     )
     with (
         patch("urllib.request.urlopen", side_effect=http_err),
-        pytest.raises(LLMError, match="OpenAI API returned HTTP 429"),
+        pytest.raises(LLMRateLimitError, match="OpenAI API rate limit \\(429\\)"),
     ):
         client.complete("p")
 

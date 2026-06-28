@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any
 
 from .base import DatabaseBackend
 
@@ -108,6 +109,7 @@ class PostgresBackend(DatabaseBackend):
             kwargs={"row_factory": dict_row},
             open=True,
         )
+        self._backend_type = "postgresql"
         logger.debug("Postgres connection pool open (min=%d, max=%d)", self._min_pool_size, self._max_pool_size)
 
     def close(self) -> None:
@@ -121,7 +123,7 @@ class PostgresBackend(DatabaseBackend):
     # ------------------------------------------------------------------
 
     @contextmanager
-    def connection(self) -> Generator[Any, None, None]:
+    def connection(self) -> Generator[Any]:
         """Acquire a pooled psycopg connection and release it on exit.
 
         psycopg v3 connections from ``ConnectionPool.connection()`` already

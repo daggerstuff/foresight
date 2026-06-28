@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import typer
 
 from ..utils import output as out
@@ -15,6 +14,8 @@ def run(
     db_path: str | None = typer.Option(None, "--db-path", help="Path to temp database (default: auto tempfile)"),
     report: str | None = typer.Option(None, "--report", "-r", help="Write JSON report to file"),
     budget: int = typer.Option(2000, "--budget", "-b", help="Character budget for injection payloads"),
+    compare: str | None = typer.Option(None, "--compare", "-c", help="Path to a baseline JSON report to diff against"),
+    save_baseline: str | None = typer.Option(None, "--save-baseline", help="Save the report as a baseline JSON at this path"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output report as JSON"),
     compare: str | None = typer.Option(None, "--compare", help="Path to a baseline JSON report to diff against"),
     save_baseline: str | None = typer.Option(None, "--save-baseline", help="Write this run as a baseline JSON report"),
@@ -32,6 +33,8 @@ def run(
         db_path=db_path,
         report_path=report,
         budget_chars=budget,
+        compare_path=compare,
+        save_baseline=save_baseline,
         json_output=json_output or out.get_settings().mode == "json",
         compare_path=compare,
         save_baseline=save_baseline,

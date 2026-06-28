@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
+from datetime import datetime, timezone
 from typing import Any
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class DatabaseBackend(ABC):
@@ -29,6 +34,13 @@ class DatabaseBackend(ABC):
             conn.execute("UPDATE t SET b = ? WHERE a = ?", (2, 1))
             conn.commit()
     """
+
+    def __init__(self) -> None:
+        self._backend_type: str | None = None
+
+    @property
+    def backend_type(self) -> str | None:
+        return self._backend_type
 
     @abstractmethod
     def connect(self) -> None:

@@ -3,47 +3,31 @@
 Provides the ``DatabaseBackend`` protocol and concrete implementations:
 
 * ``SqliteBackend`` — default, wraps the existing SQLite connection pool
-* ``PostgresBackend`` — (Phase 2) native asyncpg-backed PostgreSQL
+* ``PostgresBackend`` — PostgreSQL via psycopg v3
+* ``RedisCompanion`` — optional cross-process cache with graceful degradation
 
-Use the ``create_backend()`` factory to instantiate the correct backend
-based on the ``FORESIGHT_DB_URL`` environment variable.
+Use ``create_backend()`` to instantiate the correct backend based on
+the ``FORESIGHT_DB_URL`` environment variable; use
+``run_migrations(backend)`` for the backend-agnostic migration runner
+backed by the portable DDL phases in :mod:`schema_ddl`.
 """
 
 from __future__ import annotations
 
+from .backend_factory import create_backend
+from .backend_migrations import run_migrations
 from .base import DatabaseBackend
-from .sqlite_backend import SqliteBackend
 from .postgres_backend import PostgresBackend
+from .redis_companion import RedisCompanion
+from .schema_ddl import MIGRATIONS as SCHEMA_MIGRATIONS
+from .sqlite_backend import SqliteBackend
 
 __all__ = [
+    "SCHEMA_MIGRATIONS",
     "DatabaseBackend",
-    "SqliteBackend",
     "PostgresBackend",
+    "RedisCompanion",
+    "SqliteBackend",
     "create_backend",
+    "run_migrations",
 ]
-
-
-def create_backend(db_url: str | None = None) -> DatabaseBackend:
-    """Create the appropriate database backend based on configuration.
-
-    Parameters
-    ----------
-    db_url :
-        Database URL.  If ``None`` (default) the environment variable
-        ``FORESIGHT_DB_URL`` is read.  When neither is set the default
-        SqliteBackend is returned.
-
-    Returns
-    -------
-    DatabaseBackend
-        An initialised backend ready for ``connect()``.
-    """
-    if db_url is None:
-        import os
-
-        db_url = os.environ.get("FORESIGHT_DB_URL", "")
-
-    if db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
-        return PostgresBackend(dsn=db_url)
-
-    return SqliteBackend()

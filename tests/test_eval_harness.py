@@ -12,10 +12,10 @@ import tempfile
 from types import SimpleNamespace
 
 from foresight_mcp.eval_harness import (
-    EvalHarness,
-    EvalReport,
     FIXTURE_MEMORIES,
     SCENARIOS,
+    EvalHarness,
+    EvalReport,
     ScenarioResult,
     scan_for_pii,
 )
