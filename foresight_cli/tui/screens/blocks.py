@@ -132,7 +132,7 @@ class BlocksScreen(Screen):
             if content:
                 try:
                     init_db()
-                    result = manage_context_blocks(
+                    manage_context_blocks(
                         options=ContextBlockAction(action="update", label=label, content=content)
                     )
                     detail.update(f"[bold]{label}[/bold]\n\n{content}")

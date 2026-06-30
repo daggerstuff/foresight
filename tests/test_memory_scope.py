@@ -1,4 +1,5 @@
 from foresight_mcp.config import DEFAULT_USER_ID
+
 """Tests for explicit memory scoping (PIX-317)."""
 
 import asyncio

@@ -1,16 +1,16 @@
 """Tests for the BlockRegistry singleton and MemoryBlockSchema lifecycle."""
 import pytest
 from foresight_mcp.block_registry import (
+    DEFAULT_BLOCK_SCHEMAS,
     BlockRegistry,
-    MemoryBlockSchema,
-    MemoryBlock,
-    RetentionPolicy,
-    MergeStrategy,
-    InjectionPoint,
     BlockScope,
+    InjectionPoint,
+    MemoryBlock,
+    MemoryBlockSchema,
+    MergeStrategy,
+    RetentionPolicy,
     get_registry,
     initialize_default_blocks,
-    DEFAULT_BLOCK_SCHEMAS,
 )
 
 

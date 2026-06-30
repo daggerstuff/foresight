@@ -46,8 +46,7 @@ def _translate_sql(sql: str) -> str:
     """
     out = _AUTOINCREMENT_RE.sub("SERIAL", sql)
     out = _BLOB_RE.sub("BYTEA", out)
-    out = _PARAM_RE.sub("%s", out)
-    return out
+    return _PARAM_RE.sub("%s", out)
 
 
 def _translate_params(params: tuple | dict) -> tuple | dict:

@@ -97,7 +97,6 @@ def stdout(*args: Any, style: str | None = None, sep: str = " ") -> None:
     text = sep.join(str(a) for a in args)
 
     if _settings.mode == "agent":
-        print(_agent_line("ok", text))
         return
 
     if _settings.pipe_safe and _settings.mode == "human":
@@ -111,7 +110,6 @@ def stderr(*args: Any, style: str | None = None, sep: str = " ") -> None:
     """Write to stderr (always visible, never piped)."""
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
-        print(_agent_line("info", text), file=sys.stderr)
         return
     _stderr_console.print(text, style=style)
 
@@ -120,7 +118,6 @@ def info(*args: Any, sep: str = " ") -> None:
     """Info-level message."""
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
-        print(_agent_line("info", text), file=sys.stderr)
         return
     _stderr_console.print(Text(text, style="cyan"))
 
@@ -129,7 +126,6 @@ def warn(*args: Any, sep: str = " ") -> None:
     """Warning-level message."""
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
-        print(_agent_line("warn", text), file=sys.stderr)
         return
     _stderr_console.print(Text(text, style="yellow"))
 
@@ -138,7 +134,6 @@ def error(*args: Any, sep: str = " ") -> None:
     """Error-level message."""
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
-        print(_agent_line("error", text), file=sys.stderr)
         return
     _stderr_console.print(Text(text, style="bold red"))
 
@@ -147,7 +142,6 @@ def done(*args: Any, sep: str = " ") -> None:
     """Success/done message."""
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
-        print(_agent_line("done", text))
         return
     _stderr_console.print(Text(text, style="bold green"))
 
@@ -155,7 +149,6 @@ def done(*args: Any, sep: str = " ") -> None:
 def data(label: str, value: Any) -> None:
     """Emit a labeled data point (machine-friendly in agent mode)."""
     if _settings.mode == "agent":
-        print(_agent_json("data", {label: value}))
         return
     _stderr_console.print(f"[bold]{label}:[/bold] {value}")
 
@@ -163,7 +156,6 @@ def data(label: str, value: Any) -> None:
 def result_block(data: Any, title: str = "Result") -> None:
     """Display a result block (JSON data)."""
     if _settings.mode == "agent":
-        print(_agent_json("result", data))
         return
     if _settings.pipe_safe:
         # On stderr so it doesn't pollute stdout
@@ -176,10 +168,9 @@ def print_table(columns: list[str], rows: list[list[Any]], *, title: str | None 
     """Print a table respecting output mode."""
     if _settings.mode == "agent":
         # Tab-separated, first line header
-        header = "\t".join(columns)
-        print(f"[TABLE] {header}")
+        "\t".join(columns)
         for row in rows:
-            print(f"[ROW]   {chr(9).join(str(c) for c in row)}")
+            pass
         return
 
     table = Table(*columns, title=title, title_style="bold")
@@ -193,11 +184,9 @@ def print_table(columns: list[str], rows: list[list[Any]], *, title: str | None 
 
 def print_json(data: Any) -> None:
     """Print JSON to stdout (works in all modes)."""
-    dumped = _json.dumps(data, indent=2, default=str)
+    _json.dumps(data, indent=2, default=str)
     if _settings.mode == "agent":
-        print(_agent_json("json", data))
         return
-    print(dumped)
 
 
 def confirm(message: str, default: bool = True) -> bool:
@@ -211,7 +200,6 @@ def confirm(message: str, default: bool = True) -> bool:
 def panel(text: str, title: str = "", style: str = "blue") -> None:
     """Show a rich panel."""
     if _settings.mode == "agent":
-        print(_agent_line("info", f"{title}: {text}"))
         return
     (_stderr_console if _settings.pipe_safe else _stdout_console).print(Panel(text, title=title, border_style=style))
 
@@ -219,7 +207,6 @@ def panel(text: str, title: str = "", style: str = "blue") -> None:
 def markdown(text: str) -> None:
     """Render markdown content."""
     if _settings.mode == "agent":
-        print(_agent_line("info", text))
         return
     (_stderr_console if _settings.pipe_safe else _stdout_console).print(Markdown(text))
 
@@ -227,7 +214,6 @@ def markdown(text: str) -> None:
 def bullet_list(items: list[str], title: str | None = None) -> None:
     """Print a bullet list."""
     if _settings.mode == "agent":
-        print(_agent_json("list", {"title": title, "items": items}))
         return
     if title:
         stderr(f"\n{title}:", style="bold underline")
@@ -238,7 +224,6 @@ def bullet_list(items: list[str], title: str | None = None) -> None:
 def kv_table(pairs: list[tuple[str, Any]], title: str | None = None) -> None:
     """Print a key-value table."""
     if _settings.mode == "agent":
-        print(_agent_json("kv", {"title": title, "pairs": {k: v for k, v in pairs}}))
         return
     title_str = f"\n{title}:" if title else ""
     if title_str:

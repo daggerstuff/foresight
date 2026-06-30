@@ -2,6 +2,7 @@ from pathlib import Path
 
 from foresight_mcp.rrf_tuning import RRFConfig, get_rrf_config, save_rrf_config
 
+
 def test_get_rrf_config_default(tmp_path):
     """Test getting default config when file doesn't exist."""
     config = get_rrf_config(str(tmp_path / "nonexistent.json"))

@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 logger = logging.getLogger("foresight_budget")
@@ -36,7 +36,7 @@ logger = logging.getLogger("foresight_budget")
 # =============================================================================
 
 
-class Lane(str, Enum):
+class Lane(StrEnum):
     """Injection lanes in priority order."""
 
     STATIC = "static"
@@ -56,7 +56,7 @@ LANE_PRIORITY: list[Lane] = [
 ]
 
 
-class TruncationLevel(str, Enum):
+class TruncationLevel(StrEnum):
     """How much of an item's content is preserved."""
 
     FULL = "full"  # Complete content

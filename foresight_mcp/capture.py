@@ -452,7 +452,7 @@ class CapturePipeline:
         conn = pool.acquire()
         try:
             conn.row_factory = __import__("sqlite3").Row
-            for category, items in candidate_map.items():
+            for _category, items in candidate_map.items():
                 if not items:
                     continue
                 for candidate, dedupe in items:

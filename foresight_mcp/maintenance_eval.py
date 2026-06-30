@@ -21,6 +21,7 @@ Or via CLI:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -641,10 +642,8 @@ class MaintenanceEvalHarness:
             self._conn.close()
             self._conn = None
         if not self._user_provided_db:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(self._db_path)
-            except OSError:
-                pass
 
 
 # =============================================================================

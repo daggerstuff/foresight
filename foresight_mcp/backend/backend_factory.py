@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import os
 
-from ..config import DB_PATH, DB_URL
+from foresight_mcp.config import DB_PATH, DB_URL
+
 from .base import DatabaseBackend
 from .postgres_backend import PostgresBackend
 from .sqlite_backend import SqliteBackend

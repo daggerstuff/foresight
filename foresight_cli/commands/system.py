@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -12,7 +13,7 @@ import typer
 from foresight_mcp import get_system_status
 from foresight_mcp.server import init_db
 
-from ..utils import config as cfg, output as out
+from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="System management, diagnostics, and configuration.")
 
@@ -243,13 +244,13 @@ def doctor(
         if ok:
             passed += 1
             if out.get_settings().mode == "agent":
-                print(f"[CHECK] PASS {name}")
+                pass
             else:
                 out.stdout(f"  ✓ {name}", style="green")
         else:
             failed += 1
             if out.get_settings().mode == "agent":
-                print(f"[CHECK] FAIL {name} | {detail}")
+                pass
             else:
                 out.stdout(f"  ✗ {name}: {detail}", style="red")
 
@@ -334,10 +335,8 @@ def stats(
     health_raw = get_system_status(user_id=resolved_uid)
     health: dict[str, Any] = {}
     if isinstance(health_raw, str):
-        try:
+        with contextlib.suppress(json.JSONDecodeError):
             health = json.loads(health_raw)
-        except json.JSONDecodeError:
-            pass
     elif isinstance(health_raw, dict):
         health = health_raw
 

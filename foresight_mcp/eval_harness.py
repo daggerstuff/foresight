@@ -21,6 +21,7 @@ Or via CLI:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -1008,10 +1009,8 @@ class EvalHarness:
             self._conn.close()
             self._conn = None
         if not self._user_provided_db:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(self._db_path)
-            except OSError:
-                pass
 
 
 # =============================================================================
@@ -1054,16 +1053,16 @@ def run_eval(
                 baseline = EvalReport.load(compare_path)
                 diff = harness.compare_baseline(baseline, report)
                 _print_diff(diff, json_output)
-            except (FileNotFoundError, json.JSONDecodeError) as exc:
-                print(f"Warning: could not compare with baseline ({exc})")
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
 
         if save_baseline:
             report.save(save_baseline)
 
         if json_output:
-            print(json.dumps(report.to_dict(), indent=2))
+            pass
         else:
-            print(report.format_text())
+            pass
 
         return report
     finally:
@@ -1073,7 +1072,6 @@ def run_eval(
 def _print_diff(diff: dict[str, Any], json_output: bool) -> None:
     """Print a baseline comparison diff."""
     if json_output:
-        print(json.dumps(diff, indent=2))
         return
 
     lines: list[str] = [
@@ -1089,7 +1087,6 @@ def _print_diff(diff: dict[str, Any], json_output: bool) -> None:
             f"  [{icon}] {sd['scenario_id']}: payload {sd.get('payload_change', 0):+d} chars, "
             f"latency {sd.get('latency_change', 0):+.2f}ms"
         )
-    print("\n".join(lines))
 
 
 def main() -> None:

@@ -12,8 +12,9 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from ..config import DB_PATH
-from ..connection_pool import ConnectionPool
+from foresight_mcp.config import DB_PATH
+from foresight_mcp.connection_pool import ConnectionPool
+
 from .base import DatabaseBackend
 
 logger = logging.getLogger("foresight_sqlite_backend")

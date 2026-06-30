@@ -2,6 +2,7 @@
 import pytest
 from foresight_mcp.backend.sqlite_backend import SqliteBackend
 
+
 @pytest.fixture
 def db_path(tmp_path):
     return str(tmp_path / "backend_test.db")
@@ -37,9 +38,8 @@ def test_close_never_connected(db_path):
 def test_unconnected_backend_raises(db_path):
     b = SqliteBackend(db_path=db_path)
 
-    with pytest.raises(RuntimeError, match="SqliteBackend not connected"):
-        with b.connection():
-            pass
+    with pytest.raises(RuntimeError, match="SqliteBackend not connected"), b.connection():
+        pass
 
     with pytest.raises(RuntimeError, match="SqliteBackend not connected"):
         b.execute("SELECT 1")
@@ -117,10 +117,9 @@ def test_stats_unconnected(db_path):
 def test_connection_exception_rollback(backend):
     backend.execute("CREATE TABLE test (val INTEGER)")
 
-    with pytest.raises(ValueError):
-        with backend.connection() as conn:
-            conn.execute("INSERT INTO test (val) VALUES (42)")
-            raise ValueError("Something went wrong")
+    with pytest.raises(ValueError), backend.connection() as conn:
+        conn.execute("INSERT INTO test (val) VALUES (42)")
+        raise ValueError("Something went wrong")
 
     # The transaction should have been rolled back
     row = backend.fetch_one("SELECT val FROM test")

@@ -14,15 +14,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..backend.base import DatabaseBackend
+    from foresight_mcp.backend.base import DatabaseBackend
 
 
 
 import re as _re
 
+
 def _safe_identifier(name: str) -> str:
     """Whitelist: only allow alphanumeric + underscore identifiers."""
-    if not _re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+    if not _re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
         raise ValueError(f"Unsafe identifier: {name!r}")
     return name
 
