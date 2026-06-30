@@ -429,8 +429,8 @@ class TestRunEval:
                 os.unlink(report_path)
 
     def test_cli_eval_command_uses_scenario_result_fields(self, monkeypatch):
-        from foresight_cli.commands import eval as eval_cmd
         import foresight_mcp.eval_harness as eval_harness_module
+        from foresight_cli.commands import eval as eval_cmd
 
         scenario = ScenarioResult(
             scenario_id="S1_preference",
@@ -457,9 +457,9 @@ class TestRunEval:
 
         monkeypatch.setattr(eval_harness_module, "run_eval", lambda **_: report)
         monkeypatch.setattr(eval_cmd.out, "get_settings", lambda: SimpleNamespace(mode="human"))
-        monkeypatch.setattr(eval_cmd.out, "done", lambda message: done_calls.append(message))
+        monkeypatch.setattr(eval_cmd.out, "done", done_calls.append)
         monkeypatch.setattr(eval_cmd.out, "stderr", lambda message, style=None: stderr_calls.append(message))
-        monkeypatch.setattr(eval_cmd.out, "info", lambda message: info_calls.append(message))
+        monkeypatch.setattr(eval_cmd.out, "info", info_calls.append)
 
         eval_cmd.run(
             db_path=None,

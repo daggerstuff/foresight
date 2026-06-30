@@ -17,7 +17,7 @@ from foresight_mcp import (
 )
 from foresight_mcp.server import init_db
 
-from ..utils import config as cfg, output as out
+from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Store, retrieve, search, and manage memories.")
 

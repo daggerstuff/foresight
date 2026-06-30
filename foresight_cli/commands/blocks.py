@@ -8,7 +8,7 @@ import typer
 from foresight_mcp import ContextBlockAction, manage_context_blocks
 from foresight_mcp.server import init_db
 
-from ..utils import config as cfg, output as out
+from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage Foresight context blocks (guidance, preferences, state).")
 

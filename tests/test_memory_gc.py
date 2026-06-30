@@ -253,7 +253,7 @@ class TestGCStats:
         stats = GCStats()
         d = stats.to_dict()
         for v in d.values():
-            assert v == 0 or v == 0.0, f"expected zero, got {v}"
+            assert v in {0}, f"expected zero, got {v}"
 
 
 # ---------------------------------------------------------------------------

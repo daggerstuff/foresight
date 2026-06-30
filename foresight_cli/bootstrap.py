@@ -256,9 +256,8 @@ def _sync_init_exports(package_name: str) -> None:
         return
 
     # Ensure __path__ matches
-    if hasattr(pkg, "__path__") and hasattr(init_mod, "__path__"):
-        if not pkg.__path__:
-            pkg.__path__ = init_mod.__path__
+    if hasattr(pkg, "__path__") and hasattr(init_mod, "__path__") and not pkg.__path__:
+        pkg.__path__ = init_mod.__path__
 
     # Copy public symbols from __init__ to the package
     for attr_name in dir(init_mod):

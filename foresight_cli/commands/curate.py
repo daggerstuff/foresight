@@ -9,7 +9,7 @@ import typer
 from foresight_mcp import CurationRunAction, manage_curation_runs
 from foresight_mcp.server import init_db
 
-from ..utils import config as cfg, output as out
+from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage async Foresight curation runs.")
 

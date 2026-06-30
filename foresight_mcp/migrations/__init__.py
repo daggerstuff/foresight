@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..backend.base import DatabaseBackend
+    from foresight_mcp.backend.base import DatabaseBackend
 
 logger = logging.getLogger(__name__)
 

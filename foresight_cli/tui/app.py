@@ -8,7 +8,8 @@ from textual.reactive import var
 from textual.screen import Screen
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
-from ..utils.config import CliConfig
+from foresight_cli.utils.config import CliConfig
+
 from .screens.blocks import BlocksScreen
 from .screens.dashboard import DashboardScreen
 from .screens.memories import MemoriesScreen

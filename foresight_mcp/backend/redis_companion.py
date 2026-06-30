@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -112,10 +113,8 @@ class RedisCompanion:
         if not await self._ensure_connected():
             return
         key = _make_embed_key(tenant_id, user_id, provider, _hash_text(text))
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.setex(key, ttl, json.dumps(vector))
-        except Exception:
-            pass
 
     async def embedding_cache_invalidate(self, tenant_id: str, user_id: str, memory_id: str) -> None:
         """Publish an invalidation notification for *memory_id*."""
@@ -129,10 +128,8 @@ class RedisCompanion:
                 "ts": time.time(),
             }
         )
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.publish(_INVALIDATE_CHANNEL, payload)
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Rate limiter (sliding window via sorted set)
@@ -188,10 +185,8 @@ class RedisCompanion:
     async def close(self) -> None:
         """Close the Redis connection."""
         if self._redis is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._redis.close()
-            except Exception:
-                pass
             self._redis = None
             self._available = False
             self._warned = False

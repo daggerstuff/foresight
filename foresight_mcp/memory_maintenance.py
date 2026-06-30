@@ -87,8 +87,6 @@ class MaintenanceConfig:
     sensitive_only: bool = False
     tool_access: str = "observe"
     max_runtime_seconds: float = MAX_RUNTIME_SECONDS
-    sensitive_only: bool = False
-    tool_access: str = "auto"
 
 
 @dataclass
@@ -208,7 +206,7 @@ class MemoryMaintenanceJob:
     ) -> list[dict[str, Any]]:
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
         where = f"user_id = ? AND tenant_id = ? AND {sensitivity_filter}{extra_where}"
-        params = (config.user_id, config.tenant_id) + extra_params
+        params = (config.user_id, config.tenant_id, *extra_params)
         cursor = conn.execute(
             f"""
             SELECT id, user_id, tenant_id, scope, retention, content, tags,
@@ -375,10 +373,7 @@ class MemoryMaintenanceJob:
             for mem_b in memories[i + 1 :]:
                 words_a = set(re.findall(r"\b\w+\b", (mem_a["content"] or "").lower()))
                 words_b = set(re.findall(r"\b\w+\b", (mem_b["content"] or "").lower()))
-                if not words_a or not words_b:
-                    score = 0.0
-                else:
-                    score = len(words_a & words_b) / len(words_a | words_b)
+                score = 0.0 if not words_a or not words_b else len(words_a & words_b) / len(words_a | words_b)
                 key = tuple(sorted([mem_a["id"], mem_b["id"]]))
                 scores[key] = score
         return scores
@@ -424,10 +419,10 @@ class MemoryMaintenanceJob:
         # Update primary memory with content and sensitivity in a single transaction
         is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, combined[:1000])
         conn.execute(
-            """UPDATE memories 
-               SET content = ?, 
-                   is_ghost = 1, 
-                   gist = ?, 
+            """UPDATE memories
+               SET content = ?,
+                   is_ghost = 1,
+                   gist = ?,
                    synthesized_from = ?,
                    is_sensitive = ?,
                    sensitivity_reason = ?
@@ -448,7 +443,7 @@ class MemoryMaintenanceJob:
         if other_ids:
             placeholders = ",".join("?" for _ in other_ids)
             gist_values = [(other_ids[0][:200] if other_ids else "")] * len(other_ids)
-            synthesized_from_values = [str(list(existing_synth) + [mid]) for mid in other_ids]
+            synthesized_from_values = [str([*list(existing_synth), mid]) for mid in other_ids]
 
             # Build the SET clause for the UPDATE
             set_clause = "is_ghost = 1, gist = CASE id "
@@ -772,7 +767,7 @@ class MemoryMaintenanceJob:
             if len(cluster) >= 3:
                 contents = [m["content"] for m in cluster if m["content"]]
                 if len(contents) >= 3:
-                    combined = " ".join(contents[:5])
+                    " ".join(contents[:5])
                     statement = (
                         f"Multiple memories share topic '{topic}': {len(cluster)} references across recent memories."
                     )
