@@ -36,7 +36,7 @@ Three commands. You're live.
 | **`foresight --agent`** | Machine-parseable output for AI agents | `foresight --agent status → [JSON] {...}`                               |
 | **`foresight tui`**     | Interactive Textual TUI                | Browse, search, edit memories — keyboard-first                          |
 | **`foresight-mcp`**     | MCP server for agent tool integration  | Add to Claude Code, Cursor, Goose, any MCP client                       |
-| **Python SDK**          | Import directly for custom tooling     | `from foresight_mcp import store_memory, query_memories`                |
+| **Python SDK**          | Import directly for custom tooling     | Use Python API helpers for custom scripts                               |
 
 ---
 
@@ -49,6 +49,7 @@ pip install foresight-mcp[all]
 ```
 
 > **Extras breakdown** — install only what you need:
+>
 > | Extra | Includes |
 > |---|---|
 > | `(none)` | MCP server only — no CLI, no TUI |
@@ -162,7 +163,7 @@ Found 4 memories (hybrid search):
 #### Step 5 — TUI
 
 ```bash
-$ foresight tui
+foresight tui
 ```
 
 Full-screen Textual terminal UI. Three tabs:
@@ -231,7 +232,9 @@ Arguments: foresight-mcp
 
 **Goose** — same pattern, same command. Any stdio MCP client works.
 
-Once connected, your agent gets Foresight as a built-in tool. It can store memories from conversations, search across everything you've told it, and pull context from three sessions ago — automatically, without you asking.
+Once connected, your agent gets Foresight as a built-in tool. It can store
+memories from conversations, search across everything you've told it, and pull
+context from three sessions ago — automatically, without you asking.
 
 ---
 
@@ -421,12 +424,16 @@ These are the actual MCP tool names exposed by the server:
 
 - `manage_memories` — store, update, delete, or archive a memory
 - `search_memories` — unified search/retrieval (ID lookup, keyword, hybrid)
-- `manage_memory_versions` — diff and rollback memory versions
-- `analyze_memories` — synthesize patterns or reflect over a time period
 - `manage_context_blocks` — list, get, update, reset, or clear context blocks
+- `process_session_transcript` — extract memories from a session transcript
 - `manage_curation_runs` — create, get, list, cancel, or archive curation runs
 - `inject_context` — surface relevant memories for a conversation
-- `process_session_transcript` — extract memories from a session transcript
+- `query_memories_temporal` — retrieve memories by time window or trend
+- `get_system_status` — inspect health and memory-system status
+
+Direct aliases, analysis/versioning, entity graph, clustering, embedding, decay,
+document, tenant-switching, and maintenance routines are intentionally not
+exposed as MCP tools. Use the `foresight` CLI or Python API for those workflows.
 
 ### Context block helpers
 
@@ -510,7 +517,12 @@ print(result)
 ### Run curation from the CLI
 
 ```bash
-foresight curate create   --source-bank-id default   --policy-mode rebalance   --tool-access observe   --output-mode reviewable_output   --instructions "Preserve durable preferences and merge duplicates"
+foresight curate create \
+  --source-bank-id default \
+  --policy-mode rebalance \
+  --tool-access observe \
+  --output-mode reviewable_output \
+  --instructions "Preserve durable preferences and merge duplicates"
 ```
 
 ## Migration notes
@@ -529,8 +541,9 @@ public surface.
 | `reset_subconscious_block`  | `reset_context_block`   |
 | `clear_subconscious_block`  | `clear_context_block`   |
 
-Compatibility aliases remain in place for older clients, but new integrations
-should use the Foresight-native names above.
+Python compatibility helpers remain in place for older direct-import clients,
+but new integrations should use the Foresight-native names above. These helpers
+are not MCP-discovered tools.
 
 ## Evaluation harness (PIX-3953)
 

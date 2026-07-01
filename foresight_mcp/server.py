@@ -12,6 +12,8 @@ import json
 import os
 import threading
 import time
+import types
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -701,9 +703,49 @@ class CurationError(RuntimeError):
     """Raised when a curation run is canceled before publication completes."""
 
 
+def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Helper to handle memory storage."""
+    hook_ctx = MemoryHookContext(
+        action="store",
+        memory_id=None,
+        user_id=uid,
+        tenant_id=tenant_id,
+        content=options.content,
+        category=options.options.category if options.options else "fact",
+        scope=options.options.scope if options.options else "session",
+        retention=options.options.retention if options.options else "short_term",
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_STORE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted store: {r.message}"
+
+    conn = get_db_connection()
+    memory_id = options.memory_id or str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    opts = options.options
+    conn.execute(
+        "INSERT INTO memories (id, content, tenant_id, user_id, bank_id, scope, retention, category, created_at, updated_at, tags, emotional_context) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            memory_id,
+            options.content,
+            tenant_id,
+            uid,
+            "default",
+            opts.scope if opts else "session",
+            opts.retention if opts else "short_term",
+            opts.category if opts else "fact",
+            now,
+            now,
+            "[]",
+            json.dumps(opts.emotional_context if opts else {}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    gate_result = types.SimpleNamespace(decision="auto", reason="Normal information flow.")
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
 
-    # ── POST_STORE hook ────────────────────────────────────────────────
     hook_ctx.memory_id = memory_id
     get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
 
@@ -1107,5 +1149,3 @@ def search_memories(
     # ── POST_RETRIEVE hook (fallback) ─────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
-
-
