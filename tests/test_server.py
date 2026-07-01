@@ -280,8 +280,28 @@ async def test_text_tools_do_not_advertise_structured_output(monkeypatch):
     async with Client(mcp) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
 
-    for tool_name in ("manage_subconscious", "search_memories", "inject_context"):
+    for tool_name in ("manage_context_blocks", "search_memories", "inject_context"):
         assert tools[tool_name].outputSchema is None
+
+
+@pytest.mark.asyncio
+async def test_mcp_exposes_only_core_tools(monkeypatch):
+    monkeypatch.setenv("FORESIGHT_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.delenv("FORESIGHT_REQUIRE_API_KEY", raising=False)
+
+    async with Client(mcp) as client:
+        tool_names = {tool.name for tool in await client.list_tools()}
+
+    assert tool_names == {
+        "get_system_status",
+        "inject_context",
+        "manage_context_blocks",
+        "manage_curation_runs",
+        "manage_memories",
+        "process_session_transcript",
+        "query_memories_temporal",
+        "search_memories",
+    }
 
 
 @pytest.mark.asyncio
@@ -292,7 +312,7 @@ async def test_local_mcp_calls_return_text_without_api_key(monkeypatch):
 
     async with Client(mcp) as client:
         result = await client.call_tool(
-            "manage_subconscious",
+            "manage_context_blocks",
             {"options": {"action": "list"}, "user_id": "test_user"},
         )
 
