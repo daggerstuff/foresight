@@ -16,7 +16,10 @@ def run(
     report: str | None = typer.Option(None, "--report", "-r", help="Write JSON report to file"),
     budget: int = typer.Option(2000, "--budget", "-b", help="Character budget for injection payloads"),
     compare: str | None = typer.Option(None, "--compare", "-c", help="Path to a baseline JSON report to diff against"),
-    save_baseline: str | None = typer.Option(None, "--save-baseline", help="Save the report as a baseline JSON at this path"),
+    save_baseline: str | None = typer.Option(
+        None, "--save-baseline", help="Save the report as a baseline JSON at this path"
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output report as JSON"),
 ):
     """Run the full evaluation harness and print a summary report.
 
@@ -31,7 +34,7 @@ def run(
         budget_chars=budget,
         compare_path=compare,
         save_baseline=save_baseline,
-        json_output=out.get_settings().mode == "json",
+        json_output=json_output or out.get_settings().mode == "json",
     )
 
     passed = report_obj.summary["passed"]
