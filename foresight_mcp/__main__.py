@@ -14,7 +14,7 @@ from .server import get_system_status, init_db, main as run_server
 def main() -> None:
     """Support lightweight CLI flags before starting the MCP server."""
     if "-h" in sys.argv or "--help" in sys.argv:
-        sys.stdout.write("Usage: foresight-mcp [--health] [--health --json] [--version]\n")
+        sys.stdout.write("Usage: foresight-mcp [--health] [--health --json] [--version] [--host HOST] [--port PORT]\n")
         return
 
     if "--health" in sys.argv:
@@ -32,7 +32,18 @@ def main() -> None:
             pass
         return
 
-    run_server()
+    host: str | None = None
+    port: int | None = None
+    if "--host" in sys.argv:
+        idx = sys.argv.index("--host")
+        if idx + 1 < len(sys.argv):
+            host = sys.argv[idx + 1]
+    if "--port" in sys.argv:
+        idx = sys.argv.index("--port")
+        if idx + 1 < len(sys.argv):
+            port = int(sys.argv[idx + 1])
+
+    run_server(host=host, port=port)
 
 
 if __name__ == "__main__":

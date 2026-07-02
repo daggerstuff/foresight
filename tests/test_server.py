@@ -1753,6 +1753,127 @@ def test_handle_version_rollback_respects_tenant_scope():
         os.unlink(db_path)
 
 
+def test_standalone_rollback_to_version_respects_tenant_scope():
+    from foresight_mcp.server import rollback_to_version
+
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """CREATE TABLE memories (
+                id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                scope TEXT DEFAULT 'session', retention TEXT DEFAULT 'short_term',
+                category TEXT DEFAULT 'fact', user_id TEXT DEFAULT 'default',
+                bank_id TEXT DEFAULT 'default', created_at TEXT NOT NULL,
+                updated_at TEXT, tags TEXT DEFAULT '[]',
+                emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
+                vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
+                synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
+                importance REAL, activation_count INTEGER DEFAULT 0,
+                is_sensitive INTEGER NOT NULL DEFAULT 0, sensitivity_reason TEXT,
+                UNIQUE(id, tenant_id)
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE memory_versions (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                content TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                tags TEXT DEFAULT '[]',
+                emotional_context TEXT DEFAULT '{}',
+                metrics TEXT DEFAULT '{}',
+                rollback_of TEXT
+            )"""
+        )
+
+        memory_id = "mem-standalone-rollback-collision"
+        now = datetime.now(timezone.utc).isoformat()
+
+        for tenant, content, tags in [
+            ("tenant-a", "tenant-a current", '["a"]'),
+            ("tenant-b", "tenant-b current", '["b"]'),
+        ]:
+            conn.execute(
+                """INSERT INTO memories
+                   (id, content, tenant_id, user_id, scope, retention, category,
+                    created_at, updated_at, tags, emotional_context, metrics, is_ghost, version)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    memory_id,
+                    content,
+                    tenant,
+                    "user-1",
+                    "session",
+                    "short_term",
+                    "fact",
+                    now,
+                    now,
+                    tags,
+                    "{}",
+                    "{}",
+                    0,
+                    3,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO memory_versions
+                   (id, memory_id, tenant_id, content, version, created_at,
+                    tags, emotional_context, metrics)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    f"ver-{tenant}-2",
+                    memory_id,
+                    tenant,
+                    f"{tenant} target-version",
+                    2,
+                    now,
+                    tags,
+                    "{}",
+                    "{}",
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+        with (
+            patch("foresight_mcp.server.DB_PATH", db_path),
+            patch("foresight_mcp.connection_pool.DB_PATH", db_path),
+            patch.dict("foresight_mcp.connection_pool._pools", {}, clear=True),
+            patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-a"),
+        ):
+            result = rollback_to_version(memory_id, 2, user_id="user-1")
+
+        assert "Rolled back" in result or "rolled" in result.lower()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        row_a = conn.execute(
+            "SELECT content, version FROM memories WHERE id = ? AND tenant_id = ?",
+            (memory_id, "tenant-a"),
+        ).fetchone()
+        assert row_a["content"] == "tenant-a target-version"
+        assert row_a["version"] == 3
+
+        row_b = conn.execute(
+            "SELECT content, version FROM memories WHERE id = ? AND tenant_id = ?",
+            (memory_id, "tenant-b"),
+        ).fetchone()
+        assert row_b["content"] == "tenant-b current"
+        assert row_b["version"] == 3
+
+        conn.close()
+    finally:
+        os.unlink(db_path)
+
+
 def test_memory_hard_cap_enforcement():
     """Storing memory beyond hard cap returns error."""
     import os

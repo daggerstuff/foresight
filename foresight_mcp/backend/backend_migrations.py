@@ -124,7 +124,7 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
             logger.exception("Migration %s failed; aborting before any version is recorded", version)
             raise
 
-        backend.set_version(version)
+        backend.set_version(version, _applied_at_iso())
         logger.info("Applied migration %s", version)
         newly_applied.append(version)
 

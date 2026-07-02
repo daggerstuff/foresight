@@ -357,6 +357,7 @@ class EvalReport:
     scenarios: list[ScenarioResult]
     summary: dict[str, Any]
     harness_version: str = "1.0.0"
+    baseline_diff: dict[str, Any] | None = None
 
     def format_text(self) -> str:
         """Format as human-readable text report."""
@@ -380,6 +381,13 @@ class EvalReport:
             lines.append(f"⚠ PII/secret findings: {self.summary['pii_findings_total']}")
         else:
             lines.append("PII/secret findings: 0 ✓")
+        if self.baseline_diff is not None:
+            lines.append("")
+            lines.append("Baseline comparison:")
+            lines.append(f"  Payload change: {_format_pct_change(self.baseline_diff.get('payload_change_pct'))}")
+            lines.append(f"  Latency change: {_format_pct_change(self.baseline_diff.get('latency_change_pct'))}")
+            lines.append(f"  Pass rate change: {self.baseline_diff.get('pass_rate_change', 0):+.1f}%")
+            lines.append(f"  PII change: {self.baseline_diff.get('pii_change', 0):+d}")
         lines.append("")
 
         for sr in self.scenarios:
@@ -403,6 +411,7 @@ class EvalReport:
             "harness_version": self.harness_version,
             "timestamp": self.timestamp,
             "summary": self.summary,
+            "baseline_diff": self.baseline_diff,
             "scenarios": [
                 {
                     "scenario_id": s.scenario_id,
@@ -456,6 +465,7 @@ class EvalReport:
             scenarios=scenarios,
             summary=data.get("summary", {}),
             harness_version=data.get("harness_version", "1.0.0"),
+            baseline_diff=data.get("baseline_diff"),
         )
 
 
@@ -543,8 +553,8 @@ class EvalHarness:
 
         # Patch config DB_PATH in each module that holds a local binding
         for mod in (config_module, conn_pool_module, hr_module):
-            orig = mod.DB_PATH
-            mod.DB_PATH = self.db_path
+            orig = getattr(mod, "DB_PATH")
+            setattr(mod, "DB_PATH", self.db_path)
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Set tenant context
@@ -1045,16 +1055,17 @@ def run_eval(
         logger.info("Seeded %d fixture memories", count)
         report = harness.run_all(budget_chars=budget_chars)
 
-        if report_path:
-            report.save(report_path)
-
         if compare_path:
             try:
                 baseline = EvalReport.load(compare_path)
                 diff = harness.compare_baseline(baseline, report)
+                report.baseline_diff = diff
                 _print_diff(diff, json_output)
             except (FileNotFoundError, json.JSONDecodeError):
                 pass
+
+        if report_path:
+            report.save(report_path)
 
         if save_baseline:
             report.save(save_baseline)
@@ -1087,6 +1098,14 @@ def _print_diff(diff: dict[str, Any], json_output: bool) -> None:
             f"  [{icon}] {sd['scenario_id']}: payload {sd.get('payload_change', 0):+d} chars, "
             f"latency {sd.get('latency_change', 0):+.2f}ms"
         )
+
+    print("\n".join(lines))
+
+
+def _format_pct_change(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:+.1f}%"
 
 
 def main() -> None:

@@ -512,7 +512,6 @@ class TestReportPersistence:
             harness.close()
 
     def test_compare_via_cli(self):
-        """run_eval with compare_path should not raise."""
         from foresight_mcp.eval_harness import run_eval
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
@@ -530,9 +529,36 @@ class TestReportPersistence:
             )
             assert isinstance(report, EvalReport)
             assert report.summary["total"] == len(SCENARIOS)
+            assert report.baseline_diff is not None
+            assert "scenario_diffs" in report.baseline_diff
         finally:
             if os.path.exists(baseline_path):
                 os.unlink(baseline_path)
+
+    def test_report_file_includes_baseline_diff(self):
+        from foresight_mcp.eval_harness import run_eval
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as baseline_file:
+            baseline_path = baseline_file.name
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as report_file:
+            report_path = report_file.name
+        try:
+            run_eval(db_path=":memory:", save_baseline=baseline_path, budget_chars=2000)
+            run_eval(
+                db_path=":memory:",
+                compare_path=baseline_path,
+                report_path=report_path,
+                budget_chars=2000,
+            )
+
+            persisted_report = EvalReport.load(report_path)
+            assert persisted_report.baseline_diff is not None
+            assert "payload_change_pct" in persisted_report.baseline_diff
+        finally:
+            if os.path.exists(baseline_path):
+                os.unlink(baseline_path)
+            if os.path.exists(report_path):
+                os.unlink(report_path)
 
     def test_compare_missing_baseline_does_not_crash(self):
         from foresight_mcp.eval_harness import run_eval
