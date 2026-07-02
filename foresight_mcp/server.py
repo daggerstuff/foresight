@@ -30,6 +30,8 @@ from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
 from mcp.types import TextContent
 from pydantic import BaseModel, Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .auth import AuthMiddleware
 from .backend import RedisCompanion, create_backend
@@ -868,12 +870,13 @@ def create_version_snapshot(memory_id: str, data: dict) -> str:
 def rollback_to_version(memory_id: str, target_version: int, user_id: str | None = None) -> str:
     """Rollback a memory to a specific version."""
     uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
     conn = get_db_connection()
 
     # Verify memory ownership first
     current = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id()),
+        (memory_id, uid, tenant_id),
     ).fetchone()
 
     if not current:
@@ -883,7 +886,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     # Get the version content (tenant enforced via memory ownership above)
     version_row = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, target_version, get_current_tenant_id()),
+        (memory_id, target_version, tenant_id),
     ).fetchone()
 
     if not version_row:
@@ -911,7 +914,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     UPDATE memories SET
         content = ?, tags = ?, emotional_context = ?, metrics = ?,
         version = ?, updated_at = ?
-    WHERE id = ? AND user_id = ?
+    WHERE id = ? AND user_id = ? AND tenant_id = ?
     """,
         (
             version_row["content"],
@@ -922,7 +925,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
             datetime.now(timezone.utc).isoformat(),
             memory_id,
             uid,
-            get_current_tenant_id(),
+            tenant_id,
         ),
     )
     conn.commit()
@@ -931,8 +934,9 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     # Emit rollback event
     event_bus = get_event_bus_with_stream()
     # Redact sensitive content from event bus publishes
-    content_redacted = "[REDACTED - sensitive]" if current.get("is_sensitive") else current["content"]
-    new_content_redacted = "[REDACTED - sensitive]" if version_row.get("is_sensitive") else version_row["content"]
+    content_redacted = "[REDACTED - sensitive]" if current["is_sensitive"] else current["content"]
+    version_is_sensitive = "is_sensitive" in version_row.keys() and bool(version_row["is_sensitive"])
+    new_content_redacted = "[REDACTED - sensitive]" if version_is_sensitive else version_row["content"]
     event_bus.publish(
         memory_updated(memory_id=memory_id, old_content=content_redacted, new_content=new_content_redacted, actor=uid)
     )
@@ -1105,6 +1109,53 @@ mcp = FastMCP(
 )
 
 logger = logging.getLogger("foresight_server")
+
+
+def _health_status_dict() -> dict[str, Any]:
+    """Best-effort snapshot of the Foresight server's liveness.
+
+    Returns structured dict for /health. Mirrors `foresight doctor`-style fields:
+    status (ok/degraded), uptime, plus a trimmed system_status payload.
+    """
+    started_at = _SERVER_STATE.get("started_at")
+    uptime_seconds: float | None = None
+    if isinstance(started_at, (int, float)):
+        uptime_seconds = max(0.0, time.time() - float(started_at))
+
+    snapshot: dict[str, Any] = {
+        "status": "ok",
+        "name": getattr(mcp, "name", "Foresight"),
+        "uptime_seconds": uptime_seconds,
+        "server": "foresight-mcp",
+    }
+    try:
+        raw = get_system_status()
+        parsed: Any = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(parsed, dict):
+            status_value = parsed.get("status", "ok")
+            if hasattr(status_value, "value"):
+                status_value = status_value.value
+            if str(status_value).lower() == "degraded":
+                snapshot["status"] = "degraded"
+            snapshot["memory_count"] = parsed.get("memory_count")
+            snapshot["tenant_id"] = parsed.get("tenant_id")
+    except Exception as exc:
+        snapshot["status"] = "degraded"
+        snapshot["system_status_error"] = f"{type(exc).__name__}: {exc}"
+    return snapshot
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_endpoint(request: Request) -> JSONResponse:
+    """HTTP health probe for load balancers and orchestrators.
+
+    Returns 200 with a JSON body as long as the FastMCP server is alive. We
+    tolerate database hiccups here -- the goal is mount-point liveness, not
+    data-plane correctness. Tools themselves enforce their own validation.
+    """
+    payload = _health_status_dict()
+    code = 200 if payload.get("status") in {"ok", "degraded"} else 503
+    return JSONResponse(payload, status_code=code)
 
 
 def initialize_stream_producer():
@@ -3577,7 +3628,17 @@ def _cache_invalidation_hook(ctx: MemoryHookContext) -> HookResult | None:
             logger.exception("Cache invalidation failed for memory %s", ctx.memory_id)
     return None
 
-def main():
+
+def main(host: str | None = None, port: int | None = None) -> None:
+    """Start the Foresight MCP server.
+
+    Args:
+        host: Host to bind when using SSE transport. If None, uses FORESIGHT_MCP_HOST
+              env var or defaults to '127.0.0.1'.
+        port: Port to bind when using SSE transport. If None, checks FORESIGHT_MCP_PORT
+              env var. If neither is set, runs in stdio mode (default).
+    """
+    _SERVER_STATE["started_at"] = time.time()
     init_db()
 
     # Create and connect the database backend (PIX-3994)
@@ -3629,7 +3690,13 @@ def main():
     )
     _run_async(websocket_server.start())
 
-    mcp.run(show_banner=False)
+    # Determine transport: SSE when port is set (via arg or env), stdio otherwise
+    transport_port = port if port is not None else os.environ.get("FORESIGHT_MCP_PORT")
+    if transport_port is not None:
+        transport_host = host if host is not None else os.environ.get("FORESIGHT_MCP_HOST", "127.0.0.1")
+        mcp.run(transport="sse", host=transport_host, port=int(transport_port), show_banner=False)
+    else:
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":
