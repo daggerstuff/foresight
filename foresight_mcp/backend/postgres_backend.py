@@ -91,6 +91,7 @@ class PostgresBackend(DatabaseBackend):
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
         self._pool: Any = None  # psycopg_pool.ConnectionPool | None
+        self._backend_type: str | None = None  # Set to "postgresql" in connect()
 
     # ------------------------------------------------------------------
     # DatabaseBackend lifecycle

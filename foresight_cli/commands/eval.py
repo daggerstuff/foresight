@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import typer
-from foresight_mcp.eval_harness import run_eval
+import foresight_mcp.eval_harness as eval_harness
 
 from foresight_cli.utils import output as out
 
@@ -23,12 +23,12 @@ def run(
 ):
     """Run the full evaluation harness and print a summary report.
 
-    Seeds fixture memories, runs all 5 evaluation scenarios against
+    Seeds fixture memories, runs all 7 evaluation scenarios against
     inject_context and get_relevant_memories, then prints a detailed
     report with metrics on payload size, latency, retrieval quality,
     and PII safety.
     """
-    report_obj = run_eval(
+    report_obj = eval_harness.run_eval(
         db_path=db_path,
         report_path=report,
         budget_chars=budget,
@@ -64,7 +64,32 @@ def run(
                 f"  [{icon}]{status}[/] {sr.scenario_id}: {payload}, {latency}, {findings}",
                 style=icon,
             )
+        if report_obj.baseline_diff is not None:
+            baseline_diff = report_obj.baseline_diff
+            out.info("Baseline comparison:")
+            out.stderr(
+                "  payload="
+                f"{_format_pct_change(baseline_diff.get('payload_change_pct'))}, "
+                "latency="
+                f"{_format_pct_change(baseline_diff.get('latency_change_pct'))}, "
+                f"pass_rate={baseline_diff.get('pass_rate_change', 0):+.1f}%, "
+                f"pii={baseline_diff.get('pii_change', 0):+d}"
+            )
+            for scenario_diff in baseline_diff.get("scenario_diffs", []):
+                out.stderr(
+                    "  "
+                    f"{scenario_diff['scenario_id']}: "
+                    f"payload={scenario_diff.get('payload_change', 0):+d} chars, "
+                    f"latency={scenario_diff.get('latency_change', 0):+.2f}ms, "
+                    f"status={scenario_diff.get('status_change', 'unchanged')}"
+                )
         if report:
             out.info(f"Maintenance eval report written to {report}")
         if save_baseline:
             out.info(f"Baseline report written to {save_baseline}")
+
+
+def _format_pct_change(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:+.1f}%"

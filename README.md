@@ -50,12 +50,12 @@ pip install foresight-mcp[all]
 
 > **Extras breakdown** — install only what you need:
 >
-> | Extra | Includes |
-> |---|---|
-> | `(none)` | MCP server only — no CLI, no TUI |
-> | `[cli]` | CLI (`typer` + `rich`) — no TUI |
-> | `[tui]` | CLI + TUI (`textual`) — no MCP |
-> | `[all]` | Everything — CLI + TUI + MCP server |
+> | Extra    | Includes                            |
+> | -------- | ----------------------------------- |
+> | `(none)` | MCP server only — no CLI, no TUI    |
+> | `[cli]`  | CLI (`typer` + `rich`) — no TUI     |
+> | `[tui]`  | CLI + TUI (`textual`) — no MCP      |
+> | `[all]`  | Everything — CLI + TUI + MCP server |
 
 On macOS/Linux with uv installed, `uv pip install foresight-mcp[all]` is ~3x faster.
 
@@ -566,7 +566,7 @@ foresight eval run --report eval-report.json --json
 ### Compare against a baseline
 
 ```bash
-foresight eval run -r baseline.json -j
+foresight eval run --save-baseline baseline.json -j
 foresight eval run --compare baseline.json -r new.json
 ```
 
