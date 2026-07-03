@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from .config import DB_PATH
 from .connection_pool import get_pool
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 if True:  # TYPE_CHECKING-compatible import guard for backend protocol
     from .backend.base import DatabaseBackend
@@ -138,7 +138,7 @@ class TemporalQueryBuilder:
         category: str | None = None,
     ) -> list[TemporalQueryResult]:
         """Get memories from a time window."""
-        tenant_id = get_current_tenant_id()
+        tenant_id = get_current_account_id()
         window_hours = self._get_window_hours(window)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
 
@@ -203,7 +203,7 @@ class TemporalQueryBuilder:
         self, user_id: str, target_date: datetime, category: str | None = None, min_importance: float = 0.1
     ) -> list[TemporalQueryResult]:
         """Get memories as of a specific time."""
-        tenant_id = get_current_tenant_id()
+        tenant_id = get_current_account_id()
         category_clause = "AND category = ?" if category else ""
         base_params: list = [user_id, tenant_id, target_date.isoformat(), min_importance]
         if category:
@@ -261,7 +261,7 @@ class TemporalQueryBuilder:
         self, user_id: str, trend: str, limit: int = 50, category: str | None = None
     ) -> list[TemporalQueryResult]:
         """Get memories by trend."""
-        tenant_id = get_current_tenant_id()
+        tenant_id = get_current_account_id()
         category_clause = "AND category = ?" if category else ""
         base_params: list = [user_id, tenant_id, trend, limit]
         if category:
@@ -317,7 +317,7 @@ class TemporalQueryBuilder:
 
     def analyze_trends(self, user_id: str, timeframe: str = "30 days") -> dict:
         """Analyze memory trends over time."""
-        tenant_id = get_current_tenant_id()
+        tenant_id = get_current_account_id()
         cutoff = self._timeframe_cutoff(timeframe)
         date_bucket = self._date_bucket_expr()
 
@@ -443,7 +443,7 @@ class TemporalQueryBuilder:
         """Calculate time-weighted scores for memories."""
         if not memory_ids:
             return {}
-        tenant_id = get_current_tenant_id()
+        tenant_id = get_current_account_id()
         placeholders = ",".join("?" * len(memory_ids))
         rows = self._fetch_rows(
             f"""

@@ -33,7 +33,7 @@ from .embedding_validation import (
     EmbeddingDimensionError,
     validate_embedding_dimension,
 )
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_semantic_search")
 
@@ -281,7 +281,7 @@ class SemanticSearch:
         _validate_memory_id(memory_id)
         if text is None or not text.strip():
             raise SemanticSearchError("text must be a non-empty string")
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)
         prov = provider or self.provider
         embedder = self.embedder if prov == self.provider else get_embedder(prov)
@@ -339,7 +339,7 @@ class SemanticSearch:
     ) -> int:
         """Remove the embedding for a memory. Returns rows deleted."""
         _validate_memory_id(memory_id)
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)
         prov = provider or self.provider
         conn = self._connect()
@@ -395,7 +395,7 @@ class SemanticSearch:
             raise SemanticSearchError("limit must be in [1, 1000]")
         if min_score < -1.0 or min_score > 1.0:
             raise SemanticSearchError("min_score must be in [-1.0, 1.0]")
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)
         prov = provider or self.provider
         embedder = self.embedder if prov == self.provider else get_embedder(prov)

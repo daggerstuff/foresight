@@ -34,7 +34,7 @@ from .circuit_breaker import (
 )
 from .connection_pool import get_pool
 from .event_bus import Event, EventType, get_event_bus
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 
 @dataclass
@@ -211,7 +211,7 @@ class SQLiteHookRegistry(HookRegistryBase):
 
     def register(self, hook: HookRegistration, tenant_id: str | None = None) -> None:
         """Register a new hook."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute(
@@ -240,7 +240,7 @@ class SQLiteHookRegistry(HookRegistryBase):
 
     def unregister(self, hook_id: str, tenant_id: str | None = None) -> bool:
         """Remove a hook registration."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         cursor = conn.execute("DELETE FROM hooks WHERE id = ? AND tenant_id = ?", (hook_id, tid))
@@ -250,7 +250,7 @@ class SQLiteHookRegistry(HookRegistryBase):
 
     def get_by_event_type(self, event_type: EventType, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks for an event type."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         rows = conn.execute(
@@ -261,7 +261,7 @@ class SQLiteHookRegistry(HookRegistryBase):
 
     def get_all(self, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         rows = conn.execute("SELECT * FROM hooks WHERE tenant_id = ?", (tid,)).fetchall()
@@ -1064,7 +1064,7 @@ class PostgresHookRegistry(HookRegistryBase):
 
     def register(self, hook: HookRegistration, tenant_id: str | None = None) -> None:
         """Register a new hook."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             conn.execute(
@@ -1105,7 +1105,7 @@ class PostgresHookRegistry(HookRegistryBase):
 
     def unregister(self, hook_id: str, tenant_id: str | None = None) -> bool:
         """Remove a hook registration."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             cursor = conn.execute("DELETE FROM hooks WHERE id = ? AND tenant_id = ?", (hook_id, tid))
@@ -1116,7 +1116,7 @@ class PostgresHookRegistry(HookRegistryBase):
 
     def get_by_event_type(self, event_type: EventType, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks for an event type."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -1128,7 +1128,7 @@ class PostgresHookRegistry(HookRegistryBase):
 
     def get_all(self, tenant_id: str | None = None) -> list[HookRegistration]:
         """Get all registered hooks."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             rows = conn.execute("SELECT * FROM hooks WHERE tenant_id = ?", (tid,)).fetchall()

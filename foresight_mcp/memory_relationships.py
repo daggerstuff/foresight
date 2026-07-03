@@ -25,7 +25,7 @@ from typing import Any
 
 from .config import DB_PATH
 from .connection_pool import get_pool
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 
 @dataclass
@@ -204,7 +204,7 @@ class MemoryRelationshipStore:
             raise MemoryRelationshipError("source_memory_id and target_memory_id must differ")
         _validate_relationship_type(relationship_type)
         _validate_confidence(options.confidence)
-        tid = options.tenant_id or get_current_tenant_id()
+        tid = options.tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)
         meta = _validate_metadata(options.metadata)
 
@@ -283,7 +283,7 @@ class MemoryRelationshipStore:
             raise MemoryRelationshipError("direction must be one of 'out', 'in', 'both'")
         if relationship_type is not None:
             _validate_relationship_type(relationship_type)
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)
 
         clauses = ["tenant_id = ?", "user_id = ?"]
@@ -360,7 +360,7 @@ class MemoryRelationshipStore:
             raise MemoryRelationshipError("max_depth must be in [0, 5]")
         if limit < 1 or limit > 1000:
             raise MemoryRelationshipError("limit must be in [1, 1000]")
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)
 
         conn = self._connect()

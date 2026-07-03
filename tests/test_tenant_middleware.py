@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from foresight_mcp.tenant_context import (
     DEFAULT_TENANT_ID,
-    get_current_tenant_id,
+    get_current_account_id,
     reset_tenant_context,
     set_current_tenant_id,
 )
@@ -18,7 +18,7 @@ async def _run_middleware(context_obj, tenant_in_args=None, tenant_in_meta=None)
     captured_tenant = {}
 
     async def capturing_call_next(ctx):
-        captured_tenant["value"] = get_current_tenant_id()
+        captured_tenant["value"] = get_current_account_id()
         return "ok"
 
     message = MagicMock()
@@ -77,4 +77,4 @@ async def test_tenant_resets_after_request():
     set_current_tenant_id("pre-existing")
     ctx = MagicMock()
     await _run_middleware(ctx, tenant_in_args="during-request")
-    assert get_current_tenant_id() == DEFAULT_TENANT_ID
+    assert get_current_account_id() == DEFAULT_TENANT_ID

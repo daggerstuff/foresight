@@ -10,7 +10,7 @@ from foresight_mcp.backend import SqliteBackend
 from foresight_mcp.server import init_db, switch_tenant
 from foresight_mcp.tenant_context import (
     DEFAULT_TENANT_ID,
-    get_current_tenant_id,
+    get_current_account_id,
     reset_tenant_context,
     set_current_tenant_id,
 )
@@ -25,20 +25,20 @@ def _ephemeral_connection(db_path: str):
 
 def test_get_default_tenant():
     reset_tenant_context()
-    assert get_current_tenant_id() == DEFAULT_TENANT_ID
+    assert get_current_account_id() == DEFAULT_TENANT_ID
 
 
 def test_set_tenant_id():
     reset_tenant_context()
     set_current_tenant_id("acme-corp")
-    assert get_current_tenant_id() == "acme-corp"
+    assert get_current_account_id() == "acme-corp"
 
 
 def test_reset_restores_default():
     reset_tenant_context()
     set_current_tenant_id("acme-corp")
     reset_tenant_context()
-    assert get_current_tenant_id() == DEFAULT_TENANT_ID
+    assert get_current_account_id() == DEFAULT_TENANT_ID
 
 
 def test_switch_tenant_default_is_stable_after_bootstrap():
@@ -82,12 +82,12 @@ def test_contextvar_isolation_between_tasks():
     async def task_a():
         set_current_tenant_id("tenant-a")
         await asyncio.sleep(0.01)
-        results["a"] = get_current_tenant_id()
+        results["a"] = get_current_account_id()
 
     async def task_b():
         set_current_tenant_id("tenant-b")
         await asyncio.sleep(0.01)
-        results["b"] = get_current_tenant_id()
+        results["b"] = get_current_account_id()
 
     async def main():
         await asyncio.gather(
@@ -104,4 +104,4 @@ def test_sequential_set_overrides():
     reset_tenant_context()
     set_current_tenant_id("first")
     set_current_tenant_id("second")
-    assert get_current_tenant_id() == "second"
+    assert get_current_account_id() == "second"

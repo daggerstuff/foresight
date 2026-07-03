@@ -29,7 +29,7 @@ from typing import Any
 
 from .config import DB_PATH
 from .connection_pool import get_pool
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_decay_model")
 
@@ -276,7 +276,7 @@ class MemoryDecayService:
         category: str = "general",
     ) -> DecayConfig:
         """Return the decay config for (tenant, user, category) or defaults."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         self._validate_ids(user_id, tid)
         conn = self._connect()
         try:
@@ -327,7 +327,7 @@ class MemoryDecayService:
             strengthening_threshold = options.strengthening_threshold
             stale_threshold = options.stale_threshold
 
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         self._validate_ids(user_id, tid)
         cfg = DecayConfig(
             tenant_id=tid,
@@ -392,7 +392,7 @@ class MemoryDecayService:
         tenant_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Return the current strength + trend for a single memory."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         self._validate_ids(user_id, tid)
         conn = self._connect()
         try:
@@ -434,7 +434,7 @@ class MemoryDecayService:
         activation_boost: float | None = None,
     ) -> dict[str, Any] | None:
         """Boost a memory's strength on access. Returns the new state or None."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         self._validate_ids(user_id, tid)
         conn = self._connect()
         try:
@@ -522,7 +522,7 @@ class MemoryDecayService:
         now: datetime | None = None,
     ) -> DecayStats:
         """Apply time-based decay to all memories for a user."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         self._validate_ids(user_id, tid)
         if batch_size <= 0:
             raise DecayModelError("batch_size must be > 0")
@@ -657,7 +657,7 @@ class MemoryDecayService:
         limit: int = 50,
     ) -> list[StrengthEvent]:
         """Return recent decay events for a user (optionally filtered by memory)."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         self._validate_ids(user_id, tid)
         if limit <= 0:
             raise DecayModelError("limit must be > 0")

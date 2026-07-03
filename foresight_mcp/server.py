@@ -132,7 +132,7 @@ from .stream_producer import (
 from .sync import Operation, OperationQueue, OperationType
 from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
-from .tenant_context import get_current_tenant_id, get_current_user_id, set_current_tenant_id
+from .tenant_context import get_current_account_id, get_current_user_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
 
 # WebSocket imports
@@ -378,7 +378,7 @@ def _run_async(coro):
 
 def _check_rate_limit(tenant_id: str | None = None) -> None:
     """Check rate limit for tenant, raising RateLimitExceededError if exceeded."""
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     # Look up tenant-specific limits from DB
     rate_limit = DEFAULT_RATE_LIMIT
     burst_limit = DEFAULT_BURST_LIMIT
@@ -912,7 +912,7 @@ def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     # Verify memory exists
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id()),
+        (memory_id, uid, get_current_account_id()),
     ).fetchone()
 
     if not row:
@@ -925,7 +925,7 @@ def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     # Get version history
     versions = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND tenant_id = ? ORDER BY version DESC",
-        (memory_id, get_current_tenant_id()),
+        (memory_id, get_current_account_id()),
     ).fetchall()
     conn.close()
 
@@ -956,7 +956,7 @@ def create_version_snapshot(memory_id: str, data: dict) -> str:
     emo_json = emo if isinstance(emo, str) else json.dumps(emo)
     met_json = met if isinstance(met, str) else json.dumps(met)
 
-    tenant_id = data.get("tenant_id") or get_current_tenant_id()
+    tenant_id = data.get("tenant_id") or get_current_account_id()
 
     conn = get_db_connection()
     conn.execute(
@@ -986,7 +986,7 @@ def create_version_snapshot(memory_id: str, data: dict) -> str:
 def rollback_to_version(memory_id: str, target_version: int, user_id: str | None = None) -> str:
     """Rollback a memory to a specific version."""
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     conn = get_db_connection()
 
     # Verify memory ownership first
@@ -1063,7 +1063,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
 def get_memory_diff(memory_id: str, version1: int, version2: int, _user_id: str | None = None) -> dict[str, Any]:
     """Get diff between two versions of a memory."""
     conn = get_db_connection()
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     v1 = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
@@ -1288,8 +1288,8 @@ async def health_endpoint(request: Request) -> JSONResponse:
 def initialize_stream_producer():
     """Initialize stream producer for Kafka/Kinesis event publishing."""
     try:
-        producer = create_stream_producer(environment=get_current_tenant_id() or "dev")
-        publisher = StreamPublisher(producer, environment=get_current_tenant_id() or "dev")
+        producer = create_stream_producer(environment=get_current_account_id() or "dev")
+        publisher = StreamPublisher(producer, environment=get_current_account_id() or "dev")
         _SERVER_STATE["stream_publisher"] = publisher
         logger.info("Stream publisher initialized successfully")
         if isinstance(producer, KafkaProducer):
@@ -1680,7 +1680,7 @@ def manage_memories(
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     if options.action == "store" and tenant_id == "default" and os.environ.get("PYTEST_CURRENT_TEST"):
         return (
@@ -1775,7 +1775,7 @@ def search_memories(
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     # ── PRE_RETRIEVE hook ──────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
@@ -2001,7 +2001,7 @@ def manage_memory_versions(options: VersionAction, user_id: str | None = None) -
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     if options.action == "rollback":
         return _handle_version_rollback(uid, tenant_id, options)
@@ -2064,7 +2064,7 @@ def manage_context_blocks(options: ContextBlockAction, user_id: str | None = Non
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     agent = get_context_block_agent(uid, tenant_id)
 
     if options.action == "list":
@@ -2135,7 +2135,7 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
 
         for line in recent:
             content = f"[{block_name}] {line}"
-            tenant_id = get_current_tenant_id()
+            tenant_id = get_current_account_id()
             content_h = _content_hash(content)
             conn = get_db_connection()
             existing = conn.execute(
@@ -2228,7 +2228,7 @@ def process_session_transcript(
         Confirmation message
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     agent = get_context_block_agent(uid, tenant_id)
 
     _run_async(agent.process_transcript(session_id=session_id, messages=messages, project_path=project_path))
@@ -2946,7 +2946,7 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
     """
     init_db()
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     if options.action == "create":
         source_bank_id = options.source_bank_id or BANK_ID
@@ -3284,7 +3284,7 @@ def inject_context(
          - budget: lane allocation details (only when max_chars is set)
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     terms = _extract_terms(conversation_text)
     retriever = get_hybrid_retriever()
     query_text = conversation_text if conversation_text else " ".join(terms)
@@ -3484,7 +3484,7 @@ def _context_block_notes_for_terms(
     Returns a list of formatted lines with matching block content,
     grouped by InjectionPoint (PRE_PROMPT first, then POST_PROMPT, then WHISPER_ONLY).
     """
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     grouped = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
 
     lines: list[str] = []
@@ -3538,7 +3538,7 @@ def get_relevant_memories(
         - budget: lane allocation details (only when max_chars is set)
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     retriever = get_hybrid_retriever()
 
     t0 = time.perf_counter()
@@ -3686,7 +3686,7 @@ def generate_recovery_payload(
         Returns minimal message when no relevant memories exist.
     """
     uid = user_id or get_current_user_id()
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     excluded: set[str] = set()
     if exclude_memory_ids:
@@ -3870,7 +3870,7 @@ class TenantContext:
 def get_tenant_context() -> dict:
     """Get current tenant context."""
     if _SERVER_STATE["tenant_context"] is None:
-        _SERVER_STATE["tenant_context"] = {"id": get_current_tenant_id()}
+        _SERVER_STATE["tenant_context"] = {"id": get_current_account_id()}
     return _SERVER_STATE["tenant_context"]
 
 
@@ -3974,7 +3974,7 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
     """
     uid = user_id or USER_ID
     opts = options or SystemStatusOptions()
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     conn = get_db_connection()
     # Basic stats
     count = (
@@ -4280,7 +4280,7 @@ def synthesize_profile(
         max_dynamic_memories=max_dynamic_memories,
         include_synthesis=include_synthesis,
     )
-    profile = _run_async(_synthesize_profile(uid, get_current_tenant_id(), cfg))
+    profile = _run_async(_synthesize_profile(uid, get_current_account_id(), cfg))
 
     if format_prompt:
         return profile_to_prompt(profile)
@@ -4630,7 +4630,7 @@ def run_clustering(
         JSON summary of the clustering operation.
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     memories = _fetch_memories_for_clustering(uid, tenant_id)
     if not memories:
@@ -4686,7 +4686,7 @@ def query_clusters(
         JSON list of cluster entities with member info.
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
     store = get_graph_store()
 
     entities = store.get_entities_by_type(uid, "cluster", limit=limit, tenant_id=tenant_id)
@@ -4992,7 +4992,7 @@ def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
+    tenant_id = get_current_account_id()
 
     if options.action == "synthesize":
         return _handle_analyze_synthesize(uid, tenant_id, options)
@@ -5039,7 +5039,7 @@ def get_memory_strength(
         tenant_id: Optional tenant ID override; defaults to the active tenant.
     """
     uid = user_id or USER_ID
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     result = get_decay_model().get_memory_strength(memory_id=memory_id, user_id=uid, tenant_id=tid)
     if result is None:
         return f"Memory {memory_id} not found for user {uid} in tenant {tid}."
@@ -5064,7 +5064,7 @@ def apply_memory_decay(
         batch_size: Pagination size for the underlying query (default 500).
     """
     uid = user_id or USER_ID
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     stats = get_decay_model().apply_decay_batch(user_id=uid, tenant_id=tid, batch_size=batch_size)
     return json.dumps(
         {
@@ -5100,7 +5100,7 @@ def reinforce_memory(
             decay_config.activation_boost.
     """
     uid = user_id or USER_ID
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     result = get_decay_model().reinforce_memory(
         memory_id=memory_id,
         user_id=uid,
@@ -5130,7 +5130,7 @@ def get_decay_config(
         category: Memory category (default 'general').
     """
     uid = user_id or USER_ID
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     cfg = get_decay_model().get_decay_config(user_id=uid, tenant_id=tid, category=category)
     return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
 
@@ -5164,7 +5164,7 @@ def set_decay_config(
         stale_threshold: Below this strength, trend becomes 'stale'.
     """
     uid = user_id or USER_ID
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     cfg = get_decay_model().set_decay_config(
         user_id=uid,
         tenant_id=tid,
@@ -5201,7 +5201,7 @@ def get_decay_events(
         limit: Maximum number of events to return (default 50).
     """
     uid = user_id or USER_ID
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     events = get_decay_model().get_decay_events(user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit)
     return json.dumps(
         {
@@ -5233,7 +5233,7 @@ def run_maintenance(
         tenant_id: Optional tenant ID override
     """
     uid = user_id or USER_ID
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
 
     _check_rate_limit(tid)
 
@@ -5262,15 +5262,10 @@ def run_maintenance(
 
 
 if __name__ == "__main__":
-    # When executed as ``python -m foresight_mcp.server``, Python re-executes
-    # this file as the ``__main__`` module — creating a *second* copy of the
-    # module object.  Any module-level state (like ``_global_backend``) that
-    # ``main()`` sets on the ``__main__`` copy would be invisible to the
-    # ``foresight_mcp.server`` copy that the package already imported via
-    # ``__init__.py``.  Replacing the ``__main__`` entry in ``sys.modules``
-    # ensures there is only one instance of this module, so tool handlers
-    # registered on ``foresight_mcp.server`` see the same ``_global_backend``
-    # that ``_initialize_backend()`` populates inside ``main()``.
+    import warnings as _w
+
+    _w.filterwarnings("ignore", category=RuntimeWarning, message=".*found in sys.modules.*")
+
     import sys as _sys
 
     _this = _sys.modules[__name__]
