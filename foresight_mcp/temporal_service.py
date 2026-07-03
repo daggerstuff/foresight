@@ -13,12 +13,16 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from .config import DB_PATH
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_temporal")
+
+
+RowLike = Mapping[str, Any] | tuple[Any, ...]
 
 
 def _is_missing_tenant_column_error(error: Exception) -> bool:
@@ -41,8 +45,17 @@ class DecayConfig:
     category_multiplier: float = 1.0
 
     @classmethod
-    def from_db_row(cls, row: tuple) -> DecayConfig:
+    def from_db_row(cls, row: RowLike) -> DecayConfig:
         """Create DecayConfig from database row."""
+        if isinstance(row, Mapping):
+            return cls(
+                half_life_hours=float(row.get("half_life_hours", cls.half_life_hours)),
+                min_importance=float(row.get("min_importance", cls.min_importance)),
+                activation_boost=float(row.get("activation_boost", cls.activation_boost)),
+                strengthening_threshold=int(row.get("strengthening_threshold", cls.strengthening_threshold)),
+                stale_threshold=float(row.get("stale_threshold", cls.stale_threshold)),
+            )
+
         return cls(
             half_life_hours=row[2],
             min_importance=row[3],
@@ -447,15 +460,23 @@ class TemporalService:
                 (user_id, tenant_id),
             )
 
-            row = cursor.fetchone()
+            row = cursor.fetchone() or {}
             return {
-                "total_memories": row[0] or 0,
-                "avg_importance": row[1] or 0,
-                "stable_count": row[2] or 0,
-                "strengthening_count": row[3] or 0,
-                "weakening_count": row[4] or 0,
-                "stale_count": row[5] or 0,
-                "total_activations": row[6] or 0,
+                "total_memories": row["total_memories"] if isinstance(row, Mapping) else (row[0] if row else 0),
+                "avg_importance": row["avg_importance"]
+                if isinstance(row, Mapping)
+                else (row[1] if len(row) > 1 else 0),
+                "stable_count": row["stable_count"] if isinstance(row, Mapping) else (row[2] if len(row) > 2 else 0),
+                "strengthening_count": row["strengthening_count"]
+                if isinstance(row, Mapping)
+                else (row[3] if len(row) > 3 else 0),
+                "weakening_count": row["weakening_count"]
+                if isinstance(row, Mapping)
+                else (row[4] if len(row) > 4 else 0),
+                "stale_count": row["stale_count"] if isinstance(row, Mapping) else (row[5] if len(row) > 5 else 0),
+                "total_activations": row["total_activations"]
+                if isinstance(row, Mapping)
+                else (row[6] if len(row) > 6 else 0),
             }
         finally:
             pool.release(conn)

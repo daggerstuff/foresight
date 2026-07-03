@@ -286,13 +286,11 @@ class MemoryMaintenanceJob:
         # Count sensitive rows in scope before the SQL filter so the audit
         # log captures them even when they short-circuit clustering.
         if not config.sensitive_only:
-            stats.sensitive_excluded += int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
-                    (config.user_id, config.tenant_id),
-                ).fetchone()[0]
-                or 0
-            )
+            sensitive_count_row = conn.execute(
+                "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+                (config.user_id, config.tenant_id),
+            ).fetchone()
+            stats.sensitive_excluded += int((sensitive_count_row or {}).get("sensitive_count", 0) or 0)
         memories = self._fetch_memories(conn, config)
         if len(memories) < 2:
             return
@@ -523,13 +521,11 @@ class MemoryMaintenanceJob:
         # Contradict scans ALL memories (including sensitive) for admin review.
         # The count here tracks how many sensitive rows were *flagged*, not
         # excluded — use += so earlier modes' counts are preserved.
-        stats.sensitive_excluded += int(
-            conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
-                (config.user_id, config.tenant_id),
-            ).fetchone()[0]
-            or 0
-        )
+        sensitive_count_row = conn.execute(
+            "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+            (config.user_id, config.tenant_id),
+        ).fetchone()
+        stats.sensitive_excluded += int((sensitive_count_row or {}).get("sensitive_count", 0) or 0)
         memories = self._fetch_memories_batch(conn, config)
         if len(memories) < 2:
             return

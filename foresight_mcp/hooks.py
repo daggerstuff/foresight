@@ -16,6 +16,7 @@ import json
 import logging
 import sqlite3
 import threading
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -120,11 +121,40 @@ class HookRegistration:
 
 
 # =============================================================================
+# Hook Registry ABC
+# =============================================================================
+
+
+class HookRegistryBase(ABC):
+    """Abstract base class for hook registries.
+
+    Defines the interface that all hook registry backends must implement.
+    Concrete implementations: SQLiteHookRegistry (default), PostgresHookRegistry (future).
+    """
+
+    @abstractmethod
+    def register(self, hook: HookRegistration, tenant_id: str | None = None) -> None:
+        """Register a new hook."""
+
+    @abstractmethod
+    def unregister(self, hook_id: str, tenant_id: str | None = None) -> bool:
+        """Remove a hook registration. Returns True if found and removed."""
+
+    @abstractmethod
+    def get_by_event_type(self, event_type: EventType, tenant_id: str | None = None) -> list[HookRegistration]:
+        """Get all registered hooks for an event type."""
+
+    @abstractmethod
+    def get_all(self, tenant_id: str | None = None) -> list[HookRegistration]:
+        """Get all registered hooks."""
+
+
+# =============================================================================
 # Hook Registry (SQLite-backed)
 # =============================================================================
 
 
-class HookRegistry:
+class SQLiteHookRegistry(HookRegistryBase):
     """
     Persistent registry for hook configurations.
 
@@ -276,7 +306,7 @@ class HookExecutor:
     - Error handling with retries
     """
 
-    def __init__(self, registry: HookRegistry | None = None):
+    def __init__(self, registry: HookRegistryBase | None = None):
         # Circuit breaker for HTTP hooks to prevent cascading failures
         http_circuit_config = CircuitBreakerConfig(
             failure_threshold=5,
@@ -285,12 +315,7 @@ class HookExecutor:
             expected_exceptions=(ConnectionError, TimeoutError, httpx.HTTPError),
         )
         self._http_circuit_breaker = CircuitBreaker(http_circuit_config)
-        """Initialize hook executor.
-
-        Args:
-            registry: Hook registry for persistence (default: global registry)
-        """
-        self._registry = registry or HookRegistry()
+        self._registry = registry or self._create_registry()
         self._callable_handlers: dict[EventType, list[Callable[[Event], None]]] = {}
         self._async_handlers: dict[EventType, list[Callable[[Event], Coroutine[Any, Any, Any]]]] = {}
         self._background_loop: asyncio.AbstractEventLoop | None = None
@@ -300,6 +325,22 @@ class HookExecutor:
         # Subscribe to event bus
         self._event_bus = get_event_bus()
         self._subscribe_to_events()
+
+    @staticmethod
+    def _create_registry() -> HookRegistryBase:
+        """Create the appropriate hook registry based on backend type.
+
+        Uses the HookRegistry alias (pointing to SQLiteHookRegistry by default)
+        so that tests can monkeypatch hooks.HookRegistry with a fake.
+        """
+        try:
+            from .server import _global_backend
+
+            if _global_backend is not None and _global_backend.backend_type == "postgresql":
+                return PostgresHookRegistry()
+        except (ImportError, AttributeError):
+            pass
+        return HookRegistry()
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to all event types."""
@@ -961,3 +1002,160 @@ def unregister_hook(hook_id: str) -> str:
     if executor._registry.unregister(hook_id):
         return f"Unregistered hook {hook_id}"
     return f"Hook {hook_id} not found"
+
+
+# =============================================================================
+# Hook Registry (PostgreSQL-backed)
+# =============================================================================
+
+
+class PostgresHookRegistry(HookRegistryBase):
+    """
+    Persistent registry for hook configurations using PostgreSQL.
+
+    Uses get_db_connection() from server.py which routes through
+    PostgresPooledConnection when PostgresBackend is active.
+    The translation layer handles ? → $1,$2... param conversion.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Postgres hook registry.
+
+        No db_path needed — connection comes from the global backend.
+        """
+        self._init_db()
+
+    def _get_conn(self):
+        """Get a database connection via the global backend router."""
+        from .server import get_db_connection
+
+        return get_db_connection()
+
+    def _init_db(self) -> None:
+        """Ensure the hooks table exists.
+
+        For Postgres, migrations are managed by alembic, but we still
+        create the table IF NOT EXISTS for standalone / test scenarios.
+        """
+        conn = self._get_conn()
+        try:
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS hooks (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                hook_type TEXT NOT NULL,
+                handler TEXT NOT NULL,
+                condition_name TEXT,
+                retry_count INTEGER DEFAULT 3,
+                timeout INTEGER DEFAULT 30,
+                metadata TEXT DEFAULT '{}',
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_event_type ON hooks(event_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_enabled ON hooks(enabled)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def register(self, hook: HookRegistration, tenant_id: str | None = None) -> None:
+        """Register a new hook."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """
+            INSERT INTO hooks
+            (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                event_type = EXCLUDED.event_type,
+                hook_type = EXCLUDED.hook_type,
+                handler = EXCLUDED.handler,
+                condition_name = EXCLUDED.condition_name,
+                retry_count = EXCLUDED.retry_count,
+                timeout = EXCLUDED.timeout,
+                metadata = EXCLUDED.metadata,
+                enabled = EXCLUDED.enabled,
+                created_at = EXCLUDED.created_at
+            """,
+                (
+                    hook.id,
+                    tid,
+                    hook.name,
+                    hook.event_type.value,
+                    hook.hook_type.value,
+                    hook.handler,
+                    hook.condition.__name__ if hook.condition else None,
+                    hook.retry_count,
+                    hook.timeout,
+                    json.dumps(hook.metadata),
+                    1 if hook.enabled else 0,
+                    hook.created_at.isoformat(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def unregister(self, hook_id: str, tenant_id: str | None = None) -> bool:
+        """Remove a hook registration."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("DELETE FROM hooks WHERE id = ? AND tenant_id = ?", (hook_id, tid))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def get_by_event_type(self, event_type: EventType, tenant_id: str | None = None) -> list[HookRegistration]:
+        """Get all registered hooks for an event type."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM hooks WHERE event_type = ? AND enabled = 1 AND tenant_id = ?", (event_type.value, tid)
+            ).fetchall()
+        finally:
+            conn.close()
+        return [self._row_to_hook(row) for row in rows]
+
+    def get_all(self, tenant_id: str | None = None) -> list[HookRegistration]:
+        """Get all registered hooks."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("SELECT * FROM hooks WHERE tenant_id = ?", (tid,)).fetchall()
+        finally:
+            conn.close()
+        return [self._row_to_hook(row) for row in rows]
+
+    def _row_to_hook(self, row: Any) -> HookRegistration:
+        """Convert database row to HookRegistration.
+
+        PostgresRow supports both int and string key access.
+        Always uses 12-column layout.
+        """
+        return HookRegistration(
+            id=row[0],
+            name=row[2],
+            event_type=EventType(row[3]),
+            hook_type=HookType(row[4]),
+            handler=row[5],
+            condition=None,
+            retry_count=row[7],
+            timeout=row[8],
+            metadata=json.loads(row[9]),
+            enabled=bool(row[10]),
+            created_at=datetime.fromisoformat(row[11]),
+        )
+
+
+# Backward-compatible alias
+HookRegistry = SQLiteHookRegistry

@@ -28,6 +28,41 @@ from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_sync")
 
+_OPERATION_COLUMNS = (
+    "id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, last_attempt, vector_clock"
+)
+
+
+def _operation_from_row(row: sqlite3.Row | tuple[Any, ...]) -> Operation:
+    if isinstance(row, sqlite3.Row):
+        return Operation.from_dict(
+            {
+                "id": row["id"],
+                "type": row["type"],
+                "entity_type": row["entity_type"],
+                "entity_id": row["entity_id"],
+                "payload": json.loads(row["payload"]),
+                "created_at": row["created_at"],
+                "retry_count": row["retry_count"],
+                "last_attempt": row["last_attempt"],
+                "vector_clock": json.loads(row["vector_clock"]),
+            }
+        )
+
+    return Operation.from_dict(
+        {
+            "id": row[0],
+            "type": row[2],
+            "entity_type": row[3],
+            "entity_id": row[4],
+            "payload": json.loads(row[5]),
+            "created_at": row[6],
+            "retry_count": row[7],
+            "last_attempt": row[8],
+            "vector_clock": json.loads(row[9]),
+        }
+    )
+
 
 class SyncStatus(StrEnum):
     """Sync status."""
@@ -200,24 +235,13 @@ class OperationQueue:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         row = conn.execute(
-            "SELECT * FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1", (tid,)
+            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1",
+            (tid,),
         ).fetchone()
         pool.release(conn)
 
         if row:
-            return Operation.from_dict(
-                {
-                    "id": row[0],
-                    "type": row[2],
-                    "entity_type": row[3],
-                    "entity_id": row[4],
-                    "payload": json.loads(row[5]),
-                    "created_at": row[6],
-                    "retry_count": row[7],
-                    "last_attempt": row[8],
-                    "vector_clock": json.loads(row[9]),
-                }
-            )
+            return _operation_from_row(row)
         return None
 
     def remove(self, operation_id: str, tenant_id: str | None = None) -> None:
@@ -234,26 +258,15 @@ class OperationQueue:
         tid = tenant_id or get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        rows = conn.execute("SELECT * FROM operations WHERE tenant_id = ? ORDER BY created_at", (tid,)).fetchall()
+        rows = conn.execute(
+            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = ? ORDER BY created_at",
+            (tid,),
+        ).fetchall()
         pool.release(conn)
 
         operations = []
         for row in rows:
-            operations.append(
-                Operation.from_dict(
-                    {
-                        "id": row[0],
-                        "type": row[2],
-                        "entity_type": row[3],
-                        "entity_id": row[4],
-                        "payload": json.loads(row[5]),
-                        "created_at": row[6],
-                        "retry_count": row[7],
-                        "last_attempt": row[8],
-                        "vector_clock": json.loads(row[9]),
-                    }
-                )
-            )
+            operations.append(_operation_from_row(row))
         return operations
 
     def count(self, tenant_id: str | None = None) -> int:
@@ -261,9 +274,14 @@ class OperationQueue:
         tid = tenant_id or get_current_tenant_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        count = conn.execute("SELECT COUNT(*) FROM operations WHERE tenant_id = ?", (tid,)).fetchone()[0]
+        count_row = conn.execute(
+            "SELECT COUNT(*) AS operation_count FROM operations WHERE tenant_id = ?",
+            (tid,),
+        ).fetchone()
         pool.release(conn)
-        return count
+        if isinstance(count_row, sqlite3.Row):
+            return int(count_row["operation_count"] or 0)
+        return int((count_row or (0,))[0] or 0)
 
 
 class SyncManager:

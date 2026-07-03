@@ -47,7 +47,7 @@ from .config import (
     REDIS_URL,
     USER_ID,
 )
-from .connection_pool import get_pool
+from .connection_pool import PooledConnection, get_pool
 from .context_blocks import (
     PENDING_ITEMS,
     SESSION_PATTERNS,
@@ -399,17 +399,126 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
         raise RateLimitExceededError(remaining=remaining, reset_time=reset_time)
 
 
-def get_db_connection():
-    """Get a database connection from the pool.
+class PostgresPooledConnection(PooledConnection):
+    """Wraps a psycopg connection to match the PooledConnection interface.
 
-    Returns a PooledConnection that delegates all attribute access to the
-    underlying sqlite3.Connection. Calling .close() returns the connection
-    to the pool instead of truly closing it.
+    Translates SQLite-flavoured SQL to PostgreSQL dialect on execute().
+    Used when FORESIGHT_DB_URL is set and PostgresBackend is active.
+    Calling close() returns the connection to the psycopg pool.
     """
+
+    def __init__(self, conn: Any, pool: Any) -> None:
+        conn.autocommit = True
+        self._conn = conn
+        self._pool: Any = pool
+        self._last_result = None
+        self._rowcount = -1
+        self._released = False
+
+    @staticmethod
+    def _adapt_row(row: Any) -> Any:
+        if row is None or not isinstance(row, dict):
+            return row
+        return PostgresRow(row)
+
+    def execute(self, sql, params=()):
+        from foresight_mcp.backend.postgres_backend import _translate_sql
+
+        pg_sql = _translate_sql(sql)
+        self._last_result = self._conn.execute(pg_sql, params)
+        self._rowcount = self._last_result.rowcount
+        return self
+
+    def execute_returning(self, sql, params=()):
+        from foresight_mcp.backend.postgres_backend import _translate_sql
+
+        pg_sql = _translate_sql(sql)
+        upper_sql = pg_sql.upper()
+        if " RETURNING " not in upper_sql and upper_sql.lstrip().startswith(("INSERT ", "UPDATE ", "DELETE ")):
+            pg_sql = f"{pg_sql} RETURNING *"
+        self._last_result = self._conn.execute(pg_sql, params)
+        self._rowcount = self._last_result.rowcount
+        return self
+
+    @property
+    def rowcount(self):
+        return self._rowcount
+
+    def fetchone(self):
+        if self._last_result is None:
+            return None
+        return self._adapt_row(self._last_result.fetchone())
+
+    def fetchall(self):
+        if self._last_result is None:
+            return []
+        return [self._adapt_row(row) for row in self._last_result.fetchall()]
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        if not self._released:
+            self._released = True
+            self._pool.putconn(self._conn)
+
+    @property
+    def row_factory(self):
+        return dict
+
+    @row_factory.setter
+    def row_factory(self, value):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class PostgresRow(dict):
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+
+def _supports_execute_returning(conn: Any) -> bool:
+    return hasattr(conn, "execute_returning") and callable(getattr(conn, "execute_returning"))
+
+
+def get_db_connection():
+    """Get a database connection from the appropriate backend.
+
+    When PostgresBackend is active (``FORESIGHT_DB_URL`` set), acquires a
+    connection from the psycopg connection pool wrapped in a
+    ``PostgresPooledConnection`` that translates SQLite SQL to PostgreSQL
+    dialect transparently.
+
+    When the backend is SQLite or uninitialized, falls back to the existing
+    SQLite connection pool.
+
+    Returns
+    -------
+    PooledConnection | PostgresPooledConnection
+        A connection-like object with ``execute()``, ``fetchone()``,
+        ``fetchall()``, ``commit()``, and ``close()``.
+    """
+    _log = logging.getLogger("foresight.db")
+    if _global_backend is not None and _global_backend.backend_type == "postgresql":
+        _log.debug("get_db_connection: using PostgresBackend pool")
+        pool = _global_backend._pool
+        conn = pool.getconn()
+        return PostgresPooledConnection(conn, pool)
+    _log.debug("get_db_connection: using SQLite pool (_global_backend=%s)", _global_backend)
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 
 def _seed_default_tenant(conn) -> None:
@@ -646,6 +755,9 @@ _SCHEMA_MIGRATIONS = {
     10: [
         "ALTER TABLE memories ADD COLUMN content_hash TEXT",
         "CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(tenant_id, user_id, content_hash)",
+    ],
+    11: [
+        "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_created ON memories(tenant_id, user_id, created_at DESC)",
     ],
 }
 
@@ -1110,6 +1222,8 @@ mcp = FastMCP(
 
 logger = logging.getLogger("foresight_server")
 
+RowLike = Mapping[str, Any] | sqlite3.Row
+
 
 def _health_status_dict() -> dict[str, Any]:
     """Best-effort snapshot of the Foresight server's liveness.
@@ -1140,6 +1254,11 @@ def _health_status_dict() -> dict[str, Any]:
             snapshot["memory_count"] = parsed.get("memory_count")
             snapshot["tenant_id"] = parsed.get("tenant_id")
     except Exception as exc:
+        import traceback
+
+        logger.error(
+            "_health_status_dict: get_system_status raised %s: %s\n%s", type(exc).__name__, exc, traceback.format_exc()
+        )
         snapshot["status"] = "degraded"
         snapshot["system_status_error"] = f"{type(exc).__name__}: {exc}"
     return snapshot
@@ -1235,10 +1354,13 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
 
     # Hard cap enforcement: check memory count per tenant
     conn = get_db_connection()
-    current_count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-        (uid, tenant_id),
-    ).fetchone()[0]
+    current_count = (
+        conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+            (uid, tenant_id),
+        ).fetchone()
+        or (0,)
+    )[0]
     if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
         conn.close()
         return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
@@ -1251,11 +1373,15 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         (uid, tenant_id, content_h),
     ).fetchone()
     if existing:
-        conn.execute(
+        update_sql = (
             "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (datetime.now(timezone.utc).isoformat(), existing["id"], uid, tenant_id),
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?"
         )
+        update_params = (datetime.now(timezone.utc).isoformat(), existing["id"], uid, tenant_id)
+        if _supports_execute_returning(conn):
+            conn.execute_returning(update_sql, update_params).fetchone()
+        else:
+            conn.execute(update_sql, update_params)
         conn.commit()
         conn.close()
         return f"Duplicate detected - bumped activation for existing memory {existing['id']}"
@@ -1280,31 +1406,35 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     # mutated by a PRE_STORE hook above.
     is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
     # Store
-    conn.execute(
+    insert_sql = (
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
         "content, content_hash, emotional_context, metrics, importance, activation_count, "
         "created_at, updated_at, tags, is_sensitive, sensitivity_reason) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            memory_id,
-            uid,
-            tenant_id,
-            opts.category,
-            memory.scope,
-            memory.retention,
-            content,
-            content_h,
-            json.dumps(opts.emotional_context) if opts.emotional_context else None,
-            json.dumps(opts.metrics) if opts.metrics else None,
-            opts.importance,
-            1,
-            datetime.now(timezone.utc).isoformat(),
-            datetime.now(timezone.utc).isoformat(),
-            json.dumps(memory.tags),
-            1 if is_sensitive_bit else 0,
-            sensitivity_reason,
-        ),
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
+    insert_params = (
+        memory_id,
+        uid,
+        tenant_id,
+        opts.category,
+        memory.scope,
+        memory.retention,
+        content,
+        content_h,
+        json.dumps(opts.emotional_context) if opts.emotional_context else None,
+        json.dumps(opts.metrics) if opts.metrics else None,
+        opts.importance,
+        1,
+        datetime.now(timezone.utc).isoformat(),
+        datetime.now(timezone.utc).isoformat(),
+        json.dumps(memory.tags),
+        1 if is_sensitive_bit else 0,
+        sensitivity_reason,
+    )
+    if _supports_execute_returning(conn):
+        conn.execute_returning(insert_sql, insert_params).fetchone()
+    else:
+        conn.execute(insert_sql, insert_params)
     conn.commit()
     conn.close()
     # Create memory relationship if specified
@@ -1398,14 +1528,18 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     updates_list.append("updated_at = ?")
     values.append(datetime.now(timezone.utc).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
-    conn.execute(
-        f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?", values
-    )
+    update_sql = f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?"
+    if _supports_execute_returning(conn):
+        updated_row = conn.execute_returning(update_sql, values).fetchone()
+    else:
+        conn.execute(update_sql, values)
+        updated_row = None
     conn.commit()
     conn.close()
     was_sensitive = bool(dict(row).get("is_sensitive", 0))
     old_evt = "[REDACTED - sensitive]" if was_sensitive else (row["content"] or "")
-    new_evt = "[REDACTED - sensitive]" if was_sensitive else (options.updates.content or row["content"] or "")
+    effective_content = (updated_row or row)["content"] if (updated_row or row) else row["content"]
+    new_evt = "[REDACTED - sensitive]" if was_sensitive else (effective_content or "")
     get_event_bus_with_stream().publish(
         memory_updated(
             memory_id=options.memory_id,
@@ -1418,7 +1552,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
 
     # ── POST_UPDATE hook ───────────────────────────────────────────────
     hook_ctx.old_content = row["content"]
-    hook_ctx.content = options.updates.content or row["content"]
+    hook_ctx.content = effective_content or row["content"]
     get_memory_hook_registry().emit_post(MemoryHookType.POST_UPDATE, hook_ctx)
     # Create memory relationship if specified
     if options.updates.relation_type and options.updates.related_memory_id:
@@ -1453,14 +1587,22 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
             return f"Hook aborted delete: {r.message}"
 
     conn = get_db_connection()
-    if not conn.execute(
-        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
-    ).fetchone():
-        conn.close()
-        return f"Memory {memory_id} not found."
+    delete_sql = "DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"
+    delete_params = (memory_id, uid, tenant_id)
+    if _supports_execute_returning(conn):
+        deleted_row = conn.execute_returning(delete_sql, delete_params).fetchone()
+        if not deleted_row:
+            conn.close()
+            return f"Memory {memory_id} not found."
+    else:
+        if not conn.execute(
+            "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", delete_params
+        ).fetchone():
+            conn.close()
+            return f"Memory {memory_id} not found."
+        conn.execute(delete_sql, delete_params)
 
     get_event_bus_with_stream().publish(memory_deleted(memory_id=memory_id, actor=uid))
-    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id))
     conn.commit()
     conn.close()
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
@@ -1504,10 +1646,14 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
             gist=row_dict.get("gist"),
         )
     )
-    conn.execute(
-        "UPDATE memories SET content = ?, is_ghost = 1, gist = ? WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (ghost.content, ghost.gist, memory_id, uid, tenant_id),
+    archive_sql = (
+        "UPDATE memories SET content = ?, is_ghost = 1, gist = ? WHERE id = ? AND user_id = ? AND tenant_id = ?"
     )
+    archive_params = (ghost.content, ghost.gist, memory_id, uid, tenant_id)
+    if _supports_execute_returning(conn):
+        conn.execute_returning(archive_sql, archive_params).fetchone()
+    else:
+        conn.execute(archive_sql, archive_params)
     conn.commit()
     conn.close()
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
@@ -2150,7 +2296,7 @@ def capture_triggered_memories(
 # =============================================================================
 
 
-def _row_to_curation_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _row_to_curation_run(row: RowLike | None) -> dict[str, Any] | None:
     """Convert a curation run row into a JSON-friendly dict."""
     if row is None:
         return None
@@ -2190,7 +2336,7 @@ def _curation_archive_bank(run_id: str, source_bank_id: str) -> str:
     return f"{source_bank_id}:archived:{run_id}"
 
 
-def _fetch_curation_run(uid: str, tenant_id: str, run_id: str) -> sqlite3.Row | None:
+def _fetch_curation_run(uid: str, tenant_id: str, run_id: str) -> RowLike | None:
     """Load a curation run row for a user."""
     conn = get_db_connection()
     row = conn.execute(
@@ -2201,7 +2347,7 @@ def _fetch_curation_run(uid: str, tenant_id: str, run_id: str) -> sqlite3.Row | 
     return row
 
 
-def _curation_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
+def _curation_payload_from_row(row: RowLike) -> dict[str, Any]:
     """Rebuild a worker payload from a curation run row."""
     row_dict = dict(row)
     transcript_bundle_json = row_dict.get("transcript_bundle_json")
@@ -2333,7 +2479,7 @@ def _promote_in_place_curation(
     run_id: str,
     source_bank_id: str,
     staging_bank_id: str,
-    source_rows: list[sqlite3.Row],
+    source_rows: list[RowLike],
     staged_ids: list[str],
     *,
     cancel_event: threading.Event | None = None,
@@ -2385,7 +2531,7 @@ def _restore_in_place_curation(
     tenant_id: str,
     source_bank_id: str,
     staging_bank_id: str,
-    source_rows: list[sqlite3.Row],
+    source_rows: list[RowLike],
     staged_ids: list[str],
 ) -> None:
     """Restore source/staging banks if cancellation lands after promotion."""
@@ -2413,7 +2559,7 @@ def _restore_in_place_curation(
         conn.close()
 
 
-def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 100) -> list[sqlite3.Row]:
+def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 100) -> list[RowLike]:
     """Load source-bank memories for curation."""
     conn = get_db_connection()
     rows = conn.execute(
@@ -2429,7 +2575,7 @@ def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 
     return rows
 
 
-def _build_synthesis_snapshot(rows: list[sqlite3.Row], uid: str) -> dict[str, Any] | None:
+def _build_synthesis_snapshot(rows: list[RowLike], uid: str) -> dict[str, Any] | None:
     """Run the enhanced synthesizer when enough source memories exist."""
     if len(rows) < 5:
         return None
@@ -2451,7 +2597,7 @@ def _build_synthesis_snapshot(rows: list[sqlite3.Row], uid: str) -> dict[str, An
     return result.to_dict() if result else None
 
 
-def _build_reflection_snapshot(rows: list[sqlite3.Row], uid: str, tenant_id: str) -> dict[str, Any] | None:
+def _build_reflection_snapshot(rows: list[RowLike], uid: str, tenant_id: str) -> dict[str, Any] | None:
     """Build a non-persisting reflection summary from existing reflection primitives."""
     if not rows:
         return None
@@ -2477,7 +2623,7 @@ def _context_block_snapshot(uid: str, tenant_id: str) -> list[dict[str, Any]]:
 
 def _make_curated_entries(
     run: dict[str, Any],
-    source_rows: list[sqlite3.Row],
+    source_rows: list[RowLike],
     block_snapshot: list[dict[str, Any]],
     synthesis: dict[str, Any] | None,
     reflection: dict[str, Any] | None,
@@ -3454,7 +3600,7 @@ def _fetch_session_memories_raw(
     uid: str,
     tenant_id: str,
     limit: int = 20,
-) -> list[sqlite3.Row]:
+) -> list[RowLike]:
     """Fetch session-scoped memories for a user, ordered by importance desc."""
     conn = get_db_connection()
     try:
@@ -3475,7 +3621,7 @@ def _fetch_high_confidence_memories(
     tenant_id: str,
     min_importance: float = 0.5,
     limit: int = 20,
-) -> list[sqlite3.Row]:
+) -> list[RowLike]:
     """Fetch high-confidence project-level memories (arc/fact/trait) as fallback."""
     conn = get_db_connection()
     try:
@@ -3540,13 +3686,13 @@ def generate_recovery_payload(
 
     session_rows = _fetch_session_memories_raw(uid, tenant_id, limit=20)
 
-    project_rows: list[sqlite3.Row] = []
+    project_rows: list[RowLike] = []
     if len(session_rows) < 10:
         project_rows = _fetch_high_confidence_memories(uid, tenant_id, min_importance=0.5, limit=20)
 
     seen_contents: set[str] = set()
 
-    def _dedup_rows(rows: list[sqlite3.Row], session_boost: float) -> list[LaneItem]:
+    def _dedup_rows(rows: list[RowLike], session_boost: float) -> list[LaneItem]:
         items: list[LaneItem] = []
         for row in rows:
             row_id = row["id"]
@@ -3699,10 +3845,6 @@ def main(host: str | None = None, port: int | None = None) -> None:
         mcp.run(show_banner=False)
 
 
-if __name__ == "__main__":
-    main()
-
-
 # =============================================================================
 # Multi-Tenant Isolation Functions
 # =============================================================================
@@ -3827,11 +3969,12 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
     tenant_id = get_current_tenant_id()
     conn = get_db_connection()
     # Basic stats
-    count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, tenant_id)
-    ).fetchone()[0]
+    count = (
+        conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, tenant_id)).fetchone()
+        or (0,)
+    )[0]
     scope_counts = conn.execute(
-        "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
+        "SELECT scope, COUNT(*) AS scope_count FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
         (uid, tenant_id),
     ).fetchall()
     # Maintenance stats (lightweight — uses existing open conn)
@@ -3840,10 +3983,13 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
             "SELECT event_type, COUNT(*) as cnt FROM events WHERE event_type LIKE ? GROUP BY event_type",
             ("maintenance%",),
         ).fetchall()
-        last_maint = conn.execute(
-            "SELECT MAX(timestamp) FROM events WHERE event_type LIKE ?",
-            ("maintenance%",),
-        ).fetchone()[0]
+        last_maint = (
+            conn.execute(
+                "SELECT MAX(timestamp) FROM events WHERE event_type LIKE ?",
+                ("maintenance%",),
+            ).fetchone()
+            or (None,)
+        )[0]
         by_event_type = {r["event_type"]: r["cnt"] for r in maintenance_rows}
         total_events = sum(by_event_type.values())
         reviews = sum(v for k, v in by_event_type.items() if "maintenance_review" in k)
@@ -3860,30 +4006,36 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
 
     # Last capture time (lightweight — uses existing open conn)
     try:
-        last_cap = conn.execute(
-            "SELECT MAX(created_at) FROM memories WHERE user_id = ? AND tenant_id = ?",
-            (uid, tenant_id),
-        ).fetchone()[0]
+        last_cap = (
+            conn.execute(
+                "SELECT MAX(created_at) FROM memories WHERE user_id = ? AND tenant_id = ?",
+                (uid, tenant_id),
+            ).fetchone()
+            or (None,)
+        )[0]
         last_capture_time = last_cap
     except Exception:
         last_capture_time = None
 
     # Stale/decayed memory count (PIX-3955)
     try:
-        stale_count = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND strength_trend = 'stale'",
-            (uid, tenant_id),
-        ).fetchone()[0]
+        stale_count = (
+            conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND strength_trend = 'stale'",
+                (uid, tenant_id),
+            ).fetchone()
+            or (0,)
+        )[0]
     except Exception:
         stale_count = 0
 
     # Category breakdown (PIX-3955)
     try:
         category_rows = conn.execute(
-            "SELECT category, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY category",
+            "SELECT category, COUNT(*) AS category_count FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY category",
             (uid, tenant_id),
         ).fetchall()
-        by_category = {r[0]: r[1] for r in category_rows}
+        by_category = {row["category"]: row["category_count"] for row in category_rows}
     except Exception:
         by_category = {}
 
@@ -3891,7 +4043,7 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
     result = {
         "status": "healthy",
         "memory_count": count,
-        "by_scope": {r[0]: r[1] for r in scope_counts},
+        "by_scope": {row["scope"]: row["scope_count"] for row in scope_counts},
         "stale_count": stale_count,
         "by_category": by_category,
         "last_injection": dict(_last_injection_stats) if _last_injection_stats else None,
@@ -5101,4 +5253,5 @@ def run_maintenance(
     )
 
 
-# test
+if __name__ == "__main__":
+    main()

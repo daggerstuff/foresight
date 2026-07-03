@@ -18,6 +18,7 @@ import logging
 import sqlite3
 import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -26,6 +27,44 @@ from .config import DB_PATH
 from .connection_pool import PooledConnection, get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
+
+
+def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(key, default)
+    try:
+        return row[index]
+    except (IndexError, KeyError, TypeError):
+        return default
+
+
+def _memory_id(row: Any) -> str:
+    return str(_row_get(row, "id", 0, ""))
+
+
+def _memory_content(row: Any) -> str:
+    return str(_row_get(row, "content", 1, "") or "")
+
+
+def _memory_category(row: Any) -> str:
+    return str(_row_get(row, "category", 2, "general") or "general")
+
+
+def _memory_importance(row: Any) -> float:
+    value = _row_get(row, "importance", 3, 0.5)
+    try:
+        return float(value if value is not None else 0.5)
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _memory_trend(row: Any) -> str:
+    return str(_row_get(row, "strength_trend", 4, "stable") or "stable")
+
+
+def _memory_created_at(row: Any) -> str:
+    value = _row_get(row, "created_at", 8, "")
+    return str(value or "")
 
 
 @dataclass
@@ -183,15 +222,15 @@ class ReflectionEngine:
         category_importance: dict[str, list[float]] = {}
 
         for row in rows:
-            _, _, category, importance, trend, _ = row[:6]
-            trend = trend or "stable"
+            category = _memory_category(row)
+            importance = _memory_importance(row)
+            trend = _memory_trend(row)
             if trend in trend_counts:
                 trend_counts[trend] += 1
 
-            cat = category or "general"
-            if cat not in category_importance:
-                category_importance[cat] = []
-            category_importance[cat].append(importance or 0.5)
+            if category not in category_importance:
+                category_importance[category] = []
+            category_importance[category].append(importance)
 
         avg_importance = {cat: sum(vals) / len(vals) for cat, vals in category_importance.items()}
 
@@ -226,7 +265,9 @@ class ReflectionEngine:
             LIMIT 10""",
             (user_id, tenant_id),
         )
-        type_counts = {row[0]: row[1] for row in cursor.fetchall()}
+        type_counts = {
+            str(_row_get(row, "entity_type", 0, "unknown")): _row_get(row, "count", 1, 0) for row in cursor.fetchall()
+        }
 
         # Most-connected entities
         cursor = conn.execute(
@@ -241,7 +282,14 @@ class ReflectionEngine:
             LIMIT 10""",
             (tenant_id, user_id, tenant_id),
         )
-        top_entities = [{"name": row[0], "type": row[1], "connections": row[2]} for row in cursor.fetchall()]
+        top_entities = [
+            {
+                "name": _row_get(row, "name", 0),
+                "type": _row_get(row, "entity_type", 1),
+                "connections": _row_get(row, "rel_count", 2, 0),
+            }
+            for row in cursor.fetchall()
+        ]
 
         return {
             "entity_type_counts": type_counts,
@@ -280,7 +328,7 @@ class ReflectionEngine:
 
         # Entity hub insights - central themes
         top_entities = entity_summary.get("top_connected_entities", [])
-        memory_ids = [row[0] for row in rows]
+        memory_ids = [_memory_id(row) for row in rows]
         for entity in top_entities[:3]:
             if entity["connections"] >= 3:
                 # Generate specific action based on entity type
@@ -312,14 +360,14 @@ class ReflectionEngine:
         stale_count = counts.get("stale", 0)
         total = trend_summary.get("total_memories", 1)
         if stale_count / max(total, 1) > 0.5:
-            stale_rows = [r for r in rows if (r[4] or "stable") == "stale"]
-            stale_categories = {r[2] or "general" for r in stale_rows}
+            stale_rows = [r for r in rows if _memory_trend(r) == "stale"]
+            stale_categories = {_memory_category(r) for r in stale_rows}
             insights.append(
                 ReflectionInsight(
                     insight_type="warning",
                     summary=f"Half your memories ({stale_count}/{total}) are stale. Focus on {', '.join(list(stale_categories)[:3])} to re-engage.",
                     confidence=0.85,
-                    evidence_ids=[r[0] for r in stale_rows[:5]],
+                    evidence_ids=[_memory_id(r) for r in stale_rows[:5]],
                     recommended_action="review",
                     metadata={
                         "stale_ratio": stale_count / max(total, 1),
@@ -345,17 +393,16 @@ class ReflectionEngine:
         # Group by category and calculate category health scores
         by_category: dict[str, list] = {}
         for row in rows:
-            cat = row[2]
-            cat = cat or "general"
+            cat = _memory_category(row)
             if cat not in by_category:
                 by_category[cat] = []
             by_category[cat].append(row)
 
         category_health: dict[str, dict] = {}
         for cat, cat_rows in by_category.items():
-            strengthening = sum(1 for r in cat_rows if (r[4] or "stable") == "strengthening")
-            weakening = sum(1 for r in cat_rows if (r[4] or "stable") == "weakening")
-            stale = sum(1 for r in cat_rows if (r[4] or "stable") == "stale")
+            strengthening = sum(1 for r in cat_rows if _memory_trend(r) == "strengthening")
+            weakening = sum(1 for r in cat_rows if _memory_trend(r) == "weakening")
+            stale = sum(1 for r in cat_rows if _memory_trend(r) == "stale")
             total = len(cat_rows)
 
             health_score = (strengthening * 1 + stale * (-0.5) - weakening * 1) / max(total, 1)
@@ -382,7 +429,7 @@ class ReflectionEngine:
                     insight_type="breakthrough",
                     summary=f"Multiple areas improving simultaneously ({', '.join(improving_cats[:3])}). This momentum suggests foundational changes are taking hold - maintain current practices.",
                     confidence=0.8,
-                    evidence_ids=[r[0] for r in improving_memories[:5]],
+                    evidence_ids=[_memory_id(r) for r in improving_memories[:5]],
                     recommended_action="preserve",
                     metadata={
                         "improving_categories": improving_cats,
@@ -401,7 +448,10 @@ class ReflectionEngine:
                             insight_type="pattern",
                             summary=f"Energy imbalance: {high_cat} is thriving while {low_cat} struggles. Consider if time/energy allocation needs rebalancing.",
                             confidence=0.65,
-                            evidence_ids=([r[0] for r in high_data["rows"][:2]] + [r[0] for r in low_data["rows"][:2]]),
+                            evidence_ids=(
+                                [_memory_id(r) for r in high_data["rows"][:2]]
+                                + [_memory_id(r) for r in low_data["rows"][:2]]
+                            ),
                             recommended_action="investigate",
                             metadata={
                                 "high_category": high_cat,
@@ -427,15 +477,14 @@ class ReflectionEngine:
         # Sort all rows by timestamp
         sorted_rows = sorted(
             rows,
-            key=lambda r: r[8] if len(r) > 8 and r[8] else "",
+            key=_memory_created_at,
             reverse=True,
         )
 
         # Look for "keystone" categories - early improvements that correlate with overall improvement
         by_category: dict[str, list] = {}
         for row in sorted_rows:
-            cat = row[2]
-            cat = cat or "general"
+            cat = _memory_category(row)
             if cat not in by_category:
                 by_category[cat] = []
             by_category[cat].append(row)
@@ -448,11 +497,11 @@ class ReflectionEngine:
             # Check if this category strengthened early and others followed
             sorted_cat = sorted(
                 cat_rows,
-                key=lambda r: r[8] if len(r) > 8 and r[8] else "",
+                key=_memory_created_at,
             )
 
             early_rows = sorted_cat[: max(1, len(sorted_cat) // 3)]
-            strengthening_early = sum(1 for r in early_rows if (r[4] or "stable") == "strengthening")
+            strengthening_early = sum(1 for r in early_rows if _memory_trend(r) == "strengthening")
 
             if strengthening_early >= len(early_rows) * 0.7 and len(cat_rows) >= 3:
                 insights.append(
@@ -460,7 +509,7 @@ class ReflectionEngine:
                         insight_type="breakthrough",
                         summary=f"{cat} appears to be a keystone area - early improvements here may have driven broader progress. Double down on what is working in {cat}.",
                         confidence=0.7,
-                        evidence_ids=[r[0] for r in early_rows],
+                        evidence_ids=[_memory_id(r) for r in early_rows],
                         recommended_action="preserve",
                         metadata={
                             "keystone_category": cat,
@@ -487,26 +536,25 @@ class ReflectionEngine:
         # Group by category
         by_category: dict[str, list] = {}
         for row in rows:
-            cat = row[2]
-            cat = cat or "general"
+            cat = _memory_category(row)
             if cat not in by_category:
                 by_category[cat] = []
             by_category[cat].append(row)
 
         # Detect rapidly weakening categories
         for cat, cat_rows in by_category.items():
-            weakening_count = sum(1 for r in cat_rows if (r[4] or "stable") == "weakening")
+            weakening_count = sum(1 for r in cat_rows if _memory_trend(r) == "weakening")
             total = len(cat_rows)
 
             if weakening_count / max(total, 1) > 0.5 and total >= 3:
-                recent_weakening = [r for r in cat_rows if (r[4] or "stable") == "weakening"][:3]
+                recent_weakening = [r for r in cat_rows if _memory_trend(r) == "weakening"][:3]
 
                 insights.append(
                     ReflectionInsight(
                         insight_type="warning",
                         summary=f"WARNING: {cat} showing consistent decline ({weakening_count}/{total} weakening). Address soon before pattern solidifies.",
                         confidence=0.8,
-                        evidence_ids=[r[0] for r in recent_weakening],
+                        evidence_ids=[_memory_id(r) for r in recent_weakening],
                         recommended_action="review",
                         metadata={
                             "risk_category": cat,
@@ -528,7 +576,7 @@ class ReflectionEngine:
                             insight_type="warning",
                             summary=f"Focus concentration risk: {cat} dominates your attention ({concentration:.0%} of memories). Consider broadening scope.",
                             confidence=0.75,
-                            evidence_ids=[r[0] for r in cat_rows[:5]],
+                            evidence_ids=[_memory_id(r) for r in cat_rows[:5]],
                             recommended_action="investigate",
                             metadata={
                                 "concentration_risk": concentration,
@@ -554,16 +602,15 @@ class ReflectionEngine:
         # Group by category
         by_category: dict[str, list] = {}
         for row in rows:
-            cat = row[2]
-            cat = cat or "general"
+            cat = _memory_category(row)
             if cat not in by_category:
                 by_category[cat] = []
             by_category[cat].append(row)
 
         # Find stable areas with potential for growth
         for cat, cat_rows in by_category.items():
-            stable_count = sum(1 for r in cat_rows if (r[4] or "stable") == "stable")
-            strengthening_count = sum(1 for r in cat_rows if (r[4] or "stable") == "strengthening")
+            stable_count = sum(1 for r in cat_rows if _memory_trend(r) == "stable")
+            strengthening_count = sum(1 for r in cat_rows if _memory_trend(r) == "strengthening")
             total = len(cat_rows)
 
             # Stable areas with some strengthening momentum
@@ -573,7 +620,7 @@ class ReflectionEngine:
                         insight_type="breakthrough",
                         summary=f"{cat} is stable with emerging momentum - ripe for intentional growth. Small investments here could yield disproportionate returns.",
                         confidence=0.7,
-                        evidence_ids=[r[0] for r in cat_rows[:4]],
+                        evidence_ids=[_memory_id(r) for r in cat_rows[:4]],
                         recommended_action="preserve",
                         metadata={
                             "opportunity_category": cat,
@@ -613,8 +660,7 @@ class ReflectionEngine:
         # Group rows by category
         by_category: dict[str, list] = {}
         for row in rows:
-            category = row[2]
-            cat = category or "general"
+            cat = _memory_category(row)
             if cat not in by_category:
                 by_category[cat] = []
             by_category[cat].append(row)
@@ -623,22 +669,22 @@ class ReflectionEngine:
             # Sort by created_at descending to find most recent
             sorted_rows = sorted(
                 cat_rows,
-                key=lambda r: r[8] if len(r) > 8 else "",
+                key=_memory_created_at,
                 reverse=True,
             )
 
-            strengthening_rows = [r for r in sorted_rows if (r[4] or "stable") == "strengthening"]
-            weakening_rows = [r for r in sorted_rows if (r[4] or "stable") == "weakening"]
+            strengthening_rows = [r for r in sorted_rows if _memory_trend(r) == "strengthening"]
+            weakening_rows = [r for r in sorted_rows if _memory_trend(r) == "weakening"]
 
             if strengthening_rows:
                 mem = strengthening_rows[0]
-                excerpt = (mem[1] or "")[:80]
+                excerpt = _memory_content(mem)[:80]
                 insights.append(
                     ReflectionInsight(
                         insight_type="trend",
                         summary=f"Progress in {cat}: {excerpt}",
                         confidence=0.8,
-                        evidence_ids=[mem[0]],
+                        evidence_ids=[_memory_id(mem)],
                         recommended_action="preserve",
                         metadata={"category": cat, "trend": "strengthening"},
                     )
@@ -646,13 +692,13 @@ class ReflectionEngine:
 
             if weakening_rows:
                 mem = weakening_rows[0]
-                excerpt = (mem[1] or "")[:80]
+                excerpt = _memory_content(mem)[:80]
                 insights.append(
                     ReflectionInsight(
                         insight_type="warning",
                         summary=f"Decline in {cat}: {excerpt}",
                         confidence=0.8,
-                        evidence_ids=[mem[0]],
+                        evidence_ids=[_memory_id(mem)],
                         recommended_action="review",
                         metadata={"category": cat, "trend": "weakening"},
                     )
