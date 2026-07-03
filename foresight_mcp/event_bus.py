@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import uuid
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -120,11 +121,54 @@ EventHandler = Callable[[Event], None]
 
 
 # =============================================================================
+# Event Store ABC
+# =============================================================================
+
+
+class EventStoreBase(ABC):
+    """Abstract base class for event stores.
+
+    Defines the interface that all event store backends must implement.
+    Concrete implementations: SQLiteEventStore (default), PostgresEventStore (future).
+    """
+
+    @abstractmethod
+    def append(self, event: Event, tenant_id: str | None = None) -> None:
+        """Append event to store."""
+
+    @abstractmethod
+    def get_by_entity(
+        self, entity_id: str, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
+        """Get events by entity ID."""
+
+    @abstractmethod
+    def get_by_type(
+        self, event_type: EventType, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
+        """Get events by type."""
+
+    @abstractmethod
+    def get_by_time_range(
+        self, start: datetime, end: datetime, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
+        """Get events by time range."""
+
+    @abstractmethod
+    def get_all(self, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
+        """Get all events (paginated)."""
+
+    @abstractmethod
+    def purge_old_events(self, retention_days: int = 90, tenant_id: str | None = None) -> int:
+        """Delete events older than retention_days. Returns count of deleted rows."""
+
+
+# =============================================================================
 # Event Store (SQLite-based)
 # =============================================================================
 
 
-class EventStore:
+class SQLiteEventStore(EventStoreBase):
     """
     Persistent event store using SQLite.
 
@@ -355,7 +399,7 @@ class EventBus:
 
     def __init__(
         self,
-        store: EventStore | None = None,
+        store: EventStoreBase | None = None,
         stream_publisher: Any | None = None,
     ):
         """Initialize event bus.
@@ -432,7 +476,7 @@ class _EventBusSingleton:
     """Module-level singleton for EventBus."""
 
     _instance: EventBus | None = None
-    _store: EventStore | None = None
+    _store: EventStoreBase | None = None
     _lock = threading.Lock()
 
     @classmethod
@@ -444,11 +488,27 @@ class _EventBusSingleton:
         """
         with cls._lock:
             if cls._instance is None:
-                cls._store = EventStore()
+                cls._store = cls._create_store()
                 cls._instance = EventBus(cls._store, stream_publisher)
             elif stream_publisher is not None:
                 cls._instance.set_stream_publisher(stream_publisher)
             return cls._instance
+
+    @classmethod
+    def _create_store(cls) -> EventStoreBase:
+        """Create the appropriate event store based on backend type.
+
+        Uses the EventStore alias (pointing to SQLiteEventStore by default)
+        so that tests can monkeypatch event_bus.EventStore with a fake.
+        """
+        try:
+            from .server import _global_backend
+
+            if _global_backend is not None and _global_backend.backend_type == "postgresql":
+                return PostgresEventStore()
+        except (ImportError, AttributeError):
+            pass
+        return EventStore()
 
     @classmethod
     def reset(cls) -> None:
@@ -604,3 +664,206 @@ def system_error(error_type: str, message: str, actor: str = "system") -> Event:
         f"error:{error_type}",
         {"error_type": error_type, "message": message},
     )
+
+
+# =============================================================================
+# Event Store (PostgreSQL-based)
+# =============================================================================
+
+
+class PostgresEventStore(EventStoreBase):
+    """
+    Persistent event store using PostgreSQL.
+
+    Uses get_db_connection() from server.py which routes through
+    PostgresPooledConnection when PostgresBackend is active.
+    The translation layer handles ? → $1,$2... param conversion.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Postgres event store.
+
+        No db_path needed — connection comes from the global backend.
+        """
+        self._init_db()
+
+    def _get_conn(self):
+        """Get a database connection via the global backend router."""
+        from .server import get_db_connection
+
+        return get_db_connection()
+
+    def _init_db(self) -> None:
+        """Ensure the events table exists.
+
+        For Postgres, migrations are managed by alembic, but we still
+        create the table IF NOT EXISTS for standalone / test scenarios.
+        """
+        conn = self._get_conn()
+        try:
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                event_type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id)")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def append(self, event: Event, tenant_id: str | None = None) -> None:
+        """Append event to store."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event.id,
+                    tid,
+                    event.event_type.value,
+                    event.timestamp.isoformat(),
+                    event.actor,
+                    event.entity_id,
+                    json.dumps(event.payload),
+                    json.dumps(event.metadata),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_by_entity(
+        self, entity_id: str, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
+        """Get events by entity ID."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE entity_id = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (entity_id, tid, limit, offset),
+            ).fetchall()
+        finally:
+            conn.close()
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
+
+    def get_by_type(
+        self, event_type: EventType, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
+        """Get events by type."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE event_type = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (event_type.value, tid, limit, offset),
+            ).fetchall()
+        finally:
+            conn.close()
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
+
+    def get_by_time_range(
+        self, start: datetime, end: datetime, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
+        """Get events by time range."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (start.isoformat(), end.isoformat(), tid, limit, offset),
+            ).fetchall()
+        finally:
+            conn.close()
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
+
+    def get_all(self, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
+        """Get all events (paginated)."""
+        tid = tenant_id or get_current_tenant_id()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (tid, limit, offset),
+            ).fetchall()
+        finally:
+            conn.close()
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
+
+    def purge_old_events(self, retention_days: int = 90, tenant_id: str | None = None) -> int:
+        """Delete events older than retention_days. Returns count of deleted rows."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        conn = self._get_conn()
+        try:
+            if tenant_id:
+                cursor = conn.execute(
+                    "DELETE FROM events WHERE timestamp < ? AND tenant_id = ?",
+                    (cutoff, tenant_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM events WHERE timestamp < ?",
+                    (cutoff,),
+                )
+            deleted = cursor.rowcount
+            conn.commit()
+            logger.info("Purged %d events older than %d days", deleted, retention_days)
+            return deleted
+        finally:
+            conn.close()
+
+    def _row_to_event(self, row: Any) -> Event | None:
+        """Convert database row to Event, returning None for corrupt rows.
+
+        PostgresRow supports both int and string key access.
+        Always uses 8-column layout (id, tenant_id, event_type, timestamp, actor, entity_id, payload, metadata).
+        """
+        try:
+            # PostgresRow supports int indexing like tuples
+            return Event(
+                id=row[0],
+                event_type=EventType(row[2]),
+                timestamp=datetime.fromisoformat(row[3]),
+                actor=row[4],
+                entity_id=row[5],
+                payload=json.loads(row[6]),
+                metadata=json.loads(row[7]),
+            )
+        except (IndexError, ValueError, KeyError, json.JSONDecodeError) as e:
+            logger.warning("Skipping corrupt event row: %s", e)
+            return None
+
+
+# Backward-compatible alias
+EventStore = SQLiteEventStore

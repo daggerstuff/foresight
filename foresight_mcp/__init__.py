@@ -107,7 +107,10 @@ from .entity_extractor import (
 from .event_bus import (
     Event as Event,
     EventBus as EventBus,
+    EventStoreBase as EventStoreBase,
     EventType as EventType,
+    PostgresEventStore as PostgresEventStore,
+    SQLiteEventStore as SQLiteEventStore,
     get_event_bus as get_event_bus,
 )
 from .graph_store import (
@@ -118,9 +121,11 @@ from .graph_store import (
 )
 from .hooks import (
     HookExecutor as HookExecutor,
+    HookRegistryBase as HookRegistryBase,
     HookRegistration as HookRegistration,
-    HookRegistry as HookRegistry,
     HookType as HookType,
+    PostgresHookRegistry as PostgresHookRegistry,
+    SQLiteHookRegistry as SQLiteHookRegistry,
     get_hook_executor as get_hook_executor,
     list_hooks as list_hooks,
     register_hook as register_hook,
@@ -415,6 +420,7 @@ __all__ = [
     "EntityQuery",
     "Event",
     "EventBus",
+    "EventStoreBase",
     "EventType",
     "ExtractionResult",
     "FreshnessTrend",
@@ -424,7 +430,11 @@ __all__ = [
     "GraphTraversalResult",
     "HookExecutor",
     "HookRegistration",
-    "HookRegistry",
+    "PostgresEventStore",
+    "PostgresHookRegistry",
+    "SQLiteEventStore",
+    "SQLiteHookRegistry",
+    "HookRegistryBase",
     "HookType",
     "HybridResult",
     "HybridRetriever",

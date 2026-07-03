@@ -97,6 +97,37 @@ class TemporalQueryBuilder:
             "year": 8760,
         }[window]
 
+    def _is_postgres_backend(self) -> bool:
+        return self._backend is not None and self._backend.backend_type == "postgresql"
+
+    def _date_bucket_expr(self) -> str:
+        if self._is_postgres_backend():
+            return "(created_at::timestamptz)::date"
+        return "strftime('%Y-%m-%d', created_at)"
+
+    def _timeframe_cutoff(self, timeframe: str) -> str:
+        parts = timeframe.strip().lower().split()
+        if len(parts) != 2:
+            raise ValueError(f"Invalid timeframe: {timeframe!r}. Expected format like '30 days'.")
+        try:
+            amount = int(parts[0])
+        except ValueError as exc:
+            raise ValueError(f"Invalid timeframe amount: {parts[0]!r}") from exc
+
+        unit = parts[1].rstrip("s")
+        hours_by_unit = {
+            "hour": 1,
+            "day": 24,
+            "week": 168,
+            "month": 720,
+            "year": 8760,
+        }
+        if unit not in hours_by_unit:
+            raise ValueError(f"Invalid timeframe unit: {parts[1]!r}")
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=amount * hours_by_unit[unit])
+        return cutoff.isoformat()
+
     def get_memories_from_window(
         self,
         user_id: str,
@@ -287,46 +318,48 @@ class TemporalQueryBuilder:
     def analyze_trends(self, user_id: str, timeframe: str = "30 days") -> dict:
         """Analyze memory trends over time."""
         tenant_id = get_current_tenant_id()
+        cutoff = self._timeframe_cutoff(timeframe)
+        date_bucket = self._date_bucket_expr()
 
         # Daily stats
-        daily_sql = """
+        daily_sql = f"""
             SELECT
-                strftime('%Y-%m-%d', created_at) as date,
+                {date_bucket} as date,
                 COUNT(*) as count,
                 AVG(importance) as avg_importance,
                 SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
                 SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
-            AND created_at >= datetime('now', '-' || ?)
-            GROUP BY date
-            ORDER BY date
+            AND created_at >= ?
+            GROUP BY {date_bucket}
+            ORDER BY {date_bucket}
         """
         try:
-            daily_rows = self._fetch_rows(daily_sql, (user_id, tenant_id, timeframe))
+            daily_rows = self._fetch_rows(daily_sql, (user_id, tenant_id, cutoff))
         except Exception as e:
             if self._backend is not None:
                 raise
             if not _is_missing_tenant_column_error(e):
                 raise
-            daily_no_tenant = """
+            daily_no_tenant = f"""
                 SELECT
-                    strftime('%Y-%m-%d', created_at) as date,
+                    {date_bucket} as date,
                     COUNT(*) as count,
                     AVG(importance) as avg_importance,
                     SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
                     SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
                 FROM memories
                 WHERE user_id = ?
-                AND created_at >= datetime('now', '-' || ?)
-                GROUP BY date
-                ORDER BY date
+                AND created_at >= ?
+                GROUP BY {date_bucket}
+                ORDER BY {date_bucket}
             """
-            daily_rows = self._fetch_rows(daily_no_tenant, (user_id, timeframe))
+            daily_rows = self._fetch_rows(daily_no_tenant, (user_id, cutoff))
 
         daily_stats = [
             {
-                "date": row["date"],
+                "date": str(row["date"]),
                 "count": row["count"],
                 "avg_importance": row["avg_importance"] or 0,
                 "strengthening": row["strengthening"] or 0,
@@ -344,12 +377,12 @@ class TemporalQueryBuilder:
                 SUM(activation_count) as total_activations
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
-            AND created_at >= datetime('now', '-' || ?)
+            AND created_at >= ?
             GROUP BY category
             ORDER BY count DESC
         """
         try:
-            cat_rows = self._fetch_rows(cat_sql, (user_id, tenant_id, timeframe))
+            cat_rows = self._fetch_rows(cat_sql, (user_id, tenant_id, cutoff))
         except Exception as e:
             if self._backend is not None:
                 raise
@@ -363,11 +396,11 @@ class TemporalQueryBuilder:
                     SUM(activation_count) as total_activations
                 FROM memories
                 WHERE user_id = ?
-                AND created_at >= datetime('now', '-' || ?)
+                AND created_at >= ?
                 GROUP BY category
                 ORDER BY count DESC
             """
-            cat_rows = self._fetch_rows(cat_no_tenant, (user_id, timeframe))
+            cat_rows = self._fetch_rows(cat_no_tenant, (user_id, cutoff))
 
         category_breakdown = [
             {

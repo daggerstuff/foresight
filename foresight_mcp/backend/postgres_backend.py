@@ -43,6 +43,10 @@ def _translate_sql(sql: str) -> str:
     - ``?`` positional placeholders → ``%s``
     - ``INTEGER PRIMARY KEY AUTOINCREMENT`` → ``SERIAL``
     - ``BLOB`` → ``BYTEA``
+
+    This is intentionally a compatibility shim so existing SQLite-oriented
+    call sites can keep working while the shared deployment shifts toward a
+    Postgres-first backend.
     """
     out = _AUTOINCREMENT_RE.sub("SERIAL", sql)
     out = _BLOB_RE.sub("BYTEA", out)
