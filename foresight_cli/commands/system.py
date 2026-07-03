@@ -11,11 +11,17 @@ from typing import Any
 
 import typer
 from foresight_mcp import get_system_status
-from foresight_mcp.server import init_db
+from foresight_mcp.server import _initialize_backend, init_db
 
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="System management, diagnostics, and configuration.")
+
+
+def _init_backend() -> None:
+    """Initialize DB schema and backend (ensures Postgres routing works in CLI)."""
+    init_db()
+    _initialize_backend()
 
 
 @app.command()
@@ -23,7 +29,7 @@ def status(
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Get Foresight system status and health."""
-    init_db()
+    _init_backend()
     resolved_uid = cfg.get_user_id(user_id)
     result = get_system_status(user_id=resolved_uid)
 
@@ -208,7 +214,7 @@ def init(
 
     # Initialize DB
     try:
-        init_db()
+        _init_backend()
         out.done("Database initialized")
     except Exception as e:
         out.warn(f"Database init issue: {e}")
@@ -232,7 +238,7 @@ def doctor(
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Run comprehensive diagnostics."""
-    init_db()
+    _init_backend()
     resolved_uid = cfg.get_user_id(user_id)
     config = cfg.ensure_config()
     passed = 0
@@ -320,7 +326,7 @@ def stats(
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Show memory statistics and trends."""
-    init_db()
+    _init_backend()
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
@@ -448,7 +454,7 @@ def history(
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """View recent memory decay and reinforcement events."""
-    init_db()
+    _init_backend()
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
