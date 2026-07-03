@@ -838,10 +838,14 @@ def _initialize_backend() -> None:
     Reads ``FORESIGHT_DB_URL`` via ``create_backend()``.  The backend is stored
     as ``_global_backend`` and passed to service initializers.
 
+    Idempotent: if ``_global_backend`` is already set, this is a no-op.
+
     Fail-fast: if ``FORESIGHT_DB_URL`` is explicitly set but the backend
     fails to connect, the server aborts with a clear error message.
     """
-    global _global_backend  # noqa: PLW0603
+    global _global_backend
+    if _global_backend is not None:
+        return
     try:
         backend = create_backend()
         backend.connect()
