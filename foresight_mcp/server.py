@@ -1243,7 +1243,11 @@ def _health_status_dict() -> dict[str, Any]:
         "server": "foresight-mcp",
     }
     try:
-        raw = get_system_status()
+        # Deferred: get_system_status is defined later in this module (~L3960).
+        # Bare name fails if called during module init before that def.
+        from foresight_mcp.server import get_system_status as _get_status
+
+        raw = _get_status()
         parsed: Any = json.loads(raw) if isinstance(raw, str) else raw
         if isinstance(parsed, dict):
             status_value = parsed.get("status", "ok")
