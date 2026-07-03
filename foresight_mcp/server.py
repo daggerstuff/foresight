@@ -5258,4 +5258,18 @@ def run_maintenance(
 
 
 if __name__ == "__main__":
+    # When executed as ``python -m foresight_mcp.server``, Python re-executes
+    # this file as the ``__main__`` module — creating a *second* copy of the
+    # module object.  Any module-level state (like ``_global_backend``) that
+    # ``main()`` sets on the ``__main__`` copy would be invisible to the
+    # ``foresight_mcp.server`` copy that the package already imported via
+    # ``__init__.py``.  Replacing the ``__main__`` entry in ``sys.modules``
+    # ensures there is only one instance of this module, so tool handlers
+    # registered on ``foresight_mcp.server`` see the same ``_global_backend``
+    # that ``_initialize_backend()`` populates inside ``main()``.
+    import sys as _sys
+
+    _this = _sys.modules[__name__]
+    _sys.modules["foresight_mcp.server"] = _this
+    _sys.modules[__name__] = _this
     main()
