@@ -24,7 +24,7 @@ from typing import Any
 
 from .connection_pool import get_pool
 from .crdt import LWWRegister, ORSet, VectorClock
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_sync")
 
@@ -204,7 +204,7 @@ class OperationQueue:
 
     def enqueue(self, operation: Operation, tenant_id: str | None = None) -> None:
         """Add operation to queue."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute(
@@ -231,7 +231,7 @@ class OperationQueue:
 
     def dequeue(self, tenant_id: str | None = None) -> Operation | None:
         """Get next operation from queue."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         row = conn.execute(
@@ -246,7 +246,7 @@ class OperationQueue:
 
     def remove(self, operation_id: str, tenant_id: str | None = None) -> None:
         """Remove operation from queue."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("DELETE FROM operations WHERE id = ? AND tenant_id = ?", (operation_id, tid))
@@ -255,7 +255,7 @@ class OperationQueue:
 
     def peek(self, tenant_id: str | None = None) -> list[Operation]:
         """Get all pending operations."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         rows = conn.execute(
@@ -271,7 +271,7 @@ class OperationQueue:
 
     def count(self, tenant_id: str | None = None) -> int:
         """Get count of pending operations."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         count_row = conn.execute(

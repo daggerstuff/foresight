@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .connection_pool import get_pool
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,7 @@ class SQLiteEventStore(EventStoreBase):
 
     def append(self, event: Event, tenant_id: str | None = None) -> None:
         """Append event to store."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._connect()
         try:
             conn.execute(
@@ -252,7 +252,7 @@ class SQLiteEventStore(EventStoreBase):
         self, entity_id: str, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by entity ID."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -272,7 +272,7 @@ class SQLiteEventStore(EventStoreBase):
         self, event_type: EventType, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by type."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -292,7 +292,7 @@ class SQLiteEventStore(EventStoreBase):
         self, start: datetime, end: datetime, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by time range."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -310,7 +310,7 @@ class SQLiteEventStore(EventStoreBase):
 
     def get_all(self, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
         """Get all events (paginated)."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -723,7 +723,7 @@ class PostgresEventStore(EventStoreBase):
 
     def append(self, event: Event, tenant_id: str | None = None) -> None:
         """Append event to store."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             conn.execute(
@@ -747,7 +747,7 @@ class PostgresEventStore(EventStoreBase):
         self, entity_id: str, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by entity ID."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -767,7 +767,7 @@ class PostgresEventStore(EventStoreBase):
         self, event_type: EventType, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by type."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -787,7 +787,7 @@ class PostgresEventStore(EventStoreBase):
         self, start: datetime, end: datetime, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by time range."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -805,7 +805,7 @@ class PostgresEventStore(EventStoreBase):
 
     def get_all(self, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
         """Get all events (paginated)."""
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         try:
             rows = conn.execute(

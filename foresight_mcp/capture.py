@@ -24,7 +24,7 @@ from typing import Any
 from .config import BANK_ID
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_capture")
 
@@ -405,7 +405,7 @@ class CapturePipeline:
         Returns CaptureStats summarizing what happened.
         """
         stats = CaptureStats()
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         now = datetime.now(timezone.utc).isoformat()
 
         # Phase 1: Classify

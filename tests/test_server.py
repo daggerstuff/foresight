@@ -869,7 +869,7 @@ def test_manage_context_blocks_are_tenant_isolated():
     tmp.close()
 
     with _patched_context_block_storage(tmp.name):
-        with patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-a"):
+        with patch("foresight_mcp.server.get_current_account_id", return_value="tenant-a"):
             update_a = _decode_json_result(
                 manage_context_blocks(
                     ContextBlockAction(action="update", label="guidance", content="Tenant A guidance"),
@@ -878,13 +878,13 @@ def test_manage_context_blocks_are_tenant_isolated():
             )
             assert update_a["ok"] is True
 
-        with patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-b"):
+        with patch("foresight_mcp.server.get_current_account_id", return_value="tenant-b"):
             fetched_b = _decode_json_result(
                 manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
             )
             assert fetched_b["content"] != "Tenant A guidance"
 
-        with patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-a"):
+        with patch("foresight_mcp.server.get_current_account_id", return_value="tenant-a"):
             fetched_a = _decode_json_result(
                 manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
             )
@@ -1846,7 +1846,7 @@ def test_standalone_rollback_to_version_respects_tenant_scope():
             patch("foresight_mcp.server.DB_PATH", db_path),
             patch("foresight_mcp.connection_pool.DB_PATH", db_path),
             patch.dict("foresight_mcp.connection_pool._pools", {}, clear=True),
-            patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-a"),
+            patch("foresight_mcp.server.get_current_account_id", return_value="tenant-a"),
         ):
             result = rollback_to_version(memory_id, 2, user_id="user-1")
 

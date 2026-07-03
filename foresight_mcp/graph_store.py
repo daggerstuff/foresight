@@ -24,7 +24,7 @@ from .config import DB_PATH
 from .connection_pool import get_pool
 from .entity_extractor import Entity, EntityType, ExtractionResult, Relationship, RelationshipType
 from .sql_helpers import build_type_filter
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_graph_store")
 
@@ -43,7 +43,7 @@ def _validate_input(user_id: str, tenant_id: str | None = None) -> None:
     """Validate user_id and tenant_id input."""
     if not user_id or len(user_id) > MAX_USER_ID_LENGTH:
         raise ValueError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
-    tid = tenant_id or get_current_tenant_id()
+    tid = tenant_id or get_current_account_id()
     if not tid or len(tid) > MAX_TENANT_ID_LENGTH:
         raise ValueError(f"tenant_id must be 1-{MAX_TENANT_ID_LENGTH} chars")
 
@@ -359,7 +359,7 @@ class GraphStore:
     # =========================================================================
 
     def upsert_entity(self, entity: Entity, user_id: str, tenant_id: str | None = None) -> str:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         self._execute_sql(
             """
@@ -384,7 +384,7 @@ class GraphStore:
         return entity.id
 
     def get_entity(self, entity_id: str, user_id: str, tenant_id: str | None = None) -> Entity | None:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         rows = self._fetch_rows(
             """
@@ -413,7 +413,7 @@ class GraphStore:
         limit: int = 100,
         tenant_id: str | None = None,
     ) -> list[Entity]:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         rows = self._fetch_rows(
             """
@@ -445,7 +445,7 @@ class GraphStore:
         limit: int = 10,
         tenant_id: str | None = None,
     ) -> list[Entity]:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         escaped = _escape_like(name)
         rows = self._fetch_rows(
@@ -475,7 +475,7 @@ class GraphStore:
     # =========================================================================
 
     def add_relationship(self, relationship: Relationship, user_id: str, tenant_id: str | None = None) -> None:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         self._execute_sql(
             """
@@ -501,7 +501,7 @@ class GraphStore:
         direction: str = "both",
         tenant_id: str | None = None,
     ) -> list[Relationship]:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         if direction == "out":
             rows = self._fetch_rows(
@@ -557,7 +557,7 @@ class GraphStore:
         max_depth = kwargs.get("max_depth", args[0] if len(args) > 0 else 2)
         max_results = kwargs.get("max_results", args[1] if len(args) > 1 else 50)
         relationship_types: list[str] | None = kwargs.get("relationship_types", args[2] if len(args) > 2 else None)
-        tid = tenant_id or kwargs.get("tenant_id", args[3] if len(args) > 3 else None) or get_current_tenant_id()
+        tid = tenant_id or kwargs.get("tenant_id", args[3] if len(args) > 3 else None) or get_current_account_id()
         _validate_input(user_id, tid)
         type_filter, type_params = build_type_filter(relationship_types or [])
 
@@ -688,7 +688,7 @@ class GraphStore:
         scores: dict[str, float] | None = None,
         tenant_id: str | None = None,
     ) -> None:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         for entity_id in entity_ids:
             score = scores.get(entity_id, 1.0) if scores else 1.0
@@ -708,7 +708,7 @@ class GraphStore:
         limit: int = 50,
         tenant_id: str | None = None,
     ) -> list[str]:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         rows = self._fetch_rows(
             """
@@ -729,7 +729,7 @@ class GraphStore:
         limit: int = 20,
         tenant_id: str | None = None,
     ) -> list[str]:
-        tid = tenant_id or get_current_tenant_id()
+        tid = tenant_id or get_current_account_id()
         _validate_input(user_id, tid)
         rows = self._fetch_rows(
             """

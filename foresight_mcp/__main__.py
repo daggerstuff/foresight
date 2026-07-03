@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import warnings
+
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*found in sys.modules.*")
+
 import contextlib
 import json as _json
 import sys
