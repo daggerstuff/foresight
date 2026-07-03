@@ -29,6 +29,7 @@ memory.db
 AGENTS.md
 CLAUDE.md
 node_modules/
+pyrightconfig.json
 
 # Coverage reports
 packages/*/coverage/
