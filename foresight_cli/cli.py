@@ -13,6 +13,10 @@ from __future__ import annotations
 import contextlib
 from enum import StrEnum
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import typer
 
 from .commands import analysis, blocks, curate, eval as eval_cmd, memory, system
