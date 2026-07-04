@@ -7,6 +7,10 @@ import warnings
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*found in sys.modules.*")
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import contextlib
 import json as _json
 import sys
