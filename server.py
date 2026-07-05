@@ -833,33 +833,35 @@ def init_db(backend=None):
 
 
 def _initialize_backend() -> None:
-    """Create and connect the global database backend (PIX-3994).
+    """Create and connect the global database backend.
 
-    Reads ``FORESIGHT_DB_URL`` via ``create_backend()``.  The backend is stored
-    as ``_global_backend`` and passed to service initializers.
+    ``FORESIGHT_DB_URL`` is **required**.  There is no SQLite fallback.
+    If the URL is set but the connection fails, the server aborts with a
+    clear error message.  If the URL is unset, a ``RuntimeError`` is raised.
 
     Idempotent: if ``_global_backend`` is already set, this is a no-op.
-
-    Fail-fast: if ``FORESIGHT_DB_URL`` is explicitly set but the backend
-    fails to connect, the server aborts with a clear error message.
     """
     global _global_backend
     if _global_backend is not None:
         return
+    if not os.environ.get("FORESIGHT_DB_URL"):
+        raise RuntimeError(
+            "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. "
+            "SQLite-as-primary is no longer supported.\n"
+            "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'"
+        )
     try:
         backend = create_backend()
         backend.connect()
         _global_backend = backend
         logger.info("Database backend initialised (type=%s)", type(backend).__name__)
     except Exception:
-        if os.environ.get("FORESIGHT_DB_URL"):
-            logger.exception(
-                "FATAL: FORESIGHT_DB_URL is set (%s) but the backend failed to connect. "
-                "Aborting startup. Fix the connection string or unset FORESIGHT_DB_URL.",
-                os.environ.get("FORESIGHT_DB_URL"),
-            )
-            raise
-        logger.debug("No FORESIGHT_DB_URL set; skipping backend initialisation (SQLite pool will be used).")
+        logger.exception(
+            "FATAL: FORESIGHT_DB_URL is set (%s) but the backend failed to connect. "
+            "Aborting startup. Fix the connection string.",
+            os.environ.get("FORESIGHT_DB_URL"),
+        )
+        raise
 
 
 def _initialize_redis() -> None:
@@ -3848,7 +3850,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
     transport_port = port if port is not None else os.environ.get("FORESIGHT_MCP_PORT")
     if transport_port is not None:
         transport_host = host if host is not None else os.environ.get("FORESIGHT_MCP_HOST", "127.0.0.1")
-        mcp.run(transport="streamable-http", host=transport_host, port=int(transport_port), show_banner=False)
+        mcp.run(transport="sse", host=transport_host, port=int(transport_port), show_banner=False)
     else:
         mcp.run(show_banner=False)
 
