@@ -14,6 +14,7 @@ Key dialect differences handled internally:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -89,8 +90,14 @@ class PostgresBackend(DatabaseBackend):
         self,
         dsn: str,
         min_pool_size: int = 2,
-        max_pool_size: int = 10,
+        max_pool_size: int = 20,
     ) -> None:
+        env_max = os.environ.get("FORESIGHT_DB_POOL_MAX")
+        if env_max:
+            try:
+                max_pool_size = int(env_max)
+            except ValueError:
+                logger.warning("FORESIGHT_DB_POOL_MAX=%r is not an int; using %d", env_max, max_pool_size)
         self._dsn = self._ensure_sslmode(dsn)
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size

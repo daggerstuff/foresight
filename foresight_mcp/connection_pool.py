@@ -1,7 +1,15 @@
-"""SQLite Connection Pool for Foresight MCP.
+"""Connection Pool for Foresight MCP.
 
-Provides thread-safe connection pooling with WAL mode, foreign keys,
-and automatic cleanup of stale connections.
+When ``FORESIGHT_DB_URL`` is set and ``_initialize_backend()`` has wired
+``_global_backend`` to a ``PostgresBackend``, ``get_pool()`` returns a
+``_PsycopgPoolAdapter`` that yields ``PostgresPooledConnection`` objects
+(see ``server.py``).  The 22 callers that use ``get_pool().acquire()`` /
+``pool.release(conn)`` keep working unchanged because the adapter honours
+that exact surface.
+
+When no Postgres backend is active, ``get_pool()`` requires an explicit
+``db_path`` argument (used by test fixtures).  Production calls without
+``db_path`` raise ``RuntimeError`` — Postgres is mandatory in production.
 """
 
 from __future__ import annotations
@@ -113,15 +121,74 @@ class ConnectionPool:
             }
 
 
-# Global pools keyed by db path so tests can use isolated databases safely.
+def _active_postgres_pool() -> Any | None:
+    try:
+        from foresight_mcp import server as _server
+
+        backend = getattr(_server, "_global_backend", None)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if backend is None:
+        return None
+    if getattr(backend, "_backend_type", None) != "postgresql":
+        return None
+    return getattr(backend, "_pool", None)
+
+
+class _PsycopgPoolAdapter:
+    """Adapts psycopg_pool.ConnectionPool to the acquire()/release() shape used by 22 callers."""
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    def acquire(self) -> Any:
+        from foresight_mcp.server import PostgresPooledConnection
+
+        raw_conn = self._pool.connection()
+        return PostgresPooledConnection(raw_conn, self._pool)
+
+    def release(self, conn: Any) -> None:
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("release() failed to close PostgresPooledConnection", exc_info=True)
+
+    @property
+    def stats(self) -> dict:
+        try:
+            idle = self._pool._pool.free()
+            in_use = self._pool._pool.size() - idle
+        except Exception:
+            idle, in_use = 0, 0
+        return {"idle": idle, "in_use": in_use, "max_size": getattr(self._pool, "_max_pool_size", None)}
+
+
 _pools: dict[str, ConnectionPool] = {}
 _pool_lock = threading.Lock()
 
 
-def get_pool(db_path: str | None = None) -> ConnectionPool:
-    """Get or create the global connection pool (thread-safe)."""
+def get_pool(db_path: str | None = None) -> Any:
+    """Return the active pool.
+
+    * When a Postgres backend is active → returns a ``_PsycopgPoolAdapter``.
+    * When ``db_path`` is provided (tests only) → returns the legacy SQLite
+      ``ConnectionPool`` keyed on the absolute path.
+    * When neither condition is met → raises ``RuntimeError``. Production
+      must have Postgres; tests must pass an explicit path.
+    """
+    pg_pool = _active_postgres_pool()
+    if pg_pool is not None:
+        return _PsycopgPoolAdapter(pg_pool)
+
+    if db_path is None:
+        raise RuntimeError(
+            "No Postgres backend active and no db_path provided. "
+            "Production: set FORESIGHT_DB_URL and ensure the server "
+            "initialized correctly. Tests: pass an explicit db_path."
+        )
+
     with _pool_lock:
-        pool_path = os.path.abspath(db_path or DB_PATH)
+        pool_path = os.path.abspath(db_path)
         if pool_path not in _pools:
             _pools[pool_path] = ConnectionPool(pool_path)
         return _pools[pool_path]
