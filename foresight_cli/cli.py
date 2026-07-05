@@ -13,9 +13,15 @@ from __future__ import annotations
 import contextlib
 from enum import StrEnum
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+_project_root = Path(__file__).resolve().parent.parent.parent
+for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
+    if _candidate.exists():
+        load_dotenv(_candidate)
+        break
 
 import typer
 
