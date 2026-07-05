@@ -8,7 +8,9 @@ import psycopg2
 import os
 
 SQLITE_PATH = os.path.expanduser("~/.foresight/memory.db")
-GHOST_DB_URL = "postgresql://tsdbadmin:REDACTED@l1jgvzcieb.epyzl1cudh.db.ghost.build:5432/tsdb?sslmode=require"
+GHOST_DB_URL = os.environ.get("FORESIGHT_DB_URL")
+if not GHOST_DB_URL:
+    raise SystemExit("FORESIGHT_DB_URL must be set to the (rotated) Ghost Postgres DSN")
 
 # Tables with data, ordered by FK dependency
 TABLES = [
@@ -100,7 +102,13 @@ def main():
         "curation_runs": ["id"],
         "hooks": ["id"],
         "memory_entities": ["tenant_id", "user_id", "name", "entity_type"],
-        "entity_relationships": ["tenant_id", "user_id", "source_entity_id", "target_entity_id", "relationship_type"],
+        "entity_relationships": [
+            "tenant_id",
+            "user_id",
+            "source_entity_id",
+            "target_entity_id",
+            "relationship_type",
+        ],
         "schema_migrations": ["version"],
     }
 
