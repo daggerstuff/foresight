@@ -221,9 +221,9 @@ class TestDedupeEngine:
         self, content: str, category: str = "decision", user_id: str = "_test_user_", tenant_id: str = "_test_"
     ):
         """Insert a memory directly so the engine can find it."""
-        from foresight_mcp.connection_pool import get_pool
+        from foresight_mcp.connection_pool import DB_PATH, get_pool
 
-        pool = get_pool()
+        pool = get_pool(db_path=DB_PATH)
         conn = pool.acquire()
         try:
             now = datetime.now(timezone.utc).isoformat()
@@ -321,9 +321,9 @@ class TestDedupeEngine:
 
 class TestCapturePipeline:
     def _count_memories(self):
-        from foresight_mcp.connection_pool import get_pool
+        from foresight_mcp.connection_pool import DB_PATH, get_pool
 
-        pool = get_pool()
+        pool = get_pool(db_path=DB_PATH)
         conn = pool.acquire()
         try:
             return conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE user_id = '_test_user_'").fetchone()["cnt"]

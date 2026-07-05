@@ -266,6 +266,181 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_injection_runs_lookup ON injection_runs(tenant_id, user_id, created_at DESC)",
     ],
+    # v12 — Reconcile v11 drift (add missing index), add 002_unified_schema
+    # columns, and register 11 tables that individual modules create inline
+    # with CREATE TABLE IF NOT EXISTS so Postgres gets them through the
+    # migration runner.
+    12: [
+        # v11 drift — schema_ddl.MIGRATIONS v11 created injection_runs but
+        # server.py._SCHEMA_MIGRATIONS v11 created idx_memories_tenant_user_created.
+        # Production Postgres has the index (init_db uses _SCHEMA_MIGRATIONS);
+        # this ensures the index also exists when schema_ddl.MIGRATIONS drives
+        # the migration.
+        "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_created ON memories(tenant_id, user_id, created_at DESC)",
+        # 002_unified_schema columns — added by a separate migration runner
+        # (migrations/002_unified_schema.py) that is not integrated with the
+        # versioned schema_ddl system.  Fold them in here so the schema_ddl
+        # SOT is truly complete.
+        "ALTER TABLE memories ADD COLUMN schema_version TEXT",
+        "ALTER TABLE memories ADD COLUMN source_service TEXT",
+        # ── graph_store tables ──────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS memory_entities (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            entity_type TEXT NOT NULL
+                CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object', 'cluster')),
+            description TEXT,
+            properties TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, user_id, name, entity_type)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_entities_user ON memory_entities(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_tenant ON memory_entities(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_entities_tenant ON memory_entities(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_type ON memory_entities(entity_type)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_name ON memory_entities(name)",
+        """CREATE TABLE IF NOT EXISTS entity_relationships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            source_entity_id TEXT NOT NULL,
+            target_entity_id TEXT NOT NULL,
+            relationship_type TEXT NOT NULL
+                CHECK(relationship_type IN (
+                    'mentions', 'located_at', 'experienced', 'caused',
+                    'relates_to', 'contradicts', 'supports', 'part_of', 'created'
+                )),
+            confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
+            last_accessed TEXT DEFAULT CURRENT_TIMESTAMP,
+            decay_factor REAL DEFAULT 1.0 CHECK(decay_factor >= 0 AND decay_factor <= 1),
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_rel_source ON entity_relationships(source_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rel_target ON entity_relationships(target_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rel_user ON entity_relationships(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rel_tenant ON entity_relationships(tenant_id)",
+        """CREATE TABLE IF NOT EXISTS memory_entity_links (
+            memory_id TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            relevance_score REAL DEFAULT 1.0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (memory_id, entity_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_links_memory ON memory_entity_links(memory_id)",
+        "CREATE INDEX IF NOT EXISTS idx_links_entity ON memory_entity_links(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_links_user ON memory_entity_links(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_links_tenant ON memory_entity_links(tenant_id)",
+        # ── auth tables ─────────────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            role TEXT NOT NULL,
+            is_active BOOLEAN DEFAULT true,
+            created_at TEXT NOT NULL,
+            last_login TEXT,
+            password_hash TEXT NOT NULL,
+            api_key TEXT UNIQUE NOT NULL,
+            tenant_access TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+        "CREATE INDEX IF NOT EXISTS idx_users_api_key ON users(api_key)",
+        """CREATE TABLE IF NOT EXISTS auth_sessions (
+            session_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON auth_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON auth_sessions(expires_at)",
+        # ── event_bus tables ────────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS events (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            event_type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            metadata TEXT DEFAULT '{}'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id)",
+        # ── audit tables ────────────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time ON audit_events(tenant_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_resource ON audit_events(resource_id)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_type ON audit_events(tenant_id, event_type)",
+        # ── hooks tables ────────────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS hooks (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            hook_type TEXT NOT NULL,
+            handler TEXT NOT NULL,
+            condition_name TEXT,
+            retry_count INTEGER DEFAULT 3,
+            timeout INTEGER DEFAULT 30,
+            metadata TEXT DEFAULT '{}',
+            enabled INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_hooks_event_type ON hooks(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_hooks_enabled ON hooks(enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)",
+        # ── sync tables ─────────────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS operations (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0,
+            last_attempt TEXT,
+            vector_clock TEXT DEFAULT '{}'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ops_entity ON operations(entity_type, entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ops_created ON operations(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_ops_tenant ON operations(tenant_id)",
+        # ── narrative_cache table ───────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS narrative_cache (
+            cache_key TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            report_id TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            insights_hash TEXT NOT NULL,
+            narrative TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            last_accessed_at REAL NOT NULL,
+            access_count INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_narrative_cache_tenant_user ON narrative_cache(tenant_id, user_id)",
+    ],
 }
 
 

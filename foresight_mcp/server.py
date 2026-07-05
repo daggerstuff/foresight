@@ -491,7 +491,7 @@ def _supports_execute_returning(conn: Any) -> bool:
     return hasattr(conn, "execute_returning") and callable(getattr(conn, "execute_returning"))
 
 
-def get_db_connection():
+def get_db_connection(db_path: str | None = None):
     """Get a database connection from the appropriate backend.
 
     When PostgresBackend is active (``FORESIGHT_DB_URL`` set), acquires a
@@ -500,7 +500,14 @@ def get_db_connection():
     dialect transparently.
 
     When the backend is SQLite or uninitialized, falls back to the existing
-    SQLite connection pool.
+    SQLite connection pool.  An explicit *db_path* overrides the default
+    ``DB_PATH`` for the SQLite case.
+
+    Parameters
+    ----------
+    db_path : str or None
+        Explicit path for the SQLite database file.  Ignored when a
+        Postgres backend is active.
 
     Returns
     -------
@@ -515,7 +522,9 @@ def get_db_connection():
         conn = pool.getconn()
         return PostgresPooledConnection(conn, pool)
     _log.debug("get_db_connection: using SQLite pool (_global_backend=%s)", _global_backend)
-    return get_pool().acquire()
+    from foresight_mcp.connection_pool import DB_PATH as _pool_db_path
+
+    return get_pool(db_path or _pool_db_path).acquire()
 
 
 SCHEMA_VERSION = 11
@@ -759,6 +768,171 @@ _SCHEMA_MIGRATIONS = {
     11: [
         "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_created ON memories(tenant_id, user_id, created_at DESC)",
     ],
+    # v12 — Register 11 tables that individual modules create inline with
+    # CREATE TABLE IF NOT EXISTS, plus 002_unified_schema columns. Mirrors
+    # foreight_mcp/backend/schema_ddl.py MIGRATIONS[12].
+    12: [
+        # 002_unified_schema columns
+        "ALTER TABLE memories ADD COLUMN schema_version TEXT",
+        "ALTER TABLE memories ADD COLUMN source_service TEXT",
+        # graph_store tables
+        """CREATE TABLE IF NOT EXISTS memory_entities (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            entity_type TEXT NOT NULL
+                CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object', 'cluster')),
+            description TEXT,
+            properties TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, user_id, name, entity_type)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_entities_user ON memory_entities(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_tenant ON memory_entities(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_entities_tenant ON memory_entities(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_type ON memory_entities(entity_type)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_name ON memory_entities(name)",
+        """CREATE TABLE IF NOT EXISTS entity_relationships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            source_entity_id TEXT NOT NULL,
+            target_entity_id TEXT NOT NULL,
+            relationship_type TEXT NOT NULL
+                CHECK(relationship_type IN (
+                    'mentions', 'located_at', 'experienced', 'caused',
+                    'relates_to', 'contradicts', 'supports', 'part_of', 'created'
+                )),
+            confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
+            last_accessed TEXT DEFAULT CURRENT_TIMESTAMP,
+            decay_factor REAL DEFAULT 1.0 CHECK(decay_factor >= 0 AND decay_factor <= 1),
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_rel_source ON entity_relationships(source_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rel_target ON entity_relationships(target_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rel_user ON entity_relationships(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rel_tenant ON entity_relationships(tenant_id)",
+        """CREATE TABLE IF NOT EXISTS memory_entity_links (
+            memory_id TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            relevance_score REAL DEFAULT 1.0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (memory_id, entity_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_links_memory ON memory_entity_links(memory_id)",
+        "CREATE INDEX IF NOT EXISTS idx_links_entity ON memory_entity_links(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_links_user ON memory_entity_links(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_links_tenant ON memory_entity_links(tenant_id)",
+        # auth tables
+        """CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            role TEXT NOT NULL,
+            is_active BOOLEAN DEFAULT true,
+            created_at TEXT NOT NULL,
+            last_login TEXT,
+            password_hash TEXT NOT NULL,
+            api_key TEXT UNIQUE NOT NULL,
+            tenant_access TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+        "CREATE INDEX IF NOT EXISTS idx_users_api_key ON users(api_key)",
+        """CREATE TABLE IF NOT EXISTS auth_sessions (
+            session_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON auth_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON auth_sessions(expires_at)",
+        # event_bus tables
+        """CREATE TABLE IF NOT EXISTS events (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            event_type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            metadata TEXT DEFAULT '{}'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id)",
+        # audit tables
+        """CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time ON audit_events(tenant_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_resource ON audit_events(resource_id)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_type ON audit_events(tenant_id, event_type)",
+        # hooks tables
+        """CREATE TABLE IF NOT EXISTS hooks (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            hook_type TEXT NOT NULL,
+            handler TEXT NOT NULL,
+            condition_name TEXT,
+            retry_count INTEGER DEFAULT 3,
+            timeout INTEGER DEFAULT 30,
+            metadata TEXT DEFAULT '{}',
+            enabled INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_hooks_event_type ON hooks(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_hooks_enabled ON hooks(enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)",
+        # sync tables
+        """CREATE TABLE IF NOT EXISTS operations (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0,
+            last_attempt TEXT,
+            vector_clock TEXT DEFAULT '{}'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ops_entity ON operations(entity_type, entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ops_created ON operations(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_ops_tenant ON operations(tenant_id)",
+        # narrative_cache table
+        """CREATE TABLE IF NOT EXISTS narrative_cache (
+            cache_key TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            report_id TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            insights_hash TEXT NOT NULL,
+            narrative TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            last_accessed_at REAL NOT NULL,
+            access_count INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_narrative_cache_tenant_user ON narrative_cache(tenant_id, user_id)",
+    ],
 }
 
 
@@ -766,12 +940,19 @@ def init_db(backend=None):
     """Initialize the database schema with idempotent versioned migrations.
 
     Args:
-        backend: Optional DatabaseBackend. None → create via create_backend().
+        backend: Optional DatabaseBackend. None → create a backend
+                 (attempt Postgres via ``create_backend()``, fall back to
+                 ``SqliteBackend`` for tests).
     """
     if backend is None:
         db_path = Path(DB_PATH)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        backend = create_backend()
+        try:
+            backend = create_backend()
+        except RuntimeError:
+            from foresight_mcp.backend.sqlite_backend import SqliteBackend
+
+            backend = SqliteBackend(db_path=str(db_path))
     backend.connect()
 
     try:
@@ -833,33 +1014,35 @@ def init_db(backend=None):
 
 
 def _initialize_backend() -> None:
-    """Create and connect the global database backend (PIX-3994).
+    """Create and connect the global database backend.
 
-    Reads ``FORESIGHT_DB_URL`` via ``create_backend()``.  The backend is stored
-    as ``_global_backend`` and passed to service initializers.
+    ``FORESIGHT_DB_URL`` is **required**.  There is no SQLite fallback.
+    If the URL is set but the connection fails, the server aborts with a
+    clear error message.  If the URL is unset, a ``RuntimeError`` is raised.
 
     Idempotent: if ``_global_backend`` is already set, this is a no-op.
-
-    Fail-fast: if ``FORESIGHT_DB_URL`` is explicitly set but the backend
-    fails to connect, the server aborts with a clear error message.
     """
     global _global_backend
     if _global_backend is not None:
         return
+    if not os.environ.get("FORESIGHT_DB_URL"):
+        raise RuntimeError(
+            "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. "
+            "SQLite-as-primary is no longer supported.\n"
+            "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'"
+        )
     try:
         backend = create_backend()
         backend.connect()
         _global_backend = backend
         logger.info("Database backend initialised (type=%s)", type(backend).__name__)
     except Exception:
-        if os.environ.get("FORESIGHT_DB_URL"):
-            logger.exception(
-                "FATAL: FORESIGHT_DB_URL is set (%s) but the backend failed to connect. "
-                "Aborting startup. Fix the connection string or unset FORESIGHT_DB_URL.",
-                os.environ.get("FORESIGHT_DB_URL"),
-            )
-            raise
-        logger.debug("No FORESIGHT_DB_URL set; skipping backend initialisation (SQLite pool will be used).")
+        logger.exception(
+            "FATAL: FORESIGHT_DB_URL is set (%s) but the backend failed to connect. "
+            "Aborting startup. Fix the connection string.",
+            os.environ.get("FORESIGHT_DB_URL"),
+        )
+        raise
 
 
 def _initialize_redis() -> None:
@@ -1991,7 +2174,6 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
     return "\n".join(res)
 
 
-@mcp.tool(output_schema=None)
 def manage_memory_versions(options: VersionAction, user_id: str | None = None) -> str:
     """
     Manage memory versioning: diff or rollback.
@@ -2100,7 +2282,6 @@ def manage_context_blocks(options: ContextBlockAction, user_id: str | None = Non
     return res
 
 
-@mcp.tool(output_schema=None)
 def manage_subconscious(options: SubconsciousAction, user_id: str | None = None) -> str:
     """Legacy alias for manage_context_blocks()."""
     return manage_context_blocks(ContextBlockAction(**options.model_dump()), user_id=user_id)
@@ -2242,7 +2423,6 @@ def process_session_transcript(
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
 
 
-@mcp.tool(output_schema=None)
 def capture_triggered_memories(
     text: str,
     user_id: str | None = None,
@@ -3505,7 +3685,6 @@ def _subconscious_context_for_terms(uid: str, terms: list[str]) -> list[str]:
     return _context_block_notes_for_terms(uid, terms)
 
 
-@mcp.tool(output_schema=None)
 def get_relevant_memories(
     query: str,
     user_id: str | None = None,
@@ -3647,7 +3826,6 @@ def _fetch_high_confidence_memories(
         conn.close()
 
 
-@mcp.tool(output_schema=None)
 def generate_recovery_payload(
     session_id: str,
     user_id: str | None = None,
@@ -3844,7 +4022,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
     )
     _run_async(websocket_server.start())
 
-    # Determine transport: SSE when port is set (via arg or env), stdio otherwise
+    # Determine transport: streamable-http (full HTTP, stateless request/response) when port is set, stdio otherwise
     transport_port = port if port is not None else os.environ.get("FORESIGHT_MCP_PORT")
     if transport_port is not None:
         transport_host = host if host is not None else os.environ.get("FORESIGHT_MCP_HOST", "127.0.0.1")
@@ -3888,7 +4066,6 @@ def set_tenant_context(tenant_id: str) -> None:
     set_current_tenant_id(tenant_id)
 
 
-@mcp.tool(output_schema=None)
 def switch_tenant(tenant_id: str) -> str:
     """
     Switch current tenant context.
@@ -4125,7 +4302,6 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
     return json.dumps(result, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def memory_status(
     user_id: str | None = None,
     include_trends: bool = False,
@@ -4138,7 +4314,6 @@ def memory_status(
     )
 
 
-@mcp.tool(output_schema=None)
 def store_memory(
     content: str,
     user_id: str | None = None,
@@ -4169,14 +4344,12 @@ def store_memory(
     return manage_memories(options, user_id=user_id)
 
 
-@mcp.tool(output_schema=None)
 def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) -> str:
     """Legacy alias for search_memories(query_type="list")."""
     options = SearchOptions(query_type="list", limit=limit, offset=offset)
     return search_memories(options, user_id=user_id)
 
 
-@mcp.tool(output_schema=None)
 def query_memories(
     query: str,
     user_id: str | None = None,
@@ -4197,14 +4370,12 @@ def query_memories(
     return search_memories(options, user_id=user_id)
 
 
-@mcp.tool(output_schema=None)
 def get_memory(memory_id: str, user_id: str | None = None, min_importance: float = 0.1) -> str:
     """Legacy alias for search_memories(query_type="id")."""
     options = SearchOptions(query_type="id", memory_id=memory_id, min_importance=min_importance)
     return search_memories(options, user_id=user_id)
 
 
-@mcp.tool(output_schema=None)
 def update_memory(
     memory_id: str,
     user_id: str | None = None,
@@ -4230,14 +4401,12 @@ def update_memory(
     return manage_memories(options, user_id=user_id)
 
 
-@mcp.tool(output_schema=None)
 def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     """Legacy alias for manage_memories(action="delete")."""
     options = MemoryAction(action="delete", memory_id=memory_id)
     return manage_memories(options, user_id=user_id)
 
 
-@mcp.tool(output_schema=None)
 def archive_memory(memory_id: str, user_id: str | None = None) -> str:
     """Legacy alias for manage_memories(action="archive")."""
     options = MemoryAction(action="archive", memory_id=memory_id)
@@ -4249,7 +4418,6 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def synthesize_profile(
     user_id: str | None = None,
     max_static_memories: int = 20,
@@ -4293,7 +4461,6 @@ def synthesize_profile(
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def manage_entities(action: EntityAction, user_id: str | None = None) -> str:
     """
     Manage entities and relationships (extract, link).
@@ -4352,7 +4519,6 @@ def _handle_entity_query_relationships(uid: str, store, query: EntityQuery) -> s
     return json.dumps([r.to_dict() for r in relationships], indent=2)
 
 
-@mcp.tool(output_schema=None)
 def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
     """
     Query entities and graph relationships.
@@ -4393,7 +4559,6 @@ def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def create_document(
     title: str,
     content: str,
@@ -4445,7 +4610,6 @@ def create_document(
     )
 
 
-@mcp.tool(output_schema=None)
 def get_document(
     document_id: str,
     user_id: str | None = None,
@@ -4462,7 +4626,6 @@ def get_document(
     return json.dumps(doc.to_dict(), indent=2)
 
 
-@mcp.tool(output_schema=None)
 def list_document_chunks(
     document_id: str,
     user_id: str | None = None,
@@ -4477,7 +4640,6 @@ def list_document_chunks(
     return json.dumps([c.to_dict() for c in chunks], indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_memory_source(
     memory_id: str,
     user_id: str | None = None,
@@ -4498,7 +4660,6 @@ def get_memory_source(
     )
 
 
-@mcp.tool(output_schema=None)
 def delete_document(
     document_id: str,
     user_id: str | None = None,
@@ -4604,7 +4765,6 @@ def _upsert_cluster_results(
     }
 
 
-@mcp.tool(output_schema=None)
 def run_clustering(
     user_id: str | None = None,
     min_similarity: float = 0.25,
@@ -4669,7 +4829,6 @@ def run_clustering(
     )
 
 
-@mcp.tool(output_schema=None)
 def query_clusters(
     user_id: str | None = None,
     limit: int = 50,
@@ -4719,7 +4878,6 @@ def query_clusters(
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def link_memories(
     source_memory_id: str,
     target_memory_id: str,
@@ -4758,7 +4916,6 @@ def link_memories(
     return json.dumps(rel.to_dict(), indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_memory_relationships(
     memory_id: str,
     user_id: str | None = None,
@@ -4788,7 +4945,6 @@ def get_memory_relationships(
     return json.dumps([r.to_dict() for r in rels], indent=2)
 
 
-@mcp.tool(output_schema=None)
 def traverse_memory_graph(
     root_memory_id: str,
     user_id: str | None = None,
@@ -4834,7 +4990,6 @@ def traverse_memory_graph(
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def index_memory_embedding(
     memory_id: str,
     text: str,
@@ -4869,7 +5024,6 @@ def index_memory_embedding(
     )
 
 
-@mcp.tool(output_schema=None)
 def delete_memory_embedding(
     memory_id: str,
     user_id: str | None = None,
@@ -4894,7 +5048,6 @@ def delete_memory_embedding(
     )
 
 
-@mcp.tool(output_schema=None)
 def semantic_search_memories(
     query: str,
     user_id: str | None = None,
@@ -4982,7 +5135,6 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     )
 
 
-@mcp.tool(output_schema=None)
 def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str:
     """
     Perform analysis on memories: synthesis or reflection.
@@ -5020,7 +5172,6 @@ def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def get_memory_strength(
     memory_id: str,
     user_id: str | None = None,
@@ -5046,7 +5197,6 @@ def get_memory_strength(
     return json.dumps(result, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def apply_memory_decay(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -5078,7 +5228,6 @@ def apply_memory_decay(
     )
 
 
-@mcp.tool(output_schema=None)
 def reinforce_memory(
     memory_id: str,
     user_id: str | None = None,
@@ -5112,7 +5261,6 @@ def reinforce_memory(
     return json.dumps({"ok": True, "action": "reinforce_memory", **result}, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_decay_config(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -5135,7 +5283,6 @@ def get_decay_config(
     return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def set_decay_config(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -5180,7 +5327,6 @@ def set_decay_config(
     return json.dumps({"ok": True, "action": "set_decay_config", **cfg.to_dict()}, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_decay_events(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -5214,7 +5360,6 @@ def get_decay_events(
     )
 
 
-@mcp.tool(output_schema=None)
 def run_maintenance(
     options: MaintenanceAction,
     user_id: str | None = None,

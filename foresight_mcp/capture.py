@@ -309,14 +309,18 @@ class DedupeEngine:
         candidate: CapturedMemory,
         user_id: str,
         tenant_id: str,
+        db_path: str | None = None,
     ) -> DedupeResult:
         """Check candidate against existing memories.
 
         Phase 1: exact content_hash match → DUPLICATE (bump activation)
         Phase 2: Jaccard word overlap > threshold → NEAR_DUPLICATE
         Phase 3: no match → UNIQUE
+
+        ``db_path`` is optional — omit for Postgres (production) or pass
+        an explicit path for SQLite-backed testing.
         """
-        pool = get_pool()
+        pool = get_pool(db_path)
         conn = pool.acquire()
         try:
             conn.row_factory = __import__("sqlite3").Row
@@ -388,10 +392,11 @@ class DedupeEngine:
 class CapturePipeline:
     """Orchestrate the add-only capture flow for a session transcript."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         self.classifier = SessionClassifier()
         self.extractor = MemoryExtractor()
         self.dedupe = DedupeEngine()
+        self.db_path = db_path
 
     def run(
         self,
@@ -425,7 +430,7 @@ class CapturePipeline:
             return stats
 
         # Phase 3-4: Dedupe and persist
-        pool = get_pool()
+        pool = get_pool(self.db_path)
         candidate_map = {
             "decision": [],
             "preference": [],
@@ -435,7 +440,7 @@ class CapturePipeline:
         }
 
         for candidate in candidates:
-            dedupe = self.dedupe.check(candidate, user_id, tid)
+            dedupe = self.dedupe.check(candidate, user_id, tid, db_path=self.db_path)
             if dedupe.status == "DUPLICATE":
                 stats.duplicates += 1
                 continue

@@ -464,9 +464,9 @@ class TestUpsertClusterResults:
         _upsert_cluster_results(result, "test_user", "default")
 
         # The memory_entity_links table should have the link
-        from foresight_mcp.connection_pool import get_pool
+        from foresight_mcp.connection_pool import DB_PATH, get_pool
 
-        pool = get_pool()
+        pool = get_pool(db_path=DB_PATH)
         conn = pool.acquire()
         try:
             row = conn.execute(

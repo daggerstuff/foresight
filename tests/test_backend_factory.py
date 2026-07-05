@@ -1,7 +1,7 @@
 """Tests for the backend factory (PIX-3983).
 
 Verifies that ``create_backend()`` correctly routes based on
-``FORESIGHT_DB_URL`` and falls back to ``SqliteBackend`` when no URL is set.
+``FORESIGHT_DB_URL`` and fails when no Postgres DSN is provided.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import os
 import pytest
 from foresight_mcp.backend.backend_factory import create_backend
 from foresight_mcp.backend.postgres_backend import PostgresBackend
-from foresight_mcp.backend.sqlite_backend import SqliteBackend
 
 
 class TestCreateBackend:
@@ -22,12 +21,12 @@ class TestCreateBackend:
         mp.delenv("FORESIGHT_DB_URL", raising=False)
         _factory.DB_URL = ""
 
-    def test_default_returns_sqlite_backend(self):
-        """When neither FORESIGHT_DB_URL nor db_url is set, returns SqliteBackend."""
+    def test_default_raises_runtime_error(self):
+        """When neither FORESIGHT_DB_URL nor db_url is set, raises RuntimeError."""
         with pytest.MonkeyPatch.context() as mp:
             self._clear_db_url(mp)
-            backend = create_backend()
-            assert isinstance(backend, SqliteBackend)
+            with pytest.raises(RuntimeError, match="FORESIGHT_DB_URL"):
+                create_backend()
 
     def test_pg_url_returns_postgres_backend(self):
         """When db_url is a postgresql:// DSN, returns PostgresBackend."""
@@ -49,27 +48,33 @@ class TestCreateBackend:
             backend = create_backend(db_url=url)
             assert isinstance(backend, PostgresBackend)
 
-    def test_empty_url_falls_back_to_sqlite(self):
-        """An explicitly empty string falls back to SqliteBackend."""
+    def test_empty_url_raises_runtime_error(self):
+        """An explicitly empty string raises RuntimeError."""
         with pytest.MonkeyPatch.context() as mp:
             self._clear_db_url(mp)
-            backend = create_backend(db_url="")
-            assert isinstance(backend, SqliteBackend)
+            with pytest.raises(RuntimeError, match="FORESIGHT_DB_URL"):
+                create_backend(db_url="")
 
-    def test_env_url_empty_string_falls_back_to_sqlite(self):
-        """When FORESIGHT_DB_URL is set to empty string, falls back to SqliteBackend."""
+    def test_env_url_empty_string_raises_runtime_error(self):
+        """When FORESIGHT_DB_URL is set to empty string, raises RuntimeError."""
         import foresight_mcp.backend.backend_factory as _factory
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("FORESIGHT_DB_URL", "")
             _factory.DB_URL = ""
-            backend = create_backend()
-            assert isinstance(backend, SqliteBackend)
+            with pytest.raises(RuntimeError, match="FORESIGHT_DB_URL"):
+                create_backend()
 
-    def test_backend_not_connected_after_create(self):
-        """create_backend() returns an unconnected backend (caller must call connect())."""
+    def test_create_backend_requires_url(self):
+        """The error message tells the user to set FORESIGHT_DB_URL."""
+        import foresight_mcp.backend.backend_factory as _factory
+
         with pytest.MonkeyPatch.context() as mp:
-            self._clear_db_url(mp)
-            backend = create_backend()
-            assert isinstance(backend, SqliteBackend)
-            assert backend._pool is None
+            mp.delenv("FORESIGHT_DB_URL", raising=False)
+            _factory.DB_URL = ""
+            with pytest.raises(RuntimeError) as exc_info:
+                create_backend()
+            msg = str(exc_info.value)
+            assert "FORESIGHT_DB_URL" in msg
+            assert "postgresql://" in msg
+            assert "SQLite" in msg
