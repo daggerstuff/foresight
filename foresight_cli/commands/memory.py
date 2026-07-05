@@ -77,23 +77,9 @@ def list_memories(
     """List all memories (latest first)."""
     _init_and_user(user_id)
     result = search_memories(options=SearchOptions(query_type="list", limit=limit, offset=offset))
+    from foresight_cli.utils.output import _stdout_console
 
-    if isinstance(result, list):
-        rows = []
-        for m in result[:limit]:
-            mid = m.get("memory_id", m.get("id", "?"))
-            cat = m.get("category", "-")
-            scope = m.get("scope", "-")
-            content = str(m.get("content", ""))[:60]
-            rows.append([mid, cat, scope, content])
-
-        out.print_table(
-            ["ID", "Category", "Scope", "Content (truncated)"],
-            rows,
-            title=f"Memories ({len(result)} total)",
-        )
-    else:
-        out.print_json(result)
+    _stdout_console.print(result)
 
 
 @app.command()
