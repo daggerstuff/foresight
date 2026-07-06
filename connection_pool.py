@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import sys
 import threading
 import time
 from collections import deque
@@ -123,8 +124,9 @@ class ConnectionPool:
 
 def _active_postgres_pool() -> Any | None:
     try:
-        from foresight_mcp import server as _server
-
+        _server = sys.modules.get("foresight_mcp.server")
+        if _server is None:
+            return None
         backend = getattr(_server, "_global_backend", None)
     except Exception:  # pragma: no cover - defensive
         return None
@@ -142,10 +144,9 @@ class _PsycopgPoolAdapter:
         self._pool = pool
 
     def acquire(self) -> Any:
-        from foresight_mcp.server import PostgresPooledConnection
-
+        _server = sys.modules["foresight_mcp.server"]
         raw_conn = self._pool.connection()
-        return PostgresPooledConnection(raw_conn, self._pool)
+        return _server.PostgresPooledConnection(raw_conn, self._pool)
 
     def release(self, conn: Any) -> None:
         try:
