@@ -31,6 +31,8 @@ def setup_test_db(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
+    import foresight_mcp.server as server_module
+    monkeypatch.setattr(server_module, "DB_PATH", str(db_file))
     reset_pool()
 
     from foresight_mcp.tenant_context import set_current_account_id, set_current_user_id

@@ -802,12 +802,12 @@ class HybridRetriever:
         has_relevance = "relevance_score" in link_cols
 
         relevance_col = ", COALESCE(AVG(mel.relevance_score), 1.0) as avg_relevance" if has_relevance else ""
+        entity_conf_col = ", COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf" if has_confidence else ", 1.0 as avg_entity_conf"
         rows = self._fetch_rows(
             f"""
             SELECT
                 mel.memory_id,
-                COUNT(DISTINCT mel.entity_id) as entity_hits,
-                COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf,
+                COUNT(DISTINCT mel.entity_id) as entity_hits{entity_conf_col},
                 COALESCE(AVG(er.confidence * er.decay_factor), 1.0) as avg_edge_quality{relevance_col}
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id

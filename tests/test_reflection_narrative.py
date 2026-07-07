@@ -532,7 +532,7 @@ def test_reflection_narrative_narrative_cache_tenant_isolation(
 
 def test_reflection_narrative_rejects_invalid_cache_type() -> None:
     report = _make_report()
-    with pytest.raises(TypeError, match="cache must be a dict or NarrativeCache"):
+    with pytest.raises(TypeError, match="cache must be a dict, NarrativeCache, or RedisCache"):
         generate_insight_narrative(
             report,
             tenant_id="t",
