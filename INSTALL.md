@@ -21,7 +21,7 @@ cd foresight
 uv sync
 
 # Run the server
-uv run foresight-mcp
+uv run foresight-server
 ```
 
 ## Option 3: Development mode
@@ -37,7 +37,7 @@ uv sync --dev
 uv run pytest
 
 # Run server
-uv run foresight-mcp
+uv run foresight-server
 ```
 
 ## Add to Claude Code
@@ -50,7 +50,7 @@ After installation, add to your `~/.claude/settings.json` or project's
   "mcpServers": {
     "foresight": {
       "command": "uv",
-      "args": ["run", "foresight-mcp"],
+      "args": ["run", "foresight-server"],
       "env": {
         "FORESIGHT_DB_PATH": "/home/user/.foresight/memory.db",
         "FORESIGHT_USER_ID": "username"
@@ -64,8 +64,8 @@ After installation, add to your `~/.claude/settings.json` or project's
 
 ```bash
 # Check version
-uv run foresight-mcp --version
+uv run foresight-server --version
 
 # Or test connection
-foresight-mcp --health
+foresight-server --health
 ```

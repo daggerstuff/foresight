@@ -1449,7 +1449,7 @@ def _health_status_dict() -> dict[str, Any]:
         "status": "ok",
         "name": getattr(mcp, "name", "Foresight"),
         "uptime_seconds": uptime_seconds,
-        "server": "foresight-mcp",
+        "server": "foresight",
     }
     try:
         # Deferred: get_system_status is defined later in this module (~L3960).

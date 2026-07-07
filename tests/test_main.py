@@ -15,7 +15,7 @@ def test_main_health_prints_status(capsys):
     import foresight.__main__ as main_module
 
     with (
-        patch.object(main_module.sys, "argv", ["foresight-mcp", "--health"]),
+        patch.object(main_module.sys, "argv", ["foresight-server", "--health"]),
         patch.object(main_module, "init_db"),
         patch.object(main_module, "_initialize_backend"),
         patch.object(main_module, "get_system_status", return_value='{"status":"healthy"}'),
@@ -28,10 +28,10 @@ def test_main_health_prints_status(capsys):
 def test_main_help_prints_usage(capsys):
     import foresight.__main__ as main_module
 
-    with patch.object(main_module.sys, "argv", ["foresight-mcp", "--help"]):
+    with patch.object(main_module.sys, "argv", ["foresight-server", "--help"]):
         main_module.main()
 
-    assert "Usage: foresight-mcp" in capsys.readouterr().out
+    assert "Usage: foresight-server" in capsys.readouterr().out
 
 
 def test_status_human_formats_payload_budget_weights_and_injection_health():

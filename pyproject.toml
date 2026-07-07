@@ -61,7 +61,7 @@ Issues = "https://github.com/daggerstuff/foresight/issues"
 Changelog = "https://github.com/daggerstuff/foresight/releases"
 
 [project.scripts]
-foresight-mcp = "foresight.__main__:main"
+foresight-server = "foresight.__main__:main"
 foresight-cli = "foresight_cli.cli:main"
 foresight = "foresight_cli.cli:main"
 
