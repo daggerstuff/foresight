@@ -3987,9 +3987,9 @@ def main(host: str | None = None, port: int | None = None) -> None:
     """Start the Foresight MCP server.
 
     Args:
-        host: Host to bind when using SSE transport. If None, uses FORESIGHT_MCP_HOST
+        host: Host to bind when using SSE transport. If None, uses FORESIGHT_HOST
               env var or defaults to '127.0.0.1'.
-        port: Port to bind when using SSE transport. If None, checks FORESIGHT_MCP_PORT
+        port: Port to bind when using SSE transport. If None, checks FORESIGHT_PORT
               env var. If neither is set, runs in stdio mode (default).
     """
     _SERVER_STATE["started_at"] = time.time()
@@ -4049,9 +4049,9 @@ def main(host: str | None = None, port: int | None = None) -> None:
         _run_async(websocket_server.start())
 
     # Determine transport: streamable-http (full HTTP, stateless request/response) when port is set, stdio otherwise
-    transport_port = port if port is not None else os.environ.get("FORESIGHT_MCP_PORT")
+    transport_port = port if port is not None else os.environ.get("FORESIGHT_PORT")
     if transport_port is not None:
-        transport_host = host if host is not None else os.environ.get("FORESIGHT_MCP_HOST", "127.0.0.1")
+        transport_host = host if host is not None else os.environ.get("FORESIGHT_HOST", "127.0.0.1")
         mcp.run(transport="streamable-http", host=transport_host, port=int(transport_port), show_banner=False)
     else:
         mcp.run(show_banner=False)
