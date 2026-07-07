@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from foresight_mcp.rrf_tuning import RRFConfig, get_rrf_config, save_rrf_config
+from foresight.rrf_tuning import RRFConfig, get_rrf_config, save_rrf_config
 
 
 def test_get_rrf_config_default(tmp_path):
@@ -39,8 +39,8 @@ def test_save_rrf_config_default_path(monkeypatch, tmp_path):
 
     # We need to patch DEFAULT_CONFIG_PATH since it is defined at the module level
     expected_path = home_dir / ".foresight" / "rrf_config.json"
-    import foresight_mcp.rrf_tuning
-    monkeypatch.setattr(foresight_mcp.rrf_tuning, "DEFAULT_CONFIG_PATH", expected_path)
+    import foresight.rrf_tuning
+    monkeypatch.setattr(foresight.rrf_tuning, "DEFAULT_CONFIG_PATH", expected_path)
 
     config = RRFConfig(rrf_k=42.0)
     save_rrf_config(config)

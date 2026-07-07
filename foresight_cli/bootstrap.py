@@ -1,9 +1,9 @@
 """
-Bootstrap the foresight_mcp package from .pyc bytecode.
+Bootstrap the foresight package from .pyc bytecode.
 
-The foresight_mcp source tree has been compiled to .pyc bytecode in
+The foresight source tree has been compiled to .pyc bytecode in
 __pycache__ directories but the corresponding .py source files were removed.
-This module pre-loads all necessary foresight_mcp modules from bytecode
+This module pre-loads all necessary foresight modules from bytecode
 so CLI imports resolve correctly.
 
 Usage:
@@ -23,7 +23,7 @@ import warnings
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_MCP_DIR = _HERE.parent / "foresight_mcp"
+_MCP_DIR = _HERE.parent / "foresight"
 _PYCACHE = _MCP_DIR / "__pycache__"
 _BACKEND_PYCACHE = _MCP_DIR / "backend" / "__pycache__"
 _LLM_PYCACHE = _MCP_DIR / "llm_providers" / "__pycache__"
@@ -50,11 +50,11 @@ def _discover_pyc_files() -> dict[str, Path]:
                 if name not in EXCLUDED_MODULES:
                     result[f"{prefix}.{name}"] = p
 
-    scan(_PYCACHE, "foresight_mcp")
-    scan(_BACKEND_PYCACHE, "foresight_mcp.backend")
-    scan(_LLM_PYCACHE, "foresight_mcp.llm_providers")
-    scan(_MCP_DIR / "websocket" / "__pycache__", "foresight_mcp.websocket")
-    scan(_MCP_DIR / "migrations" / "__pycache__", "foresight_mcp.migrations")
+    scan(_PYCACHE, "foresight")
+    scan(_BACKEND_PYCACHE, "foresight.backend")
+    scan(_LLM_PYCACHE, "foresight.llm_providers")
+    scan(_MCP_DIR / "websocket" / "__pycache__", "foresight.websocket")
+    scan(_MCP_DIR / "migrations" / "__pycache__", "foresight.migrations")
 
     return result
 
@@ -75,7 +75,7 @@ class _PycLoader(importlib.abc.Loader):
 
 
 class _PycFinder(importlib.abc.MetaPathFinder):
-    """Meta path finder that resolves foresight_mcp modules from .pyc files."""
+    """Meta path finder that resolves foresight modules from .pyc files."""
 
     def __init__(self) -> None:
         self._pyc_map: dict[str, Path] = {}
@@ -118,7 +118,7 @@ def _bootstrap_import(name, *args, **kwargs):
 
 
 def ensure_loaded() -> None:
-    """Load foresight_mcp modules from .pyc bytecode.
+    """Load foresight modules from .pyc bytecode.
 
     Safe to call multiple times — only runs once.
     """
@@ -135,17 +135,17 @@ def ensure_loaded() -> None:
 
     # Register backend package
     backend_pkg_path = _MCP_DIR / "backend"
-    if backend_pkg_path.exists() and "foresight_mcp.backend" not in sys.modules:
-        backend_pkg = types.ModuleType("foresight_mcp.backend")
+    if backend_pkg_path.exists() and "foresight.backend" not in sys.modules:
+        backend_pkg = types.ModuleType("foresight.backend")
         backend_pkg.__path__ = [str(backend_pkg_path)]
-        sys.modules["foresight_mcp.backend"] = backend_pkg
+        sys.modules["foresight.backend"] = backend_pkg
 
     # Register subpackages (needed for relative imports in server.py)
     subpackages = {
-        "foresight_mcp.backend": _MCP_DIR / "backend",
-        "foresight_mcp.llm_providers": _MCP_DIR / "llm_providers",
-        "foresight_mcp.websocket": _MCP_DIR / "websocket",
-        "foresight_mcp.migrations": _MCP_DIR / "migrations",
+        "foresight.backend": _MCP_DIR / "backend",
+        "foresight.llm_providers": _MCP_DIR / "llm_providers",
+        "foresight.websocket": _MCP_DIR / "websocket",
+        "foresight.migrations": _MCP_DIR / "migrations",
     }
     for pkg_name, pkg_path in subpackages.items():
         if pkg_path.exists() and pkg_name not in sys.modules:
@@ -153,67 +153,67 @@ def ensure_loaded() -> None:
             ns_pkg.__path__ = [str(pkg_path)]
             sys.modules[pkg_name] = ns_pkg
 
-    # Register the foresight_mcp package itself (needed for relative imports)
-    if "foresight_mcp" not in sys.modules:
-        mcp_pkg = types.ModuleType("foresight_mcp")
+    # Register the foresight package itself (needed for relative imports)
+    if "foresight" not in sys.modules:
+        mcp_pkg = types.ModuleType("foresight")
         mcp_pkg.__path__ = [str(_MCP_DIR)]
-        sys.modules["foresight_mcp"] = mcp_pkg
+        sys.modules["foresight"] = mcp_pkg
 
     # Import leaf modules first (fewest dependencies)
     leaf_order = [
-        "foresight_mcp.config",
-        "foresight_mcp.schema",
-        "foresight_mcp.connection_pool",
-        "foresight_mcp.tenant_context",
-        "foresight_mcp.sql_helpers",
-        "foresight_mcp.rate_limiter",
-        "foresight_mcp.tenant_middleware",
-        "foresight_mcp.event_bus",
-        "foresight_mcp.llm_errors",
-        "foresight_mcp.auth",
-        "foresight_mcp.decay_model",
-        "foresight_mcp.graph_store",
-        "foresight_mcp.embedding_validation",
-        "foresight_mcp.hybrid_retriever",
-        "foresight_mcp.injection_budget",
-        "foresight_mcp.rrf_tuning",
-        "foresight_mcp.circuit_breaker",
-        "foresight_mcp.entity_extractor",
-        "foresight_mcp.memory_types",
-        "foresight_mcp.memory_components",
-        "foresight_mcp.enhanced_synthesizer",
-        "foresight_mcp.crisis_detection",
-        "foresight_mcp.block_registry",
-        "foresight_mcp.context_blocks",
-        "foresight_mcp.document_layer",
-        "foresight_mcp.reflection_engine",
-        "foresight_mcp.reflection_narrative",
-        "foresight_mcp.semantic_search",
-        "foresight_mcp.stream_producer",
-        "foresight_mcp.phrase_triggers",
-        "foresight_mcp.memory_gc",
-        "foresight_mcp.narrative_cache",
-        "foresight_mcp.ghost_cleanup",
-        "foresight_mcp.graph_edge_decay",
-        "foresight_mcp.cluster_service",
-        "foresight_mcp.memory_maintenance",
-        "foresight_mcp.temporal_schema",
-        "foresight_mcp.temporal_service",
-        "foresight_mcp.maintenance_eval",
-        "foresight_mcp.crdt",
-        "foresight_mcp.consumer_group",
-        "foresight_mcp.sync",
-        "foresight_mcp.capture",
-        "foresight_mcp.clustering",
-        "foresight_mcp.temporal_queries",
-        "foresight_mcp.llm_client",
-        "foresight_mcp.profile_synthesizer",
-        "foresight_mcp.hooks",
-        "foresight_mcp.memory_relationships",
-        "foresight_mcp.audit",
-        "foresight_mcp.subconscious",
-        "foresight_mcp.narrative_cache",
-        "foresight_mcp.backend.__init__",
+        "foresight.config",
+        "foresight.schema",
+        "foresight.connection_pool",
+        "foresight.tenant_context",
+        "foresight.sql_helpers",
+        "foresight.rate_limiter",
+        "foresight.tenant_middleware",
+        "foresight.event_bus",
+        "foresight.llm_errors",
+        "foresight.auth",
+        "foresight.decay_model",
+        "foresight.graph_store",
+        "foresight.embedding_validation",
+        "foresight.hybrid_retriever",
+        "foresight.injection_budget",
+        "foresight.rrf_tuning",
+        "foresight.circuit_breaker",
+        "foresight.entity_extractor",
+        "foresight.memory_types",
+        "foresight.memory_components",
+        "foresight.enhanced_synthesizer",
+        "foresight.crisis_detection",
+        "foresight.block_registry",
+        "foresight.context_blocks",
+        "foresight.document_layer",
+        "foresight.reflection_engine",
+        "foresight.reflection_narrative",
+        "foresight.semantic_search",
+        "foresight.stream_producer",
+        "foresight.phrase_triggers",
+        "foresight.memory_gc",
+        "foresight.narrative_cache",
+        "foresight.ghost_cleanup",
+        "foresight.graph_edge_decay",
+        "foresight.cluster_service",
+        "foresight.memory_maintenance",
+        "foresight.temporal_schema",
+        "foresight.temporal_service",
+        "foresight.maintenance_eval",
+        "foresight.crdt",
+        "foresight.consumer_group",
+        "foresight.sync",
+        "foresight.capture",
+        "foresight.clustering",
+        "foresight.temporal_queries",
+        "foresight.llm_client",
+        "foresight.profile_synthesizer",
+        "foresight.hooks",
+        "foresight.memory_relationships",
+        "foresight.audit",
+        "foresight.subconscious",
+        "foresight.narrative_cache",
+        "foresight.backend.__init__",
     ]
 
     for mod_name in leaf_order:
@@ -232,11 +232,11 @@ def ensure_loaded() -> None:
     # but our SourcelessFileLoader doesn't trigger the standard attribute
     # propagation. We need to copy __init__ exports to the parent package.
     for pkg in [
-        "foresight_mcp.backend",
-        "foresight_mcp.llm_providers",
-        "foresight_mcp.websocket",
-        "foresight_mcp.migrations",
-        "foresight_mcp",
+        "foresight.backend",
+        "foresight.llm_providers",
+        "foresight.websocket",
+        "foresight.migrations",
+        "foresight",
     ]:
         _sync_init_exports(pkg)
 

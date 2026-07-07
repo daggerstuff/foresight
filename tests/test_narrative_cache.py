@@ -3,7 +3,7 @@ import stat
 import threading
 import time
 
-from foresight_mcp.narrative_cache import NarrativeCache
+from foresight.narrative_cache import NarrativeCache
 
 
 def test_narrative_cache_put_and_get(tmp_path) -> None:

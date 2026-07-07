@@ -66,7 +66,7 @@ store_memory(
 ## Example Usage
 
 ```python
-from foresight_mcp import store_memory, get_memory, update_memory
+from foresight import store_memory, get_memory, update_memory
 
 # Store with full metadata
 result = store_memory(

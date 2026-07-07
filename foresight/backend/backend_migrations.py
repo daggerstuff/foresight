@@ -3,13 +3,13 @@
 Runs pending schema migrations against any ``DatabaseBackend`` implementation
 — the SQLite default or the PostgreSQL backend — and records each applied
 version in ``schema_migrations``. Equivalent semantics to the legacy
-``foresight_mcp.migrations.run_migrations(db_path)`` helper, but usable
+``foresight.migrations.run_migrations(db_path)`` helper, but usable
 against a backend chosen at runtime via ``FORESIGHT_DB_URL``.
 
 Usage::
 
-    from foresight_mcp.backend import create_backend
-    from foresight_mcp.backend.backend_migrations import run_migrations
+    from foresight.backend import create_backend
+    from foresight.backend.backend_migrations import run_migrations
 
     backend = create_backend()
     backend.connect()

@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-from foresight_mcp import memory_relationships as rel_mod
-from foresight_mcp.memory_relationships import (
+from foresight import memory_relationships as rel_mod
+from foresight.memory_relationships import (
     VALID_RELATIONSHIP_TYPES,
     LinkMemoriesOptions,
     MemoryGraphTraversal,
@@ -82,8 +82,8 @@ def _patched_db(db_path: str) -> Iterator[MemoryRelationshipStore]:
     reset_memory_relationship_store()
     with (
         patch.object(rel_mod, "DB_PATH", db_path),
-        patch("foresight_mcp.config.DB_PATH", db_path),
-        patch("foresight_mcp.memory_relationships.DB_PATH", db_path),
+        patch("foresight.config.DB_PATH", db_path),
+        patch("foresight.memory_relationships.DB_PATH", db_path),
     ):
         store = MemoryRelationshipStore(db_path)
         try:
@@ -325,7 +325,7 @@ def test_traverse_rejects_oversized_limit():
 
 def test_singleton_returns_same_instance(monkeypatch):
     db = _make_test_db()
-    monkeypatch.setattr("foresight_mcp.config.DB_PATH", db)
+    monkeypatch.setattr("foresight.config.DB_PATH", db)
     monkeypatch.setattr(rel_mod, "DB_PATH", db)
     reset_memory_relationship_store()
     a = get_memory_relationship_store()
@@ -342,7 +342,7 @@ def test_singleton_returns_same_instance(monkeypatch):
 
 
 def test_unified_memory_round_trips_relationship_fields():
-    from foresight_mcp.schema import MemoryCreateOptions, UnifiedMemory
+    from foresight.schema import MemoryCreateOptions, UnifiedMemory
 
     options = MemoryCreateOptions(relation_type="extends", related_memory_id="abc")
     m = UnifiedMemory.create(content="x", user_id="u1", options=options)
@@ -359,7 +359,7 @@ def test_unified_memory_round_trips_relationship_fields():
 
 
 def test_unified_memory_defaults_relationship_fields_to_none():
-    from foresight_mcp.schema import MemoryCreateOptions, UnifiedMemory
+    from foresight.schema import MemoryCreateOptions, UnifiedMemory
 
     m = UnifiedMemory.create(content="x", user_id="u1", options=MemoryCreateOptions())
     assert m.relation_type is None

@@ -20,15 +20,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.audit import (
+from foresight.audit import (
     NARRATIVE_CACHE_HIT,
     NARRATIVE_FAILED,
     NARRATIVE_GENERATED,
     AuditLog,
 )
-from foresight_mcp.narrative_cache import NarrativeCache
-from foresight_mcp.reflection_engine import ReflectionInsight, ReflectionReport
-from foresight_mcp.reflection_narrative import (
+from foresight.narrative_cache import NarrativeCache
+from foresight.reflection_engine import ReflectionInsight, ReflectionReport
+from foresight.reflection_narrative import (
     ReflectionNarrativeError,
     _build_phi_safe_prompt,
     _compute_cache_key,

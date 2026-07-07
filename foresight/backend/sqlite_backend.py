@@ -13,8 +13,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from foresight_mcp.config import DB_PATH
-from foresight_mcp.connection_pool import ConnectionPool
+from foresight.config import DB_PATH
+from foresight.connection_pool import ConnectionPool
 
 from .base import DatabaseBackend
 

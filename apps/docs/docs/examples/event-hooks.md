@@ -10,7 +10,7 @@ Integrate Foresight with external systems.
 ## Slack Notifications
 
 ```python
-from foresight_mcp.hooks import register_hook, EventType
+from foresight.hooks import register_hook, EventType
 
 # Notify Slack on anomalies
 register_hook(
@@ -25,7 +25,7 @@ register_hook(
 ## Audit Logging
 
 ```python
-from foresight_mcp.hooks import register_hook, EventType
+from foresight.hooks import register_hook, EventType
 
 # Log all memory operations
 register_hook(
@@ -45,7 +45,7 @@ register_hook(
 ## Zapier Integration
 
 ```python
-from foresight_mcp.hooks import register_hook, EventType
+from foresight.hooks import register_hook, EventType
 
 # Trigger Zapier workflow
 register_hook(
@@ -59,7 +59,7 @@ register_hook(
 
 ```python
 import httpx
-from foresight_mcp.hooks import register_hook, EventType
+from foresight.hooks import register_hook, EventType
 
 # Your custom endpoint
 async def handle_event(payload):

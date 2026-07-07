@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 import typer
-from foresight_mcp import CurationRunAction, manage_curation_runs
-from foresight_mcp.server import init_db
+from foresight import CurationRunAction, manage_curation_runs
+from foresight.server import init_db
 
 from foresight_cli.utils import config as cfg, output as out
 
@@ -17,7 +17,7 @@ app = typer.Typer(help="Manage async Foresight curation runs.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight_mcp.server import _initialize_backend
+    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)

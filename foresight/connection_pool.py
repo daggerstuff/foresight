@@ -92,7 +92,7 @@ class ConnectionPool:
 
     def _new_connection(self) -> sqlite3.Connection:
         """Create a new database connection with proper settings."""
-        from foresight_mcp.backend.sqlite_backend import CustomRow
+        from foresight.backend.sqlite_backend import CustomRow
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = CustomRow
         
@@ -126,7 +126,7 @@ class ConnectionPool:
 
 def _active_postgres_pool() -> Any | None:
     try:
-        from foresight_mcp import server as _server
+        from foresight import server as _server
 
         backend = getattr(_server, "_global_backend", None)
     except Exception:  # pragma: no cover - defensive
@@ -145,7 +145,7 @@ class _PsycopgPoolAdapter:
         self._pool = pool
 
     def acquire(self) -> Any:
-        from foresight_mcp.server import PostgresPooledConnection
+        from foresight.server import PostgresPooledConnection
         raw_conn = self._pool.getconn()
         return PostgresPooledConnection(raw_conn, self)
 

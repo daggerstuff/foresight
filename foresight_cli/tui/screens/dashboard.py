@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from foresight_mcp import get_system_status
-from foresight_mcp.server import init_db
+from foresight import get_system_status
+from foresight.server import init_db
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.screen import Screen

@@ -10,10 +10,10 @@ Companion to `INSTALL.md` and `README.md`. This document records the **deploy-ti
 
 ```bash
 # 1. Fetch the source
-git submodule update --init foresight-mcp
+git submodule update --init foresight
 
 # 2. Install runtime + Postgres + Redis deps in the submodule's own .venv
-cd foresight-mcp
+cd foresight
 uv sync --extra postgres              # pulls psycopg, psycopg-binary, psycopg-pool
 uv add redis                          # optional: sibling-infrastructure compat
 
@@ -25,7 +25,7 @@ export FORESIGHT_BANK_ID=pixelated
 # 4. Smoke the backend factory
 cd ..
 set -a; source .env.local; set +a
-( cd foresight-mcp && uv run python -c "from foresight_mcp.backend import create_backend; b=create_backend(); print(type(b).__name__)" )
+( cd foresight && uv run python -c "from foresight.backend import create_backend; b=create_backend(); print(type(b).__name__)" )
 # expect: PostgresBackend
 ```
 
@@ -53,7 +53,7 @@ If `FORESIGHT_DB_URL` is unset, the factory falls back to `SqliteBackend()` — 
 
 ## 3. Backend Selection
 
-Selection is purely string-prefix based, executed in `foresight_mcp/backend/__init__.py:create_backend()`:
+Selection is purely string-prefix based, executed in `foresight/backend/__init__.py:create_backend()`:
 
 ```python
 def create_backend() -> DatabaseBackend:
@@ -102,7 +102,7 @@ If you upgrade `psycopg-pool` past 3.3.x in the future, re-verify these names �
 
 ## 6. SQLite Fallback — Fixed in this PR
 
-Substep C of PIX-3996 originally failed because of a **pre-existing bug** in `foresight_mcp/backend/sqlite_backend.py`. Substep G (this PR, per user-authorized scope expansion in m0246) corrects it.
+Substep C of PIX-3996 originally failed because of a **pre-existing bug** in `foresight/backend/sqlite_backend.py`. Substep G (this PR, per user-authorized scope expansion in m0246) corrects it.
 
 **The fix** — two-line surgical patch at `sqlite_backend.py:44-45`:
 
@@ -135,7 +135,7 @@ SqliteBackend.connect() → no NameError ✓
 
 ## 7. Redis Companion Cache — Implemented
 
-Substeps B → F of PIX-3996 respond to the constraint that Foresight can't drop cross-process shared caching on a Redis-free broker. The class is `foresight_mcp/redis_cache.RedisCache`, instantiated by `reflection_narrative.generate_insight_narrative(...)` when the caller provides it via the `cache=` argument.
+Substeps B → F of PIX-3996 respond to the constraint that Foresight can't drop cross-process shared caching on a Redis-free broker. The class is `foresight/redis_cache.RedisCache`, instantiated by `reflection_narrative.generate_insight_narrative(...)` when the caller provides it via the `cache=` argument.
 
 **Class surface** — mirrors `NarrativeCache` exactly:
 
@@ -177,7 +177,7 @@ Cross-process value matches. CROSS_PROCESS_UPSTASH_VERIFIED.
 
 Plus local Docker smoke: `c.put(...)` → `c.get(...)` produces a HIT with TTL=604800 intact.
 
-**Configuration** — see §2 (`REDIS_URL`). If `REDIS_URL` is empty, callers that explicitly construct `RedisCache(url, ...)` consume it on demand; Foresight's default cache is still the in-process dict in `reflection_narrative.py`. If you want Foresight to construct the cache automatically, see `foresight_mcp/reflection_narrative._get_default_cache()`.
+**Configuration** — see §2 (`REDIS_URL`). If `REDIS_URL` is empty, callers that explicitly construct `RedisCache(url, ...)` consume it on demand; Foresight's default cache is still the in-process dict in `reflection_narrative.py`. If you want Foresight to construct the cache automatically, see `foresight/reflection_narrative._get_default_cache()`.
 
 ---
 
@@ -185,21 +185,21 @@ Plus local Docker smoke: `c.put(...)` → `c.get(...)` produces a HIT with TTL=6
 
 > **Status: historical.** The launcher `scripts/memory/foresight-mcp-server.sh` was hardened against ambient `VIRTUAL_ENV` in commit `e970f760c fix: harden foresight-mcp launcher against ambient VIRTUAL_ENV` (landed on `origin/staging`, June 2026). Production launches flow through the hardened launcher (`set -a; source .env; source .env.local; set +a; exec uv run ...`) and are no longer subject to the trap described below. The pattern documented here is preserved as the developer-machine / smoke-test idiom.
 
-`uv run` defaults to the closest `.venv`. The host repo (`pixelated/`) ships an outer `.venv` that **lacks** `psycopg`, `psycopg-pool`, and `redis`. If you accidentally run with `--active` from anywhere outside `foresight-mcp/`, you'll end up using the outer venv and getting `ModuleNotFoundError`.
+`uv run` defaults to the closest `.venv`. The host repo (`pixelated/`) ships an outer `.venv` that **lacks** `psycopg`, `psycopg-pool`, and `redis`. If you accidentally run with `--active` from anywhere outside `foresight/`, you'll end up using the outer venv and getting `ModuleNotFoundError`.
 
 ```
 VIRTUAL_ENV=/home/vivi/pixelated/.venv does not match ... ignore
 ```
 
-That warning is log noise, not failure — but **only when you are already inside `foresight-mcp/`**. If you see it while `cwd` is somewhere else (e.g. `/home/vivi/pixelated/`), the launch silently falls back to the outer venv and will fail to `import psycopg` later.
+That warning is log noise, not failure — but **only when you are already inside `foresight/`**. If you see it while `cwd` is somewhere else (e.g. `/home/vivi/pixelated/`), the launch silently falls back to the outer venv and will fail to `import psycopg` later.
 
 Pattern that always works:
 
 ```bash
-( cd foresight-mcp && uv run python -c "from foresight_mcp.backend import create_backend; print(type(create_backend()).__name__)" )
+( cd foresight && uv run python -c "from foresight.backend import create_backend; print(type(create_backend()).__name__)" )
 ```
 
-The parentheses matter — `cd` is scoped to the subshell. Don't `cd foresight-mcp && uv run ...` in the parent shell because the cd persists and contaminates subsequent commands.
+The parentheses matter — `cd` is scoped to the subshell. Don't `cd foresight && uv run ...` in the parent shell because the cd persists and contaminates subsequent commands.
 
 ---
 
@@ -221,28 +221,28 @@ The parentheses matter — `cd` is scoped to the subshell. Don't `cd foresight-m
 | J — Linear close                                                       | ✅ PASS                 | PIX-3996 transitioned In Progress → Done with substep verification comment.                                                                                                                                                                                                                    |
 | K — `connection()` contextmanager fix (post-close per m0274 directive) | ✅ PASS                 | Body changed from `try: conn.execute(sql, params); conn.commit(); finally: self._pool.release(conn)` to `with self._pool.acquire() as conn: yield conn`. Pyright post-fix `No diagnostics found`. Smoke confirms SELECT roundtrip + INSERT/COMMIT/SELECT via `with self.connection()`.         |
 
-All edits scoped to `chad/sentry-fixes-round5 @ b445754` (foresight-mcp submodule). **All five files are uncommitted at the time of writing.** Per AGENTS.md "Never commit without explicit request", the commit + push is held back pending user authorization.
+All edits scoped to `chad/sentry-fixes-round5 @ b445754` (foresight submodule). **All five files are uncommitted at the time of writing.** Per AGENTS.md "Never commit without explicit request", the commit + push is held back pending user authorization.
 
 **Files touched in this PR:**
 
-| File                                        | Status   | Edits                                                                                                                                             |
-| ------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `foresight_mcp/backend/postgres_backend.py` | Modified | 5 surgical namespace corrections (see §5).                                                                                                        |
-| `foresight_mcp/redis_cache.py`              | **NEW**  | `RedisCache` class, ~225 lines. Mirrors `NarrativeCache` API. Pyright-clean.                                                                      |
-| `foresight_mcp/backend/sqlite_backend.py`   | Modified | 2-line `self._` prefix fix at L44-45 (G substep) + `connection()` contextmanager body rewrite at L58-68 (Fix 2 / K substep, per m0274 directive). |
-| `foresight_mcp/reflection_narrative.py`     | Modified | 4 surgical edits: import + typing + isinstance guard + dict-first dispatch reorder (L67, L271, L323, L329-340, L398-409).                         |
-| `foresight_mcp/config.py`                   | Modified | `REDIS_URL` canonical env var documented (collapsed to upstream `config.REDIS_URL`).                                                              |
+| File                                    | Status   | Edits                                                                                                                                             |
+| --------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `foresight/backend/postgres_backend.py` | Modified | 5 surgical namespace corrections (see §5).                                                                                                        |
+| `foresight/redis_cache.py`              | **NEW**  | `RedisCache` class, ~225 lines. Mirrors `NarrativeCache` API. Pyright-clean.                                                                      |
+| `foresight/backend/sqlite_backend.py`   | Modified | 2-line `self._` prefix fix at L44-45 (G substep) + `connection()` contextmanager body rewrite at L58-68 (Fix 2 / K substep, per m0274 directive). |
+| `foresight/reflection_narrative.py`     | Modified | 4 surgical edits: import + typing + isinstance guard + dict-first dispatch reorder (L67, L271, L323, L329-340, L398-409).                         |
+| `foresight/config.py`                   | Modified | `REDIS_URL` canonical env var documented (collapsed to upstream `config.REDIS_URL`).                                                              |
 
 ---
 
 ## 10. Troubleshooting
 
-| Symptom                                                                  | Likely Cause                                                  | Fix                                                              |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `factory returned SqliteBackend despite setting FORESIGHT_DB_URL`        | URL prefix mismatch (`postgresql+psycopg://`, `pgbouncer://`) | Use bare `postgresql://`.                                        |
-| `ModuleNotFoundError: No module named 'psycopg'`                         | Outer `.venv` shadowed the submodule venv                     | Drop `--active`. `cd foresight-mcp && uv sync --extra postgres`. |
-| `attribute 'row_factory' requires dict_row, not DictRow`                 | Stale import in `postgres_backend.py`                         | Apply the surgical correction from §5 (L92-93 + L113-114).       |
-| `NameError: name 'max_size' is not defined` (SQLite path)                | Bug — fixed in this PR (§6)                                   | Already shipped; `uv sync` then retry.                           |
-| `NameError: name 'sql' is not defined` (SQLite `with self.connection()`) | Fixed in this PR (§6 "Fix 2")                                 | Use `with self.connection() as conn:` — no workaround needed.    |
-| Neon SSL handshake fails                                                 | Missing `sslmode=require`                                     | Append `?sslmode=require` to your DSN.                           |
-| Cross-process row invisibility                                           | Hitting writer endpoint for read, pooler for write            | Pick one endpoint per process and stick with it.                 |
+| Symptom                                                                  | Likely Cause                                                  | Fix                                                           |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------------------------- |
+| `factory returned SqliteBackend despite setting FORESIGHT_DB_URL`        | URL prefix mismatch (`postgresql+psycopg://`, `pgbouncer://`) | Use bare `postgresql://`.                                     |
+| `ModuleNotFoundError: No module named 'psycopg'`                         | Outer `.venv` shadowed the submodule venv                     | Drop `--active`. `cd foresight && uv sync --extra postgres`.  |
+| `attribute 'row_factory' requires dict_row, not DictRow`                 | Stale import in `postgres_backend.py`                         | Apply the surgical correction from §5 (L92-93 + L113-114).    |
+| `NameError: name 'max_size' is not defined` (SQLite path)                | Bug — fixed in this PR (§6)                                   | Already shipped; `uv sync` then retry.                        |
+| `NameError: name 'sql' is not defined` (SQLite `with self.connection()`) | Fixed in this PR (§6 "Fix 2")                                 | Use `with self.connection() as conn:` — no workaround needed. |
+| Neon SSL handshake fails                                                 | Missing `sslmode=require`                                     | Append `?sslmode=require` to your DSN.                        |
+| Cross-process row invisibility                                           | Hitting writer endpoint for read, pooler for write            | Pick one endpoint per process and stick with it.              |

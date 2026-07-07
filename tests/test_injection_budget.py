@@ -7,7 +7,7 @@ preservation under pressure.
 """
 
 import pytest
-from foresight_mcp.injection_budget import (
+from foresight.injection_budget import (
     InjectionBudget,
     Lane,
     LaneItem,

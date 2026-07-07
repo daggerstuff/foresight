@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish foresight-mcp to PyPI.
+# Publish foresight to PyPI.
 #
 # Usage:
 #   ./scripts/pypi-publish.sh              # Build + publish to PyPI
@@ -23,7 +23,7 @@ cd "$PROJECT_DIR"
 
 MODE="${1:---publish}"
 
-echo "=== foresight-mcp PyPI Publisher ==="
+echo "=== foresight PyPI Publisher ==="
 echo ""
 
 # Clean previous builds
@@ -57,7 +57,7 @@ if [ "$MODE" = "--test" ]; then
     uv run twine upload --repository testpypi --password "$TEST_PYPI_TOKEN" dist/*
     echo ""
     echo "✓ Published to TestPyPI!"
-    echo "  Install: pip install --index-url https://test.pypi.org/simple/ foresight-mcp[all]"
+    echo "  Install: pip install --index-url https://test.pypi.org/simple/ foresight[all]"
     exit 0
 fi
 
@@ -71,5 +71,5 @@ fi
 uv run twine upload --password "$PYPI_TOKEN" dist/*
 echo ""
 echo "✓ Published to PyPI!"
-echo "  Install: pip install foresight-mcp[all]"
-echo "  Or:      uv pip install foresight-mcp[all]"
+echo "  Install: pip install foresight[all]"
+echo "  Or:      uv pip install foresight[all]"

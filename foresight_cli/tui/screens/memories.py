@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from foresight_mcp import SearchOptions, search_memories, store_memory
-from foresight_mcp.server import init_db
+from foresight import SearchOptions, search_memories, store_memory
+from foresight.server import init_db
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen

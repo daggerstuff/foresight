@@ -17,14 +17,14 @@ Get up and running with Foresight in 5 minutes.
 
 ```bash
 # Install the Python package
-cd foresight-mcp
+cd foresight
 uv pip install -e .
 ```
 
 ## Step 2: Store Your First Memory
 
 ```python
-from foresight_mcp import store_memory, list_memories
+from foresight import store_memory, list_memories
 
 # Store a memory
 result = store_memory(
@@ -42,7 +42,7 @@ print(result)
 ## Step 3: Query Memories
 
 ```python
-from foresight_mcp import query_memories
+from foresight import query_memories
 
 # Search memories
 results = query_memories("TypeScript")
@@ -54,7 +54,7 @@ print(results)
 ## Step 4: List All Memories
 
 ```python
-from foresight_mcp import list_memories
+from foresight import list_memories
 
 # List recent memories
 all_memories = list_memories(limit=10)

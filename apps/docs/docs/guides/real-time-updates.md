@@ -87,7 +87,7 @@ const state = client.getState()
 ## Python MCP Tools
 
 ```python
-from foresight_mcp import ws_subscribe, ws_unsubscribe, ws_status
+from foresight import ws_subscribe, ws_unsubscribe, ws_status
 
 # Subscribe
 ws_subscribe(

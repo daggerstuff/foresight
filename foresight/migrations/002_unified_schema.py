@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from foresight_mcp.backend.base import DatabaseBackend
+    from foresight.backend.base import DatabaseBackend
 
 
 

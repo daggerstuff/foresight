@@ -518,7 +518,7 @@ wheels = [
 ]
 
 [[package]]
-name = "foresight-mcp"
+name = "foresight"
 version = "0.18.1"
 source = { editable = "." }
 dependencies = [
@@ -574,7 +574,7 @@ dev = [
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "fastmcp", specifier = ">=3.2.0" },
-    { name = "foresight-mcp", extras = ["cli", "tui", "postgres", "redis"], marker = "extra == 'all'" },
+    { name = "foresight", extras = ["cli", "tui", "postgres", "redis"], marker = "extra == 'all'" },
     { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },

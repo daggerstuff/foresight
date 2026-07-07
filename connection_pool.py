@@ -124,7 +124,7 @@ class ConnectionPool:
 
 def _active_postgres_pool() -> Any | None:
     try:
-        _server = importlib.import_module("foresight_mcp.server")
+        _server = importlib.import_module("foresight.server")
         backend = getattr(_server, "_global_backend", None)
     except Exception:  # pragma: no cover - defensive
         return None
@@ -142,7 +142,7 @@ class _PsycopgPoolAdapter:
         self._pool = pool
 
     def acquire(self) -> Any:
-        _server = importlib.import_module("foresight_mcp.server")
+        _server = importlib.import_module("foresight.server")
         raw_conn = self._pool.connection()
         return _server.PostgresPooledConnection(raw_conn, self._pool)
 

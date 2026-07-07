@@ -1,6 +1,6 @@
 """Tests for the backend-agnostic migration runner (PIX-3992).
 
-Verifies that ``foresight_mcp.backend.backend_migrations.run_migrations``
+Verifies that ``foresight.backend.backend_migrations.run_migrations``
 correctly bootstraps a fresh Schema (versions 1..11) against the SQLite
 backend. A clean postgreSQL happy path is exercised only when
 ``psycopg`` is installed and ``FORESIGHT_DB_URL_TEST`` points at a
@@ -13,12 +13,12 @@ import os
 import tempfile
 
 import pytest
-from foresight_mcp.backend import SCHEMA_MIGRATIONS
-from foresight_mcp.backend.backend_migrations import (
+from foresight.backend import SCHEMA_MIGRATIONS
+from foresight.backend.backend_migrations import (
     current_version,
     run_migrations,
 )
-from foresight_mcp.backend.sqlite_backend import SqliteBackend
+from foresight.backend.sqlite_backend import SqliteBackend
 
 # =============================================================================
 # SQLite backend — primary test surface (no external services required)
@@ -173,7 +173,7 @@ class TestBackendBaseSchemaHelpers:
 class TestPostgresMigrationRunner:
     def test_migrations_apply(self):
         dsn = os.environ["FORESIGHT_DB_URL_TEST"]
-        from foresight_mcp.backend.postgres_backend import PostgresBackend
+        from foresight.backend.postgres_backend import PostgresBackend
 
         backend = PostgresBackend(dsn=dsn)
         backend.connect()

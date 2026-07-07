@@ -3,13 +3,13 @@
 from unittest.mock import MagicMock
 
 import pytest
-from foresight_mcp.tenant_context import (
+from foresight.tenant_context import (
     DEFAULT_TENANT_ID,
     get_current_account_id,
     reset_tenant_context,
     set_current_tenant_id,
 )
-from foresight_mcp.tenant_middleware import TenantMiddleware
+from foresight.tenant_middleware import TenantMiddleware
 
 
 async def _run_middleware(context_obj, tenant_in_args=None, tenant_in_meta=None):

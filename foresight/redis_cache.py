@@ -1,7 +1,7 @@
 """
 Redis-backed cache for generated reflection narratives.
 
-Mirrors the public API of :class:`foresight_mcp.narrative_cache.NarrativeCache`
+Mirrors the public API of :class:`foresight.narrative_cache.NarrativeCache`
 so callers can swap the in-process SQLite cache for a shared Redis cache
 without changing call sites. Useful for multi-agent deployments where several
 processes serve the same tenant/user pair and want to share cached

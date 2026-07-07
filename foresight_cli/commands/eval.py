@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import typer
-import foresight_mcp.eval_harness as eval_harness
+import foresight.eval_harness as eval_harness
 
 from foresight_cli.utils import output as out
 

@@ -5,7 +5,7 @@ import tempfile
 from datetime import datetime, timezone
 
 import pytest
-from foresight_mcp.sync import (
+from foresight.sync import (
     Operation,
     OperationQueue,
     OperationType,

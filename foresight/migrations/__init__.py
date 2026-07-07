@@ -12,13 +12,13 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from foresight_mcp.backend.base import DatabaseBackend
+    from foresight.backend.base import DatabaseBackend
 
 logger = logging.getLogger(__name__)
 
 MIGRATIONS = [
-    (1, "foresight_mcp.migrations.001_add_tenant_to_graph_tables"),
-    (2, "foresight_mcp.migrations.002_unified_schema"),
+    (1, "foresight.migrations.001_add_tenant_to_graph_tables"),
+    (2, "foresight.migrations.002_unified_schema"),
 ]
 
 

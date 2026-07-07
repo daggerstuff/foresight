@@ -10,7 +10,7 @@ Common patterns for using Foresight.
 ## Store and Retrieve
 
 ```python
-from foresight_mcp import store_memory, query_memories, list_memories
+from foresight import store_memory, query_memories, list_memories
 
 # Store a memory
 result = store_memory(
@@ -33,7 +33,7 @@ print(all_memories)
 ## With Emotional Context
 
 ```python
-from foresight_mcp import store_memory
+from foresight import store_memory
 
 result = store_memory(
     content="User frustrated with deployment",

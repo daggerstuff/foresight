@@ -4,7 +4,7 @@ import re
 FILES = {}
 
 # ── temporal_service.py ──────────────────────────────────────────────
-with open("foresight_mcp/temporal_service.py") as f:
+with open("foresight/temporal_service.py") as f:
     s = f.read()
 
 # _get_decay_config: add tenant_id param + filter
@@ -47,10 +47,10 @@ s = s.replace(
     "FROM memories\n                WHERE user_id = ? AND tenant_id = ?\n                \"\"\", (user_id, tenant_id))",
 )
 
-FILES["foresight_mcp/temporal_service.py"] = s
+FILES["foresight/temporal_service.py"] = s
 
 # ── hybrid_retriever.py: _graph_search entity lookup ────────────────
-with open("foresight_mcp/hybrid_retriever.py") as f:
+with open("foresight/hybrid_retriever.py") as f:
     s = f.read()
 
 s = s.replace(
@@ -62,10 +62,10 @@ s = s.replace(
     "WHERE e.user_id = ? AND e.tenant_id = ?\n            AND ({like_clauses})",
 )
 
-FILES["foresight_mcp/hybrid_retriever.py"] = s
+FILES["foresight/hybrid_retriever.py"] = s
 
 # ── reflection_engine.py: _build_entity_summary ──────────────────────
-with open("foresight_mcp/reflection_engine.py") as f:
+with open("foresight/reflection_engine.py") as f:
     s = f.read()
 
 # Add tenant_id param
@@ -93,10 +93,10 @@ s = s.replace(
     "\"\"\", (user_id, tenant_id, rel_limit))\n\n    return {",
 )
 
-FILES["foresight_mcp/reflection_engine.py"] = s
+FILES["foresight/reflection_engine.py"] = s
 
 # ── subconscious.py: key singleton on tenant_id+user_id ─────────────
-with open("foresight_mcp/subconscious.py") as f:
+with open("foresight/subconscious.py") as f:
     s = f.read()
 
 # Change get_subconscious_agent to accept and use tenant_id
@@ -122,10 +122,10 @@ s = s.replace(
     "_subconscious_agents[_key] = agent",
 )
 
-FILES["foresight_mcp/subconscious.py"] = s
+FILES["foresight/subconscious.py"] = s
 
 # ── server.py: multiple missing tenant_id filters ───────────────────
-with open("foresight_mcp/server.py") as f:
+with open("foresight/server.py") as f:
     s = f.read()
 
 # Ensure get_current_tenant_id is imported
@@ -226,7 +226,7 @@ s = s.replace(
     "WHERE id = ? AND user_id = ? AND tenant_id = ?\n                \"\"\", (ghost.content, ghost.gist, memory_id, uid, get_current_tenant_id()))",
 )
 
-FILES["foresight_mcp/server.py"] = s
+FILES["foresight/server.py"] = s
 
 # ── Write all files ──────────────────────────────────────────────────
 for path, content in FILES.items():

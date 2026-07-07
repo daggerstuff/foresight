@@ -8,7 +8,7 @@ trigger each maintenance mode, runs the job per-mode and combined,
 then reports pre/post metrics.
 
 Usage:
-    from foresight_mcp.maintenance_eval import MaintenanceEvalHarness
+    from foresight.maintenance_eval import MaintenanceEvalHarness
 
     harness = MaintenanceEvalHarness()
     harness.seed_fixtures()
@@ -16,7 +16,7 @@ Usage:
     print(report.format_text())
 
 Or via CLI:
-    python -m foresight_mcp.maintenance_eval
+    python -m foresight.maintenance_eval
 """
 
 from __future__ import annotations
@@ -434,10 +434,10 @@ class MaintenanceEvalHarness:
 
         Mirrors the pattern in eval_harness.py and tests/test_server.py.
         """
-        import foresight_mcp.config as config_module
-        import foresight_mcp.connection_pool as conn_pool_module
-        from foresight_mcp.connection_pool import reset_pool
-        from foresight_mcp.server import init_db
+        import foresight.config as config_module
+        import foresight.connection_pool as conn_pool_module
+        from foresight.connection_pool import reset_pool
+        from foresight.server import init_db
 
         reset_pool()
 
@@ -450,7 +450,7 @@ class MaintenanceEvalHarness:
         init_db()
 
     def _restore_patches(self) -> None:
-        from foresight_mcp.connection_pool import reset_pool
+        from foresight.connection_pool import reset_pool
 
         reset_pool()
         for module, attr, orig in self._monkeypatches:
@@ -688,7 +688,7 @@ def run_maintenance_eval(
 
 
 def main() -> None:
-    """CLI entry point. Run with: python -m foresight_mcp.maintenance_eval"""
+    """CLI entry point. Run with: python -m foresight.maintenance_eval"""
     import argparse
 
     parser = argparse.ArgumentParser(description="Foresight Maintenance Evaluation (PIX-3952)")

@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.llm_client import (
+from foresight.llm_client import (
     LLMConfig,
     LLMError,
     LLMNotConfiguredError,
@@ -25,8 +25,8 @@ from foresight_mcp.llm_client import (
     default_llm_call,
     get_default_client,
 )
-from foresight_mcp.llm_providers.anthropic import AnthropicClient
-from foresight_mcp.llm_providers.openai import OpenAIClient
+from foresight.llm_providers.anthropic import AnthropicClient
+from foresight.llm_providers.openai import OpenAIClient
 
 
 def _header_lookup(headers: Any, key: str) -> str:

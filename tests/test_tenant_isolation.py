@@ -6,8 +6,8 @@ import sqlite3
 import tempfile
 from unittest.mock import patch
 
-from foresight_mcp.server import query_memories, store_memory
-from foresight_mcp.tenant_context import (
+from foresight.server import query_memories, store_memory
+from foresight.tenant_context import (
     reset_tenant_context,
     set_current_tenant_id,
 )
@@ -15,8 +15,8 @@ from foresight_mcp.tenant_context import (
 
 def _make_temp_db(db_path: str) -> None:
     """Create a fresh temporary database and run full migrations."""
-    from foresight_mcp.backend import SqliteBackend
-    from foresight_mcp.server import init_db
+    from foresight.backend import SqliteBackend
+    from foresight.server import init_db
 
     backend = SqliteBackend(db_path=db_path)
     backend.connect()
@@ -39,8 +39,8 @@ def test_tenant_isolation():
     # Simulate Tenant A
     set_current_tenant_id("tenant_a")
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: sqlite3.connect(tenant_db1.name)),
-        patch("foresight_mcp.server.BANK_ID", "tenant_a"),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db1.name)),
+        patch("foresight.server.BANK_ID", "tenant_a"),
     ):
         result = store_memory(content="Confidential data for tenant A", user_id="user_a")
         assert "Stored" in result
@@ -48,8 +48,8 @@ def test_tenant_isolation():
     # Simulate Tenant B
     set_current_tenant_id("tenant_b")
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: sqlite3.connect(tenant_db2.name)),
-        patch("foresight_mcp.server.BANK_ID", "tenant_b"),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db2.name)),
+        patch("foresight.server.BANK_ID", "tenant_b"),
     ):
         result = store_memory(content="Confidential data for tenant B", user_id="user_b")
         assert "Stored" in result
@@ -57,8 +57,8 @@ def test_tenant_isolation():
     # Verify Tenant A cannot see Tenant B memory
     set_current_tenant_id("tenant_a")
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: sqlite3.connect(tenant_db1.name)),
-        patch("foresight_mcp.server.BANK_ID", "tenant_a"),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db1.name)),
+        patch("foresight.server.BANK_ID", "tenant_a"),
     ):
         results = query_memories("tenant_b")  # Search for tenant B memory
         assert "tenant b" not in results.lower(), "Tenant A should NOT see Tenant B's memories"
@@ -66,8 +66,8 @@ def test_tenant_isolation():
     # Verify Tenant B cannot see Tenant A memory
     set_current_tenant_id("tenant_b")
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: sqlite3.connect(tenant_db2.name)),
-        patch("foresight_mcp.server.BANK_ID", "tenant_b"),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db2.name)),
+        patch("foresight.server.BANK_ID", "tenant_b"),
     ):
         results = query_memories("tenant_a")
         assert "tenant a" not in results.lower(), "Tenant B should NOT see Tenant A's memories"

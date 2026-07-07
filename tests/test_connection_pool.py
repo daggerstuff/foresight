@@ -4,7 +4,7 @@ import threading
 import time
 
 import pytest
-from foresight_mcp.connection_pool import (
+from foresight.connection_pool import (
     ConnectionPool,
     get_pool,
     reset_pool,

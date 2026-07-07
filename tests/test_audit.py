@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any
 
 import pytest
-from foresight_mcp.audit import (
+from foresight.audit import (
     LLM_CALL_FAILED,
     LLM_CALL_SUCCEEDED,
     NARRATIVE_CACHE_HIT,

@@ -4,18 +4,18 @@
 
 ```bash
 # Install with pip
-pip install foresight-mcp
+pip install foresight
 
 # Or with uv
-uv add foresight-mcp
+uv add foresight
 ```
 
 ## Option 2: Run directly from repo
 
 ```bash
 # Clone the repo
-git clone https://github.com/your-org/foresight-mcp.git
-cd foresight-mcp
+git clone https://github.com/your-org/foresight.git
+cd foresight
 
 # Install with uv
 uv sync
@@ -27,8 +27,8 @@ uv run foresight-mcp
 ## Option 3: Development mode
 
 ```bash
-git clone https://github.com/your-org/foresight-mcp.git
-cd foresight-mcp
+git clone https://github.com/your-org/foresight.git
+cd foresight
 
 # Install in editable mode
 uv sync --dev

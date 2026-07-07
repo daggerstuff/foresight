@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import typer
-from foresight_mcp import (
+from foresight import (
     MemoryAction,
     MemoryUpdateOptions,
     SearchOptions,
@@ -15,7 +15,7 @@ from foresight_mcp import (
     search_memories,
     store_memory,
 )
-from foresight_mcp.server import init_db
+from foresight.server import init_db
 
 from foresight_cli.utils import config as cfg, output as out
 
@@ -25,7 +25,7 @@ app = typer.Typer(help="Store, retrieve, search, and manage memories.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight_mcp.server import _initialize_backend
+    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)
@@ -167,7 +167,7 @@ def search(
 
     if mode == "semantic":
         try:
-            from foresight_mcp import semantic_search_memories
+            from foresight import semantic_search_memories
 
             result = semantic_search_memories(query=query_text, limit=limit, min_score=min_score)
         except ImportError:

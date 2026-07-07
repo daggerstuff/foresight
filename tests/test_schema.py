@@ -1,4 +1,4 @@
-from foresight_mcp.schema import (
+from foresight.schema import (
     EmotionalContext,
     EmpathyMetrics,
     MemoryCreateOptions,

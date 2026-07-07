@@ -13,20 +13,20 @@ Install Foresight Memory Architecture for your environment.
 
 ```bash
 # Clone the repository
-git clone https://github.com/daggerstuff/foresight-mcp.git
-cd foresight-mcp
+git clone https://github.com/daggerstuff/foresight.git
+cd foresight
 
 # Install with uv
 uv pip install -e .
 
 # Verify installation
-python -c "from foresight_mcp import memory_status; print(memory_status())"
+python -c "from foresight import memory_status; print(memory_status())"
 ```
 
 ### Using pip
 
 ```bash
-pip install foresight-mcp
+pip install foresight
 ```
 
 ## TypeScript Installation
@@ -102,7 +102,7 @@ Create `~/.foresight/config.json`:
 ## Docker (Coming Soon)
 
 ```bash
-docker pull foresight/foresight-mcp:latest
+docker pull foresight/foresight:latest
 ```
 
 ## Verification

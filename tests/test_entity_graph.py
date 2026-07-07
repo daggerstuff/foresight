@@ -10,8 +10,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.entity_extractor import Entity, EntityExtractor, Relationship
-from foresight_mcp.graph_store import GraphStore
+from foresight.entity_extractor import Entity, EntityExtractor, Relationship
+from foresight.graph_store import GraphStore
 
 
 @pytest.fixture

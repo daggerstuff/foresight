@@ -13,11 +13,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import Client
 from foresight_cli.cli import _decode_tool_result
-from foresight_mcp import memory_status, store_memory
-from foresight_mcp.block_registry import MemoryBlockSchema
-from foresight_mcp.context_blocks import register_context_block_schema
-from foresight_mcp.hybrid_retriever import HybridResult, HybridSearchResult
-from foresight_mcp.server import (
+from foresight import memory_status, store_memory
+from foresight.block_registry import MemoryBlockSchema
+from foresight.context_blocks import register_context_block_schema
+from foresight.hybrid_retriever import HybridResult, HybridSearchResult
+from foresight.server import (
     ContextBlockAction,
     CurationRunAction,
     _extract_terms,
@@ -42,18 +42,18 @@ def setup_test_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_memory.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
-    import foresight_mcp.config as config_module
-    import foresight_mcp.connection_pool as conn_pool_module
-    from foresight_mcp.backend import SqliteBackend
-    from foresight_mcp.connection_pool import reset_pool
-    from foresight_mcp.server import init_db
+    import foresight.config as config_module
+    import foresight.connection_pool as conn_pool_module
+    from foresight.backend import SqliteBackend
+    from foresight.connection_pool import reset_pool
+    from foresight.server import init_db
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
     reset_pool()
 
     # Isolate tenant context so test data never lands in the 'default' tenant
-    from foresight_mcp.tenant_context import (
+    from foresight.tenant_context import (
         set_current_account_id,
         set_current_user_id,
     )
@@ -66,7 +66,7 @@ def setup_test_db(tmp_path, monkeypatch):
     yield
     reset_pool()
 
-    from foresight_mcp.tenant_context import reset_tenant_context
+    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -103,7 +103,7 @@ def test_memories_content_hash_backfill_computes_correct_hash():
                 user_id TEXT DEFAULT 'default', is_ghost INTEGER DEFAULT 0
             )"""
         )
-        from foresight_mcp.document_layer import content_hash
+        from foresight.document_layer import content_hash
 
         test_content = "backfill test content 123"
         expected_hash = content_hash(test_content)
@@ -138,7 +138,7 @@ def test_store_memory_uses_content_hash_for_dedup():
     Regression: old code used 'content = ?' exact match. New code uses
     content_hash index for deterministic, index-based dedup.
     """
-    from foresight_mcp import store_memory
+    from foresight import store_memory
 
     unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:8]
     content = f"hash_dedup_test_{unique_marker}"
@@ -152,7 +152,7 @@ def test_store_memory_uses_content_hash_for_dedup():
 
 def test_store_memory_dedup_increments_activation_count():
     """Duplicate store must bump activation_count, not create a new row."""
-    from foresight_mcp import store_memory
+    from foresight import store_memory
 
     unique = f"activation_bump_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
     r1 = store_memory(unique)
@@ -162,7 +162,7 @@ def test_store_memory_dedup_increments_activation_count():
 
     import sqlite3 as _sql
 
-    from foresight_mcp.config import DB_PATH
+    from foresight.config import DB_PATH
 
     conn = _sql.connect(str(DB_PATH))
     conn.row_factory = _sql.Row
@@ -198,7 +198,7 @@ def test_store_memory_tenant_isolation_on_dedup():
                 version INTEGER, importance REAL
             )"""
         )
-        from foresight_mcp.document_layer import content_hash
+        from foresight.document_layer import content_hash
 
         shared_content = "cross-tenant dedup test"
         h = content_hash(shared_content)
@@ -323,7 +323,7 @@ async def test_local_mcp_calls_return_text_without_api_key(monkeypatch):
 @contextmanager
 def _patched_context_block_storage(db_path: str) -> Iterator[None]:
     """Point context-block persistence at a test database and isolate agent cache."""
-    from foresight_mcp import subconscious as subconscious_module
+    from foresight import subconscious as subconscious_module
 
     with (
         patch.object(subconscious_module, "DB_PATH", db_path),
@@ -334,8 +334,8 @@ def _patched_context_block_storage(db_path: str) -> Iterator[None]:
 
 def test_bridge_context_blocks_to_memories():
     """_bridge_context_blocks_to_memories stores extracted blocks as memories."""
-    from foresight_mcp.server import _bridge_context_blocks_to_memories
-    from foresight_mcp.subconscious import ContextBlockAgent
+    from foresight.server import _bridge_context_blocks_to_memories
+    from foresight.subconscious import ContextBlockAgent
 
     agent = ContextBlockAgent(user_id="bridge_test_user")
     # Populate some blocks via the agent's normal extraction
@@ -344,8 +344,8 @@ def test_bridge_context_blocks_to_memories():
 
     db_path = _make_test_db()
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
-        patch("foresight_mcp.server.BANK_ID", "test_bank"),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight.server.BANK_ID", "test_bank"),
     ):
         stored = _bridge_context_blocks_to_memories(agent, "bridge_test_user")
 
@@ -365,16 +365,16 @@ def test_bridge_context_blocks_to_memories():
 
 def test_bridge_context_blocks_dedup():
     """Bridging the same agent state twice should bump, not duplicate."""
-    from foresight_mcp.server import _bridge_context_blocks_to_memories
-    from foresight_mcp.subconscious import ContextBlockAgent
+    from foresight.server import _bridge_context_blocks_to_memories
+    from foresight.subconscious import ContextBlockAgent
 
     agent = ContextBlockAgent(user_id="dedup_bridge_user")
     agent._extract_preference("I prefer explicit returns")
 
     db_path = _make_test_db()
     with (
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
-        patch("foresight_mcp.server.BANK_ID", "test_bank"),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight.server.BANK_ID", "test_bank"),
     ):
         _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
         _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
@@ -391,9 +391,9 @@ def test_bridge_context_blocks_dedup():
 
 def test_bridge_transcript_entities():
     """_bridge_transcript_entities runs extraction and stores entities."""
-    from foresight_mcp.entity_extractor import reset_entity_extractor
-    from foresight_mcp.graph_store import GraphStore, reset_graph_store
-    from foresight_mcp.server import _bridge_transcript_entities
+    from foresight.entity_extractor import reset_entity_extractor
+    from foresight.graph_store import GraphStore, reset_graph_store
+    from foresight.server import _bridge_transcript_entities
 
     reset_entity_extractor()
     reset_graph_store()
@@ -406,7 +406,7 @@ def test_bridge_transcript_entities():
         db_path = tmp.name
 
     # GraphStore.__init__ creates the correct schema including tenant_id
-    with patch("foresight_mcp.server.get_graph_store", lambda: GraphStore(db_path)):
+    with patch("foresight.server.get_graph_store", lambda: GraphStore(db_path)):
         count = _bridge_transcript_entities(messages, "entity_test_user")
 
     assert count >= 1
@@ -498,7 +498,7 @@ def _patch_hybrid_retriever(results, total_candidates=None, signal_counts=None):
         total_candidates=total_candidates if total_candidates is not None else len(results),
         signal_counts=signal_counts or {},
     )
-    return patch("foresight_mcp.server.get_hybrid_retriever", return_value=mock_retriever)
+    return patch("foresight.server.get_hybrid_retriever", return_value=mock_retriever)
 
 
 def test_extract_terms_filters_stop_words():
@@ -542,8 +542,8 @@ def test_inject_context_returns_formatted_output():
 
     with (
         _patch_hybrid_retriever(results),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
-        patch("foresight_mcp.server.get_context_block_agent"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.get_context_block_agent"),
     ):
         result = inject_context("Let's talk about database and type hints")
 
@@ -559,8 +559,8 @@ def test_inject_context_respects_max_memories():
 
     with (
         _patch_hybrid_retriever(results),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
-        patch("foresight_mcp.server.get_context_block_agent"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.get_context_block_agent"),
     ):
         result = inject_context("python topic", max_memories=2)
 
@@ -576,8 +576,8 @@ def test_inject_context_no_match():
 
     with (
         _patch_hybrid_retriever(results),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
-        patch("foresight_mcp.server.get_context_block_agent"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.get_context_block_agent"),
     ):
         result = inject_context("quantum computing algorithms", min_relevance=0.5)
 
@@ -588,8 +588,8 @@ def test_inject_context_empty_conversation_text():
     """inject_context with empty conversation text still works (no terms to match)."""
     with (
         _patch_hybrid_retriever([]),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
-        patch("foresight_mcp.server.get_context_block_agent"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.get_context_block_agent"),
     ):
         result = inject_context("")
 
@@ -603,8 +603,8 @@ def test_inject_context_include_details_returns_json():
     ]
     with (
         _patch_hybrid_retriever(results, total_candidates=5, signal_counts={"keyword": 3}),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
-        patch("foresight_mcp.server.get_context_block_agent"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.get_context_block_agent"),
     ):
         result = inject_context("python type hints", include_details=True)
 
@@ -627,7 +627,7 @@ def test_get_relevant_memories_returns_structured_data():
     ]
     with (
         _patch_hybrid_retriever(results, total_candidates=5, signal_counts={"keyword": 3, "graph": 2}),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
     ):
         result = get_relevant_memories("python type hints")
 
@@ -649,7 +649,7 @@ def test_get_relevant_memories_filters_by_min_relevance():
     ]
     with (
         _patch_hybrid_retriever(results),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
     ):
         result = get_relevant_memories("test query", min_relevance=0.5)
 
@@ -663,7 +663,7 @@ def test_get_relevant_memories_respects_limit():
     results = [_make_hybrid_result(f"mem{i}", f"Memory {i}", combined_score=0.9 - i * 0.05) for i in range(10)]
     with (
         _patch_hybrid_retriever(results),
-        patch("foresight_mcp.server.USER_ID", "inject_test_user"),
+        patch("foresight.server.USER_ID", "inject_test_user"),
     ):
         result = get_relevant_memories("test query", limit=3)
 
@@ -683,7 +683,7 @@ def test_format_context_blocks_by_injection_point_groups_by_schema():
 
     mock_agent.state.get_block.side_effect = fake_block
 
-    with patch("foresight_mcp.server.get_context_block_agent", return_value=mock_agent):
+    with patch("foresight.server.get_context_block_agent", return_value=mock_agent):
         result = _format_context_blocks_by_injection_point("test_user", "default", ["python"])
 
     total_entries = sum(len(v) for v in result.values())
@@ -869,7 +869,7 @@ def test_manage_context_blocks_are_tenant_isolated():
     tmp.close()
 
     with _patched_context_block_storage(tmp.name):
-        with patch("foresight_mcp.server.get_current_account_id", return_value="tenant-a"):
+        with patch("foresight.server.get_current_account_id", return_value="tenant-a"):
             update_a = _decode_json_result(
                 manage_context_blocks(
                     ContextBlockAction(action="update", label="guidance", content="Tenant A guidance"),
@@ -878,13 +878,13 @@ def test_manage_context_blocks_are_tenant_isolated():
             )
             assert update_a["ok"] is True
 
-        with patch("foresight_mcp.server.get_current_account_id", return_value="tenant-b"):
+        with patch("foresight.server.get_current_account_id", return_value="tenant-b"):
             fetched_b = _decode_json_result(
                 manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
             )
             assert fetched_b["content"] != "Tenant A guidance"
 
-        with patch("foresight_mcp.server.get_current_account_id", return_value="tenant-a"):
+        with patch("foresight.server.get_current_account_id", return_value="tenant-a"):
             fetched_a = _decode_json_result(
                 manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
             )
@@ -969,10 +969,10 @@ def test_manage_curation_runs_create_cancel_archive():
     _seed_memory(db_path, memory_id="mem1", content="A durable memory", bank_id="source_bank", user_id=user_id)
 
     with (
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None),
-        patch("foresight_mcp.server._publish_curation_status", lambda *_args, **_kwargs: None),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server._start_curation_worker", lambda *_args, **_kwargs: None),
+        patch("foresight.server._publish_curation_status", lambda *_args, **_kwargs: None),
     ):
         created = json.loads(
             manage_curation_runs(
@@ -1051,7 +1051,7 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
 
 def test_manage_curation_runs_reviewable_output_and_failure_status():
     """Curation runs keep failed output reviewable and persist error metadata."""
-    from foresight_mcp import server as server_module
+    from foresight import server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_failure_user"
@@ -1067,16 +1067,16 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
 
     with (
         _patched_context_block_storage(db_path),
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server.get_event_bus_with_stream", return_value=_FakeBus()),
-        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server.get_event_bus_with_stream", return_value=_FakeBus()),
+        patch("foresight.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
         patch(
-            "foresight_mcp.server._build_reflection_snapshot",
+            "foresight.server._build_reflection_snapshot",
             return_value={"trend_summary": {"overall": "stable"}, "insights": []},
         ),
-        patch("foresight_mcp.server._insert_curation_entries", side_effect=RuntimeError("curation exploded")),
+        patch("foresight.server._insert_curation_entries", side_effect=RuntimeError("curation exploded")),
     ):
         created = json.loads(
             manage_curation_runs(
@@ -1097,7 +1097,7 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
 
 def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_output():
     """Successful in-place runs archive the source bank and promote staged entries into it."""
-    from foresight_mcp import server as server_module
+    from foresight import server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_in_place_user"
@@ -1109,13 +1109,13 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
 
     with (
         _patched_context_block_storage(db_path),
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server.get_event_bus_with_stream"),
-        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server.get_event_bus_with_stream"),
+        patch("foresight.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
         patch(
-            "foresight_mcp.server._build_reflection_snapshot",
+            "foresight.server._build_reflection_snapshot",
             return_value={"trend_summary": {"overall": "stable"}, "insights": []},
         ),
     ):
@@ -1168,7 +1168,7 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
 
 def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched():
     """Canceled in-place runs do not promote or archive any source memories."""
-    from foresight_mcp import server as server_module
+    from foresight import server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_cancel_integrity_user"
@@ -1191,16 +1191,16 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
 
     with (
         _patched_context_block_storage(db_path),
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server.get_event_bus_with_stream"),
-        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server.get_event_bus_with_stream"),
+        patch("foresight.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
         patch(
-            "foresight_mcp.server._build_reflection_snapshot",
+            "foresight.server._build_reflection_snapshot",
             return_value={"trend_summary": {"overall": "stable"}, "insights": []},
         ),
-        patch("foresight_mcp.server._make_curated_entries", side_effect=_cancel_before_insert),
+        patch("foresight.server._make_curated_entries", side_effect=_cancel_before_insert),
     ):
         created = json.loads(
             manage_curation_runs(
@@ -1241,7 +1241,7 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
 
 def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
     """Cancellation landing after promotion starts must restore the source bank and keep the run canceled."""
-    from foresight_mcp import server as server_module
+    from foresight import server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_cancel_promotion_user"
@@ -1271,16 +1271,16 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
 
     with (
         _patched_context_block_storage(db_path),
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server.get_event_bus_with_stream"),
-        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server.get_event_bus_with_stream"),
+        patch("foresight.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
         patch(
-            "foresight_mcp.server._build_reflection_snapshot",
+            "foresight.server._build_reflection_snapshot",
             return_value={"trend_summary": {"overall": "stable"}, "insights": []},
         ),
-        patch("foresight_mcp.server._promote_in_place_curation", side_effect=_cancel_after_promote),
+        patch("foresight.server._promote_in_place_curation", side_effect=_cancel_after_promote),
     ):
         created = json.loads(
             manage_curation_runs(
@@ -1321,7 +1321,7 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
 
 def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
     """Startup replay re-enqueues interrupted curation runs and normalizes running->pending."""
-    from foresight_mcp.server import _resume_pending_curation_runs
+    from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
     now = datetime.now(timezone.utc).isoformat()
@@ -1346,9 +1346,9 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
         started.append((run_id, payload))
 
     with (
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server._start_curation_worker", side_effect=_capture_start),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server._start_curation_worker", side_effect=_capture_start),
     ):
         _resume_pending_curation_runs()
 
@@ -1371,7 +1371,7 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
 
 def test_resume_pending_curation_runs_preserves_transcript_payload():
     """Startup replay must keep transcript/session/project payload for interrupted runs."""
-    from foresight_mcp.server import _resume_pending_curation_runs
+    from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
     now = datetime.now(timezone.utc).isoformat()
@@ -1397,9 +1397,9 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
         started.append((run_id, payload))
 
     with (
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server._start_curation_worker", side_effect=_capture_start),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server._start_curation_worker", side_effect=_capture_start),
     ):
         _resume_pending_curation_runs()
 
@@ -1426,20 +1426,20 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
 
 def test_claim_curation_run_is_atomic_for_duplicate_workers():
     """Only one worker may claim a pending run even if execution is invoked twice."""
-    from foresight_mcp import server as server_module
+    from foresight import server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_atomic_claim_user"
     _seed_memory(db_path, memory_id="mem1", content="Atomic claim source", bank_id="source_bank", user_id=user_id)
 
     with (
-        patch("foresight_mcp.server.DB_PATH", db_path),
-        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-        patch("foresight_mcp.server.get_event_bus_with_stream"),
-        patch("foresight_mcp.server._start_curation_worker", lambda *_args, **_kwargs: None),
-        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch("foresight.server.DB_PATH", db_path),
+        patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.server.get_event_bus_with_stream"),
+        patch("foresight.server._start_curation_worker", lambda *_args, **_kwargs: None),
+        patch("foresight.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
         patch(
-            "foresight_mcp.server._build_reflection_snapshot",
+            "foresight.server._build_reflection_snapshot",
             return_value={"trend_summary": {"overall": "stable"}, "insights": []},
         ),
     ):
@@ -1468,7 +1468,7 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
         server_module._execute_curation_run(run["id"], payload)
 
         # Reset tenant context after _execute_curation_run changed it via set_current_tenant_id()
-        from foresight_mcp.tenant_context import set_current_account_id
+        from foresight.tenant_context import set_current_account_id
 
         set_current_account_id("_test_")
 
@@ -1491,7 +1491,7 @@ def test_manage_curation_runs_list_initializes_schema_for_empty_database():
     """Calling curation APIs directly should bootstrap their schema on a new database."""
     db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 
-    with patch("foresight_mcp.server.DB_PATH", db_path):
+    with patch("foresight.server.DB_PATH", db_path):
         listed = json.loads(manage_curation_runs(CurationRunAction(action="list", limit=5), user_id="fresh_user"))
 
     assert listed == {"ok": True, "action": "list", "runs": []}
@@ -1636,7 +1636,7 @@ def test_handle_version_rollback_respects_tenant_scope():
 
     Regression test: same defense-in-depth scenario as archive.
     """
-    from foresight_mcp.server import VersionAction, _handle_version_rollback
+    from foresight.server import VersionAction, _handle_version_rollback
 
     db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     try:
@@ -1724,9 +1724,9 @@ def test_handle_version_rollback_respects_tenant_scope():
         options = VersionAction(action="rollback", memory_id=memory_id, to_version=2)
 
         with (
-            patch("foresight_mcp.server.DB_PATH", db_path),
-            patch("foresight_mcp.connection_pool.DB_PATH", db_path),
-            patch.dict("foresight_mcp.connection_pool._pools", {}, clear=True),
+            patch("foresight.server.DB_PATH", db_path),
+            patch("foresight.connection_pool.DB_PATH", db_path),
+            patch.dict("foresight.connection_pool._pools", {}, clear=True),
         ):
             result = _handle_version_rollback("user-1", "tenant-a", options)
 
@@ -1754,7 +1754,7 @@ def test_handle_version_rollback_respects_tenant_scope():
 
 
 def test_standalone_rollback_to_version_respects_tenant_scope():
-    from foresight_mcp.server import rollback_to_version
+    from foresight.server import rollback_to_version
 
     db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     try:
@@ -1843,10 +1843,10 @@ def test_standalone_rollback_to_version_respects_tenant_scope():
         conn.close()
 
         with (
-            patch("foresight_mcp.server.DB_PATH", db_path),
-            patch("foresight_mcp.connection_pool.DB_PATH", db_path),
-            patch.dict("foresight_mcp.connection_pool._pools", {}, clear=True),
-            patch("foresight_mcp.server.get_current_account_id", return_value="tenant-a"),
+            patch("foresight.server.DB_PATH", db_path),
+            patch("foresight.connection_pool.DB_PATH", db_path),
+            patch.dict("foresight.connection_pool._pools", {}, clear=True),
+            patch("foresight.server.get_current_account_id", return_value="tenant-a"),
         ):
             result = rollback_to_version(memory_id, 2, user_id="user-1")
 
@@ -1905,20 +1905,20 @@ def test_memory_hard_cap_enforcement():
         conn.commit()
         conn.close()
         # Patch config DB_PATH BEFORE importing other modules
-        import foresight_mcp.config as config_module
+        import foresight.config as config_module
 
         original_db_path = config_module.DB_PATH
         config_module.DB_PATH = db_path
         # Also patch connection_pool's DB_PATH
-        import foresight_mcp.connection_pool as conn_pool_module
+        import foresight.connection_pool as conn_pool_module
 
         conn_pool_module.DB_PATH = db_path
-        from foresight_mcp.connection_pool import reset_pool
-        from foresight_mcp.hybrid_retriever import reset_hybrid_retriever
+        from foresight.connection_pool import reset_pool
+        from foresight.hybrid_retriever import reset_hybrid_retriever
 
         reset_pool()
         reset_hybrid_retriever()
-        import foresight_mcp.server as server_module
+        import foresight.server as server_module
 
         server_module._narrative_cache = None
         try:
@@ -1926,7 +1926,7 @@ def test_memory_hard_cap_enforcement():
             original_limit = server_module.DEFAULT_MAX_MEMORY_PER_TENANT
             server_module.DEFAULT_MAX_MEMORY_PER_TENANT = 5
             try:
-                from foresight_mcp.server import store_memory
+                from foresight.server import store_memory
 
                 for i in range(5):
                     result = store_memory(f"test memory {i}")
@@ -1951,7 +1951,7 @@ def test_memory_budget_metrics_utilization():
     """memory_budget utilization_pct is calculated correctly."""
     import json
 
-    from foresight_mcp.server import SystemStatusOptions, get_system_status, store_memory
+    from foresight.server import SystemStatusOptions, get_system_status, store_memory
 
     # Store a few memories
     for i in range(5):
@@ -1965,7 +1965,7 @@ def test_memory_budget_metrics_utilization():
 
 def test_cascade_retrieval_basic():
     """Cascade retrieval returns results when use_cascade is enabled."""
-    from foresight_mcp.server import SearchOptions, search_memories
+    from foresight.server import SearchOptions, search_memories
 
     result = search_memories(SearchOptions(query="test", use_cascade=True, limit=5))
     # Should return results (falls back to hybrid since no embeddings)
@@ -1974,7 +1974,7 @@ def test_cascade_retrieval_basic():
 
 def test_cascade_retrieval_respects_limit():
     """Cascade retrieval respects the limit parameter."""
-    from foresight_mcp.server import SearchOptions, search_memories
+    from foresight.server import SearchOptions, search_memories
 
     result = search_memories(SearchOptions(query="test", use_cascade=True, limit=2))
     # Count lines in result
@@ -1984,7 +1984,7 @@ def test_cascade_retrieval_respects_limit():
 
 def test_search_options_cascade_fields():
     """SearchOptions accepts cascade-related fields."""
-    from foresight_mcp.server import SearchOptions
+    from foresight.server import SearchOptions
 
     opts = SearchOptions(query="test", use_cascade=True, cascade_depth=3, cascade_limit=100)
     assert opts.use_cascade is True
@@ -2002,7 +2002,7 @@ class TestSystemStatusHealth:
 
     def test_injection_stats_tracked(self):
         """inject_context updates _last_injection_stats with metadata."""
-        from foresight_mcp.server import _last_injection_stats, inject_context
+        from foresight.server import _last_injection_stats, inject_context
 
         results = [
             _make_hybrid_result("mem1", "Python type hints discussion", combined_score=0.85),
@@ -2011,8 +2011,8 @@ class TestSystemStatusHealth:
 
         with (
             _patch_hybrid_retriever(results, total_candidates=4, signal_counts={"keyword": 2, "graph": 1}),
-            patch("foresight_mcp.server.USER_ID", "test_user"),
-            patch("foresight_mcp.server.get_context_block_agent"),
+            patch("foresight.server.USER_ID", "test_user"),
+            patch("foresight.server.get_context_block_agent"),
         ):
             inject_context("python type hints and database")
 
@@ -2025,7 +2025,7 @@ class TestSystemStatusHealth:
 
     def test_injection_stats_no_memory_content_leak(self):
         """_last_injection_stats does not include raw memory content (privacy-safe)."""
-        from foresight_mcp.server import _last_injection_stats, inject_context
+        from foresight.server import _last_injection_stats, inject_context
 
         results = [
             _make_hybrid_result("mem1", "sensitive clinical note about patient X", combined_score=0.9),
@@ -2033,8 +2033,8 @@ class TestSystemStatusHealth:
 
         with (
             _patch_hybrid_retriever(results),
-            patch("foresight_mcp.server.USER_ID", "test_user"),
-            patch("foresight_mcp.server.get_context_block_agent"),
+            patch("foresight.server.USER_ID", "test_user"),
+            patch("foresight.server.get_context_block_agent"),
         ):
             inject_context("clinical note")
 
@@ -2049,7 +2049,7 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_stale_count(self):
         """get_system_status returns stale_count metric."""
-        from foresight_mcp.server import get_system_status
+        from foresight.server import get_system_status
 
         result = get_system_status()
         data = json.loads(result)
@@ -2058,7 +2058,7 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_by_category(self):
         """get_system_status returns by_category breakdown."""
-        from foresight_mcp.server import get_system_status
+        from foresight.server import get_system_status
 
         # Store memories with different categories
         store_memory("fact memory one", category="fact", scope="session")
@@ -2072,7 +2072,7 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_last_injection(self):
         """get_system_status returns last_injection field (may be null)."""
-        from foresight_mcp.server import get_system_status
+        from foresight.server import get_system_status
 
         result = get_system_status()
         data = json.loads(result)
@@ -2081,7 +2081,7 @@ class TestSystemStatusHealth:
 
     def test_system_status_no_memory_content_in_output(self):
         """get_system_status output does not include raw memory content (privacy-safe)."""
-        from foresight_mcp.server import get_system_status
+        from foresight.server import get_system_status
 
         store_memory("very personal therapeutic session content that should be private")
         result = get_system_status()
