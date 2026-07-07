@@ -4037,12 +4037,16 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
         return None
 
-    # Create and start WebSocket server with event bus for real-time push
-    websocket_server = WebSocketServer(
-        event_bus=get_event_bus(),
-        auth_callback=cast(Any, websocket_auth_callback),
-    )
-    _run_async(websocket_server.start())
+    # WebSocket server is opt-in: only enabled when FORESIGHT_ENABLE_WS is set.
+    # The WS surface exists for live UI/inspector clients; stdio MCP tools do not
+    # need it. Skipping avoids binding port 8765 and re-broadcasting port-forward
+    # notices on every tool call.
+    if os.environ.get("FORESIGHT_ENABLE_WS"):
+        websocket_server = WebSocketServer(
+            event_bus=get_event_bus(),
+            auth_callback=cast(Any, websocket_auth_callback),
+        )
+        _run_async(websocket_server.start())
 
     # Determine transport: streamable-http (full HTTP, stateless request/response) when port is set, stdio otherwise
     transport_port = port if port is not None else os.environ.get("FORESIGHT_MCP_PORT")
