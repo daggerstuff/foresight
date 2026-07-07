@@ -35,7 +35,7 @@ Three commands. You're live.
 | **`foresight`**         | Full CLI with 20+ commands             | `foresight store "hello"`, `foresight list`, `foresight query "search"` |
 | **`foresight --agent`** | Machine-parseable output for AI agents | `foresight --agent status → [JSON] {...}`                               |
 | **`foresight tui`**     | Interactive Textual TUI                | Browse, search, edit memories — keyboard-first                          |
-| **`foresight-mcp`**     | MCP server for agent tool integration  | Add to Claude Code, Cursor, Goose, any MCP client                       |
+| **`foresight-server`**  | MCP server for agent tool integration  | Add to Claude Code, Cursor, Goose, any MCP client                       |
 | **Python SDK**          | Import directly for custom tooling     | Use Python API helpers for custom scripts                               |
 
 ---
@@ -217,7 +217,7 @@ Add to any MCP-compatible agent. Here's the Claude Code config:
   "mcpServers": {
     "foresight": {
       "command": "uvx",
-      "args": ["foresight-mcp"]
+      "args": ["foresight-server"]
     }
   }
 }
@@ -227,7 +227,7 @@ Add to any MCP-compatible agent. Here's the Claude Code config:
 
 ```bash
 Command: uvx
-Arguments: foresight-mcp
+Arguments: foresight-server
 ```
 
 **Goose** — same pattern, same command. Any stdio MCP client works.
@@ -334,7 +334,7 @@ the source bank through a staging-and-promotion flow.
 ## Quick start
 
 ```bash
-uv run foresight-mcp
+uv run foresight-server
 uv run foresight --help
 ```
 
@@ -368,7 +368,7 @@ uv run foresight --help
 5. Start the MCP server:
 
    ```bash
-   uvx --from foresight foresight-mcp
+   uvx --from foresight foresight-server
    ```
 
 6. Explore the CLI:

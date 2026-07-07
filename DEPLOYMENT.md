@@ -47,7 +47,7 @@ If `FORESIGHT_DB_URL` is unset, the factory falls back to `SqliteBackend()` — 
 | `REDIS_URL_LOCAL`    | _Optional_  | Local Docker convention (`redis://[:pw]@127.0.0.1:6379`). **Diagnostic-only**; not consumed by Foresight at runtime — useful for local-dev smokes. | _none_                          |
 | `REDIS_URL_REMOTE`   | _Optional_  | Upstash / hosted broker URL (`rediss://default:[pw]@host:6379`). **Diagnostic-only**; cross-process smoke target.                                  | _none_                          |
 
-> **Security**: keep `FORESIGHT_DB_URL` and any Upstash credentials out of git. They belong in `~/.env` for shared team deployment of Foresight→Neon, with optional per-developer override in `~/.env.local` (last-source-wins via `foresight-mcp-server.sh`), or in the deployment platform's secret manager. Both files are gitignored via the `~/.gitignore` rule `/.env*`.
+> **Security**: keep `FORESIGHT_DB_URL` and any Upstash credentials out of git. They belong in `~/.env` for shared team deployment of Foresight→Neon, with optional per-developer override in `~/.env.local` (last-source-wins via `foresight-server.sh`), or in the deployment platform's secret manager. Both files are gitignored via the `~/.gitignore` rule `/.env*`.
 
 ---
 
@@ -183,7 +183,7 @@ Plus local Docker smoke: `c.put(...)` → `c.get(...)` produces a HIT with TTL=6
 
 ## 8. The `--active` Flag Trap — Historical (retired) Context
 
-> **Status: historical.** The launcher `scripts/memory/foresight-mcp-server.sh` was hardened against ambient `VIRTUAL_ENV` in commit `e970f760c fix: harden foresight-mcp launcher against ambient VIRTUAL_ENV` (landed on `origin/staging`, June 2026). Production launches flow through the hardened launcher (`set -a; source .env; source .env.local; set +a; exec uv run ...`) and are no longer subject to the trap described below. The pattern documented here is preserved as the developer-machine / smoke-test idiom.
+> **Status: historical.** The launcher `scripts/memory/foresight-server.sh` was hardened against ambient `VIRTUAL_ENV` in commit `e970f760c fix: harden foresight launcher against ambient VIRTUAL_ENV` (landed on `origin/staging`, June 2026). Production launches flow through the hardened launcher (`set -a; source .env; source .env.local; set +a; exec uv run ...`) and are no longer subject to the trap described below. The pattern documented here is preserved as the developer-machine / smoke-test idiom.
 
 `uv run` defaults to the closest `.venv`. The host repo (`pixelated/`) ships an outer `.venv` that **lacks** `psycopg`, `psycopg-pool`, and `redis`. If you accidentally run with `--active` from anywhere outside `foresight/`, you'll end up using the outer venv and getting `ModuleNotFoundError`.
 

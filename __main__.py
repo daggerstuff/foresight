@@ -29,7 +29,9 @@ from .server import _initialize_backend, get_system_status, init_db, main as run
 def main() -> None:
     """Support lightweight CLI flags before starting the MCP server."""
     if "-h" in sys.argv or "--help" in sys.argv:
-        sys.stdout.write("Usage: foresight-mcp [--health] [--health --json] [--version] [--host HOST] [--port PORT]\n")
+        sys.stdout.write(
+            "Usage: foresight-server [--health] [--health --json] [--version] [--host HOST] [--port PORT]\n"
+        )
         return
 
     if "--health" in sys.argv:
