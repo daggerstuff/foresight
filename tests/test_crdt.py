@@ -3,7 +3,7 @@
 import time
 
 import pytest
-from foresight_mcp.crdt import (
+from foresight.crdt import (
     LWWMap,
     LWWRegister,
     ORSet,

@@ -5,7 +5,7 @@ inject_context and get_relevant_memories, and detailed metrics on
 payload size, latency, retrieval quality, and safety (PII leakage).
 
 Usage:
-    from foresight_mcp.eval_harness import EvalHarness, EvalReport
+    from foresight.eval_harness import EvalHarness, EvalReport
 
     harness = EvalHarness(db_path="/tmp/eval_fixtures.db")
     harness.seed_fixtures()
@@ -16,7 +16,7 @@ Usage:
     import json; print(json.dumps(report.to_dict(), indent=2))
 
 Or via CLI:
-    python -m foresight_mcp.eval_harness
+    python -m foresight.eval_harness
 """
 
 from __future__ import annotations
@@ -539,13 +539,13 @@ class EvalHarness:
         Note: hybrid_retriever has its own `from .config import DB_PATH` local
         binding, so we must patch that module's attribute directly too.
         """
-        import foresight_mcp.config as config_module
-        import foresight_mcp.connection_pool as conn_pool_module
-        import foresight_mcp.hybrid_retriever as hr_module
-        from foresight_mcp.connection_pool import reset_pool
-        from foresight_mcp.hybrid_retriever import reset_hybrid_retriever
-        from foresight_mcp.server import init_db
-        from foresight_mcp.tenant_context import set_current_account_id, set_current_user_id
+        import foresight.config as config_module
+        import foresight.connection_pool as conn_pool_module
+        import foresight.hybrid_retriever as hr_module
+        from foresight.connection_pool import reset_pool
+        from foresight.hybrid_retriever import reset_hybrid_retriever
+        from foresight.server import init_db
+        from foresight.tenant_context import set_current_account_id, set_current_user_id
 
         # Reset singletons
         reset_pool()
@@ -563,7 +563,7 @@ class EvalHarness:
 
         # Ensure schema exists — always use SqliteBackend so the harness
         # database is self-contained regardless of FORESIGHT_DB_URL.
-        from foresight_mcp.backend import SqliteBackend
+        from foresight.backend import SqliteBackend
 
         backend = SqliteBackend(db_path=self.db_path)
         backend.connect()
@@ -574,16 +574,16 @@ class EvalHarness:
 
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
-        import foresight_mcp.hybrid_retriever as hr_module
+        import foresight.hybrid_retriever as hr_module
 
         hr_module.reset_hybrid_retriever()
-        from foresight_mcp.connection_pool import reset_pool
+        from foresight.connection_pool import reset_pool
 
         reset_pool()
         for module, attr, orig in self._monkeypatches:
             setattr(module, attr, orig)
         self._monkeypatches.clear()
-        from foresight_mcp.tenant_context import reset_tenant_context
+        from foresight.tenant_context import reset_tenant_context
 
         reset_tenant_context()
 
@@ -784,15 +784,15 @@ class EvalHarness:
         budget_chars: int | None,
     ) -> ScenarioResult:
         """Internal: run scenario without exception handling."""
-        from foresight_mcp.server import inject_context as ic_fn
-        from foresight_mcp.tenant_context import set_current_account_id, set_current_user_id
+        from foresight.server import inject_context as ic_fn
+        from foresight.tenant_context import set_current_account_id, set_current_user_id
 
         # Set tenant context for server functions
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
 
         # Also patch the module-level USER_ID for inject_context
-        import foresight_mcp.server as server_module
+        import foresight.server as server_module
 
         original_user_id = server_module.USER_ID
         server_module.USER_ID = self.user_id
@@ -818,7 +818,7 @@ class EvalHarness:
             formatted = result.get("formatted", "")
 
             # Also run get_relevant_memories for structured metrics
-            from foresight_mcp.server import get_relevant_memories as grm_fn
+            from foresight.server import get_relevant_memories as grm_fn
 
             t1 = time.perf_counter()
             grm_str = grm_fn(
@@ -932,7 +932,7 @@ class EvalHarness:
 
         for scenario in SCENARIOS:
             # Reset hybrid retriever between scenarios to avoid cross-contamination
-            from foresight_mcp.hybrid_retriever import reset_hybrid_retriever
+            from foresight.hybrid_retriever import reset_hybrid_retriever
 
             reset_hybrid_retriever()
             result = self.run_scenario(scenario, budget_chars)
@@ -1108,7 +1108,7 @@ def _format_pct_change(value: float | None) -> str:
 
 
 def main() -> None:
-    """CLI entry point. Run with: python -m foresight_mcp.eval_harness"""
+    """CLI entry point. Run with: python -m foresight.eval_harness"""
     import argparse
 
     parser = argparse.ArgumentParser(description="Foresight Evaluation Harness (PIX-3953)")

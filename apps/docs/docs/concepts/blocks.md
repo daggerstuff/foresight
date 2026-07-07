@@ -35,7 +35,7 @@ Context blocks are named containers that hold high-signal context with:
 ## Working with blocks in Python
 
 ```python
-from foresight_mcp import (
+from foresight import (
     add_context_guidance,
     get_context_block,
     get_context_snapshot,

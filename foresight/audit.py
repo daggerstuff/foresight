@@ -1,4 +1,4 @@
-"""Tenant-isolated audit log for foresight-mcp clinical workflows.
+"""Tenant-isolated audit log for foresight clinical workflows.
 
 Replaces the Python ``logging``-based stopgap (PIX-3738) with a SQLite
 table that supports queryable, tenant-isolated, retention-controlled

@@ -4,7 +4,7 @@ import json
 import tempfile
 
 import pytest
-from foresight_mcp.clustering import ClusterResult, _jaccard, _tokenize, cluster_memories
+from foresight.clustering import ClusterResult, _jaccard, _tokenize, cluster_memories
 
 
 def test_tokenize_basic() -> None:
@@ -231,21 +231,21 @@ def temp_db():
 def server_env(temp_db, monkeypatch):
     """Set up server environment with isolated DB and mocked USER_ID."""
     monkeypatch.setenv("FORESIGHT_DB_PATH", temp_db)
-    import foresight_mcp.config as config_module
-    import foresight_mcp.connection_pool as conn_pool_module
-    from foresight_mcp.backend import SqliteBackend
-    from foresight_mcp.connection_pool import reset_pool
-    from foresight_mcp.server import init_db
+    import foresight.config as config_module
+    import foresight.connection_pool as conn_pool_module
+    from foresight.backend import SqliteBackend
+    from foresight.connection_pool import reset_pool
+    from foresight.server import init_db
 
     monkeypatch.setattr(config_module, "DB_PATH", temp_db)
     monkeypatch.setattr(conn_pool_module, "DB_PATH", temp_db)
     monkeypatch.setattr(config_module, "USER_ID", "test_user")
 
     # Also patch graph_store's module-level DB_PATH import
-    import foresight_mcp.graph_store as graph_store_module
+    import foresight.graph_store as graph_store_module
 
     monkeypatch.setattr(graph_store_module, "DB_PATH", temp_db)
-    from foresight_mcp.graph_store import reset_graph_store
+    from foresight.graph_store import reset_graph_store
 
     reset_graph_store()
     reset_pool()
@@ -256,11 +256,11 @@ def server_env(temp_db, monkeypatch):
     finally:
         backend.close()
     # Reset USER_ID in server module too
-    import foresight_mcp.server as server_module
+    import foresight.server as server_module
 
     monkeypatch.setattr(server_module, "USER_ID", "test_user")
 
-    from foresight_mcp.tenant_context import (
+    from foresight.tenant_context import (
         set_current_account_id,
         set_current_user_id,
     )
@@ -272,7 +272,7 @@ def server_env(temp_db, monkeypatch):
     reset_pool()
     reset_graph_store()
 
-    from foresight_mcp.tenant_context import reset_tenant_context
+    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -280,7 +280,7 @@ def server_env(temp_db, monkeypatch):
 @pytest.fixture
 def seed_memories(server_env):
     """Seed test memories for clustering tests."""
-    from foresight_mcp.server import store_memory
+    from foresight.server import store_memory
 
     # Group A: anxiety-themed memories
     store_memory("I feel very anxious about my job interview tomorrow", user_id="test_user")
@@ -307,7 +307,7 @@ class TestRunClusteringTool:
     @pytest.mark.usefixtures("server_env")
     def test_run_clustering_no_memories(self) -> None:
         """run_clustering with no memories returns zero clusters."""
-        from foresight_mcp.server import run_clustering
+        from foresight.server import run_clustering
 
         result = run_clustering(user_id="empty_user")
         data = json.loads(result)
@@ -318,7 +318,7 @@ class TestRunClusteringTool:
     @pytest.mark.usefixtures("seed_memories")
     def test_run_clustering_creates_clusters(self) -> None:
         """run_clustering should create clusters from related memories."""
-        from foresight_mcp.server import run_clustering
+        from foresight.server import run_clustering
 
         result = run_clustering(user_id="test_user", min_similarity=0.1)
         data = json.loads(result)
@@ -329,7 +329,7 @@ class TestRunClusteringTool:
     @pytest.mark.usefixtures("seed_memories")
     def test_run_clustering_high_threshold(self) -> None:
         """High min_similarity should produce no clusters."""
-        from foresight_mcp.server import run_clustering
+        from foresight.server import run_clustering
 
         result = run_clustering(user_id="test_user", min_similarity=0.99)
         data = json.loads(result)
@@ -343,7 +343,7 @@ class TestQueryClustersTool:
     @pytest.mark.usefixtures("server_env")
     def test_query_clusters_empty(self) -> None:
         """query_clusters with no cluster entities returns empty list."""
-        from foresight_mcp.server import query_clusters
+        from foresight.server import query_clusters
 
         result = query_clusters(user_id="empty_user")
         data = json.loads(result)
@@ -354,7 +354,7 @@ class TestQueryClustersTool:
     @pytest.mark.usefixtures("seed_memories")
     def test_query_clusters_after_run(self) -> None:
         """query_clusters should return cluster entities after run_clustering."""
-        from foresight_mcp.server import query_clusters, run_clustering
+        from foresight.server import query_clusters, run_clustering
 
         run_result = json.loads(run_clustering(user_id="test_user", min_similarity=0.1))
         if run_result["clusters_created"] == 0:
@@ -377,8 +377,8 @@ class TestUpsertClusterResults:
     @pytest.mark.usefixtures("server_env")
     def test_upsert_empty_result(self) -> None:
         """Empty ClusterResult should upsert nothing."""
-        from foresight_mcp.clustering import ClusterResult
-        from foresight_mcp.server import _upsert_cluster_results
+        from foresight.clustering import ClusterResult
+        from foresight.server import _upsert_cluster_results
 
         result = ClusterResult(cluster_entities=[], memory_links=[])
         summary = _upsert_cluster_results(result, "test_user", "default")
@@ -389,9 +389,9 @@ class TestUpsertClusterResults:
     @pytest.mark.usefixtures("server_env")
     def test_upsert_and_query_round_trip(self) -> None:
         """Entities upserted via _upsert_cluster_results should be queryable."""
-        from foresight_mcp.clustering import ClusterResult
-        from foresight_mcp.graph_store import get_graph_store
-        from foresight_mcp.server import _upsert_cluster_results
+        from foresight.clustering import ClusterResult
+        from foresight.graph_store import get_graph_store
+        from foresight.server import _upsert_cluster_results
 
         store = get_graph_store()
         cluster_entities = [
@@ -438,8 +438,8 @@ class TestUpsertClusterResults:
     @pytest.mark.usefixtures("server_env")
     def test_upsert_then_memory_linking(self) -> None:
         """After upsert, memories should be linkable to cluster entities."""
-        from foresight_mcp.clustering import ClusterResult
-        from foresight_mcp.server import _upsert_cluster_results
+        from foresight.clustering import ClusterResult
+        from foresight.server import _upsert_cluster_results
 
         cluster_entities = [
             {
@@ -464,7 +464,7 @@ class TestUpsertClusterResults:
         _upsert_cluster_results(result, "test_user", "default")
 
         # The memory_entity_links table should have the link
-        from foresight_mcp.connection_pool import DB_PATH, get_pool
+        from foresight.connection_pool import DB_PATH, get_pool
 
         pool = get_pool(db_path=DB_PATH)
         conn = pool.acquire()

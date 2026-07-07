@@ -27,7 +27,7 @@ Foresight provides:
 ## Quick Example
 
 ```python
-from foresight_mcp import ForesightClient
+from foresight import ForesightClient
 
 client = ForesightClient()
 
@@ -96,4 +96,4 @@ client.subscribeToEvents(['memory.stored', 'memory.updated'])
 ## License
 
 MIT License - see
-[LICENSE](https://github.com/daggerstuff/foresight-mcp/blob/main/LICENSE)
+[LICENSE](https://github.com/daggerstuff/foresight/blob/main/LICENSE)

@@ -422,7 +422,7 @@ class PostgresPooledConnection(PooledConnection):
         return PostgresRow(row)
 
     def execute(self, sql, params=()):
-        from foresight_mcp.backend.postgres_backend import _translate_sql
+        from foresight.backend.postgres_backend import _translate_sql
         import re
 
         sql_upper = sql.lstrip().upper()
@@ -449,7 +449,7 @@ class PostgresPooledConnection(PooledConnection):
         return self
 
     def execute_returning(self, sql, params=()):
-        from foresight_mcp.backend.postgres_backend import _translate_sql
+        from foresight.backend.postgres_backend import _translate_sql
 
         pg_sql = _translate_sql(sql)
         upper_sql = pg_sql.upper()
@@ -544,7 +544,7 @@ def get_db_connection(db_path: str | None = None):
         conn = pool.getconn()
         return PostgresPooledConnection(conn, pool)
     _log.debug("get_db_connection: using SQLite pool (_global_backend=%s)", _global_backend)
-    from foresight_mcp.connection_pool import DB_PATH as _pool_db_path
+    from foresight.connection_pool import DB_PATH as _pool_db_path
 
     return get_pool(db_path or _pool_db_path).acquire()
 
@@ -972,7 +972,7 @@ def init_db(backend=None):
         try:
             backend = create_backend()
         except RuntimeError:
-            from foresight_mcp.backend.sqlite_backend import SqliteBackend
+            from foresight.backend.sqlite_backend import SqliteBackend
 
             backend = SqliteBackend(db_path=str(db_path))
     backend.connect()
@@ -1454,7 +1454,7 @@ def _health_status_dict() -> dict[str, Any]:
     try:
         # Deferred: get_system_status is defined later in this module (~L3960).
         # Bare name fails if called during module init before that def.
-        from foresight_mcp.server import get_system_status as _get_status
+        from foresight.server import get_system_status as _get_status
 
         raw = _get_status()
         parsed: Any = json.loads(raw) if isinstance(raw, str) else raw
@@ -5440,6 +5440,6 @@ if __name__ == "__main__":
     import sys as _sys
 
     _this = _sys.modules[__name__]
-    _sys.modules["foresight_mcp.server"] = _this
+    _sys.modules["foresight.server"] = _this
     _sys.modules[__name__] = _this
     main()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from foresight_mcp.config import DB_URL
+from foresight.config import DB_URL
 
 from .base import DatabaseBackend
 from .postgres_backend import PostgresBackend

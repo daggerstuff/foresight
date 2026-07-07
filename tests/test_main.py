@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 
 def test_main_health_prints_status(capsys):
-    import foresight_mcp.__main__ as main_module
+    import foresight.__main__ as main_module
 
     with (
         patch.object(main_module.sys, "argv", ["foresight-mcp", "--health"]),
@@ -26,7 +26,7 @@ def test_main_health_prints_status(capsys):
 
 
 def test_main_help_prints_usage(capsys):
-    import foresight_mcp.__main__ as main_module
+    import foresight.__main__ as main_module
 
     with patch.object(main_module.sys, "argv", ["foresight-mcp", "--help"]):
         main_module.main()

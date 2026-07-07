@@ -6,9 +6,9 @@ import sqlite3
 import tempfile
 from unittest.mock import patch
 
-from foresight_mcp.backend import SqliteBackend
-from foresight_mcp.server import init_db, switch_tenant
-from foresight_mcp.tenant_context import (
+from foresight.backend import SqliteBackend
+from foresight.server import init_db, switch_tenant
+from foresight.tenant_context import (
     DEFAULT_TENANT_ID,
     get_current_account_id,
     reset_tenant_context,
@@ -46,7 +46,7 @@ def test_switch_tenant_default_is_stable_after_bootstrap():
     tmp.close()
     try:
         backend = SqliteBackend(db_path=tmp.name)
-        with patch("foresight_mcp.server.get_db_connection", lambda: _ephemeral_connection(tmp.name)):
+        with patch("foresight.server.get_db_connection", lambda: _ephemeral_connection(tmp.name)):
             init_db(backend=backend)
             result = switch_tenant(DEFAULT_TENANT_ID)
         assert result == f"Switched to tenant '{DEFAULT_TENANT_ID}'"
@@ -66,7 +66,7 @@ def test_switch_tenant_unknown_returns_not_found():
     tmp.close()
     try:
         backend = SqliteBackend(db_path=tmp.name)
-        with patch("foresight_mcp.server.get_db_connection", lambda: _ephemeral_connection(tmp.name)):
+        with patch("foresight.server.get_db_connection", lambda: _ephemeral_connection(tmp.name)):
             init_db(backend=backend)
             result = switch_tenant("no-such-tenant")
         assert result == "Tenant 'no-such-tenant' not found"

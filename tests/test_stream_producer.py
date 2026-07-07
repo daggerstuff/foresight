@@ -1,8 +1,8 @@
 """Tests for stream producer integration."""
 
 import pytest
-from foresight_mcp.event_bus import memory_stored
-from foresight_mcp.stream_producer import (
+from foresight.event_bus import memory_stored
+from foresight.stream_producer import (
     KafkaProducer,
     KinesisProducer,
     MockProducer,
@@ -126,7 +126,7 @@ class TestEventBusIntegration:
 
     def test_event_bus_with_stream_publisher(self):
         """Test EventBus publishes to stream."""
-        from foresight_mcp.event_bus import EventBus, EventStore
+        from foresight.event_bus import EventBus, EventStore
 
         mock_producer = MockProducer()
         publisher = StreamPublisher(mock_producer, environment="dev")

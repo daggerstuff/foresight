@@ -32,7 +32,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          uv run pytest tests/ -v --cov=foresight_mcp --cov-report=lcov
+          uv run pytest tests/ -v --cov=foresight --cov-report=lcov
 
       - name: Prepare coverage report
         run: |

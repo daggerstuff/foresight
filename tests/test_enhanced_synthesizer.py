@@ -10,13 +10,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.enhanced_synthesizer import (
+from foresight.enhanced_synthesizer import (
     Contradiction,
     EnhancedMemorySynthesizer,
     Insight,
     TemporalTrend,
 )
-from foresight_mcp.memory_types import EmotionalMetadata, MemoryObject
+from foresight.memory_types import EmotionalMetadata, MemoryObject
 
 
 def create_memory(content: str, timestamp: datetime, intensity: float = 0.5, tags=None) -> MemoryObject:

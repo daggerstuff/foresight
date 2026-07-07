@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from foresight_mcp import get_system_status
-from foresight_mcp.server import _initialize_backend, init_db
+from foresight import get_system_status
+from foresight.server import _initialize_backend, init_db
 
 from foresight_cli.utils import config as cfg, output as out
 
@@ -330,8 +330,8 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight_mcp import query_memories_temporal
-        from foresight_mcp.server import TemporalWindow
+        from foresight import query_memories_temporal
+        from foresight.server import TemporalWindow
 
         temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:
@@ -458,7 +458,7 @@ def history(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight_mcp import get_decay_events
+        from foresight import get_decay_events
 
         raw = get_decay_events(user_id=resolved_uid, limit=limit)
         parsed: dict = json.loads(raw) if isinstance(raw, str) else raw

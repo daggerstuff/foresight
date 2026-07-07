@@ -151,7 +151,7 @@ except ImportError:
 
 _tui_err = (
     "Cannot launch TUI — missing dependency: {e}\n"
-    "Install with: pip install 'foresight-mcp[tui]' or: uv pip install 'foresight-mcp[tui]'"
+    "Install with: pip install 'foresight[tui]' or: uv pip install 'foresight[tui]'"
 )
 
 
@@ -161,7 +161,7 @@ def tui(
 ):
     """Launch the Foresight interactive TUI (Textual)."""
     if ForesightTUI is None:
-        out.error("Cannot launch TUI — missing dependency. Install with: pip install 'foresight-mcp[tui]'")
+        out.error("Cannot launch TUI — missing dependency. Install with: pip install 'foresight[tui]'")
         raise typer.Exit(1)
 
     ui_cfg = cfg.ensure_config()

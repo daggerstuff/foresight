@@ -2,9 +2,9 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import foresight_mcp.auth as auth_module
+import foresight.auth as auth_module
 import pytest
-from foresight_mcp.auth import AuthManager, AuthMiddleware, Role
+from foresight.auth import AuthManager, AuthMiddleware, Role
 
 
 def _tool_result_is_error(result) -> bool:

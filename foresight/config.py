@@ -22,7 +22,7 @@ DB_PATH = os.environ.get("FORESIGHT_DB_PATH", DEFAULT_DB_PATH)
 DB_URL = os.environ.get("FORESIGHT_DB_URL", "")
 
 # Optional Redis companion cache (overrides the in-process dict cache when set).
-# See foresight_mcp/redis_cache.RedisCache for the consuming API.
+# See foresight/redis_cache.RedisCache for the consuming API.
 # Format: redis://[:password@]host:port[/db]
 REDIS_URL = os.environ.get("FORESIGHT_REDIS_URL", "")
 

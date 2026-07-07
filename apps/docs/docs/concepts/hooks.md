@@ -27,7 +27,7 @@ foresight hook register "My Webhook" "memory.stored" \
 
 ```python
 # Via Python
-from foresight_mcp.hooks import register_hook, EventType
+from foresight.hooks import register_hook, EventType
 
 hook = register_hook(
     name="Slack Notification",
@@ -74,7 +74,7 @@ foresight hook list
 ```
 
 ```python
-from foresight_mcp.hooks import list_hooks
+from foresight.hooks import list_hooks
 
 hooks = list_hooks()
 for hook in hooks:
@@ -88,7 +88,7 @@ foresight hook unregister <hook_id>
 ```
 
 ```python
-from foresight_mcp.hooks import unregister_hook
+from foresight.hooks import unregister_hook
 
 unregister_hook(hook_id)
 ```

@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import pytest
-from foresight_mcp.server import generate_recovery_payload
+from foresight.server import generate_recovery_payload
 
 
 @pytest.fixture(autouse=True)
@@ -15,17 +15,17 @@ def setup_test_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_memory.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
-    import foresight_mcp.config as config_module
-    import foresight_mcp.connection_pool as conn_pool_module
-    from foresight_mcp.backend import SqliteBackend
-    from foresight_mcp.connection_pool import reset_pool
-    from foresight_mcp.server import init_db
+    import foresight.config as config_module
+    import foresight.connection_pool as conn_pool_module
+    from foresight.backend import SqliteBackend
+    from foresight.connection_pool import reset_pool
+    from foresight.server import init_db
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
     reset_pool()
 
-    from foresight_mcp.tenant_context import set_current_account_id, set_current_user_id
+    from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id("_recovery_test_user_")
     set_current_account_id("_recovery_test_")
@@ -39,7 +39,7 @@ def setup_test_db(tmp_path, monkeypatch):
     yield
     reset_pool()
 
-    from foresight_mcp.tenant_context import reset_tenant_context
+    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -85,7 +85,7 @@ def _insert_memory(conn, memory_id: str, content: str, **overrides):
 
 def _get_conn():
     """Get a direct connection to the test DB (for setup/assert)."""
-    from foresight_mcp.config import DB_PATH
+    from foresight.config import DB_PATH
 
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row

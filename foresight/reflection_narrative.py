@@ -2,7 +2,7 @@
 LLM narrative generation for reflection engine reports.
 
 Converts a structured :class:`ReflectionReport` into a human-readable prose
-summary by calling a caller-supplied LLM callable. The ``foresight-mcp``
+summary by calling a caller-supplied LLM callable. The ``foresight``
 package does not bundle an LLM client; the caller is responsible for
 providing a tenant-isolated LLM function. This keeps the memory subsystem
 LLM-agnostic and avoids new top-level dependencies.
@@ -29,14 +29,14 @@ Audit
 -----
 
 Every successful and failed call writes a row to the
-:class:`foresight_mcp.audit.AuditLog` table when one is supplied via
+:class:`foresight.audit.AuditLog` table when one is supplied via
 the ``audit_log`` parameter. The row contains ``tenant_id``,
 ``user_id``, ``report_id``, ``model_version``, ``prompt_hash``,
 ``response_hash``, ``latency_ms``, and ``outcome``. No raw prompt or
 response text is stored. If no ``audit_log`` is supplied (e.g. unit
 tests, ephemeral CLI runs), the module falls back to a structured
 ``logger.info(...)`` call for compatibility. The audit table is
-append-only at the SQLite layer (see :mod:`foresight_mcp.audit`).
+append-only at the SQLite layer (see :mod:`foresight.audit`).
 
 Caching
 -------
@@ -294,7 +294,7 @@ def generate_insight_narrative(
             If ``None``, the module-level in-process dict is used. The
             cache key includes ``tenant_id`` and ``user_id`` to enforce
             isolation.
-        audit_log: Optional :class:`foresight_mcp.audit.AuditLog`. If
+        audit_log: Optional :class:`foresight.audit.AuditLog`. If
             provided, success / error / cache-hit events are persisted
             as queryable, tenant-isolated rows. If ``None`` (the
             default), the module falls back to a structured

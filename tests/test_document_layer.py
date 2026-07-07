@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
-from foresight_mcp import document_layer as doc_mod
-from foresight_mcp.document_layer import (
+from foresight import document_layer as doc_mod
+from foresight.document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET,
     VALID_DOCUMENT_SOURCES,
     Document,
@@ -79,8 +79,8 @@ def _patched_store(db_path: str) -> Iterator[DocumentStore]:
     reset_document_store()
     with (
         patch.object(doc_mod, "DB_PATH", db_path),
-        patch("foresight_mcp.config.DB_PATH", db_path),
-        patch("foresight_mcp.document_layer.DB_PATH", db_path),
+        patch("foresight.config.DB_PATH", db_path),
+        patch("foresight.document_layer.DB_PATH", db_path),
     ):
         store = DocumentStore(db_path)
         try:
@@ -445,7 +445,7 @@ def test_delete_document_returns_zero_when_missing():
 
 def test_singleton_returns_same_instance(monkeypatch):
     db = _make_test_db()
-    monkeypatch.setattr("foresight_mcp.config.DB_PATH", db)
+    monkeypatch.setattr("foresight.config.DB_PATH", db)
     monkeypatch.setattr(doc_mod, "DB_PATH", db)
     reset_document_store()
     a = get_document_store()

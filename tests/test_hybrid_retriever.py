@@ -13,14 +13,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.hybrid_retriever import (
+from foresight.hybrid_retriever import (
     HybridRetriever,
     _escape_like,
     _normalize_query,
     _validate_input,
     reset_hybrid_retriever,
 )
-from foresight_mcp.server import SearchTrace
+from foresight.server import SearchTrace
 
 
 @pytest.fixture(autouse=True)

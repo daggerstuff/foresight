@@ -422,7 +422,7 @@ class PostgresPooledConnection(PooledConnection):
         return PostgresRow(row)
 
     def execute(self, sql, params=()):
-        from foresight_mcp.backend.postgres_backend import _translate_sql
+        from foresight.backend.postgres_backend import _translate_sql
 
         pg_sql = _translate_sql(sql)
         self._last_result = self._conn.execute(pg_sql, params)
@@ -430,7 +430,7 @@ class PostgresPooledConnection(PooledConnection):
         return self
 
     def execute_returning(self, sql, params=()):
-        from foresight_mcp.backend.postgres_backend import _translate_sql
+        from foresight.backend.postgres_backend import _translate_sql
 
         pg_sql = _translate_sql(sql)
         upper_sql = pg_sql.upper()
@@ -1251,7 +1251,7 @@ def _health_status_dict() -> dict[str, Any]:
     try:
         # Deferred: get_system_status is defined later in this module (~L3960).
         # Bare name fails if called during module init before that def.
-        from foresight_mcp.server import get_system_status as _get_status
+        from foresight.server import get_system_status as _get_status
 
         raw = _get_status()
         parsed: Any = json.loads(raw) if isinstance(raw, str) else raw
@@ -5271,6 +5271,6 @@ if __name__ == "__main__":
     import sys as _sys
 
     _this = _sys.modules[__name__]
-    _sys.modules["foresight_mcp.server"] = _this
+    _sys.modules["foresight.server"] = _this
     _sys.modules[__name__] = _this
     main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point for running foresight-mcp as a module."""
+"""Entry point for running foresight as a module."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Walk up to find .env: foresight-mcp/.env → pixelated/.env → home/.env
+# Walk up to find .env: foresight/.env → pixelated/.env → home/.env
 _project_root = Path(__file__).resolve().parent.parent.parent
 for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
     if _candidate.exists():

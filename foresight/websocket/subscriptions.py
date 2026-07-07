@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
-from foresight_mcp.event_bus import EventType
+from foresight.event_bus import EventType
 
 logger = logging.getLogger("foresight_websocket")
 

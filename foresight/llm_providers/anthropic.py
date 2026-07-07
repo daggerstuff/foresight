@@ -1,6 +1,6 @@
-"""OpenAI Chat Completions API adapter.
+"""Anthropic Messages API adapter.
 
-Uses the public ``https://api.openai.com/v1/chat/completions`` endpoint.
+Uses the public ``https://api.anthropic.com/v1/messages`` endpoint.
 No SDK dependency; only the standard library.
 """
 
@@ -12,26 +12,27 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from foresight_mcp.llm_errors import LLMError, LLMRateLimitError
+from foresight.llm_errors import LLMError, LLMRateLimitError
 
-DEFAULT_MODEL = "gpt-4o-mini"
-API_URL = "https://api.openai.com/v1/chat/completions"
+DEFAULT_MODEL = "claude-3-5-sonnet-latest"
+API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
 
 
-class OpenAIClient:
-    provider: str = "openai"
+class AnthropicClient:
+    provider: str = "anthropic"
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         if not api_key:
-            raise LLMError("OpenAI API key is required. Set OPENAI_API_KEY or pass api_key=... explicitly.")
+            raise LLMError("Anthropic API key is required. Set ANTHROPIC_API_KEY or pass api_key=... explicitly.")
         if not model:
             raise LLMError("model is required and must be a non-empty string")
         self._api_key = api_key
         self.model = model
 
     @classmethod
-    def from_env(cls) -> OpenAIClient:
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    def from_env(cls) -> AnthropicClient:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         model = os.environ.get("FORESIGHT_LLM_MODEL", DEFAULT_MODEL).strip()
         return cls(api_key=api_key, model=model)
 
@@ -52,7 +53,8 @@ class OpenAIClient:
             data=data,
             method="POST",
             headers={
-                "Authorization": f"Bearer {self._api_key}",
+                "x-api-key": self._api_key,
+                "anthropic-version": ANTHROPIC_VERSION,
                 "content-type": "application/json",
             },
         )
@@ -62,29 +64,27 @@ class OpenAIClient:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code == 429:
-                raise LLMRateLimitError(f"OpenAI API rate limit (429): {detail}") from exc
-            raise LLMError(f"OpenAI API returned HTTP {exc.code}: {detail}") from exc
+                raise LLMRateLimitError(f"Anthropic API rate limit (429): {detail}") from exc
+            raise LLMError(f"Anthropic API returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
-            raise LLMError(f"OpenAI API request failed: {exc.reason}") from exc
+            raise LLMError(f"Anthropic API request failed: {exc.reason}") from exc
 
         try:
             parsed: dict[str, Any] = json.loads(payload)
         except json.JSONDecodeError as exc:
-            raise LLMError(f"OpenAI API returned malformed JSON: {exc}") from exc
+            raise LLMError(f"Anthropic API returned malformed JSON: {exc}") from exc
 
-        choices = parsed.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise LLMError(f"OpenAI API returned no choices: {payload[:200]}")
+        content = parsed.get("content")
+        if not isinstance(content, list) or not content:
+            raise LLMError(f"Anthropic API returned no content blocks: {payload[:200]}")
 
-        for choice in choices:
-            if isinstance(choice, dict):
-                message = choice.get("message")
-                if isinstance(message, dict):
-                    content = message.get("content")
-                    if isinstance(content, str):
-                        return content
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    return text
 
-        raise LLMError(f"OpenAI API returned no message content: {payload[:200]}")
+        raise LLMError(f"Anthropic API returned no text block: {payload[:200]}")
 
 
-__all__ = ["DEFAULT_MODEL", "OpenAIClient"]
+__all__ = ["DEFAULT_MODEL", "AnthropicClient"]
