@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import typer
+
 from foresight import (
     MemoryAction,
     MemoryUpdateOptions,
@@ -16,7 +17,6 @@ from foresight import (
     store_memory,
 )
 from foresight.server import init_db
-
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Store, retrieve, search, and manage memories.")
@@ -39,7 +39,7 @@ def store(
         "short_term", "--retention", "-r", help="Retention (ephemeral/short_term/long_term/permanent)"
     ),
     category: str = typer.Option("fact", "--category", "-c", help="Category label"),
-    importance: float = typer.Option(0.5, "--importance", "-i", min=0.0, max=1.0, help="Importance (0.0–1.0)"),
+    importance: float = typer.Option(0.5, "--importance", "-i", min=0.0, max=1.0, help="Importance (0.0-1.0)"),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Store a new memory."""
@@ -172,7 +172,7 @@ def search(
             result = semantic_search_memories(query=query_text, limit=limit, min_score=min_score)
         except ImportError:
             out.error("Semantic search requires embedding support. Use --mode keyword (default).")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
     else:
         result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
 

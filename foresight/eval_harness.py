@@ -553,8 +553,8 @@ class EvalHarness:
 
         # Patch config DB_PATH in each module that holds a local binding
         for mod in (config_module, conn_pool_module, hr_module):
-            orig = getattr(mod, "DB_PATH")
-            setattr(mod, "DB_PATH", self.db_path)
+            orig = mod.DB_PATH
+            mod.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Set tenant context
@@ -700,7 +700,7 @@ class EvalHarness:
             ("ent_deploy", "deployment", "concept", 0.85),
             ("ent_config", "configuration", "concept", 0.8),
         ]
-        for eid, name, etype, conf in entities:
+        for eid, name, etype, _conf in entities:
             conn.execute(
                 "INSERT OR IGNORE INTO memory_entities (id, tenant_id, name, entity_type, user_id) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -912,7 +912,7 @@ class EvalHarness:
     def run_all(
         self,
         budget_chars: int | None = 2000,
-        unbounded_budget: bool = False,
+        _unbounded_budget: bool = False,
     ) -> EvalReport:
         """Run all evaluation scenarios and produce a report.
 
@@ -1097,8 +1097,6 @@ def _print_diff(diff: dict[str, Any], json_output: bool) -> None:
             f"  [{icon}] {sd['scenario_id']}: payload {sd.get('payload_change', 0):+d} chars, "
             f"latency {sd.get('latency_change', 0):+.2f}ms"
         )
-
-    print("\n".join(lines))
 
 
 def _format_pct_change(value: float | None) -> str:

@@ -7,13 +7,14 @@ import tempfile
 from unittest.mock import patch
 
 from foresight.backend import SqliteBackend
-from foresight.server import init_db, switch_tenant
 from foresight.tenant_context import (
     DEFAULT_TENANT_ID,
     get_current_account_id,
     reset_tenant_context,
     set_current_tenant_id,
 )
+
+from foresight.server import init_db, switch_tenant
 
 
 def _ephemeral_connection(db_path: str):

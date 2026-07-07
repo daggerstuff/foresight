@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import typer
+
 from foresight import (
     AnalysisAction,
     ProfileConfig,
@@ -15,7 +16,6 @@ from foresight import (
     synthesize_profile,
 )
 from foresight.server import init_db
-
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Analyze, synthesize, reflect, and version memories.")

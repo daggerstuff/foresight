@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import contextlib
 from enum import StrEnum
-
 from pathlib import Path
 
 from dotenv import load_dotenv

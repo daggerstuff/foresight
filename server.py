@@ -82,12 +82,12 @@ from .hooks import (
 )
 from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
 from .injection_budget import (
-    BudgetResult,
     DEFAULT_LANE_WEIGHTS,
+    MIN_LANE_CHARS,
+    BudgetResult,
     InjectionBudget,
     Lane,
     LaneItem,
-    MIN_LANE_CHARS,
     format_budgeted_payload,
 )
 from .memory_components import (
@@ -97,7 +97,6 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
-
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -488,7 +487,7 @@ class PostgresRow(dict):
 
 
 def _supports_execute_returning(conn: Any) -> bool:
-    return hasattr(conn, "execute_returning") and callable(getattr(conn, "execute_returning"))
+    return hasattr(conn, "execute_returning") and callable(conn.execute_returning)
 
 
 def get_db_connection():
@@ -1053,7 +1052,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     event_bus = get_event_bus_with_stream()
     # Redact sensitive content from event bus publishes
     content_redacted = "[REDACTED - sensitive]" if current["is_sensitive"] else current["content"]
-    version_is_sensitive = "is_sensitive" in version_row.keys() and bool(version_row["is_sensitive"])
+    version_is_sensitive = "is_sensitive" in version_row and bool(version_row["is_sensitive"])
     new_content_redacted = "[REDACTED - sensitive]" if version_is_sensitive else version_row["content"]
     event_bus.publish(
         memory_updated(memory_id=memory_id, old_content=content_redacted, new_content=new_content_redacted, actor=uid)
@@ -1275,7 +1274,7 @@ def _health_status_dict() -> dict[str, Any]:
 
 
 @mcp.custom_route("/health", methods=["GET"])
-async def health_endpoint(request: Request) -> JSONResponse:
+async def health_endpoint(_request: Request) -> JSONResponse:
     """HTTP health probe for load balancers and orchestrators.
 
     Returns 200 with a JSON body as long as the FastMCP server is alive. We

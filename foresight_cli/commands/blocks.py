@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 
 import typer
+
 from foresight import ContextBlockAction, manage_context_blocks
 from foresight.server import init_db
-
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage Foresight context blocks (guidance, preferences, state).")

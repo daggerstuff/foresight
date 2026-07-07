@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from foresight import semantic_search as sem_mod
 from foresight.semantic_search import (
     DEFAULT_PROVIDER,
     LOCAL_HASH_DIM,
@@ -28,6 +27,8 @@ from foresight.semantic_search import (
     reset_semantic_search,
     serialize_vector,
 )
+
+from foresight import semantic_search as sem_mod
 
 # ---------------------------------------------------------------------------
 # Helpers

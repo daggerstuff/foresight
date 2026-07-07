@@ -118,7 +118,7 @@ def _clean_memories(memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return cleaned
 
 
-def _find_best_pair_affinity(cleaned: list[dict[str, Any]], min_similarity: float) -> float:
+def _find_best_pair_affinity(cleaned: list[dict[str, Any]], _min_similarity: float) -> float:
     """Find the highest Jaccard similarity between any pair of memories."""
     n = len(cleaned)
     best = (-1.0, -1, -1)

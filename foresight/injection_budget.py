@@ -4,11 +4,11 @@ Implements PIX-3949: bounded payload output for inject_context and
 get_relevant_memories with lane-based character budget allocation.
 
 Lanes (in priority order):
-1. static   – user profile / preferences (highest priority, rarely changes)
-2. dynamic  – project context / pending items (session-specific)
-3. memories – top-ranked retrieval results (most content, first to truncate)
-4. blocks   – context block signals (supplementary)
-5. safety   – clinical gating / safety notes (always preserved if present)
+1. static   - user profile / preferences (highest priority, rarely changes)
+2. dynamic  - project context / pending items (session-specific)
+3. memories - top-ranked retrieval results (most content, first to truncate)
+4. blocks   - context block signals (supplementary)
+5. safety   - clinical gating / safety notes (always preserved if present)
 
 Budget allocation strategy:
 - Each lane receives a percentage of the total character budget.
@@ -92,7 +92,7 @@ class InjectionBudget:
 
     When max_chars is None, budgeting is disabled (legacy unbounded behavior).
     Note: each lane enforces a MIN_LANE_CHARS (40) floor, so even max_chars=0
-    will produce at least ~200 characters of output (5 lanes × 40 + headers).
+    will produce at least ~200 characters of output (5 lanes x 40 + headers).
     For zero context, do not call the budgeted path at all.
 
     Attributes:
@@ -192,7 +192,7 @@ class LaneItem:
     Attributes:
         id: Unique identifier (memory_id, block label, etc.)
         content: Full text content
-        score: Relevance or importance score (0.0–1.0)
+        score: Relevance or importance score (0.0-1.0)
         lane: Which lane this item belongs to
         metadata: Optional dict for lane-specific fields
     """

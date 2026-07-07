@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
-from foresight import decay_model as mod
 from foresight.decay_model import (
     DEFAULT_ACTIVATION_BOOST,
     DEFAULT_HALF_LIFE_HOURS,
@@ -27,6 +26,8 @@ from foresight.decay_model import (
     get_decay_model,
     reset_decay_model,
 )
+
+from foresight import decay_model as mod
 
 # ---------------------------------------------------------------------------
 # Helpers

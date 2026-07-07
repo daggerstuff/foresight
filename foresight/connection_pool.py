@@ -93,9 +93,10 @@ class ConnectionPool:
     def _new_connection(self) -> sqlite3.Connection:
         """Create a new database connection with proper settings."""
         from foresight.backend.sqlite_backend import CustomRow
+
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = CustomRow
-        
+
         # Performance pragmas
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -146,6 +147,7 @@ class _PsycopgPoolAdapter:
 
     def acquire(self) -> Any:
         from foresight.server import PostgresPooledConnection
+
         raw_conn = self._pool.getconn()
         return PostgresPooledConnection(raw_conn, self)
 

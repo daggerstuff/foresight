@@ -326,7 +326,7 @@ class UnifiedMemory(BaseModel):
         }
 
     @classmethod
-    def from_sqlite_row(cls, row: dict[str, Any] | Any) -> "UnifiedMemory":
+    def from_sqlite_row(cls, row: dict[str, Any] | Any) -> UnifiedMemory:
         row = dict(row)
         """Deserialize from a Foresight SQLite row (supports both old and new schemas)."""
         tags = row.get("tags", "[]")

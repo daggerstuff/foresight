@@ -12,16 +12,23 @@ This lets us:
 - Skip re-extraction when the source is unchanged (content_hash)
 - Async/background re-extraction when the algorithm changes
 
-Extraction is deliberately synchronous and minimal: paragraph-based
-chunking with a soft character budget per chunk. The function is the
-integration seam for a future async/LLM-based extractor (marked TODO).
+Two extraction paths exist:
+
+1. **Heuristic** (sync, default): paragraph-based chunking with a soft
+   character budget per chunk — ``chunk_text`` / ``extract_memories_from_text``.
+2. **LLM-based** (async, opt-in): ``LLMDocumentExtractor`` uses
+   ``TenantLLMClient`` to identify meaningful semantic memories from
+   text. Falls back to heuristic when no LLM is configured.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -31,6 +38,8 @@ from typing import Any
 
 from .config import DB_PATH
 from .connection_pool import get_pool
+from .llm_client import TenantLLMClient
+from .llm_errors import LLMError, LLMNotConfiguredError
 from .tenant_context import get_current_account_id
 
 
@@ -228,14 +237,13 @@ def extract_memories_from_text(
     text: str,
     char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET,
 ) -> list[DocumentChunk]:
-    """Produce chunks from raw text without persisting anything.
+    """Produce chunks from raw text without persisting anything (sync, heuristic).
 
     Synthesizes a placeholder document_id ("pending") and memory_id
     per chunk; callers that want to persist should call
-    `DocumentStore.create_document` with the original text instead.
+    ``DocumentStore.create_document`` with the original text instead.
 
-    TODO: Replace the chunk-text-as-memory heuristic with a real
-    LLM-based extractor behind an async boundary.
+    For LLM-based extraction (async, semantic), use ``LLMDocumentExtractor``.
     """
     raw = chunk_text(text, char_budget=char_budget)
     return [
@@ -249,6 +257,160 @@ def extract_memories_from_text(
         )
         for i, (start, end, chunk) in enumerate(raw)
     ]
+
+
+_LLM_EXTRACTION_PROMPT = """\
+You are a precise memory extraction system. Given a document, extract the most \
+salient, distinct memories. Each memory should be a self-contained fact, \
+preference, decision, event, insight, or experience.
+
+Return ONLY a JSON array of objects, each with:
+  - "content": A concise, self-contained statement (1-3 sentences max) preserving \
+key details. Prefer verbatim excerpts for critical facts; summarise trivial details.
+  - "category": one of "fact", "preference", "decision", "event", "insight", "experience"
+  - "importance": float 0.0-1.0 (higher = more significant)
+
+No markdown, no explanation, no extra keys.
+
+Document:
+{text}
+"""
+
+
+class LLMDocumentExtractor:
+    """Async LLM-based memory extractor with heuristic fallback.
+
+    Uses ``TenantLLMClient`` for LLM calls.
+    Falls back to heuristic ``chunk_text`` when no LLM is configured or on failure.
+    """
+
+    EXTRACTION_PROMPT = _LLM_EXTRACTION_PROMPT
+
+    def __init__(self, llm_client: TenantLLMClient | None = None) -> None:
+        self._llm_client = llm_client
+        self._json_array_re = re.compile(r"\[.*?\]", re.DOTALL)
+
+    @classmethod
+    def from_env(cls, tenant_id: str | None = None) -> LLMDocumentExtractor:
+        tid = tenant_id or "default"
+        try:
+            client = TenantLLMClient.from_env(tid)
+            return cls(llm_client=client)
+        except Exception:
+            logger.debug("No LLM client configured for tenant=%s, will use heuristic fallback", tid)
+            return cls(llm_client=None)
+
+    async def extract(
+        self,
+        text: str,
+        user_id: str = "",
+        char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET,
+    ) -> list[DocumentChunk]:
+        """Extract memories from *text*.
+
+        Uses LLM when configured; falls back to heuristic ``chunk_text``
+        otherwise or on LLM failure. Returns ``list[DocumentChunk]`` with
+        ``document_id="pending"`` and ``memory_id="pending"``.
+        """
+        if not text:
+            return []
+
+        client = self._llm_client
+        if client is not None:
+            try:
+                return await self._extract_with_llm(client, text, user_id)
+            except (LLMError, LLMNotConfiguredError):
+                logger.info("LLM extraction unavailable, falling back to heuristic chunking")
+            except Exception:
+                logger.exception("LLM extraction failed, falling back to heuristic chunking")
+
+        return self._extract_heuristic(text, char_budget)
+
+    async def _extract_with_llm(self, client: TenantLLMClient, text: str, user_id: str) -> list[DocumentChunk]:
+        max_context = int(os.environ.get("FORESIGHT_DOCUMENT_EXTRACTION_MAX_CONTEXT", "4000"))
+        truncated = text[:max_context]
+        prompt = self.EXTRACTION_PROMPT.format(text=truncated)
+
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.generate(prompt=prompt, user_id=user_id, max_tokens=2048),
+        )
+        return self._parse_llm_response(response, text)
+
+    def _parse_llm_response(self, response: str, original_text: str) -> list[DocumentChunk]:
+        match = self._json_array_re.search(response.strip())
+        if not match:
+            logger.warning("LLM response did not contain a JSON array: %.200s", response)
+            raise LLMError("No JSON array found in LLM response")
+
+        try:
+            items = json.loads(match.group(0))
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse LLM response JSON: %s", exc)
+            raise LLMError(f"Invalid JSON in LLM response: {exc}") from exc
+
+        if not isinstance(items, list):
+            logger.warning("LLM response JSON is not an array: %s", type(items).__name__)
+            raise LLMError("LLM response is not a JSON array")
+
+        chunks: list[DocumentChunk] = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            content = (item.get("content") or "").strip()
+            if not content:
+                continue
+            start = original_text.find(content)
+            end = start + len(content) if start != -1 else 0
+            if start == -1:
+                start = 0
+            chunks.append(
+                DocumentChunk(
+                    document_id="pending",
+                    memory_id="pending",
+                    start_offset=start,
+                    end_offset=end,
+                    text=content,
+                    chunk_index=i,
+                )
+            )
+
+        if not chunks:
+            logger.warning("LLM returned empty memory list, falling back")
+            raise LLMError("LLM returned zero memories")
+
+        return chunks
+
+    def _extract_heuristic(self, text: str, char_budget: int) -> list[DocumentChunk]:
+        raw = chunk_text(text, char_budget=char_budget)
+        return [
+            DocumentChunk(
+                document_id="pending",
+                memory_id="pending",
+                start_offset=start,
+                end_offset=end,
+                text=chunk,
+                chunk_index=i,
+            )
+            for i, (start, end, chunk) in enumerate(raw)
+        ]
+
+
+__all__ = [
+    "DEFAULT_CHUNK_CHAR_BUDGET",
+    "Document",
+    "DocumentChunk",
+    "DocumentCreateOptions",
+    "DocumentLayerError",
+    "DocumentStore",
+    "LLMDocumentExtractor",
+    "chunk_text",
+    "content_hash",
+    "extract_memories_from_text",
+    "get_document_store",
+    "reset_document_store",
+]
 
 
 class DocumentStore:

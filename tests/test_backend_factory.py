@@ -6,8 +6,6 @@ Verifies that ``create_backend()`` correctly routes based on
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from foresight.backend.backend_factory import create_backend
 from foresight.backend.postgres_backend import PostgresBackend

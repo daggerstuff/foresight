@@ -25,6 +25,7 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
     import foresight.config as config_module
+
     import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
     from foresight.server import init_db
@@ -32,6 +33,7 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
     import foresight.server as server_module
+
     monkeypatch.setattr(server_module, "DB_PATH", str(db_file))
     reset_pool()
 

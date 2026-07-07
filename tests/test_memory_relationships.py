@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-from foresight import memory_relationships as rel_mod
 from foresight.memory_relationships import (
     VALID_RELATIONSHIP_TYPES,
     LinkMemoriesOptions,
@@ -21,6 +20,8 @@ from foresight.memory_relationships import (
     get_memory_relationship_store,
     reset_memory_relationship_store,
 )
+
+from foresight import memory_relationships as rel_mod
 
 # ---------------------------------------------------------------------------
 # Helpers

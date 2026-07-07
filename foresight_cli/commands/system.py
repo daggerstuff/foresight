@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import typer
+
 from foresight import get_system_status
 from foresight.server import _initialize_backend, init_db
-
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="System management, diagnostics, and configuration.")
@@ -409,7 +409,7 @@ def config(
     key: str | None = typer.Argument(None, help="Config key to view/set (e.g. user_id, db_path, bank_id)"),
     value: str | None = typer.Argument(None, help="Value to set (omit to view current)"),
     reset: bool = typer.Option(False, "--reset", help="Reset config to defaults"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    _user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """View or modify Foresight configuration."""
     cfg.ensure_config()
@@ -465,7 +465,7 @@ def history(
         events_list: list = parsed.get("events", []) if parsed.get("ok") else []
     except (json.JSONDecodeError, TypeError, OSError) as e:
         out.error(f"Failed to retrieve history: {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if out.get_settings().mode == "agent":
         out.print_json({"events": events_list})

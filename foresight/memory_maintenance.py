@@ -446,10 +446,10 @@ class MemoryMaintenanceJob:
 
             # Build the SET clause for the UPDATE
             set_clause = "is_ghost = 1, gist = CASE id "
-            for i, mid in enumerate(other_ids):
+            for _i, _mid in enumerate(other_ids):
                 set_clause += "WHEN ? THEN ? "
             set_clause += "END, synthesized_from = CASE id "
-            for i, mid in enumerate(other_ids):
+            for _i, _mid in enumerate(other_ids):
                 set_clause += "WHEN ? THEN ? "
             set_clause += "END"
 
