@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import typer
-import foresight.eval_harness as eval_harness
 
+from foresight import eval_harness
 from foresight_cli.utils import output as out
 
 app = typer.Typer(help="Run the evaluation harness (PIX-3953).")

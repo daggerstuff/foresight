@@ -24,23 +24,23 @@ logger = logging.getLogger("foresight_sqlite_backend")
 class CustomRow:
     def __init__(self, cursor, row):
         self._row = sqlite3.Row(cursor, row)
-    
+
     def get(self, key, default=None):
         try:
             val = self._row[key]
             return val if val is not None else default
         except (IndexError, KeyError):
             return default
-            
+
     def __getitem__(self, key):
         return self._row[key]
-        
+
     def __iter__(self):
         return iter(self._row)
-        
+
     def __len__(self):
         return len(self._row)
-        
+
     def keys(self):
         return self._row.keys()
 

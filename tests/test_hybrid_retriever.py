@@ -20,6 +20,7 @@ from foresight.hybrid_retriever import (
     _validate_input,
     reset_hybrid_retriever,
 )
+
 from foresight.server import SearchTrace
 
 

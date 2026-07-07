@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import pytest
+
 from foresight.server import generate_recovery_payload
 
 
@@ -16,8 +17,9 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
     import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
     from foresight.backend import SqliteBackend
+
+    import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
     from foresight.server import init_db
 

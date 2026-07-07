@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 import typer
+
 from foresight import CurationRunAction, manage_curation_runs
 from foresight.server import init_db
-
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage async Foresight curation runs.")
@@ -82,7 +82,7 @@ def create(
         readable=True,
     ),
     session_id: str | None = typer.Option(None, "--session-id", help="Transcript session ID"),
-    run_clustering: bool = typer.Option(False, "--run-clustering", help="Run clustering after curation"),
+    _run_clustering: bool = typer.Option(False, "--run-clustering", help="Run clustering after curation"),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Create a new curation run."""

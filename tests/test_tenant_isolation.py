@@ -6,16 +6,18 @@ import sqlite3
 import tempfile
 from unittest.mock import patch
 
-from foresight.server import query_memories, store_memory
 from foresight.tenant_context import (
     reset_tenant_context,
     set_current_tenant_id,
 )
 
+from foresight.server import query_memories, store_memory
+
 
 def _make_temp_db(db_path: str) -> None:
     """Create a fresh temporary database and run full migrations."""
     from foresight.backend import SqliteBackend
+
     from foresight.server import init_db
 
     backend = SqliteBackend(db_path=db_path)

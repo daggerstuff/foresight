@@ -116,9 +116,8 @@ class TestPostgresBackendHelpers:
     def test_unconnected_exception_message(self):
         """Unconnected PostgresBackend raises clear RuntimeError."""
         backend = PostgresBackend(dsn="postgresql://u:p@h/db")
-        with pytest.raises(RuntimeError, match="PostgresBackend not connected"):
-            with backend.connection():
-                pass
+        with pytest.raises(RuntimeError, match="PostgresBackend not connected"), backend.connection():
+            pass
 
     def test_stats_before_connect(self):
         """Stats returns zeros before connect()."""

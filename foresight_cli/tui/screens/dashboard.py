@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 
-from foresight import get_system_status
-from foresight.server import init_db
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.screen import Screen
 from textual.widgets import Label, Static
+
+from foresight import get_system_status
+from foresight.server import init_db
 
 
 class StatCard(Static):

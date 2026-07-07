@@ -232,8 +232,9 @@ def server_env(temp_db, monkeypatch):
     """Set up server environment with isolated DB and mocked USER_ID."""
     monkeypatch.setenv("FORESIGHT_DB_PATH", temp_db)
     import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
     from foresight.backend import SqliteBackend
+
+    import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
     from foresight.server import init_db
 
@@ -378,6 +379,7 @@ class TestUpsertClusterResults:
     def test_upsert_empty_result(self) -> None:
         """Empty ClusterResult should upsert nothing."""
         from foresight.clustering import ClusterResult
+
         from foresight.server import _upsert_cluster_results
 
         result = ClusterResult(cluster_entities=[], memory_links=[])
@@ -391,6 +393,7 @@ class TestUpsertClusterResults:
         """Entities upserted via _upsert_cluster_results should be queryable."""
         from foresight.clustering import ClusterResult
         from foresight.graph_store import get_graph_store
+
         from foresight.server import _upsert_cluster_results
 
         store = get_graph_store()
@@ -439,6 +442,7 @@ class TestUpsertClusterResults:
     def test_upsert_then_memory_linking(self) -> None:
         """After upsert, memories should be linkable to cluster entities."""
         from foresight.clustering import ClusterResult
+
         from foresight.server import _upsert_cluster_results
 
         cluster_entities = [

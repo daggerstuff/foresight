@@ -84,7 +84,7 @@ class _PycFinder(importlib.abc.MetaPathFinder):
         self._pyc_map = pyc_map
 
     def find_spec(
-        self, fullname: str, path: object = None, target: object = None
+        self, fullname: str, _path: object = None, _target: object = None
     ) -> importlib.machinery.ModuleSpec | None:
         if fullname not in self._pyc_map:
             return None
@@ -107,14 +107,13 @@ def _bootstrap_import(name, *args, **kwargs):
     try:
         return _original_import(name, *args, **kwargs)
     except ModuleNotFoundError:
-        pass
-    # Check if we have the .pyc for this module
-    mod_name = str(name)
-    if mod_name in _finder._pyc_map and mod_name not in sys.modules:
-        _finder.find_spec(mod_name)
-        # Import again now that we've set up the spec
-        return _original_import(name, *args, **kwargs)
-    raise
+        # Check if we have the .pyc for this module
+        mod_name = str(name)
+        if mod_name in _finder._pyc_map and mod_name not in sys.modules:
+            _finder.find_spec(mod_name)
+            # Import again now that we've set up the spec
+            return _original_import(name, *args, **kwargs)
+        raise
 
 
 def ensure_loaded() -> None:

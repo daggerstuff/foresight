@@ -13,7 +13,6 @@ from foresight.config import DB_URL
 
 from .base import DatabaseBackend
 from .postgres_backend import PostgresBackend
-from .sqlite_backend import SqliteBackend
 
 
 def create_backend(db_url: str | None = None) -> DatabaseBackend:

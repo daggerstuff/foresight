@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from collections.abc import Mapping
 from typing import Any, Literal
 
 from .config import DB_PATH

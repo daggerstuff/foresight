@@ -12,11 +12,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastmcp import Client
-from foresight_cli.cli import _decode_tool_result
-from foresight import memory_status, store_memory
 from foresight.block_registry import MemoryBlockSchema
 from foresight.context_blocks import register_context_block_schema
 from foresight.hybrid_retriever import HybridResult, HybridSearchResult
+from foresight_cli.cli import _decode_tool_result
+
+from foresight import memory_status, store_memory
 from foresight.server import (
     ContextBlockAction,
     CurationRunAction,
@@ -43,8 +44,9 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
     import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
     from foresight.backend import SqliteBackend
+
+    import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
     from foresight.server import init_db
 
@@ -334,8 +336,9 @@ def _patched_context_block_storage(db_path: str) -> Iterator[None]:
 
 def test_bridge_context_blocks_to_memories():
     """_bridge_context_blocks_to_memories stores extracted blocks as memories."""
-    from foresight.server import _bridge_context_blocks_to_memories
     from foresight.subconscious import ContextBlockAgent
+
+    from foresight.server import _bridge_context_blocks_to_memories
 
     agent = ContextBlockAgent(user_id="bridge_test_user")
     # Populate some blocks via the agent's normal extraction
@@ -365,8 +368,9 @@ def test_bridge_context_blocks_to_memories():
 
 def test_bridge_context_blocks_dedup():
     """Bridging the same agent state twice should bump, not duplicate."""
-    from foresight.server import _bridge_context_blocks_to_memories
     from foresight.subconscious import ContextBlockAgent
+
+    from foresight.server import _bridge_context_blocks_to_memories
 
     agent = ContextBlockAgent(user_id="dedup_bridge_user")
     agent._extract_preference("I prefer explicit returns")
@@ -393,6 +397,7 @@ def test_bridge_transcript_entities():
     """_bridge_transcript_entities runs extraction and stores entities."""
     from foresight.entity_extractor import reset_entity_extractor
     from foresight.graph_store import GraphStore, reset_graph_store
+
     from foresight.server import _bridge_transcript_entities
 
     reset_entity_extractor()
@@ -1913,8 +1918,9 @@ def test_memory_hard_cap_enforcement():
         import foresight.connection_pool as conn_pool_module
 
         conn_pool_module.DB_PATH = db_path
-        from foresight.connection_pool import reset_pool
         from foresight.hybrid_retriever import reset_hybrid_retriever
+
+        from foresight.connection_pool import reset_pool
 
         reset_pool()
         reset_hybrid_retriever()
