@@ -126,4 +126,4 @@ class TestPostgresBackendHelpers:
         stats = backend.stats
         assert stats["idle"] == 0
         assert stats["in_use"] == 0
-        assert stats["max_size"] == 10
+        assert stats["max_size"] == 20

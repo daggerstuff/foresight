@@ -290,7 +290,8 @@ class MemoryMaintenanceJob:
                 "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
                 (config.user_id, config.tenant_id),
             ).fetchone()
-            stats.sensitive_excluded += int((sensitive_count_row or {}).get("sensitive_count", 0) or 0)
+            sensitive_count = sensitive_count_row["sensitive_count"] if sensitive_count_row else 0
+            stats.sensitive_excluded += int(sensitive_count or 0)
         memories = self._fetch_memories(conn, config)
         if len(memories) < 2:
             return
@@ -525,7 +526,8 @@ class MemoryMaintenanceJob:
             "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
             (config.user_id, config.tenant_id),
         ).fetchone()
-        stats.sensitive_excluded += int((sensitive_count_row or {}).get("sensitive_count", 0) or 0)
+        sensitive_count = sensitive_count_row["sensitive_count"] if sensitive_count_row else 0
+        stats.sensitive_excluded += int(sensitive_count or 0)
         memories = self._fetch_memories_batch(conn, config)
         if len(memories) < 2:
             return

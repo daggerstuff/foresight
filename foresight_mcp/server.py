@@ -423,6 +423,25 @@ class PostgresPooledConnection(PooledConnection):
 
     def execute(self, sql, params=()):
         from foresight_mcp.backend.postgres_backend import _translate_sql
+        import re
+
+        sql_upper = sql.lstrip().upper()
+        if sql_upper.startswith("PRAGMA "):
+            match = re.search(r"PRAGMA\s+table_info\s*\(\s*([\'\"]?\w+[\'\"]?)\s*\)", sql, re.IGNORECASE)
+            if match:
+                table_name = match.group(1).strip("'\"")
+                pg_sql = "SELECT 0 as cid, column_name as name, 'TEXT' as type, 0 as notnull, NULL as dflt_value, 0 as pk FROM information_schema.columns WHERE table_name = %s"
+                self._last_result = self._conn.execute(pg_sql, (table_name,))
+                self._rowcount = self._last_result.rowcount
+                return self
+            else:
+                class DummyResult:
+                    rowcount = 0
+                    def fetchone(self): return None
+                    def fetchall(self): return []
+                self._last_result = DummyResult()
+                self._rowcount = 0
+                return self
 
         pg_sql = _translate_sql(sql)
         self._last_result = self._conn.execute(pg_sql, params)
@@ -463,7 +482,10 @@ class PostgresPooledConnection(PooledConnection):
     def close(self):
         if not self._released:
             self._released = True
-            self._pool.putconn(self._conn)
+            if hasattr(self._pool, "release"):
+                self._pool.release(self)
+            elif hasattr(self._pool, "putconn"):
+                self._pool.putconn(self._conn)
 
     @property
     def row_factory(self):

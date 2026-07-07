@@ -664,7 +664,6 @@ class EvalHarness:
                 entity_type TEXT,
                 description TEXT,
                 properties TEXT DEFAULT '{}',
-                confidence REAL DEFAULT 1.0,
                 user_id TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -695,7 +694,7 @@ class EvalHarness:
 
         # Insert entities for key fixture memories
         entities = [
-            ("ent_ts", "TypeScript", "language", 0.95),
+            ("ent_ts", "TypeScript", "concept", 0.95),
             ("ent_auth", "authentication", "concept", 0.9),
             ("ent_db", "database", "concept", 0.9),
             ("ent_deploy", "deployment", "concept", 0.85),
@@ -703,9 +702,9 @@ class EvalHarness:
         ]
         for eid, name, etype, conf in entities:
             conn.execute(
-                "INSERT OR IGNORE INTO memory_entities (id, tenant_id, name, entity_type, confidence, user_id) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (eid, self.tenant_id, name, etype, conf, self.user_id),
+                "INSERT OR IGNORE INTO memory_entities (id, tenant_id, name, entity_type, user_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (eid, self.tenant_id, name, etype, self.user_id),
             )
 
         # Link memories to entities

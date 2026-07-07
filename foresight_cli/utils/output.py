@@ -184,9 +184,10 @@ def print_table(columns: list[str], rows: list[list[Any]], *, title: str | None 
 
 def print_json(data: Any) -> None:
     """Print JSON to stdout (works in all modes)."""
-    _json.dumps(data, indent=2, default=str)
+    text = _json.dumps(data, indent=2, default=str)
     if _settings.mode == "agent":
         return
+    sys.stdout.write(text + "\n")
 
 
 def confirm(message: str, default: bool = True) -> bool:

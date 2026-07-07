@@ -17,6 +17,7 @@ def test_main_health_prints_status(capsys):
     with (
         patch.object(main_module.sys, "argv", ["foresight-mcp", "--health"]),
         patch.object(main_module, "init_db"),
+        patch.object(main_module, "_initialize_backend"),
         patch.object(main_module, "get_system_status", return_value='{"status":"healthy"}'),
     ):
         main_module.main()
@@ -66,6 +67,7 @@ def test_status_human_formats_payload_budget_weights_and_injection_health():
 
     with (
         patch("foresight_cli.commands.system.init_db"),
+        patch("foresight_cli.commands.system._initialize_backend"),
         patch("foresight_cli.commands.system.get_system_status", return_value=result),
         patch.object(out, "_stderr_console", Console(file=stderr_buffer, force_terminal=False, color_system=None)),
     ):
@@ -98,6 +100,7 @@ def test_status_json_mode_emits_scriptable_status_payload():
 
     with (
         patch("foresight_cli.commands.system.init_db"),
+        patch("foresight_cli.commands.system._initialize_backend"),
         patch("foresight_cli.commands.system.get_system_status", return_value=json.dumps(result)),
     ):
         cli_result = CliRunner().invoke(app, ["--output", "json", "status"])

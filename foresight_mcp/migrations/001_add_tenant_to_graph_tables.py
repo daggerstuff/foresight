@@ -20,7 +20,8 @@ MIGRATION_VERSION = 1
 
 ALLOWED_TABLES = {
     "entities", "relationships", "memories", "memory_embeddings",
-    "memory_links", "clusters", "memory_decay", "memory_versions"
+    "memory_links", "clusters", "memory_decay", "memory_versions",
+    "memory_entities", "entity_relationships", "memory_entity_links"
 }
 
 def _safe_table(name: str) -> str:

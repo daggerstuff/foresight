@@ -92,8 +92,11 @@ class ConnectionPool:
 
     def _new_connection(self) -> sqlite3.Connection:
         """Create a new database connection with proper settings."""
+        from foresight_mcp.backend.sqlite_backend import CustomRow
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = CustomRow
+        
+        # Performance pragmas
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
@@ -143,13 +146,15 @@ class _PsycopgPoolAdapter:
 
     def acquire(self) -> Any:
         from foresight_mcp.server import PostgresPooledConnection
-
-        raw_conn = self._pool.connection()
-        return PostgresPooledConnection(raw_conn, self._pool)
+        raw_conn = self._pool.getconn()
+        return PostgresPooledConnection(raw_conn, self)
 
     def release(self, conn: Any) -> None:
         try:
-            conn.close()
+            if hasattr(conn, "_conn"):
+                self._pool.putconn(conn._conn)
+            else:
+                self._pool.putconn(conn)
         except Exception:  # pragma: no cover - defensive
             logger.debug("release() failed to close PostgresPooledConnection", exc_info=True)
 
@@ -181,11 +186,13 @@ def get_pool(db_path: str | None = None) -> Any:
         return _PsycopgPoolAdapter(pg_pool)
 
     if db_path is None:
-        raise RuntimeError(
-            "No Postgres backend active and no db_path provided. "
-            "Production: set FORESIGHT_DB_URL and ensure the server "
-            "initialized correctly. Tests: pass an explicit db_path."
-        )
+        db_path = DB_PATH
+        if db_path is None:
+            raise RuntimeError(
+                "No Postgres backend active and no db_path provided. "
+                "Production: set FORESIGHT_DB_URL and ensure the server "
+                "initialized correctly. Tests: pass an explicit db_path."
+            )
 
     with _pool_lock:
         pool_path = os.path.abspath(db_path)
