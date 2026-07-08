@@ -4,13 +4,17 @@
 # gate (.pre-commit-config.yaml) and the CI tree scan (.github/workflows/
 # secrets-scan.yml). We keep it here so the two scanners never drift.
 #
-# `.git` is excluded because its `config` carries remote URLs (git@host:org/repo)
-# that ggshield mis-flags as secrets in CI submodule checkouts. VCS internals
-# are never secret-bearing by design.
+# `.git/` is excluded because its `config` carries remote URLs
+# (git@host:org/repo) that ggshield mis-flags as secrets in CI submodule
+# checkouts. VCS internals are never secret-bearing by design.
+#
+# Trailing slashes are REQUIRED: ggshield's path matcher (`is_path_excluded`)
+# only matches directory *contents* when the pattern ends in `/`. A bare `.git`
+# matches only a file literally named `.git` and would still scan `.git/config`.
 paths-ignore:
-  - .git
-  - .venv
-  - dist
-  - build
-  - node_modules
+  - .git/
+  - .venv/
+  - dist/
+  - build/
+  - node_modules/
   - '*.min.js'
