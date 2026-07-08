@@ -1,0 +1,16 @@
+# ggshield configuration — secret-scan exclusions.
+#
+# `paths-ignore` is the authoritative exclusion list for both the pre-commit
+# gate (.pre-commit-config.yaml) and the CI tree scan (.github/workflows/
+# secrets-scan.yml). We keep it here so the two scanners never drift.
+#
+# `.git` is excluded because its `config` carries remote URLs (git@host:org/repo)
+# that ggshield mis-flags as secrets in CI submodule checkouts. VCS internals
+# are never secret-bearing by design.
+paths-ignore:
+  - .git
+  - .venv
+  - dist
+  - build
+  - node_modules
+  - '*.min.js'
