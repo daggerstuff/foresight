@@ -35,3 +35,6 @@ pyrightconfig.json
 # Coverage reports
 packages/*/coverage/
 packages/*/src/test/
+
+# Added by ggshield
+.cache_ggshield
