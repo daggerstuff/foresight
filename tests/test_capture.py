@@ -44,6 +44,8 @@ def setup_test_db(tmp_path, monkeypatch):
 
     init_db()
     reset_capture_pipeline()
+    pipeline = get_capture_pipeline()
+    pipeline.db_path = str(db_file)
     reset_memory_relationship_store()
     yield
     reset_pool()
