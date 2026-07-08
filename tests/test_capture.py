@@ -29,7 +29,7 @@ def setup_test_db(tmp_path, monkeypatch):
     import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
     from foresight.server import init_db
- from foresight.backend import SqliteBackend
+    from foresight.backend import SqliteBackend
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
