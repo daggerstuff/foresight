@@ -29,6 +29,7 @@ def setup_test_db(tmp_path, monkeypatch):
     import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
     from foresight.server import init_db
+ from foresight.backend import SqliteBackend
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
@@ -42,7 +43,8 @@ def setup_test_db(tmp_path, monkeypatch):
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
 
-    init_db()
+    backend = SqliteBackend(db_path=str(db_file))
+    init_db(backend=backend)
     reset_capture_pipeline()
     pipeline = get_capture_pipeline()
     pipeline.db_path = str(db_file)
