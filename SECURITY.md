@@ -66,7 +66,7 @@ Out of scope:
   infrastructure.
 - Reports against forks of this repository.
 
-## Acknowledgements
+## Acknowledgments
 
 We thank the security research community — including Robin (Germany-based
 GitHub secret-scanner) — for the report that motivated this policy and the
