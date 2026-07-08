@@ -130,7 +130,7 @@ def test_narrative_cache_lru_eviction(tmp_path) -> None:
 
 
 def test_narrative_cache_ttl_expiry(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", ttl_seconds=0.01)
+    cache = NarrativeCache(tmp_path / "narratives.sqlite3", ttl_seconds=0.1)
     cache.put(
         "report-1",
         "short-lived narrative",
@@ -139,7 +139,7 @@ def test_narrative_cache_ttl_expiry(tmp_path) -> None:
         model_version="model-a",
         insights_hash="hash-a",
     )
-    time.sleep(0.02)
+    time.sleep(0.15)
 
     assert (
         cache.get(
@@ -320,7 +320,7 @@ def test_narrative_cache_allows_cross_thread_access(tmp_path) -> None:
 
 
 def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=10, ttl_seconds=0.01)
+    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=10, ttl_seconds=0.1)
     for index in range(9):
         cache.put(
             f"expired-{index}",
@@ -330,7 +330,7 @@ def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) 
             model_version="model-a",
             insights_hash=f"hash-{index}",
         )
-    time.sleep(0.02)
+    time.sleep(0.15)
 
     cache.put(
         "fresh",
