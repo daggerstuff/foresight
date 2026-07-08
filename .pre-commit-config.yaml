@@ -1,0 +1,21 @@
+# Pre-commit hook framework — runs on every `git commit`.
+#
+# Secret-scanning gates `ggshield` (GitGuardian) so a credential can never
+# land in a future commit. Install once with:
+#
+#     pipx install pre-commit      # or uv tool install pre-commit
+#     pre-commit install
+#
+# The `ggshield` Python package reads the same `GITGUARDIAN_API_KEY`
+# environment variable that the CI workflow consumes (see
+# .github/workflows/secrets-scan.yml).
+
+repos:
+  - repo: https://github.com/gitguardian/ggshield
+    rev: v1.52.2
+    hooks:
+      - id: ggshield
+        stages: [pre-commit]
+        language_version: python3
+        # Fail-fast on any detected secret, including historical commits.
+        args: ['--all-secrets', 'staged']
