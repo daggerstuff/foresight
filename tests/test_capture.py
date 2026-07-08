@@ -109,18 +109,9 @@ class TestSessionClassifier:
 
     def test_pass_technical_content(self):
         msgs = [
-            {
-                "role": "user",
-                "content": "Can you help me install the API client from the npm registry?",
-            },
-            {
-                "role": "assistant",
-                "content": "Sure, run `npm install my-api-client --save` to add it to your project.",
-            },
-            {
-                "role": "user",
-                "content": "I prefer using pnpm for package management because it's faster.",
-            },
+            {"role": "user", "content": "Can you help me install the API client from the npm registry?"},
+            {"role": "assistant", "content": "Sure, run `npm install my-api-client --save` to add it to your project."},
+            {"role": "user", "content": "I prefer using pnpm for package management because it's faster."},
         ]
         skip, reason = SessionClassifier.should_skip(msgs)
         assert skip is False, f"unexpected skip: {reason}"
@@ -139,18 +130,9 @@ class TestSessionClassifier:
 
     def test_pass_file_path(self):
         msgs = [
-            {
-                "role": "user",
-                "content": "The config file is located at /etc/app/config.yaml in the server directory",
-            },
-            {
-                "role": "assistant",
-                "content": "Let me check that file path for you and read its contents.",
-            },
-            {
-                "role": "user",
-                "content": "Found it, it's in the src/utils/helpers/config.yaml subdirectory.",
-            },
+            {"role": "user", "content": "The config file is located at /etc/app/config.yaml in the server directory"},
+            {"role": "assistant", "content": "Let me check that file path for you and read its contents."},
+            {"role": "user", "content": "Found it, it's in the src/utils/helpers/config.yaml subdirectory."},
         ]
         skip, reason = SessionClassifier.should_skip(msgs)
         assert skip is False, f"unexpected skip: {reason}"
@@ -162,10 +144,7 @@ class TestSessionClassifier:
 class TestMemoryExtractor:
     def test_extract_decision(self):
         msgs = [
-            {
-                "role": "user",
-                "content": "Let's use PostgreSQL for the database. It's more reliable.",
-            },
+            {"role": "user", "content": "Let's use PostgreSQL for the database. It's more reliable."},
             {"role": "assistant", "content": "Good choice. I'll set up the schema."},
         ]
         candidates = MemoryExtractor.extract(msgs)
@@ -178,10 +157,7 @@ class TestMemoryExtractor:
 
     def test_extract_preference(self):
         msgs = [
-            {
-                "role": "user",
-                "content": "I always use type hints in Python. They make code clearer.",
-            },
+            {"role": "user", "content": "I always use type hints in Python. They make code clearer."},
             {"role": "assistant", "content": "That's a good habit for maintainability."},
         ]
         candidates = MemoryExtractor.extract(msgs)
@@ -200,10 +176,7 @@ class TestMemoryExtractor:
 
     def test_extract_tool_recipe_code_block(self):
         msgs = [
-            {
-                "role": "user",
-                "content": "Here's what worked for me:\n```bash\nuvicorn main:app --reload\n```",
-            },
+            {"role": "user", "content": "Here's what worked for me:\n```bash\nuvicorn main:app --reload\n```"},
             {"role": "assistant", "content": "Good, that's the dev server command."},
         ]
         candidates = MemoryExtractor.extract(msgs)
@@ -212,14 +185,8 @@ class TestMemoryExtractor:
 
     def test_extract_pattern(self):
         msgs = [
-            {
-                "role": "user",
-                "content": "This is the same pattern as our auth module. We should reuse it.",
-            },
-            {
-                "role": "assistant",
-                "content": "Yes, it follows the same approach as the existing service layer.",
-            },
+            {"role": "user", "content": "This is the same pattern as our auth module. We should reuse it."},
+            {"role": "assistant", "content": "Yes, it follows the same approach as the existing service layer."},
         ]
         candidates = MemoryExtractor.extract(msgs)
         patterns = [c for c in candidates if c.category == "pattern"]
@@ -227,10 +194,7 @@ class TestMemoryExtractor:
 
     def test_extract_pending_item(self):
         msgs = [
-            {
-                "role": "user",
-                "content": "TODO: add input validation for the user registration endpoint",
-            },
+            {"role": "user", "content": "TODO: add input validation for the user registration endpoint"},
             {"role": "assistant", "content": "I'll create a validation middleware for that."},
             {"role": "user", "content": "We need to follow up on the deployment next week."},
         ]
@@ -265,11 +229,7 @@ class TestMemoryExtractor:
 
 class TestDedupeEngine:
     def _seed_memory(
-        self,
-        content: str,
-        category: str = "decision",
-        user_id: str = "_test_user_",
-        tenant_id: str = "_test_",
+        self, content: str, category: str = "decision", user_id: str = "_test_user_", tenant_id: str = "_test_"
     ):
         """Insert a memory directly so the engine can find it."""
         from foresight.connection_pool import DB_PATH, get_pool
@@ -309,9 +269,7 @@ class TestDedupeEngine:
     def test_duplicate_exact_match(self):
         content = "Let's use PostgreSQL for persistence"
         self._seed_memory(content, category="decision")
-        c = CapturedMemory(
-            content=content, category="decision", scope="arc", retention="long_term", importance=0.7
-        )
+        c = CapturedMemory(content=content, category="decision", scope="arc", retention="long_term", importance=0.7)
         result = DedupeEngine.check(c, "_test_user_", "_test_")
         assert result.status == "DUPLICATE"
         assert result.existing_id is not None
@@ -321,9 +279,7 @@ class TestDedupeEngine:
         content = "Let's use PostgreSQL for persistence because it's reliable and performant"
         self._seed_memory(content, category="decision")
         similar = "Let's use PostgreSQL for persistence since it's reliable and performant for our use case"
-        c = CapturedMemory(
-            content=similar, category="decision", scope="arc", retention="long_term", importance=0.7
-        )
+        c = CapturedMemory(content=similar, category="decision", scope="arc", retention="long_term", importance=0.7)
         result = DedupeEngine.check(c, "_test_user_", "_test_")
         # Jaccard should be > 0.55
         assert result.status in ("NEAR_DUPLICATE", "DUPLICATE"), f"got {result.status}"
@@ -333,11 +289,7 @@ class TestDedupeEngine:
         self._seed_memory(content1, category="preference")
         content2 = "I always prefer FastAPI for building REST APIs and web services in Python"
         c = CapturedMemory(
-            content=content2,
-            category="preference",
-            scope="trait",
-            retention="long_term",
-            importance=0.6,
+            content=content2, category="preference", scope="trait", retention="long_term", importance=0.6
         )
         result = DedupeEngine.check(c, "_test_user_", "_test_")
         assert result.status in ("NEAR_DUPLICATE", "DUPLICATE"), f"got {result.status}"
@@ -385,9 +337,7 @@ class TestCapturePipeline:
         pool = get_pool(db_path=DB_PATH)
         conn = pool.acquire()
         try:
-            return conn.execute(
-                "SELECT COUNT(*) as cnt FROM memories WHERE user_id = '_test_user_'"
-            ).fetchone()["cnt"]
+            return conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE user_id = '_test_user_'").fetchone()["cnt"]
         finally:
             pool.release(conn)
             conn.close()
@@ -395,18 +345,12 @@ class TestCapturePipeline:
     def test_full_pipeline_stores_decisions(self):
         pipeline = get_capture_pipeline()
         msgs = [
-            {
-                "role": "user",
-                "content": "Let's use PostgreSQL for the database backend running on AWS RDS.",
-            },
+            {"role": "user", "content": "Let's use PostgreSQL for the database backend running on AWS RDS."},
             {
                 "role": "assistant",
                 "content": "Good choice, I'll configure the connection pool with SSL and autocommit.",
             },
-            {
-                "role": "user",
-                "content": "We should also use Redis for caching to improve the response times.",
-            },
+            {"role": "user", "content": "We should also use Redis for caching to improve the response times."},
         ]
         stats = pipeline.run("sess_1", msgs, "_test_user_")
         assert stats.skipped is False
@@ -437,18 +381,9 @@ class TestCapturePipeline:
         """Running same transcript twice should dedup on the second call."""
         pipeline = get_capture_pipeline()
         msgs = [
-            {
-                "role": "user",
-                "content": "Let's use type hints everywhere in our Python codebase going forward.",
-            },
-            {
-                "role": "assistant",
-                "content": "Agreed, that will improve code maintainability and readability.",
-            },
-            {
-                "role": "user",
-                "content": "I always prefer explicit return types in function signatures.",
-            },
+            {"role": "user", "content": "Let's use type hints everywhere in our Python codebase going forward."},
+            {"role": "assistant", "content": "Agreed, that will improve code maintainability and readability."},
+            {"role": "user", "content": "I always prefer explicit return types in function signatures."},
         ]
         stats1 = pipeline.run("sess_4", msgs, "_test_user_")
         assert stats1.stored >= 1
@@ -461,28 +396,16 @@ class TestCapturePipeline:
         """Near duplicates should be linked via derives relationships."""
         pipeline = get_capture_pipeline()
         msgs1 = [
-            {
-                "role": "user",
-                "content": "I prefer using FastAPI for building web APIs and backend services.",
-            },
-            {
-                "role": "assistant",
-                "content": "Good choice for async Python applications with high throughput.",
-            },
-            {
-                "role": "user",
-                "content": "It has great documentation and auto-generated OpenAPI schemas.",
-            },
+            {"role": "user", "content": "I prefer using FastAPI for building web APIs and backend services."},
+            {"role": "assistant", "content": "Good choice for async Python applications with high throughput."},
+            {"role": "user", "content": "It has great documentation and auto-generated OpenAPI schemas."},
         ]
         stats1 = pipeline.run("sess_5", msgs1, "_test_user_")
         assert stats1.stored >= 1
 
         # Similar but not identical preference
         msgs2 = [
-            {
-                "role": "user",
-                "content": "I always prefer FastAPI for building REST APIs and web services.",
-            },
+            {"role": "user", "content": "I always prefer FastAPI for building REST APIs and web services."},
             {"role": "assistant", "content": "Good, it has excellent async support."},
             {"role": "user", "content": "The auto-generated docs are a big plus."},
         ]
@@ -513,18 +436,9 @@ class TestCapturePipeline:
         """A session with only content already stored should result in zero new stores."""
         pipeline = get_capture_pipeline()
         msgs = [
-            {
-                "role": "user",
-                "content": "I always prefer type hints in Python for code clarity and readability.",
-            },
-            {
-                "role": "assistant",
-                "content": "That's a great practice for large codebases with multiple contributors.",
-            },
-            {
-                "role": "user",
-                "content": "I always prefer explicit code over implicit patterns for maintainability.",
-            },
+            {"role": "user", "content": "I always prefer type hints in Python for code clarity and readability."},
+            {"role": "assistant", "content": "That's a great practice for large codebases with multiple contributors."},
+            {"role": "user", "content": "I always prefer explicit code over implicit patterns for maintainability."},
         ]
         stats1 = pipeline.run("sess_9", msgs, "_test_user_")
         assert stats1.stored >= 1
@@ -550,9 +464,7 @@ class TestServerIntegration:
             {"role": "assistant", "content": "Good idea, I'll configure it"},
             {"role": "user", "content": "I prefer using sentinel for high availability"},
         ]
-        result = process_session_transcript(
-            "sess_integration", msgs, project_path="/tmp", user_id="_test_user_"
-        )
+        result = process_session_transcript("sess_integration", msgs, project_path="/tmp", user_id="_test_user_")
         # The result should mention memories were stored
         assert "new memories" in result
 
@@ -574,10 +486,7 @@ class TestServerIntegration:
 
         msgs = [
             {"role": "user", "content": "TODO: Add retry logic for the API client."},
-            {
-                "role": "assistant",
-                "content": "I'll create a retry decorator with exponential backoff.",
-            },
+            {"role": "assistant", "content": "I'll create a retry decorator with exponential backoff."},
             {"role": "user", "content": "I always prefer tenacity for retry logic in Python."},
         ]
         result = process_session_transcript("sess_bridge_coexist", msgs, user_id="_test_user_")
