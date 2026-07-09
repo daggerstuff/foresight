@@ -9,16 +9,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from foresight_mcp import profile_synthesizer as ps_mod, subconscious as sub_mod
-from foresight_mcp.context_blocks import update_context_block
-from foresight_mcp.profile_synthesizer import (
+from foresight.context_blocks import update_context_block
+from foresight.profile_synthesizer import (
     _deduplicate_lines,
     _extract_block_lines,
     _is_placeholder,
     profile_to_prompt,
     synthesize_profile,
 )
-from foresight_mcp.subconscious import ContextBlockAgent
+from foresight.subconscious import ContextBlockAgent
+
+from foresight import profile_synthesizer as ps_mod, subconscious as sub_mod
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -6,8 +6,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from foresight_mcp.event_bus import Event, EventType, get_event_bus, reset_event_bus
-from foresight_mcp.hooks import (
+from foresight.event_bus import Event, EventType, get_event_bus, reset_event_bus
+from foresight.hooks import (
     HookExecutor,
     HookRegistry,
     HookResult,

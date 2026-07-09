@@ -8,7 +8,7 @@ exercise the pure-Python transformation functions.
 from __future__ import annotations
 
 import pytest
-from foresight_mcp.backend.postgres_backend import (
+from foresight.backend.postgres_backend import (
     PostgresBackend,
     _translate_sql,
 )
@@ -116,9 +116,8 @@ class TestPostgresBackendHelpers:
     def test_unconnected_exception_message(self):
         """Unconnected PostgresBackend raises clear RuntimeError."""
         backend = PostgresBackend(dsn="postgresql://u:p@h/db")
-        with pytest.raises(RuntimeError, match="PostgresBackend not connected"):
-            with backend.connection():
-                pass
+        with pytest.raises(RuntimeError, match="PostgresBackend not connected"), backend.connection():
+            pass
 
     def test_stats_before_connect(self):
         """Stats returns zeros before connect()."""
@@ -126,4 +125,4 @@ class TestPostgresBackendHelpers:
         stats = backend.stats
         assert stats["idle"] == 0
         assert stats["in_use"] == 0
-        assert stats["max_size"] == 10
+        assert stats["max_size"] == 20

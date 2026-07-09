@@ -14,6 +14,7 @@ SQLite for speed).
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import sqlite3
@@ -123,8 +124,7 @@ class ConnectionPool:
 
 def _active_postgres_pool() -> Any | None:
     try:
-        from foresight_mcp import server as _server
-
+        _server = importlib.import_module("foresight.server")
         backend = getattr(_server, "_global_backend", None)
     except Exception:  # pragma: no cover - defensive
         return None
@@ -142,10 +142,9 @@ class _PsycopgPoolAdapter:
         self._pool = pool
 
     def acquire(self) -> Any:
-        from foresight_mcp.server import PostgresPooledConnection
-
+        _server = importlib.import_module("foresight.server")
         raw_conn = self._pool.connection()
-        return PostgresPooledConnection(raw_conn, self._pool)
+        return _server.PostgresPooledConnection(raw_conn, self._pool)
 
     def release(self, conn: Any) -> None:
         try:

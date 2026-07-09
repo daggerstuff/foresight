@@ -169,13 +169,13 @@ def print_table(columns: list[str], rows: list[list[Any]], *, title: str | None 
     if _settings.mode == "agent":
         # Tab-separated, first line header
         "\t".join(columns)
-        for row in rows:
+        for _row in rows:
             pass
         return
 
     table = Table(*columns, title=title, title_style="bold")
-    for row in rows:
-        table.add_row(*[str(c) for c in row])
+    for _row in rows:
+        table.add_row(*[str(c) for c in _row])
     if _settings.pipe_safe:
         _stderr_console.print(table)
     else:
@@ -184,9 +184,10 @@ def print_table(columns: list[str], rows: list[list[Any]], *, title: str | None 
 
 def print_json(data: Any) -> None:
     """Print JSON to stdout (works in all modes)."""
-    _json.dumps(data, indent=2, default=str)
+    text = _json.dumps(data, indent=2, default=str)
     if _settings.mode == "agent":
         return
+    sys.stdout.write(text + "\n")
 
 
 def confirm(message: str, default: bool = True) -> bool:

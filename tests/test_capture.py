@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime, timezone
 
 import pytest
-from foresight_mcp.capture import (
+from foresight.capture import (
     CapturedMemory,
     DedupeEngine,
     MemoryExtractor,
@@ -12,8 +12,8 @@ from foresight_mcp.capture import (
     get_capture_pipeline,
     reset_capture_pipeline,
 )
-from foresight_mcp.document_layer import content_hash as _content_hash
-from foresight_mcp.memory_relationships import reset_memory_relationship_store
+from foresight.document_layer import content_hash as _content_hash
+from foresight.memory_relationships import reset_memory_relationship_store
 
 # ====== Fixtures ======
 
@@ -24,26 +24,37 @@ def setup_test_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_capture.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
-    import foresight_mcp.config as config_module
-    import foresight_mcp.connection_pool as conn_pool_module
-    from foresight_mcp.connection_pool import reset_pool
-    from foresight_mcp.server import init_db
+    import foresight.config as config_module
+
+    import foresight.connection_pool as conn_pool_module
+    from foresight.connection_pool import reset_pool
+    from foresight.server import init_db
+    from foresight.backend import SqliteBackend
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
+    import foresight.server as server_module
+
+    monkeypatch.setattr(server_module, "DB_PATH", str(db_file))
+    import foresight.subconscious as subconscious_module
+
+    monkeypatch.setattr(subconscious_module, "DB_PATH", str(db_file))
     reset_pool()
 
-    from foresight_mcp.tenant_context import set_current_account_id, set_current_user_id
+    from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
 
-    init_db()
+    backend = SqliteBackend(db_path=str(db_file))
+    init_db(backend=backend)
     reset_capture_pipeline()
+    pipeline = get_capture_pipeline()
+    pipeline.db_path = str(db_file)
     reset_memory_relationship_store()
     yield
     reset_pool()
-    from foresight_mcp.tenant_context import reset_tenant_context
+    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -221,7 +232,7 @@ class TestDedupeEngine:
         self, content: str, category: str = "decision", user_id: str = "_test_user_", tenant_id: str = "_test_"
     ):
         """Insert a memory directly so the engine can find it."""
-        from foresight_mcp.connection_pool import DB_PATH, get_pool
+        from foresight.connection_pool import DB_PATH, get_pool
 
         pool = get_pool(db_path=DB_PATH)
         conn = pool.acquire()
@@ -321,7 +332,7 @@ class TestDedupeEngine:
 
 class TestCapturePipeline:
     def _count_memories(self):
-        from foresight_mcp.connection_pool import DB_PATH, get_pool
+        from foresight.connection_pool import DB_PATH, get_pool
 
         pool = get_pool(db_path=DB_PATH)
         conn = pool.acquire()
@@ -446,7 +457,7 @@ class TestServerIntegration:
 
     def test_process_session_transcript_includes_capture(self):
         """Verify the return message includes memory count from capture pipeline."""
-        from foresight_mcp.server import process_session_transcript
+        from foresight.server import process_session_transcript
 
         msgs = [
             {"role": "user", "content": "Let's use Redis for caching"},
@@ -459,7 +470,7 @@ class TestServerIntegration:
 
     def test_process_session_transcript_skips_trivial(self):
         """Trivial sessions should still report zero new memories."""
-        from foresight_mcp.server import process_session_transcript
+        from foresight.server import process_session_transcript
 
         msgs = [
             {"role": "user", "content": "hi"},
@@ -471,7 +482,7 @@ class TestServerIntegration:
 
     def test_process_session_transcript_with_existing_bridge(self):
         """Pipeline should coexist with existing _bridge_context_blocks_to_memories."""
-        from foresight_mcp.server import process_session_transcript
+        from foresight.server import process_session_transcript
 
         msgs = [
             {"role": "user", "content": "TODO: Add retry logic for the API client."},

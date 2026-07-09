@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import foresight_mcp.event_bus as event_bus_module
-from foresight_mcp.event_bus import Event, EventType, get_event_bus, reset_event_bus
+import foresight.event_bus as event_bus_module
+from foresight.event_bus import Event, EventType, get_event_bus, reset_event_bus
 
 
 class _FakeStore:

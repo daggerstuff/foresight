@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 import typer
-from foresight_mcp import (
+
+from foresight import (
     MemoryAction,
     MemoryUpdateOptions,
     SearchOptions,
@@ -15,8 +16,7 @@ from foresight_mcp import (
     search_memories,
     store_memory,
 )
-from foresight_mcp.server import init_db
-
+from foresight.server import init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Store, retrieve, search, and manage memories.")
@@ -25,7 +25,7 @@ app = typer.Typer(help="Store, retrieve, search, and manage memories.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight_mcp.server import _initialize_backend
+    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)
@@ -39,7 +39,7 @@ def store(
         "short_term", "--retention", "-r", help="Retention (ephemeral/short_term/long_term/permanent)"
     ),
     category: str = typer.Option("fact", "--category", "-c", help="Category label"),
-    importance: float = typer.Option(0.5, "--importance", "-i", min=0.0, max=1.0, help="Importance (0.0–1.0)"),
+    importance: float = typer.Option(0.5, "--importance", "-i", min=0.0, max=1.0, help="Importance (0.0-1.0)"),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Store a new memory."""
@@ -167,12 +167,12 @@ def search(
 
     if mode == "semantic":
         try:
-            from foresight_mcp import semantic_search_memories
+            from foresight import semantic_search_memories
 
             result = semantic_search_memories(query=query_text, limit=limit, min_score=min_score)
         except ImportError:
             out.error("Semantic search requires embedding support. Use --mode keyword (default).")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
     else:
         result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
 

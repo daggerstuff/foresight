@@ -57,7 +57,7 @@ CREATE TABLE events (
 ### Python
 
 ```python
-from foresight_mcp.event_bus import get_event_bus, EventType
+from foresight.event_bus import get_event_bus, EventType
 
 event_bus = get_event_bus()
 
@@ -94,7 +94,7 @@ client.onMessage((message) => {
 ## Querying Events
 
 ```python
-from foresight_mcp.event_bus import get_event_bus
+from foresight.event_bus import get_event_bus
 
 event_bus = get_event_bus()
 store = event_bus._store

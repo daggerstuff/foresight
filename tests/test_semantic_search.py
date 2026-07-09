@@ -11,8 +11,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from foresight_mcp import semantic_search as sem_mod
-from foresight_mcp.semantic_search import (
+from foresight.semantic_search import (
     DEFAULT_PROVIDER,
     LOCAL_HASH_DIM,
     VALID_PROVIDERS,
@@ -28,6 +27,8 @@ from foresight_mcp.semantic_search import (
     reset_semantic_search,
     serialize_vector,
 )
+
+from foresight import semantic_search as sem_mod
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -64,8 +65,8 @@ def _patched_db(db_path: str) -> Iterator[SemanticSearch]:
     reset_semantic_search()
     with (
         patch.object(sem_mod, "DB_PATH", db_path),
-        patch("foresight_mcp.config.DB_PATH", db_path),
-        patch("foresight_mcp.semantic_search.DB_PATH", db_path),
+        patch("foresight.config.DB_PATH", db_path),
+        patch("foresight.semantic_search.DB_PATH", db_path),
     ):
         store = SemanticSearch(db_path)
         try:
@@ -298,7 +299,7 @@ def test_search_is_user_isolated():
 
 def test_singleton_returns_same_instance(monkeypatch):
     db = _make_test_db()
-    monkeypatch.setattr("foresight_mcp.config.DB_PATH", db)
+    monkeypatch.setattr("foresight.config.DB_PATH", db)
     monkeypatch.setattr(sem_mod, "DB_PATH", db)
     reset_semantic_search()
     a = get_semantic_search()

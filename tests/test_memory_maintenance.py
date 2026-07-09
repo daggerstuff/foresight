@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 
-from foresight_mcp.memory_maintenance import (
+from foresight.memory_maintenance import (
     DUPLICATE_OVERLAP_HIGH,
     DUPLICATE_OVERLAP_MARGINAL,
     MAX_BATCH_SIZE,

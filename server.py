@@ -82,12 +82,12 @@ from .hooks import (
 )
 from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
 from .injection_budget import (
-    BudgetResult,
     DEFAULT_LANE_WEIGHTS,
+    MIN_LANE_CHARS,
+    BudgetResult,
     InjectionBudget,
     Lane,
     LaneItem,
-    MIN_LANE_CHARS,
     format_budgeted_payload,
 )
 from .memory_components import (
@@ -97,7 +97,6 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
-
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -422,7 +421,7 @@ class PostgresPooledConnection(PooledConnection):
         return PostgresRow(row)
 
     def execute(self, sql, params=()):
-        from foresight_mcp.backend.postgres_backend import _translate_sql
+        from foresight.backend.postgres_backend import _translate_sql
 
         pg_sql = _translate_sql(sql)
         self._last_result = self._conn.execute(pg_sql, params)
@@ -430,7 +429,7 @@ class PostgresPooledConnection(PooledConnection):
         return self
 
     def execute_returning(self, sql, params=()):
-        from foresight_mcp.backend.postgres_backend import _translate_sql
+        from foresight.backend.postgres_backend import _translate_sql
 
         pg_sql = _translate_sql(sql)
         upper_sql = pg_sql.upper()
@@ -488,7 +487,7 @@ class PostgresRow(dict):
 
 
 def _supports_execute_returning(conn: Any) -> bool:
-    return hasattr(conn, "execute_returning") and callable(getattr(conn, "execute_returning"))
+    return hasattr(conn, "execute_returning") and callable(conn.execute_returning)
 
 
 def get_db_connection():
@@ -1053,7 +1052,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     event_bus = get_event_bus_with_stream()
     # Redact sensitive content from event bus publishes
     content_redacted = "[REDACTED - sensitive]" if current["is_sensitive"] else current["content"]
-    version_is_sensitive = "is_sensitive" in version_row.keys() and bool(version_row["is_sensitive"])
+    version_is_sensitive = "is_sensitive" in version_row and bool(version_row["is_sensitive"])
     new_content_redacted = "[REDACTED - sensitive]" if version_is_sensitive else version_row["content"]
     event_bus.publish(
         memory_updated(memory_id=memory_id, old_content=content_redacted, new_content=new_content_redacted, actor=uid)
@@ -1246,12 +1245,12 @@ def _health_status_dict() -> dict[str, Any]:
         "status": "ok",
         "name": getattr(mcp, "name", "Foresight"),
         "uptime_seconds": uptime_seconds,
-        "server": "foresight-mcp",
+        "server": "foresight",
     }
     try:
         # Deferred: get_system_status is defined later in this module (~L3960).
         # Bare name fails if called during module init before that def.
-        from foresight_mcp.server import get_system_status as _get_status
+        from foresight.server import get_system_status as _get_status
 
         raw = _get_status()
         parsed: Any = json.loads(raw) if isinstance(raw, str) else raw
@@ -1275,7 +1274,7 @@ def _health_status_dict() -> dict[str, Any]:
 
 
 @mcp.custom_route("/health", methods=["GET"])
-async def health_endpoint(request: Request) -> JSONResponse:
+async def health_endpoint(_request: Request) -> JSONResponse:
     """HTTP health probe for load balancers and orchestrators.
 
     Returns 200 with a JSON body as long as the FastMCP server is alive. We
@@ -3789,9 +3788,9 @@ def main(host: str | None = None, port: int | None = None) -> None:
     """Start the Foresight MCP server.
 
     Args:
-        host: Host to bind when using SSE transport. If None, uses FORESIGHT_MCP_HOST
+        host: Host to bind when using SSE transport. If None, uses FORESIGHT_HOST
               env var or defaults to '127.0.0.1'.
-        port: Port to bind when using SSE transport. If None, checks FORESIGHT_MCP_PORT
+        port: Port to bind when using SSE transport. If None, checks FORESIGHT_PORT
               env var. If neither is set, runs in stdio mode (default).
     """
     _SERVER_STATE["started_at"] = time.time()
@@ -3847,9 +3846,9 @@ def main(host: str | None = None, port: int | None = None) -> None:
     _run_async(websocket_server.start())
 
     # Determine transport: SSE when port is set (via arg or env), stdio otherwise
-    transport_port = port if port is not None else os.environ.get("FORESIGHT_MCP_PORT")
+    transport_port = port if port is not None else os.environ.get("FORESIGHT_PORT")
     if transport_port is not None:
-        transport_host = host if host is not None else os.environ.get("FORESIGHT_MCP_HOST", "127.0.0.1")
+        transport_host = host if host is not None else os.environ.get("FORESIGHT_HOST", "127.0.0.1")
         mcp.run(transport="sse", host=transport_host, port=int(transport_port), show_banner=False)
     else:
         mcp.run(show_banner=False)
@@ -5271,6 +5270,6 @@ if __name__ == "__main__":
     import sys as _sys
 
     _this = _sys.modules[__name__]
-    _sys.modules["foresight_mcp.server"] = _this
+    _sys.modules["foresight.server"] = _this
     _sys.modules[__name__] = _this
     main()

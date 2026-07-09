@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 
 import typer
-from foresight_mcp import (
+
+from foresight import (
     AnalysisAction,
     ProfileConfig,
     VersionAction,
@@ -14,8 +15,7 @@ from foresight_mcp import (
     profile_to_prompt,
     synthesize_profile,
 )
-from foresight_mcp.server import init_db
-
+from foresight.server import init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Analyze, synthesize, reflect, and version memories.")
@@ -24,7 +24,7 @@ app = typer.Typer(help="Analyze, synthesize, reflect, and version memories.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight_mcp.server import _initialize_backend
+    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)

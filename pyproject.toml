@@ -1,5 +1,5 @@
 [project]
-name = "foresight-mcp"
+name = "foresight"
 version = "0.18.1"
 description = "Persistent memory for AI agents — CLI, TUI, MCP server, and Python SDK"
 readme = "README.md"
@@ -40,7 +40,7 @@ cli = ["typer>=0.9.0", "rich>=13.0"]
 tui = ["textual>=1.0.0"]
 postgres = ["psycopg[binary,pool]>=3.2"]
 redis = ["redis>=5.0"]
-all = ["foresight-mcp[cli,tui,postgres,redis]"]
+all = ["foresight[cli,tui,postgres,redis]"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -54,20 +54,20 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/daggerstuff/foresight-mcp"
-Repository = "https://github.com/daggerstuff/foresight-mcp"
+Homepage = "https://github.com/daggerstuff/foresight"
+Repository = "https://github.com/daggerstuff/foresight"
 Documentation = "https://foresight.vectorize.io"
-Issues = "https://github.com/daggerstuff/foresight-mcp/issues"
-Changelog = "https://github.com/daggerstuff/foresight-mcp/releases"
+Issues = "https://github.com/daggerstuff/foresight/issues"
+Changelog = "https://github.com/daggerstuff/foresight/releases"
 
 [project.scripts]
-foresight-mcp = "foresight_mcp.__main__:main"
+foresight-server = "foresight.__main__:main"
 foresight-cli = "foresight_cli.cli:main"
 foresight = "foresight_cli.cli:main"
 
 # Evaluation harness (PIX-3953)
-eval-run = "foresight_mcp.eval_harness:run_eval"
-eval-baseline = "foresight_mcp.eval_harness:run_eval"
+eval-run = "foresight.eval_harness:run_eval"
+eval-baseline = "foresight.eval_harness:run_eval"
 
 [dependency-groups]
 dev = [
@@ -90,11 +90,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["foresight_mcp", "foresight_cli"]
+packages = ["foresight", "foresight_cli"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/foresight_mcp",
+    "/foresight",
     "/foresight_cli",
     "/scripts",
     "README.md",

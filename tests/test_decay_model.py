@@ -12,8 +12,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
-from foresight_mcp import decay_model as mod
-from foresight_mcp.decay_model import (
+from foresight.decay_model import (
     DEFAULT_ACTIVATION_BOOST,
     DEFAULT_HALF_LIFE_HOURS,
     DEFAULT_MIN_IMPORTANCE,
@@ -27,6 +26,8 @@ from foresight_mcp.decay_model import (
     get_decay_model,
     reset_decay_model,
 )
+
+from foresight import decay_model as mod
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -94,8 +95,8 @@ def _patched_service(db_path: str) -> Iterator[MemoryDecayService]:
     reset_decay_model()
     with (
         patch.object(mod, "DB_PATH", db_path),
-        patch("foresight_mcp.config.DB_PATH", db_path),
-        patch("foresight_mcp.decay_model.DB_PATH", db_path),
+        patch("foresight.config.DB_PATH", db_path),
+        patch("foresight.decay_model.DB_PATH", db_path),
     ):
         svc = MemoryDecayService(db_path)
         try:
@@ -712,8 +713,8 @@ def test_singleton_returns_same_instance():
     db = _make_test_db()
     with (
         patch.object(mod, "DB_PATH", db),
-        patch("foresight_mcp.config.DB_PATH", db),
-        patch("foresight_mcp.decay_model.DB_PATH", db),
+        patch("foresight.config.DB_PATH", db),
+        patch("foresight.decay_model.DB_PATH", db),
     ):
         reset_decay_model()
         a = get_decay_model()
@@ -728,8 +729,8 @@ def test_singleton_thread_safe():
     db = _make_test_db()
     with (
         patch.object(mod, "DB_PATH", db),
-        patch("foresight_mcp.config.DB_PATH", db),
-        patch("foresight_mcp.decay_model.DB_PATH", db),
+        patch("foresight.config.DB_PATH", db),
+        patch("foresight.decay_model.DB_PATH", db),
     ):
         reset_decay_model()
         results = []

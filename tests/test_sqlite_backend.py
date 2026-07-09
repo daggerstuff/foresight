@@ -1,11 +1,13 @@
 """Tests for SqliteBackend connection pooling and query execution."""
+
 import pytest
-from foresight_mcp.backend.sqlite_backend import SqliteBackend
+from foresight.backend.sqlite_backend import SqliteBackend
 
 
 @pytest.fixture
 def db_path(tmp_path):
     return str(tmp_path / "backend_test.db")
+
 
 @pytest.fixture
 def backend(db_path):
@@ -13,6 +15,7 @@ def backend(db_path):
     b.connect()
     yield b
     b.close()
+
 
 def test_connect_and_close(db_path):
     b = SqliteBackend(db_path=db_path)
@@ -53,6 +56,7 @@ def test_unconnected_backend_raises(db_path):
     with pytest.raises(RuntimeError, match="SqliteBackend not connected"):
         b.fetch_one("SELECT 1")
 
+
 def test_execute_and_fetch(backend):
     backend.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
     backend.execute("INSERT INTO test (name) VALUES (?)", ("foo",))
@@ -61,6 +65,7 @@ def test_execute_and_fetch(backend):
     assert len(rows) == 1
     assert rows[0]["name"] == "foo"
     assert rows[0]["id"] == 1
+
 
 def test_fetch_one(backend):
     backend.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
@@ -73,6 +78,7 @@ def test_fetch_one(backend):
     row_none = backend.fetch_one("SELECT name FROM test WHERE id = ?", (99,))
     assert row_none is None
 
+
 def test_execute_many(backend):
     backend.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
     backend.execute_many("INSERT INTO test (name) VALUES (?)", [("a",), ("b",), ("c",)])
@@ -83,6 +89,7 @@ def test_execute_many(backend):
     assert rows[1]["name"] == "b"
     assert rows[2]["name"] == "c"
 
+
 def test_connection_context_manager(backend):
     backend.execute("CREATE TABLE test (val INTEGER)")
 
@@ -92,6 +99,7 @@ def test_connection_context_manager(backend):
 
     row = backend.fetch_one("SELECT val FROM test")
     assert row["val"] == 42
+
 
 def test_stats(backend):
     stats = backend.stats
@@ -114,10 +122,11 @@ def test_stats_unconnected(db_path):
     stats = b.stats
     assert stats == {"idle": 0, "in_use": 0, "max_size": 10}
 
+
 def test_connection_exception_rollback(backend):
     backend.execute("CREATE TABLE test (val INTEGER)")
 
-    with pytest.raises(ValueError), backend.connection() as conn:
+    with pytest.raises(ValueError, match="Something went wrong"), backend.connection() as conn:
         conn.execute("INSERT INTO test (val) VALUES (42)")
         raise ValueError("Something went wrong")
 
@@ -128,8 +137,9 @@ def test_connection_exception_rollback(backend):
 
 def test_connect_default_db_path(monkeypatch, tmp_path):
     default_path = str(tmp_path / "default.db")
-    import foresight_mcp.backend.sqlite_backend
-    monkeypatch.setattr(foresight_mcp.backend.sqlite_backend, "DB_PATH", default_path)
+    import foresight.backend.sqlite_backend
+
+    monkeypatch.setattr(foresight.backend.sqlite_backend, "DB_PATH", default_path)
 
     b = SqliteBackend()
     b.connect()
@@ -162,6 +172,7 @@ def test_execute_no_params(backend):
     row = backend.fetch_one("SELECT id, name FROM test")
     assert row is not None
     assert row["name"] == "no_params"
+
 
 def test_fetch_one_multiple_results(backend):
     backend.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")

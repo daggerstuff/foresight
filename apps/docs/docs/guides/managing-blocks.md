@@ -14,7 +14,7 @@ recently cleared block.
 ## Read a block
 
 ```python
-from foresight_mcp import get_context_block
+from foresight import get_context_block
 
 guidance = get_context_block("guidance", user_id="vivi")
 print(guidance)
@@ -23,7 +23,7 @@ print(guidance)
 ## Update a block
 
 ```python
-from foresight_mcp import update_context_block
+from foresight import update_context_block
 
 update_context_block(
     label="guidance",
@@ -35,7 +35,7 @@ update_context_block(
 ## Append a guidance line
 
 ```python
-from foresight_mcp import add_context_guidance
+from foresight import add_context_guidance
 
 add_context_guidance("Prefer small, reviewable diffs.", user_id="vivi")
 ```
@@ -43,7 +43,7 @@ add_context_guidance("Prefer small, reviewable diffs.", user_id="vivi")
 ## Get the full continuity snapshot
 
 ```python
-from foresight_mcp import get_context_snapshot, get_context_whisper
+from foresight import get_context_snapshot, get_context_whisper
 
 snapshot = get_context_snapshot(user_id="vivi")
 whisper = get_context_whisper(user_id="vivi")
@@ -54,7 +54,7 @@ print(whisper)
 ## Reset or clear a block
 
 ```python
-from foresight_mcp import clear_context_block, reset_context_block
+from foresight import clear_context_block, reset_context_block
 
 clear_context_block("guidance", user_id="vivi")
 reset_context_block("guidance", user_id="vivi")

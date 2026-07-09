@@ -7,7 +7,7 @@ preservation under pressure.
 """
 
 import pytest
-from foresight_mcp.injection_budget import (
+from foresight.injection_budget import (
     InjectionBudget,
     Lane,
     LaneItem,
@@ -22,8 +22,8 @@ from foresight_mcp.injection_budget import (
 # ---------------------------------------------------------------------------
 
 
-def _item(id: str, content: str, score: float = 0.5, lane: Lane = Lane.MEMORIES) -> LaneItem:
-    return LaneItem(id=id, content=content, score=score, lane=lane)
+def _item(item_id: str, content: str, score: float = 0.5, lane: Lane = Lane.MEMORIES) -> LaneItem:
+    return LaneItem(id=item_id, content=content, score=score, lane=lane)
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ class TestInjectionBudget:
             InjectionBudget(max_chars=-1)
 
     def test_weights_must_sum_to_one(self):
-        with pytest.raises(ValueError, match="lane_weights must sum to 1.0"):
+        with pytest.raises(ValueError, match=r"lane_weights must sum to 1\.0"):
             InjectionBudget(max_chars=1000, lane_weights={Lane.MEMORIES: 0.5})
 
     def test_custom_weights(self):

@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.reflection_engine import (
+from foresight.reflection_engine import (
     ReflectionEngine,
     ReflectionReport,
     reset_reflection_engine,

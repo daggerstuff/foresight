@@ -10,7 +10,7 @@ Search and retrieve stored memories.
 ## Basic Query
 
 ```python
-from foresight_mcp import query_memories
+from foresight import query_memories
 
 results = query_memories("TypeScript")
 print(results)
@@ -22,7 +22,7 @@ print(results)
 ## List All Memories
 
 ```python
-from foresight_mcp import list_memories
+from foresight import list_memories
 
 # Default: first 10
 memories = list_memories()
@@ -34,7 +34,7 @@ memories = list_memories(limit=20, offset=10)
 ## Get Specific Memory
 
 ```python
-from foresight_mcp import get_memory
+from foresight import get_memory
 
 memory = get_memory("abc123")
 print(memory)

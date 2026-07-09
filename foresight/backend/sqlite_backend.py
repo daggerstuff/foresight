@@ -1,0 +1,163 @@
+"""SQLite backend — wraps the existing ConnectionPool behind DatabaseBackend.
+
+This is the default backend used when ``FORESIGHT_DB_URL`` is not set.
+It preserves full backward compatibility with the existing SQLite database
+at ``FORESIGHT_DB_PATH`` (or the compiled-in default).
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import Any
+
+from foresight.config import DB_PATH
+from foresight.connection_pool import ConnectionPool
+
+from .base import DatabaseBackend
+
+logger = logging.getLogger("foresight_sqlite_backend")
+
+
+class CustomRow:
+    def __init__(self, cursor, row):
+        self._row = sqlite3.Row(cursor, row)
+
+    def get(self, key, default=None):
+        try:
+            val = self._row[key]
+            return val if val is not None else default
+        except (IndexError, KeyError):
+            return default
+
+    def __getitem__(self, key):
+        return self._row[key]
+
+    def __iter__(self):
+        return iter(self._row)
+
+    def __len__(self):
+        return len(self._row)
+
+    def keys(self):
+        return self._row.keys()
+
+
+class SqliteBackend(DatabaseBackend):
+    """DatabaseBackend implementation backed by a SQLite ConnectionPool."""
+
+    def __init__(
+        self,
+        db_path: str | None = None,
+        max_size: int = 10,
+        max_idle_seconds: int = 300,
+    ) -> None:
+        self._db_path = db_path
+        self._max_size = max_size
+        self._max_idle_seconds = max_idle_seconds
+        self._pool: ConnectionPool | None = None
+        self.row_factory = CustomRow
+
+    # ------------------------------------------------------------------
+    # DatabaseBackend lifecycle
+    # ------------------------------------------------------------------
+
+    def connect(self) -> None:
+        path = self._db_path or DB_PATH
+        logger.debug("Initialising SqliteBackend with db_path=%s", path)
+        self._pool = ConnectionPool(
+            db_path=path,
+            max_size=self._max_size,
+            max_idle_seconds=self._max_idle_seconds,
+        )
+        self._backend_type = "sqlite"
+
+    def close(self) -> None:
+        if self._pool is not None:
+            logger.debug("Closing SqliteBackend pool")
+            self._pool.close_all()
+            self._pool = None
+
+    # ------------------------------------------------------------------
+    # Connection lifecycle
+    # ------------------------------------------------------------------
+
+    @contextmanager
+    def connection(self) -> Generator[Any]:
+        """Acquire a pooled SQLite connection and release it on exit."""
+        if self._pool is None:
+            raise RuntimeError("SqliteBackend not connected. Call connect() first.")
+        with self._pool.acquire() as conn:
+            try:
+                yield conn
+            except Exception:
+                conn.rollback()
+                raise
+
+    # ------------------------------------------------------------------
+    # Convenience — minor optimisation over base-class defaults
+    # ------------------------------------------------------------------
+
+    def execute(self, sql: str, params: tuple | dict = ()) -> None:
+        if self._pool is None:
+            raise RuntimeError("SqliteBackend not connected. Call connect() first.")
+        with self._pool.acquire() as conn:
+            conn.execute(sql, params)
+            conn.commit()
+
+    def execute_many(self, sql: str, params_list: list[tuple]) -> None:
+        if self._pool is None:
+            raise RuntimeError("SqliteBackend not connected. Call connect() first.")
+        with self._pool.acquire() as conn:
+            conn.executemany(sql, params_list)
+            conn.commit()
+
+    def fetch(self, sql: str, params: tuple | dict = ()) -> list[dict]:
+        if self._pool is None:
+            raise RuntimeError("SqliteBackend not connected. Call connect() first.")
+        with self._pool.acquire() as conn:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    def fetch_one(self, sql: str, params: tuple | dict = ()) -> dict | None:
+        if self._pool is None:
+            raise RuntimeError("SqliteBackend not connected. Call connect() first.")
+        with self._pool.acquire() as conn:
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Pool introspection
+    # ------------------------------------------------------------------
+
+    def table_exists(self, table_name: str) -> bool:
+        result = self.fetch_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (table_name,),
+        )
+        return result is not None
+
+    def column_exists(self, table_name: str, column_name: str) -> bool:
+        if not self.table_exists(table_name):
+            return False
+        rows = self.fetch(f"PRAGMA table_info({table_name})")
+        return any(row["name"] == column_name for row in rows)
+
+    def get_version(self) -> int:
+        if not self.table_exists("schema_migrations"):
+            return 0
+        row = self.fetch_one("SELECT MAX(version) AS version FROM schema_migrations")
+        return int(row["version"]) if row and row["version"] is not None else 0
+
+    def set_version(self, version: int, applied_at: str) -> None:
+        self.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (version, applied_at),
+        )
+
+    @property
+    def stats(self) -> dict:
+        if self._pool is None:
+            return {"idle": 0, "in_use": 0, "max_size": self._max_size}
+        return self._pool.stats

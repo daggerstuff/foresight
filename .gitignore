@@ -9,6 +9,7 @@ __pycache__/
 build/
 dist/
 .moderne/
+.agent/
 
 # Environments
 .env
@@ -34,3 +35,6 @@ pyrightconfig.json
 # Coverage reports
 packages/*/coverage/
 packages/*/src/test/
+
+# Added by ggshield
+.cache_ggshield

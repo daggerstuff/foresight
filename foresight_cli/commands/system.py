@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from foresight_mcp import get_system_status
-from foresight_mcp.server import _initialize_backend, init_db
 
+from foresight import get_system_status
+from foresight.server import _initialize_backend, init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="System management, diagnostics, and configuration.")
@@ -330,8 +330,8 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight_mcp import query_memories_temporal
-        from foresight_mcp.server import TemporalWindow
+        from foresight import query_memories_temporal
+        from foresight.server import TemporalWindow
 
         temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:
@@ -409,7 +409,7 @@ def config(
     key: str | None = typer.Argument(None, help="Config key to view/set (e.g. user_id, db_path, bank_id)"),
     value: str | None = typer.Argument(None, help="Value to set (omit to view current)"),
     reset: bool = typer.Option(False, "--reset", help="Reset config to defaults"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+    _user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """View or modify Foresight configuration."""
     cfg.ensure_config()
@@ -458,14 +458,14 @@ def history(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight_mcp import get_decay_events
+        from foresight import get_decay_events
 
         raw = get_decay_events(user_id=resolved_uid, limit=limit)
         parsed: dict = json.loads(raw) if isinstance(raw, str) else raw
         events_list: list = parsed.get("events", []) if parsed.get("ok") else []
     except (json.JSONDecodeError, TypeError, OSError) as e:
         out.error(f"Failed to retrieve history: {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if out.get_settings().mode == "agent":
         out.print_json({"events": events_list})

@@ -4,9 +4,9 @@ import os
 import sqlite3
 import tempfile
 
-from foresight_mcp.entity_extractor import Entity, Relationship
-from foresight_mcp.graph_store import GraphStore
-from foresight_mcp.tenant_context import reset_tenant_context, set_current_tenant_id
+from foresight.entity_extractor import Entity, Relationship
+from foresight.graph_store import GraphStore
+from foresight.tenant_context import reset_tenant_context, set_current_tenant_id
 
 
 def _fresh_store():
@@ -143,8 +143,8 @@ def test_migration_adds_tenant_id_to_existing_db():
         conn.close()
 
         # Run migration
-        from foresight_mcp.backend import SqliteBackend
-        from foresight_mcp.migrations import run_migrations
+        from foresight.backend import SqliteBackend
+        from foresight.migrations import run_migrations
 
         backend = SqliteBackend(db_path=db_path)
         backend.connect()

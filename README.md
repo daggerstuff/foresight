@@ -2,18 +2,18 @@
 
 **Persistent memory for AI agents** — CLI, TUI, MCP server, and Python SDK.
 
-[![PyPI](https://img.shields.io/pypi/v/foresight-mcp?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/foresight-mcp/)
-[![Python](https://img.shields.io/pypi/pyversions/foresight-mcp?logo=python&logoColor=white)](https://python.org)
-[![License](https://img.shields.io/pypi/l/foresight-mcp?color=green)](LICENSE)
-[![CI](https://github.com/daggerstuff/foresight-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/daggerstuff/foresight-mcp/actions)
-[![Downloads](https://img.shields.io/pypi/dm/foresight-mcp?color=purple)](https://pypi.org/project/foresight-mcp/)
+[![PyPI](https://img.shields.io/pypi/v/foresight?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/foresight/)
+[![Python](https://img.shields.io/pypi/pyversions/foresight?logo=python&logoColor=white)](https://python.org)
+[![License](https://img.shields.io/pypi/l/foresight?color=green)](LICENSE)
+[![CI](https://github.com/daggerstuff/foresight/actions/workflows/ci.yml/badge.svg)](https://github.com/daggerstuff/foresight/actions)
+[![Downloads](https://img.shields.io/pypi/dm/foresight?color=purple)](https://pypi.org/project/foresight/)
 
 ---
 
 ### One-liner install
 
 ```bash
-pip install foresight-mcp[all]
+pip install foresight[all]
 ```
 
 That's it. Now run:
@@ -35,7 +35,7 @@ Three commands. You're live.
 | **`foresight`**         | Full CLI with 20+ commands             | `foresight store "hello"`, `foresight list`, `foresight query "search"` |
 | **`foresight --agent`** | Machine-parseable output for AI agents | `foresight --agent status → [JSON] {...}`                               |
 | **`foresight tui`**     | Interactive Textual TUI                | Browse, search, edit memories — keyboard-first                          |
-| **`foresight-mcp`**     | MCP server for agent tool integration  | Add to Claude Code, Cursor, Goose, any MCP client                       |
+| **`foresight-server`**  | MCP server for agent tool integration  | Add to Claude Code, Cursor, Goose, any MCP client                       |
 | **Python SDK**          | Import directly for custom tooling     | Use Python API helpers for custom scripts                               |
 
 ---
@@ -45,7 +45,7 @@ Three commands. You're live.
 #### Step 1 — Install
 
 ```bash
-pip install foresight-mcp[all]
+pip install foresight[all]
 ```
 
 > **Extras breakdown** — install only what you need:
@@ -57,7 +57,7 @@ pip install foresight-mcp[all]
 > | `[tui]`  | CLI + TUI (`textual`) — no MCP      |
 > | `[all]`  | Everything — CLI + TUI + MCP server |
 
-On macOS/Linux with uv installed, `uv pip install foresight-mcp[all]` is ~3x faster.
+On macOS/Linux with uv installed, `uv pip install foresight[all]` is ~3x faster.
 
 ---
 
@@ -217,7 +217,7 @@ Add to any MCP-compatible agent. Here's the Claude Code config:
   "mcpServers": {
     "foresight": {
       "command": "uvx",
-      "args": ["foresight-mcp"]
+      "args": ["foresight-server"]
     }
   }
 }
@@ -227,7 +227,7 @@ Add to any MCP-compatible agent. Here's the Claude Code config:
 
 ```bash
 Command: uvx
-Arguments: foresight-mcp
+Arguments: foresight-server
 ```
 
 **Goose** — same pattern, same command. Any stdio MCP client works.
@@ -334,7 +334,7 @@ the source bank through a staging-and-promotion flow.
 ## Quick start
 
 ```bash
-uv run foresight-mcp
+uv run foresight-server
 uv run foresight --help
 ```
 
@@ -349,14 +349,14 @@ uv run foresight --help
 2. Clone the repository:
 
    ```bash
-   git clone https://github.com/yourorg/foresight-mcp.git
-   cd foresight-mcp
+   git clone https://github.com/yourorg/foresight.git
+   cd foresight
    ```
 
 3. Install the package:
 
    ```bash
-   pip install foresight-mcp[all]
+   pip install foresight[all]
    ```
 
 4. Initialize your memory store:
@@ -368,7 +368,7 @@ uv run foresight --help
 5. Start the MCP server:
 
    ```bash
-   uvx foresight-mcp
+   uvx --from foresight foresight-server
    ```
 
 6. Explore the CLI:
@@ -388,8 +388,8 @@ uv run foresight --help
   "mcpServers": {
     "foresight": {
       "command": "uv",
-      "args": ["run", "-m", "foresight_mcp"],
-      "cwd": "/path/to/foresight-mcp",
+      "args": ["run", "-m", "foresight"],
+      "cwd": "/path/to/foresight",
       "env": {
         "FORESIGHT_DB_PATH": "/home/user/.foresight/memory.db",
         "FORESIGHT_USER_ID": "username"
@@ -404,8 +404,8 @@ uv run foresight --help
 ```yaml
 extensions:
   foresight:
-    args: ['run', '-m', 'foresight_mcp']
-    cwd: /path/to/foresight-mcp
+    args: ['run', '-m', 'foresight']
+    cwd: /path/to/foresight
     env:
       FORESIGHT_DB_PATH: /home/user/.foresight/memory.db
       FORESIGHT_USER_ID: username
@@ -414,7 +414,7 @@ extensions:
 
 ### Other MCP clients
 
-Use the same stdio pattern with `uv run -m foresight_mcp`.
+Use the same stdio pattern with `uv run -m foresight`.
 
 ## Public surfaces
 
@@ -475,7 +475,7 @@ field. The CLI `--json` mode prints these envelopes directly.
 ### Store a memory
 
 ```python
-from foresight_mcp import store_memory
+from foresight import store_memory
 
 store_memory(
     content="User prefers short direct progress updates.",
@@ -488,7 +488,7 @@ store_memory(
 ### Update continuity context
 
 ```python
-from foresight_mcp import add_context_guidance, get_context_whisper
+from foresight import add_context_guidance, get_context_whisper
 
 add_context_guidance("Keep updates short and concrete.", user_id="vivi")
 whisper = get_context_whisper(user_id="vivi")
@@ -498,7 +498,7 @@ print(whisper)
 ### Create a reviewable curation run
 
 ```python
-from foresight_mcp import CurationRunAction, manage_curation_runs
+from foresight import CurationRunAction, manage_curation_runs
 
 result = manage_curation_runs(
     CurationRunAction(

@@ -10,7 +10,7 @@ Complete guide to storing memories with Foresight.
 ## Basic Storage
 
 ```python
-from foresight_mcp import store_memory
+from foresight import store_memory
 
 result = store_memory(
     content="User prefers dark mode",

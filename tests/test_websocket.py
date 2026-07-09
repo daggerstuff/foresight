@@ -5,13 +5,13 @@ import contextlib
 from unittest.mock import patch
 
 import pytest
-from foresight_mcp.event_bus import EventType
-from foresight_mcp.websocket.server import (
+from foresight.event_bus import EventType
+from foresight.websocket.server import (
     ConnectionState,
     WebSocketHandler,
     WebSocketServer,
 )
-from foresight_mcp.websocket.subscriptions import (
+from foresight.websocket.subscriptions import (
     get_subscription_manager,
     reset_subscription_manager,
 )

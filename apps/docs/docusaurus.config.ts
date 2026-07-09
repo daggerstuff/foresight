@@ -8,9 +8,9 @@ const config: Config = {
   favicon: 'img/favicon.ico',
 
   url: 'https://foresight-memory.github.io',
-  baseUrl: '/foresight-mcp/',
+  baseUrl: '/foresight/',
   organizationName: 'foresight-memory',
-  projectName: 'foresight-mcp',
+  projectName: 'foresight',
 
   onBrokenLinks: 'throw',
   markdown: {
@@ -31,7 +31,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           editUrl:
-            'https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/',
+            'https://github.com/daggerstuff/foresight/tree/main/apps/docs/',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -55,7 +55,7 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          href: 'https://github.com/daggerstuff/foresight-mcp',
+          href: 'https://github.com/daggerstuff/foresight',
           label: 'GitHub',
           position: 'right',
         },
@@ -86,7 +86,7 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/daggerstuff/foresight-mcp',
+              href: 'https://github.com/daggerstuff/foresight',
             },
           ],
         },

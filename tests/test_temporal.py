@@ -20,9 +20,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from foresight_mcp.temporal_queries import TemporalQueryBuilder
-from foresight_mcp.temporal_schema import run_temporal_migrations
-from foresight_mcp.temporal_service import TemporalService
+from foresight.temporal_queries import TemporalQueryBuilder
+from foresight.temporal_schema import run_temporal_migrations
+from foresight.temporal_service import TemporalService
 
 
 def create_minimal_schema(db_path: str) -> None:

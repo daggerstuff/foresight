@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from foresight_mcp import document_layer as doc_mod
-from foresight_mcp.document_layer import (
+from foresight.document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET,
     VALID_DOCUMENT_SOURCES,
     Document,
@@ -18,12 +18,16 @@ from foresight_mcp.document_layer import (
     DocumentCreateOptions,
     DocumentLayerError,
     DocumentStore,
+    LLMDocumentExtractor,
     chunk_text,
     content_hash,
     extract_memories_from_text,
     get_document_store,
     reset_document_store,
 )
+from foresight.llm_errors import LLMError
+
+from foresight import document_layer as doc_mod
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,8 +83,8 @@ def _patched_store(db_path: str) -> Iterator[DocumentStore]:
     reset_document_store()
     with (
         patch.object(doc_mod, "DB_PATH", db_path),
-        patch("foresight_mcp.config.DB_PATH", db_path),
-        patch("foresight_mcp.document_layer.DB_PATH", db_path),
+        patch("foresight.config.DB_PATH", db_path),
+        patch("foresight.document_layer.DB_PATH", db_path),
     ):
         store = DocumentStore(db_path)
         try:
@@ -445,7 +449,7 @@ def test_delete_document_returns_zero_when_missing():
 
 def test_singleton_returns_same_instance(monkeypatch):
     db = _make_test_db()
-    monkeypatch.setattr("foresight_mcp.config.DB_PATH", db)
+    monkeypatch.setattr("foresight.config.DB_PATH", db)
     monkeypatch.setattr(doc_mod, "DB_PATH", db)
     reset_document_store()
     a = get_document_store()
@@ -500,3 +504,151 @@ def test_chunk_to_dict_shape():
         "text": "hello",
         "chunk_index": 0,
     }
+
+
+def test_llm_extractor_from_env_returns_instance():
+    """from_env should return a usable extractor (client may be None or real depending on env)."""
+    extractor = LLMDocumentExtractor.from_env("test-tenant")
+    assert isinstance(extractor, LLMDocumentExtractor)
+
+
+@pytest.mark.asyncio
+async def test_llm_extractor_empty_text():
+    extractor = LLMDocumentExtractor()
+    chunks = await extractor.extract("")
+    assert chunks == []
+
+
+@pytest.mark.asyncio
+async def test_llm_extractor_heuristic_fallback():
+    """Without an LLM client, extract should fall back to heuristic chunking."""
+    extractor = LLMDocumentExtractor()
+    text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+    chunks = await extractor.extract(text, char_budget=200)
+    assert len(chunks) == 1
+    assert all(isinstance(c, DocumentChunk) for c in chunks)
+    assert all(c.document_id == "pending" for c in chunks)
+    assert all(c.memory_id == "pending" for c in chunks)
+    assert "First paragraph." in chunks[0].text
+    assert "Third paragraph." in chunks[0].text
+
+
+def test_llm_parse_llm_response_valid_json():
+    extractor = LLMDocumentExtractor()
+    response = json.dumps(
+        [
+            {"content": "User prefers dark mode", "category": "preference", "importance": 0.8},
+            {"content": "Team chose GraphQL", "category": "decision", "importance": 0.9},
+        ]
+    )
+    source = "Some text about User prefers dark mode and Team chose GraphQL here."
+    chunks = extractor._parse_llm_response(response, source)
+    assert len(chunks) == 2
+    assert chunks[0].text == "User prefers dark mode"
+    assert chunks[1].text == "Team chose GraphQL"
+    assert chunks[0].chunk_index == 0
+    assert chunks[1].chunk_index == 1
+    assert chunks[0].start_offset >= 0
+
+
+def test_llm_parse_llm_response_finds_content_in_source():
+    """Offset calculation: content is found verbatim in source."""
+    extractor = LLMDocumentExtractor()
+    source = "A long document. User prefers dark mode. More text."
+    response = json.dumps([{"content": "User prefers dark mode", "category": "fact", "importance": 0.5}])
+    chunks = extractor._parse_llm_response(response, source)
+    assert len(chunks) == 1
+    expected_start = source.find("User prefers dark mode")
+    assert chunks[0].start_offset == expected_start
+    assert chunks[0].end_offset == expected_start + len("User prefers dark mode")
+
+
+def test_llm_parse_llm_response_no_json():
+    extractor = LLMDocumentExtractor()
+    with pytest.raises(LLMError, match="No JSON array"):
+        extractor._parse_llm_response("Just some text without JSON", "")
+
+
+def test_llm_parse_llm_response_empty_array():
+    extractor = LLMDocumentExtractor()
+    with pytest.raises(LLMError, match="zero memories"):
+        extractor._parse_llm_response("[]", "")
+
+
+def test_llm_parse_llm_response_invalid_json():
+    extractor = LLMDocumentExtractor()
+    with pytest.raises(LLMError, match="Invalid JSON"):
+        extractor._parse_llm_response("[broken json]", "")
+
+
+def test_llm_parse_llm_response_skips_items_missing_content():
+    extractor = LLMDocumentExtractor()
+    response = json.dumps(
+        [
+            {"category": "fact", "importance": 0.5},
+            {"content": "  ", "category": "fact", "importance": 0.5},
+            {"content": "valid memory", "category": "fact", "importance": 0.5},
+        ]
+    )
+    chunks = extractor._parse_llm_response(response, "valid memory")
+    assert len(chunks) == 1
+    assert chunks[0].text == "valid memory"
+
+
+@pytest.mark.asyncio
+async def test_llm_extractor_with_mocked_llm():
+    """When LLM client returns valid JSON, extract returns parsed memories."""
+    mock_client = AsyncMock()
+    mock_client.generate = lambda prompt, user_id="", max_tokens=1024: json.dumps(
+        [
+            {"content": "Key insight from text", "category": "insight", "importance": 0.9},
+        ]
+    )
+
+    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    source = "Some text with Key insight from text included."
+    chunks = await extractor.extract(source, user_id="test-user")
+    assert len(chunks) == 1
+    assert chunks[0].text == "Key insight from text"
+    assert chunks[0].document_id == "pending"
+
+
+@pytest.mark.asyncio
+async def test_llm_extractor_fallback_on_llm_error():
+    """When LLM call raises an exception, fall back to heuristic chunking."""
+    mock_client = AsyncMock()
+
+    def failing_generate(prompt, user_id="", max_tokens=1024):
+        msg = "API not available"
+        raise LLMError(msg)
+
+    mock_client.generate = failing_generate
+    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    text = "Para one.\n\nPara two.\n\nPara three."
+    chunks = await extractor.extract(text, char_budget=200)
+    assert len(chunks) == 1
+    assert all(c.text.startswith("Para") for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_llm_extractor_fallback_on_bad_response():
+    """When LLM returns bad JSON, fall back to heuristic chunking."""
+    mock_client = AsyncMock()
+    mock_client.generate = lambda prompt, user_id="", max_tokens=1024: "Not JSON at all"
+    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    text = "A.\n\nB.\n\nC."
+    chunks = await extractor.extract(text, char_budget=200)
+    assert len(chunks) > 0
+    assert all(c.document_id == "pending" for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_llm_extractor_fallback_on_empty_memories():
+    """When LLM returns empty memory list, fall back to heuristic chunking."""
+    mock_client = AsyncMock()
+    mock_client.generate = lambda prompt, user_id="", max_tokens=1024: "[]"
+    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    text = "X.\n\nY."
+    chunks = await extractor.extract(text, char_budget=200)
+    assert len(chunks) > 0
+    assert all(c.document_id == "pending" for c in chunks)
