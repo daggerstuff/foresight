@@ -492,8 +492,12 @@ class ContextBlockAgent:
         # Require unambiguous path forms to avoid matching prose like "and/or" or "1/2":
         # - ./ or ../ prefix: relative paths like ./foo/bar or ../foo/bar (at least one subdir)
         # - source-root prefix: recognized project dirs followed by at least one subdir
+        # Use a non-word lookbehind (?<!\w) instead of \b at the start: \b cannot
+        # occur before a dot, so ./foo and ../foo never matched when the path sat at
+        # the start of the string or after a non-word char. (?<!\w) still blocks
+        # false positives like "foo./bar" (word char directly before the dot).
         has_dir_path = bool(re.search(
-            r"\b(\./\w+(?:/\w+)*|\.\./\w+(?:/\w+)*|(?:src|lib|app|foresight|tests?|specs?|config|scripts|docs|pkg|internal|tools|backend|frontend)/\w+(?:/\w+)*)\b",
+            r"(?<!\w)(?:\./\w+(?:/\w+)*|\.\./\w+(?:/\w+)*|(?:src|lib|app|foresight|tests?|specs?|config|scripts|docs|pkg|internal|tools|backend|frontend)/\w+(?:/\w+)*)\b",
             content,
         ))
         has_stack_noun = any(re.search(rf"\b{re.escape(n)}\b", lowered) for n in self._PCX_STACK_NOUNS)

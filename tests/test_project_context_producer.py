@@ -248,6 +248,61 @@ def test_bare_path_fact_routes_without_verb():
     assert "src/api/users.py" in content
 
 
+# ====== Relative-path (./foo, ../foo) regression tests ======
+
+
+def test_relative_dot_path_routes_to_project_context():
+    """A leading-dot relative path like ./foo/bar MUST populate project_context.
+
+    Regression for the bug where the heuristic's leading \\b could never occur
+    before a dot, so ./foo and ../foo silently failed to route despite being
+    listed as supported path forms.
+    """
+    agent = ContextBlockAgent()
+    msg = "The wiring lives in ./src/wiring.py and the glue in ./app/glue.py."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    content = _project_context_content(agent)
+    assert "src/wiring.py" in content
+    assert "app/glue.py" in content
+
+
+def test_relative_parent_path_routes_to_project_context():
+    """A ../foo/bar relative path at the start of the message MUST route."""
+    agent = ContextBlockAgent()
+    msg = "../shared/lib/core.py holds the shared primitives."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    content = _project_context_content(agent)
+    assert "shared/lib/core.py" in content
+
+
+def test_dot_path_after_whitespace_routes():
+    """../foo/bar preceded only by whitespace (no word char) must still route."""
+    agent = ContextBlockAgent()
+    msg = "see ./lib/utils.py for the helper"
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    content = _project_context_content(agent)
+    assert "lib/utils.py" in content
+
+
+def test_word_before_dot_path_does_not_false_positive():
+    """A word char immediately before the dot must NOT match (false-positive guard).
+
+    'foo./bar/baz' is not a relative path; the non-word lookbehind must reject it
+    so ordinary prose / version strings don't pollute project_context.
+    """
+    agent = ContextBlockAgent()
+    msg = "the value is foo./bar/baz and nothing else"
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    assert _project_context_is_empty(agent), (
+        f"word-before-dot falsely wrote project_context: "
+        f"{_project_context_content(agent)!r}"
+    )
+
+
 def test_session_id_attribution_in_block_entry():
     """The producing session_id is embedded in the appended line for traceability."""
     agent = ContextBlockAgent()
