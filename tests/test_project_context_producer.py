@@ -10,7 +10,6 @@ regression where the block silently stays empty.
 import asyncio
 
 import pytest
-
 from foresight.subconscious import PROJECT_CONTEXT, ContextBlockAgent
 
 # ====== Fixtures ======
@@ -23,11 +22,12 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
     import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
     import foresight.subconscious as subconscious_module
     from foresight.backend import SqliteBackend
-    from foresight.connection_pool import reset_pool
     from foresight.server import init_db
+
+    import foresight.connection_pool as conn_pool_module
+    from foresight.connection_pool import reset_pool
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
