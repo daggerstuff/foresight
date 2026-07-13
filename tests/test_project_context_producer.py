@@ -173,7 +173,10 @@ def test_snippet_truncated_to_200_chars():
     """Long decision content is trimmed so blocks stay compact."""
     agent = ContextBlockAgent()
     long_tail = "z" * 500
-    msg = f"We decided to pad the message {long_tail}."
+    # Strong verb + a technical object (the "service"/"layer"/"queue" stack nouns)
+    # so the message still routes through the tightened heuristic and exercises
+    # the 200-char snippet trim.
+    msg = f"We decided to migrate the service layer to a new queue {long_tail}."
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     content = _project_context_content(agent)
@@ -205,6 +208,23 @@ def test_bare_soft_phrase_rejected():
 
     assert _project_context_is_empty(agent), (
         f"bare soft phrase wrongly wrote project_context: {_project_context_content(agent)!r}"
+    )
+
+
+def test_non_technical_decision_does_not_pollute_project_context():
+    """A strong verb without a code/architecture cue must NOT route.
+
+    Regression for ordinary decisions like "I decided to migrate to another
+    city" — they used to qualify on the strong verb alone and pollute the
+    project_context block.
+    """
+    agent = ContextBlockAgent()
+    msg = "I decided to migrate to another city next month."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    assert _project_context_is_empty(agent), (
+        f"non-technical decision wrongly wrote project_context: "
+        f"{_project_context_content(agent)!r}"
     )
 
 

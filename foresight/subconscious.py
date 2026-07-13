@@ -453,7 +453,10 @@ class ContextBlockAgent:
             touched_labels.add(self._extract_project_context(content, session_id))
         return touched_labels
 
-    # Strong verbs: imply a codebase action in any context. Match alone.
+    # Strong verbs: imply a codebase action. They no longer match alone — a
+    # technical-object token (see has_technical_object below) is also required,
+    # otherwise ordinary English ("I decided to migrate to another city") would
+    # pollute project_context.
     _PCX_STRONG_VERBS = (
         "decided", "chose", "we chose", "chose to", "architected",
         "refactor", "refactored", "migrate", "migrated", "moved to",
@@ -473,27 +476,40 @@ class ContextBlockAgent:
         """Heuristic: does this message state an architectural decision or codebase fact?
 
         Qualifies when:
-        - A STRONG decision verb appears (decided/migrate/refactor/renamed/...), or
-        - A source-file token appears ("src/api/users.py", "foresight/cli"), or
+        - A bare source-file token appears ("src/api/users.py", "foresight/cli"), or
+        - A STRONG decision verb (decided/migrate/refactor/renamed/...) co-occurs with
+          a technical-object token (path-like dir/dir, file ext, or stack/layer noun), or
         - A SOFT phrase ("we use"/"uses"/"architecture"/"built on") co-occurs with a
           technical-object token (path-like dir/dir, file ext, or stack/layer noun).
-        Bare "we use X" / "the architecture is nice" is rejected to avoid noise.
+        A strong verb alone ("I decided to migrate to another city") is rejected so
+        ordinary decisions don't pollute project_context. Bare "we use X" / "the
+        architecture is nice" is likewise rejected.
         """
         lowered = content.lower()
-        if any(phrase in lowered for phrase in self._PCX_STRONG_VERBS):
-            return True
         has_file_ext = bool(
             re.search(r"\b[\w./-]+\.(py|ts|tsx|js|jsx|mjs|astro|md|yaml|yml|json|toml|rb|rs|go|sql)\b", content)
         )
-        has_dir_path = bool(re.search(r"\b[\w-]+/[\w-]+\b", content))
+        # Require unambiguous path forms to avoid matching prose like "and/or" or "1/2":
+        # - ./ or ../ prefix: relative paths like ./foo/bar or ../foo/bar (at least one subdir)
+        # - source-root prefix: recognized project dirs followed by at least one subdir
+        has_dir_path = bool(re.search(
+            r"\b(\./\w+(?:/\w+)*|\.\./\w+(?:/\w+)*|(?:src|lib|app|foresight|tests?|specs?|config|scripts|docs|pkg|internal|tools|backend|frontend)/\w+(?:/\w+)*)\b",
+            content,
+        ))
         has_stack_noun = any(re.search(rf"\b{re.escape(n)}\b", lowered) for n in self._PCX_STACK_NOUNS)
         has_technical_object = has_file_ext or has_dir_path or has_stack_noun
+
+        # Strong decision verbs must co-occur with a code/architecture cue; otherwise
+        # ordinary English ("I decided to migrate to another city") pollutes the block.
+        if has_technical_object and any(phrase in lowered for phrase in self._PCX_STRONG_VERBS):
+            return True
+
+        # Soft phrases alone match ordinary English ("we use the red button"); require
+        # the same technical-object token to qualify.
         if has_technical_object and any(phrase in lowered for phrase in self._PCX_SOFT_PHRASES):
             return True
         # A bare source path/dir mention is itself a codebase fact worth recording.
-        if has_file_ext or has_dir_path:
-            return True
-        return False
+        return bool(has_file_ext or has_dir_path)
 
     def _extract_project_context(self, content: str, session_id: str) -> str:
         """Extract an architectural decision or codebase fact into project_context.
