@@ -501,12 +501,16 @@ class ContextBlockAgent:
 
         # Strong decision verbs must co-occur with a code/architecture cue; otherwise
         # ordinary English ("I decided to migrate to another city") pollutes the block.
-        if has_technical_object and any(phrase in lowered for phrase in self._PCX_STRONG_VERBS):
+        if has_technical_object and any(
+            re.search(rf"\b{re.escape(verb)}\b", lowered) for verb in self._PCX_STRONG_VERBS
+        ):
             return True
 
         # Soft phrases alone match ordinary English ("we use the red button"); require
         # the same technical-object token to qualify.
-        if has_technical_object and any(phrase in lowered for phrase in self._PCX_SOFT_PHRASES):
+        if has_technical_object and any(
+            re.search(rf"\b{re.escape(phrase)}\b", lowered) for phrase in self._PCX_SOFT_PHRASES
+        ):
             return True
         # A bare source path/dir mention is itself a codebase fact worth recording.
         return bool(has_file_ext or has_dir_path)
