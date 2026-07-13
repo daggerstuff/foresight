@@ -315,32 +315,51 @@ def test_relative_dot_path_routes_to_project_context():
     listed as supported path forms.
     """
     agent = ContextBlockAgent()
-    msg = "The wiring lives in ./src/wiring.py and the glue in ./app/glue.py."
+    # Use EXTENSIONLESS segments whose first dir (foo/bar) is NOT a recognized
+    # source-root (src/lib/app/...). This forces the test to depend solely on
+    # the relative-path matcher (./) inside has_dir_path: has_file_ext is False
+    # (no extension) and the source-root branch cannot match (foo/bar aren't in
+    # its allow-list). A regression that reverts that matcher -- e.g. restoring
+    # a leading \\b, which can never occur before a dot -- would break this test
+    # instead of silently passing on the strength of a file extension or a
+    # source-root directory name.
+    msg = "The wiring lives in ./foo/wiring and the glue in ./bar/glue."
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     content = _project_context_content(agent)
-    assert "src/wiring.py" in content
-    assert "app/glue.py" in content
+    assert "foo/wiring" in content
+    assert "bar/glue" in content
 
 
 def test_relative_parent_path_routes_to_project_context():
     """A ../foo/bar relative path at the start of the message MUST route."""
     agent = ContextBlockAgent()
-    msg = "../shared/lib/core.py holds the shared primitives."
+    # Extensionless and with a non-source-root first dir (foo) so this exercises
+    # the ../ relative-path matcher in has_dir_path rather than has_file_ext or
+    # the source-root branch -- matching the sibling ./ test above.
+    msg = "../foo/bar holds the shared primitives."
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     content = _project_context_content(agent)
-    assert "shared/lib/core.py" in content
+    assert "foo/bar" in content
 
 
 def test_dot_path_after_whitespace_routes():
-    """../foo/bar preceded only by whitespace (no word char) must still route."""
+    """./foo/utils preceded only by whitespace (no word char) must still route.
+
+    Uses an EXTENSIONLESS, non-source-root dir (foo) so routing depends solely on
+    the relative-path matcher's (./) non-word lookbehind in has_dir_path: there is
+    no file extension (has_file_ext is False) and 'foo' is not in the source-root
+    allow-list, so the source-root branch cannot match either. This guards the
+    (?<!\\w) lookbehind that lets a dot-path route when preceded only by whitespace
+    -- the complement of test_word_before_dot_path_does_not_false_positive.
+    """
     agent = ContextBlockAgent()
-    msg = "see ./lib/utils.py for the helper"
+    msg = "see ./foo/utils for the helper"
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     content = _project_context_content(agent)
-    assert "lib/utils.py" in content
+    assert "foo/utils" in content
 
 
 def test_word_before_dot_path_does_not_false_positive():
