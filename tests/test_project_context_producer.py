@@ -238,6 +238,62 @@ def test_soft_phrase_with_stack_noun_routes():
     assert "streamable-http" in content
 
 
+# ====== Gerund / present-participle regression tests ======
+
+
+def test_gerund_refactoring_with_stack_noun_routes():
+    """'We are refactoring the service layer' MUST populate project_context.
+
+    Regression: the strict \\b...\\b boundary dropped present participles like
+    'refactoring' / 'migrating' (no word boundary between stem and 'ing'), so
+    in-progress architecture updates silently stopped routing after the
+    substring check was tightened to word boundaries.
+    """
+    agent = ContextBlockAgent()
+    msg = "We are refactoring the service layer to use a thin entry point."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    content = _project_context_content(agent)
+    assert "refactor" in content.lower()
+
+
+def test_gerund_migrating_with_stack_noun_routes():
+    """'We are migrating the queue module' MUST populate project_context."""
+    agent = ContextBlockAgent()
+    msg = "We are migrating the queue module to a new transport."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    content = _project_context_content(agent)
+    assert "migrat" in content.lower()
+
+
+def test_gerund_moving_with_stack_noun_routes():
+    """'We are moving the auth layer' MUST populate project_context."""
+    agent = ContextBlockAgent()
+    msg = "We are moving the auth layer to OAuth2."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    content = _project_context_content(agent)
+    assert "auth layer" in content.lower()
+
+
+def test_gerund_without_technical_object_still_rejected():
+    """A gerund verb with NO code/architecture cue must NOT route.
+
+    Guards against over-expansion of the verb patterns: 'We are migrating to
+    another city' has no technical object, so it must stay out of
+    project_context even though 'migrating' now matches the stem pattern.
+    """
+    agent = ContextBlockAgent()
+    msg = "We are migrating to another city next month."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    assert _project_context_is_empty(agent), (
+        f"non-technical gerund wrongly wrote project_context: "
+        f"{_project_context_content(agent)!r}"
+    )
+
+
 def test_bare_path_fact_routes_without_verb():
     """A bare source path mention routes as a codebase fact — no verb needed."""
     agent = ContextBlockAgent()

@@ -457,11 +457,45 @@ class ContextBlockAgent:
     # technical-object token (see has_technical_object below) is also required,
     # otherwise ordinary English ("I decided to migrate to another city") would
     # pollute project_context.
+    # Strong decision verbs: imply a codebase action. They no longer match alone
+    # — a technical-object token (see has_technical_object below) is also
+    # required, otherwise ordinary English ("I decided to migrate to another
+    # city") pollutes project_context.
+    #
+    # Inflections (base / s / ed / ing) are listed EXPLICITLY so in-progress
+    # updates like "We are refactoring the service layer" or "We are migrating
+    # the queue" still route. English drops the silent 'e' before -ing/-ed
+    # (migrate -> migrating/migrated, move -> moving), so a stem + suffix regex
+    # can't cover them reliably — and the prior strict \b...\b boundary alone
+    # rejected the gerunds (no word boundary between the stem and 'ing'). The
+    # original substring check had accepted them, which is why these messages
+    # used to populate project_context and silently stopped after the tightening.
     _PCX_STRONG_VERBS = (
-        "decided", "chose", "we chose", "chose to", "architected",
-        "refactor", "refactored", "migrate", "migrated", "moved to",
-        "moved from", "split into", "extracted into", "replaced", "renamed",
-        "introduced",
+        # decide
+        "decide", "decides", "decided", "deciding",
+        # choose / chose (irregular)
+        "choose", "chooses", "chose", "choosing", "chosen",
+        # architect
+        "architect", "architects", "architected", "architecting",
+        # refactor
+        "refactor", "refactors", "refactored", "refactoring",
+        # migrate
+        "migrate", "migrates", "migrated", "migrating",
+        # move
+        "move", "moves", "moved", "moving",
+        # split (irregular past: "split")
+        "split", "splits", "splitting",
+        # extract
+        "extract", "extracts", "extracted", "extracting",
+        # replace
+        "replace", "replaces", "replaced", "replacing",
+        # rename
+        "rename", "renames", "renamed", "renaming",
+        # introduce
+        "introduce", "introduces", "introduced", "introducing",
+        # Multi-word constructions keep their particle (to / from / into) verbatim
+        "we chose", "chose to", "moved to", "moved from",
+        "split into", "extracted into",
     )
     # Soft verbs/nouns: "we use", "uses", "architecture", "built on", "stack is".
     # Match ordinary English ("we use the red button"); require a technical-object
