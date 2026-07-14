@@ -1,6 +1,30 @@
-modules = ["python-3.12", "nodejs-20", "bash", "web"]
+modules = ["python-3.12", "nodejs-20", "bash", "web", "postgresql-16"]
 [agent]
 expertMode = true
 
 [nix]
 channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Foresight MCP Server"
+
+[[workflows.workflow]]
+name = "Foresight MCP Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "FORESIGHT_HOST=0.0.0.0 FORESIGHT_PORT=8000 uv run foresight-server"
+waitForPort = 8000
+
+[workflows.workflow.metadata]
+outputType = "console"

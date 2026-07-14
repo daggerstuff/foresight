@@ -1,0 +1,1 @@
+- [Foresight backend requires Postgres](foresight-postgres-only.md) — README/setup.sh advertise SQLite, but the code hard-requires FORESIGHT_DB_URL (Postgres DSN).
