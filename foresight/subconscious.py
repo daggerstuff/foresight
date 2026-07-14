@@ -501,8 +501,25 @@ class ContextBlockAgent:
     # Match ordinary English ("we use the red button"); require a technical-object
     # token (source path, file ext, or stack/layer noun) to qualify.
     _PCX_SOFT_PHRASES = ("we use", "uses", "architecture", "architectural", "built on", "stack is")
+    # Stack / layer nouns that mark a message as a codebase fact. This list is the
+    # "object" half of the verb/object association that gates project_context, so a
+    # noun must be unambiguously technical — otherwise a generic verb + a generic
+    # noun re-introduces the ordinary-English noise the strong-verb tightening was
+    # meant to suppress.
+    #
+    # "service" is DELIBERATELY EXCLUDED: it is ordinary English ("service
+    # appointment", "customer service", "church service", "civil service") and was
+    # satisfying the technical-object check *regardless of context*. Once the bare
+    # gerund "moving" was admitted to _PCX_STRONG_VERBS, "moving a service
+    # appointment" routed into project_context — the exact regression the prior
+    # tightening prevented. "service" mentions in real codebase discussions almost
+    # always co-occur with another cue here (layer/module/gateway/queue/...) or a
+    # file/dir path, so dropping the standalone noun costs negligible recall while
+    # closing the false-positive hole. If bare "service" routing is ever needed, it
+    # must be re-added in a *context-aware* form (e.g. only when qualified by a
+    # technical adjective) rather than as a context-free token.
     _PCX_STACK_NOUNS = ("transport", "middleware", "pipeline", "schema", "backend", "frontend",
-                        "gateway", "service", "module", "daemon", "ingestion", "runtime",
+                        "gateway", "module", "daemon", "ingestion", "runtime",
                         "orchestrator", "registry", "store", "cache", "queue", "layer",
                         "contract", "handler", "entry point")
 

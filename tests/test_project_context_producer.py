@@ -294,6 +294,45 @@ def test_gerund_without_technical_object_still_rejected():
     )
 
 
+def test_generic_verb_with_ordinary_service_noun_rejected():
+    """'moving a service appointment' MUST NOT populate project_context.
+
+    Regression for the noise re-introduced when the bare gerund 'moving' was
+    admitted to _PCX_STRONG_VERBS: the generic noun 'service' satisfied the
+    technical-object check *regardless of context*, so ordinary English like
+    'moving a service appointment' / 'customer service' routed into
+    project_context — the exact pollution the strong-verb tightening was meant
+    to prevent. 'service' is therefore no longer a context-free stack noun; a
+    generic verb with no other technical object must stay out.
+    """
+    agent = ContextBlockAgent()
+    msg = "I'm moving my service appointment to next Thursday."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    assert _project_context_is_empty(agent), (
+        f"ordinary 'service appointment' message wrongly wrote project_context: "
+        f"{_project_context_content(agent)!r}"
+    )
+
+
+def test_service_in_technical_compound_still_routes_via_other_noun():
+    """'refactoring the service layer' STILL routes — 'service' is gone but
+    'layer' remains as the technical object.
+
+    Guards the recall side of dropping the standalone 'service' noun: messages
+    that mention a service *as part of* a real architecture compound keep
+    routing through the co-occurring stack noun, so legitimate codebase facts
+    are not lost.
+    """
+    agent = ContextBlockAgent()
+    msg = "We are refactoring the service layer to use a thin entry point."
+    _process(agent, "sess-1", [{"role": "user", "content": msg}])
+
+    content = _project_context_content(agent)
+    assert "refactor" in content.lower()
+    assert "service layer" in content.lower()
+
+
 def test_bare_path_fact_routes_without_verb():
     """A bare source path mention routes as a codebase fact — no verb needed."""
     agent = ContextBlockAgent()
