@@ -29,12 +29,10 @@ export function getPool(cfg: ForesightConfig): Pool {
 }
 
 export function getRedis(cfg: ForesightConfig): Redis {
-  if (!redis) {
-    redis = new Redis(cfg.redisUrl ?? "redis://localhost:6379/0", {
+  redis ??= new Redis(cfg.redisUrl ?? "redis://localhost:6379/0", {
       lazyConnect: true,
       maxRetriesPerRequest: 2,
     });
-  }
   return redis;
 }
 

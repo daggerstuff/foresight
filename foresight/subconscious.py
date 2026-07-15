@@ -12,6 +12,7 @@ This module provides:
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -437,7 +438,7 @@ class ContextBlockAgent:
         logger.info("Processed transcript for session %s", session_id)
 
     def _process_user_message(self, content: str, session_id: str) -> set[str]:
-        """Process a user message for preferences and pending items."""
+        """Process a user message for preferences, pending items, and project context."""
         touched_labels: set[str] = set()
         # Extract preferences
         if any(phrase in content.lower() for phrase in ["i always", "i prefer", "i want", "don't ever", "never do"]):
@@ -446,7 +447,126 @@ class ContextBlockAgent:
         # Extract pending items (TODOs, unfinished work)
         if any(phrase in content.upper() for phrase in ["TODO", "TO-DO", "NEED TO", "SHOULD", "MUST"]):
             touched_labels.add(self._extract_pending_item(content, session_id))
+
+        # Extract project context (architectural decisions, codebase structure)
+        if self._looks_like_project_context(content):
+            touched_labels.add(self._extract_project_context(content, session_id))
         return touched_labels
+
+    # Strong verbs: imply a codebase action. They no longer match alone — a
+    # technical-object token (see has_technical_object below) is also required,
+    # otherwise ordinary English ("I decided to migrate to another city") would
+    # pollute project_context.
+    # Strong decision verbs: imply a codebase action. They no longer match alone
+    # — a technical-object token (see has_technical_object below) is also
+    # required, otherwise ordinary English ("I decided to migrate to another
+    # city") pollutes project_context.
+    #
+    # Inflections (base / s / ed / ing) are listed EXPLICITLY so in-progress
+    # updates like "We are refactoring the service layer" or "We are migrating
+    # the queue" still route. English drops the silent 'e' before -ing/-ed
+    # (migrate -> migrating/migrated, move -> moving), so a stem + suffix regex
+    # can't cover them reliably — and the prior strict \b...\b boundary alone
+    # rejected the gerunds (no word boundary between the stem and 'ing'). The
+    # original substring check had accepted them, which is why these messages
+    # used to populate project_context and silently stopped after the tightening.
+    _PCX_STRONG_VERBS = (
+        # decide
+        "decide", "decides", "decided", "deciding",
+        # choose / chose (irregular)
+        "choose", "chooses", "chose", "choosing", "chosen",
+        # architect
+        "architect", "architects", "architected", "architecting",
+        # refactor
+        "refactor", "refactors", "refactored", "refactoring",
+        # migrate
+        "migrate", "migrates", "migrated", "migrating",
+        # move
+        "move", "moves", "moved", "moving",
+        # split (irregular past: "split")
+        "split", "splits", "splitting",
+        # extract
+        "extract", "extracts", "extracted", "extracting",
+        # replace
+        "replace", "replaces", "replaced", "replacing",
+        # rename
+        "rename", "renames", "renamed", "renaming",
+        # introduce
+        "introduce", "introduces", "introduced", "introducing",
+        # Multi-word constructions keep their particle (to / from / into) verbatim
+        "we chose", "chose to", "moved to", "moved from",
+        "split into", "extracted into",
+    )
+    # Soft verbs/nouns: "we use", "uses", "architecture", "built on", "stack is".
+    # Match ordinary English ("we use the red button"); require a technical-object
+    # token (source path, file ext, or stack/layer noun) to qualify.
+    _PCX_SOFT_PHRASES = ("we use", "uses", "architecture", "architectural", "built on", "stack is")
+    _PCX_STACK_NOUNS = ("transport", "middleware", "pipeline", "schema", "backend", "frontend",
+                        "gateway", "service", "module", "daemon", "ingestion", "runtime",
+                        "orchestrator", "registry", "store", "cache", "queue", "layer",
+                        "contract", "handler", "entry point")
+
+    def _looks_like_project_context(self, content: str) -> bool:
+        """Heuristic: does this message state an architectural decision or codebase fact?
+
+        Qualifies when:
+        - A bare source-file token appears ("src/api/users.py", "foresight/cli"), or
+        - A STRONG decision verb (decided/migrate/refactor/renamed/...) co-occurs with
+          a technical-object token (path-like dir/dir, file ext, or stack/layer noun), or
+        - A SOFT phrase ("we use"/"uses"/"architecture"/"built on") co-occurs with a
+          technical-object token (path-like dir/dir, file ext, or stack/layer noun).
+        A strong verb alone ("I decided to migrate to another city") is rejected so
+        ordinary decisions don't pollute project_context. Bare "we use X" / "the
+        architecture is nice" is likewise rejected.
+        """
+        lowered = content.lower()
+        has_file_ext = bool(
+            re.search(r"\b[\w./-]+\.(py|ts|tsx|js|jsx|mjs|astro|md|yaml|yml|json|toml|rb|rs|go|sql)\b", content)
+        )
+        # Require unambiguous path forms to avoid matching prose like "and/or" or "1/2":
+        # - ./ or ../ prefix: relative paths like ./foo/bar or ../foo/bar (at least one subdir)
+        # - source-root prefix: recognized project dirs followed by at least one subdir
+        # Use a non-word lookbehind (?<!\w) instead of \b at the start: \b cannot
+        # occur before a dot, so ./foo and ../foo never matched when the path sat at
+        # the start of the string or after a non-word char. (?<!\w) still blocks
+        # false positives like "foo./bar" (word char directly before the dot).
+        has_dir_path = bool(re.search(
+            r"(?<!\w)(?:\./\w+(?:/\w+)*|\.\./\w+(?:/\w+)*|(?:src|lib|app|foresight|tests?|specs?|config|scripts|docs|pkg|internal|tools|backend|frontend)/\w+(?:/\w+)*)\b",
+            content,
+        ))
+        has_stack_noun = any(re.search(rf"\b{re.escape(n)}\b", lowered) for n in self._PCX_STACK_NOUNS)
+        has_technical_object = has_file_ext or has_dir_path or has_stack_noun
+
+        # Strong decision verbs must co-occur with a code/architecture cue; otherwise
+        # ordinary English ("I decided to migrate to another city") pollutes the block.
+        if has_technical_object and any(
+            re.search(rf"\b{re.escape(verb)}\b", lowered) for verb in self._PCX_STRONG_VERBS
+        ):
+            return True
+
+        # Soft phrases alone match ordinary English ("we use the red button"); require
+        # the same technical-object token to qualify.
+        if has_technical_object and any(
+            re.search(rf"\b{re.escape(phrase)}\b", lowered) for phrase in self._PCX_SOFT_PHRASES
+        ):
+            return True
+        # A bare source path/dir mention is itself a codebase fact worth recording.
+        return bool(has_file_ext or has_dir_path)
+
+    def _extract_project_context(self, content: str, session_id: str) -> str:
+        """Extract an architectural decision or codebase fact into project_context.
+
+        Trims to keep blocks compact (per self_improvement block-size principle)
+        and tags the source session so entries are traceable back to the session
+        that produced them.
+        """
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        snippet = content.strip().replace("\n", " ")[:200]
+        self.state.append_to_block(
+            PROJECT_CONTEXT, f"- [{timestamp}] (session: {session_id}) {snippet}"
+        )
+        logger.info(f"Extracted project_context from session {session_id}: {content[:50]}...")
+        return PROJECT_CONTEXT
 
     def _extract_preference(self, content: str) -> str:
         """Extract user preference from message content."""

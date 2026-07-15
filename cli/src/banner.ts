@@ -18,7 +18,7 @@ const WORD = "FORESIGHT";
 const WIDTH = 150;
 
 function stripAnsiLen(s: string): number {
-  return s.replace(/\x1b\[[0-9;]*m/g, "").length;
+  return s.replace(new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g'), "").length;
 }
 
 function center(text: string, width: number): string {
