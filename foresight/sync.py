@@ -167,9 +167,14 @@ class OperationQueue:
         pass
 
     def _get_conn(self):
-        """Acquire a Postgres connection via get_db_connection()."""
-        from .server import get_db_connection
+        # DOC
+        from .server import _global_backend, get_db_connection
 
+        if _global_backend is None or _global_backend.backend_type != "postgresql":
+            raise RuntimeError(
+                "OperationQueue requires the Postgres backend to be "
+                "initialized (call server.init_db() or set FORESIGHT_DB_URL)."
+            )
         return get_db_connection()
 
     def enqueue(self, operation: Operation, tenant_id: str | None = None) -> None:

@@ -238,8 +238,10 @@ class NarrativeCache:
             self._closed = True
 
     def _size(self, conn) -> int:
-        row = conn.execute("SELECT COUNT(*) AS count FROM narrative_cache").fetchone()
-        return int(row["count"])
+        # Use positional access so the row factory (index or dict) does not
+        # matter; works for both Postgres RealDict and sqlite3.Row tuples.
+        row = conn.execute("SELECT COUNT(*) FROM narrative_cache").fetchone()
+        return int(row[0])
 
     def _delete_expired(self, conn, now: float) -> None:
         cursor = conn.execute(

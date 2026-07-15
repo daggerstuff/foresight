@@ -244,7 +244,8 @@ def _mask_db_url(url: str) -> str:
         if parsed.port:
             host = f"{host}:{parsed.port}"
         netloc = f"***@{host}" if host else "***"
-        return parsed._replace(netloc=netloc).geturl()
+        # Drop query/fragment so credential params (?password=...) never leak
+        return parsed._replace(netloc=netloc, query="", fragment="").geturl()
     except Exception:
         if "://" in url and "@" in url:
             scheme, _, rest = url.partition("://")

@@ -47,12 +47,26 @@ for entry in "${HOSTS[@]}"; do
     continue
   fi
 
+  # Make sure FORESIGHT_DB_URL is exported on the remote host (Postgres-only).
+  # Falls back to /etc/foresight/db-url (host-install path); otherwise skip.
+  ensure_db_url() {
+    if [ -n "${FORESIGHT_DB_URL:-}" ]; then return 0; fi
+    if [ -r /etc/foresight/db-url ]; then
+      export FORESIGHT_DB_URL="$(cat /etc/foresight/db-url)"
+      return 0
+    fi
+    return 1
+  }
   if [ "$host" = "localhost" ]; then
+    if ! ensure_db_url; then
+      echo "    [aborted] FORESIGHT_DB_URL not set on $host"
+      continue
+    fi
     ( cd "$repo" && $DRAIN_CMD )
     systemctl --user restart foresight-mcp
   else
     ssh -o StrictHostKeyChecking=accept-new "${user}@${host}" \
-      "cd ${repo} && ${DRAIN_CMD} && systemctl --user restart foresight-mcp"
+      'export FORESIGHT_DB_URL="${FORESIGHT_DB_URL:-$(cat /etc/foresight/db-url 2>/dev/null || true)}"; cd '"${repo}"' && '"${DRAIN_CMD}"' && systemctl --user restart foresight-mcp'
   fi
   echo "    done"
 done
