@@ -90,19 +90,9 @@ def query(
 ):
     """Search memories by content keyword."""
     _init_and_user(user_id)
+    # search_memories() returns a pre-formatted display string; render it directly.
     result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
-
-    if isinstance(result, list):
-        rows = []
-        for m in result:
-            mid = m.get("memory_id", m.get("id", "?"))
-            content = str(m.get("content", ""))[:80]
-            score = m.get("score", m.get("relevance", ""))
-            rows.append([mid, str(score), content])
-
-        out.print_table(["ID", "Score", "Content (truncated)"], rows, title=f"Search: {query_text}")
-    else:
-        out.print_json(result)
+    out.result_block(result, title=f"Search: {query_text}")
 
 
 @app.command()
@@ -167,7 +157,7 @@ def search(
 
     if mode == "semantic":
         try:
-            from foresight import semantic_search_memories
+            from foresight.server import semantic_search_memories
 
             result = semantic_search_memories(query=query_text, limit=limit, min_score=min_score)
         except ImportError:
@@ -176,23 +166,8 @@ def search(
     else:
         result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
 
-    if isinstance(result, list):
-        if category:
-            result = [m for m in result if m.get("category") == category]
-
-        rows = []
-        for m in result:
-            mid = m.get("memory_id", m.get("id", "?"))
-            cat = m.get("category", "-")
-            content = str(m.get("content", ""))[:80]
-            score = m.get("score", m.get("relevance", "-"))
-            rows.append([mid, cat, str(score), content])
-
-        out.print_table(
-            ["ID", "Category", "Score", "Content (truncated)"], rows, title=f"Search ({mode}): {query_text}"
-        )
-    else:
-        out.print_json(result)
+    # search_memories() returns a pre-formatted display string; render it directly.
+    out.result_block(result, title=f"Search ({mode}): {query_text}")
 
 
 @app.command()
@@ -209,15 +184,16 @@ def export(
     tenant_id = get_current_account_id()
     conn = get_db_connection()
     if category:
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND category = ?",
-            (uid, tenant_id, category),
-        ).fetchall()
+        sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND category = ? ORDER BY created_at DESC"
+        params: list = [uid, tenant_id, category]
     else:
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC",
-            (uid, tenant_id),
-        ).fetchall()
+        sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC"
+        params = [uid, tenant_id]
+    # Apply LIMIT in SQL (not Python) so large tables don't load fully into memory.
+    if limit > 0:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
     all_memories = [dict(r) for r in rows]
 

@@ -232,6 +232,27 @@ def init(
     )
 
 
+def _mask_db_url(url: str) -> str:
+    """Mask credentials in a database URL for safe display (no secrets in CLI output)."""
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        netloc = f"***@{host}" if host else "***"
+        return parsed._replace(netloc=netloc).geturl()
+    except Exception:
+        if "://" in url and "@" in url:
+            scheme, _, rest = url.partition("://")
+            _, _, tail = rest.partition("@")
+            return f"{scheme}://***@{tail}"
+        return "***"
+
+
 @app.command()
 def doctor(
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
@@ -274,7 +295,7 @@ def doctor(
     # DB URL (Postgres-only; no local SQLite file)
     db_url = cfg.get_db_url()
     if db_url:
-        check("Database URL configured", True, db_url)
+        check("Database URL configured", True, _mask_db_url(db_url))
     else:
         check("Database URL configured", False, "Set FORESIGHT_DB_URL env var")
 
@@ -287,7 +308,11 @@ def doctor(
     # Environment
     for env_var in ["FORESIGHT_DB_URL", "FORESIGHT_USER_ID", "FORESIGHT_BANK_ID"]:
         if os.environ.get(env_var):
-            warnings.append(f"{env_var}={os.environ[env_var]}")
+            # Mask the database URL so credentials never reach diagnostics output.
+            val = os.environ[env_var]
+            if env_var == "FORESIGHT_DB_URL":
+                val = _mask_db_url(val)
+            warnings.append(f"{env_var}={val}")
 
     # Test DB connection
     try:
@@ -421,6 +446,11 @@ def config(
     c = cfg.CliConfig.load()
 
     if key and value:
+        if key == "db_url":
+            out.warn(
+                "db_url is read-only in config; set the FORESIGHT_DB_URL environment variable to configure the database."
+            )
+            return
         setattr(c, key, value)
         c.save()
         out.done(f"Set {key} = {value}")
@@ -436,7 +466,7 @@ def config(
 
     # Show all config
     pairs = [
-        ("db_url", c.db_url),
+        ("db_url", _mask_db_url(c.db_url)),
         ("user_id", c.user_id),
         ("bank_id", c.bank_id),
         ("theme", c.theme),

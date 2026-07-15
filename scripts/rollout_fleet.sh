@@ -26,18 +26,20 @@ for arg in "$@"; do
   esac
 done
 
-REPO="/home/vivi/pixelated/foresight"
 DRAIN_CMD="uv run python scripts/drain_sqlite_to_postgres.py"
 
-# name:host:user
+# name:host:user:repo -- repo is each host's checkout root (per-user, NOT a
+# shared absolute path). Adjust the billy/gnasty paths to match their actual
+# checkouts; a single hardcoded /home/vivi/... path cannot reach per-user
+# directories on the remote hosts.
 HOSTS=(
-  "local:localhost:$(whoami)"
-  "billy:40.160.6.46:billy"
-  "gnasty:167.233.25.111:gnasty"
+  "local:localhost:$(whoami):/home/vivi/pixelated/foresight"
+  "billy:40.160.6.46:billy:/home/billy/pixelated/foresight"
+  "gnasty:167.233.25.111:gnasty:/home/gnasty/pixelated/foresight"
 )
 
 for entry in "${HOSTS[@]}"; do
-  IFS=':' read -r name host user <<< "$entry"
+  IFS=':' read -r name host user repo <<< "$entry"
   echo "==> [$name] ${user}@${host}"
 
   if [ "$APPLY" -eq 0 ]; then
@@ -46,11 +48,11 @@ for entry in "${HOSTS[@]}"; do
   fi
 
   if [ "$host" = "localhost" ]; then
-    ( cd "$REPO" && $DRAIN_CMD )
+    ( cd "$repo" && $DRAIN_CMD )
     systemctl --user restart foresight-mcp
   else
     ssh -o StrictHostKeyChecking=accept-new "${user}@${host}" \
-      "cd ${REPO} && ${DRAIN_CMD} && systemctl --user restart foresight-mcp"
+      "cd ${repo} && ${DRAIN_CMD} && systemctl --user restart foresight-mcp"
   fi
   echo "    done"
 done

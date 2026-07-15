@@ -75,45 +75,45 @@ class NarrativeCache:
 
         with self._lock:
             conn = self._get_conn()
-            row = conn.execute(
-                """
-                SELECT narrative, created_at
-                FROM narrative_cache
-                WHERE cache_key = %s AND tenant_id = %s AND user_id = %s
-                """,
-                (cache_key, tenant_id, user_id),
-            ).fetchone()
-
-            if row is None:
-                conn.close()
-                self._misses += 1
-                return None
-
-            if row["created_at"] < now - self.ttl_seconds:
-                conn.execute(
+            try:
+                row = conn.execute(
                     """
-                    DELETE FROM narrative_cache
+                    SELECT narrative, created_at
+                    FROM narrative_cache
                     WHERE cache_key = %s AND tenant_id = %s AND user_id = %s
                     """,
                     (cache_key, tenant_id, user_id),
+                ).fetchone()
+
+                if row is None:
+                    self._misses += 1
+                    return None
+
+                if row["created_at"] < now - self.ttl_seconds:
+                    conn.execute(
+                        """
+                        DELETE FROM narrative_cache
+                        WHERE cache_key = %s AND tenant_id = %s AND user_id = %s
+                        """,
+                        (cache_key, tenant_id, user_id),
+                    )
+                    conn.commit()
+                    self._misses += 1
+                    return None
+
+                conn.execute(
+                    """
+                    UPDATE narrative_cache
+                    SET last_accessed_at = %s, access_count = access_count + 1
+                    WHERE cache_key = %s AND tenant_id = %s AND user_id = %s
+                    """,
+                    (now, cache_key, tenant_id, user_id),
                 )
                 conn.commit()
+                self._hits += 1
+                return str(row["narrative"])
+            finally:
                 conn.close()
-                self._misses += 1
-                return None
-
-            conn.execute(
-                """
-                UPDATE narrative_cache
-                SET last_accessed_at = %s, access_count = access_count + 1
-                WHERE cache_key = %s AND tenant_id = %s AND user_id = %s
-                """,
-                (now, cache_key, tenant_id, user_id),
-            )
-            conn.commit()
-            conn.close()
-            self._hits += 1
-            return str(row["narrative"])
 
     def put(
         self,
@@ -147,73 +147,79 @@ class NarrativeCache:
 
         with self._lock:
             conn = self._get_conn()
-            if self._size(conn) >= int(self.max_entries * 0.9):
-                self._delete_expired(conn, now)
+            try:
+                if self._size(conn) >= int(self.max_entries * 0.9):
+                    self._delete_expired(conn, now)
 
-            conn.execute(
-                """
-                INSERT INTO narrative_cache (
-                    cache_key,
-                    tenant_id,
-                    user_id,
-                    report_id,
-                    model_version,
-                    insights_hash,
-                    narrative,
-                    created_at,
-                    last_accessed_at,
-                    access_count
+                conn.execute(
+                    """
+                    INSERT INTO narrative_cache (
+                        cache_key,
+                        tenant_id,
+                        user_id,
+                        report_id,
+                        model_version,
+                        insights_hash,
+                        narrative,
+                        created_at,
+                        last_accessed_at,
+                        access_count
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                    ON CONFLICT (cache_key) DO UPDATE SET
+                        tenant_id = EXCLUDED.tenant_id,
+                        user_id = EXCLUDED.user_id,
+                        report_id = EXCLUDED.report_id,
+                        model_version = EXCLUDED.model_version,
+                        insights_hash = EXCLUDED.insights_hash,
+                        narrative = EXCLUDED.narrative,
+                        created_at = EXCLUDED.created_at,
+                        last_accessed_at = EXCLUDED.last_accessed_at,
+                        access_count = 0
+                    """,
+                    (
+                        cache_key,
+                        tenant_id,
+                        user_id,
+                        report_id,
+                        model_version,
+                        insights_hash,
+                        narrative,
+                        now,
+                        now,
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
-                ON CONFLICT (cache_key) DO UPDATE SET
-                    tenant_id = EXCLUDED.tenant_id,
-                    user_id = EXCLUDED.user_id,
-                    report_id = EXCLUDED.report_id,
-                    model_version = EXCLUDED.model_version,
-                    insights_hash = EXCLUDED.insights_hash,
-                    narrative = EXCLUDED.narrative,
-                    created_at = EXCLUDED.created_at,
-                    last_accessed_at = EXCLUDED.last_accessed_at,
-                    access_count = 0
-                """,
-                (
-                    cache_key,
-                    tenant_id,
-                    user_id,
-                    report_id,
-                    model_version,
-                    insights_hash,
-                    narrative,
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-            self._evict_lru(conn)
-            conn.close()
+                conn.commit()
+                self._evict_lru(conn)
+            finally:
+                conn.close()
 
     def clear(self, tenant_id: str | None = None) -> int:
         """Clear all cache entries, or only entries for one tenant."""
         with self._lock:
             conn = self._get_conn()
-            if tenant_id is None:
-                cursor = conn.execute("DELETE FROM narrative_cache")
-            else:
-                cursor = conn.execute(
-                    "DELETE FROM narrative_cache WHERE tenant_id = %s",
-                    (tenant_id,),
-                )
-            conn.commit()
-            rowcount = int(cursor.rowcount)
-            conn.close()
+            try:
+                if tenant_id is None:
+                    cursor = conn.execute("DELETE FROM narrative_cache")
+                else:
+                    cursor = conn.execute(
+                        "DELETE FROM narrative_cache WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                conn.commit()
+                rowcount = int(cursor.rowcount)
+            finally:
+                conn.close()
             return rowcount
 
     def stats(self) -> dict[str, Any]:
         """Return cache size and in-process hit/eviction counters."""
         with self._lock:
             conn = self._get_conn()
-            size = self._size(conn)
-            conn.close()
+            try:
+                size = self._size(conn)
+            finally:
+                conn.close()
             requests = self._hits + self._misses
             hit_rate = self._hits / requests if requests else 0.0
             return {
