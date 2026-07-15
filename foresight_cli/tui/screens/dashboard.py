@@ -72,7 +72,7 @@ class DashboardScreen(Screen):
 
             mem_count = details.get("memory_count", details.get("count", "?"))
             crisis = details.get("crisis_signals", 0)
-            db_path = details.get("database", details.get("db_path", "?"))
+            db_url = details.get("database", details.get("db_url", "?"))
 
             # Update stat cards
             for child in self.query(StatCard):
@@ -82,11 +82,11 @@ class DashboardScreen(Screen):
                 elif "Crisis" in label:
                     child.set_value(str(crisis))
                 elif "Database" in label:
-                    child.set_value("OK" if db_path else "Not configured")
+                    child.set_value("OK" if db_url else "Not configured")
 
             detail_widget = self.query_one("#status-detail", Static)
             detail_widget.update(
-                f"\n[dim]Database:[/dim] {db_path}\n"
+                f"\n[dim]Database:[/dim] {db_url}\n"
                 f"[dim]User:[/dim] {details.get('user_id', 'default')}\n"
                 f"[dim]Bank:[/dim] {details.get('bank_id', 'default')}\n"
                 f"[dim]Scopes:[/dim] {json.dumps(details.get('by_scope', {}))}\n"

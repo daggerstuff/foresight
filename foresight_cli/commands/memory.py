@@ -90,19 +90,9 @@ def query(
 ):
     """Search memories by content keyword."""
     _init_and_user(user_id)
+    # search_memories() returns a pre-formatted display string; render it directly.
     result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
-
-    if isinstance(result, list):
-        rows = []
-        for m in result:
-            mid = m.get("memory_id", m.get("id", "?"))
-            content = str(m.get("content", ""))[:80]
-            score = m.get("score", m.get("relevance", ""))
-            rows.append([mid, str(score), content])
-
-        out.print_table(["ID", "Score", "Content (truncated)"], rows, title=f"Search: {query_text}")
-    else:
-        out.print_json(result)
+    out.result_block(result, title=f"Search: {query_text}")
 
 
 @app.command()
@@ -167,7 +157,7 @@ def search(
 
     if mode == "semantic":
         try:
-            from foresight import semantic_search_memories
+            from foresight.server import semantic_search_memories
 
             result = semantic_search_memories(query=query_text, limit=limit, min_score=min_score)
         except ImportError:
@@ -176,23 +166,8 @@ def search(
     else:
         result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
 
-    if isinstance(result, list):
-        if category:
-            result = [m for m in result if m.get("category") == category]
-
-        rows = []
-        for m in result:
-            mid = m.get("memory_id", m.get("id", "?"))
-            cat = m.get("category", "-")
-            content = str(m.get("content", ""))[:80]
-            score = m.get("score", m.get("relevance", "-"))
-            rows.append([mid, cat, str(score), content])
-
-        out.print_table(
-            ["ID", "Category", "Score", "Content (truncated)"], rows, title=f"Search ({mode}): {query_text}"
-        )
-    else:
-        out.print_json(result)
+    # search_memories() returns a pre-formatted display string; render it directly.
+    out.result_block(result, title=f"Search ({mode}): {query_text}")
 
 
 @app.command()
@@ -203,21 +178,27 @@ def export(
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Export memories to a JSON/JSONL file."""
-    _init_and_user(user_id)
+    uid = _init_and_user(user_id)
+    from foresight.server import get_current_account_id, get_db_connection
 
-    all_memories = search_memories(
-        options=SearchOptions(query_type="list", limit=limit if limit > 0 else 10_000, offset=0)
-    )
-
-    if not isinstance(all_memories, list):
-        out.error("Failed to retrieve memories for export.")
-        raise typer.Exit(1)
+    tenant_id = get_current_account_id()
+    conn = get_db_connection()
+    if category:
+        sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND category = ? ORDER BY created_at DESC"
+        params: list = [uid, tenant_id, category]
+    else:
+        sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC"
+        params = [uid, tenant_id]
+    # Apply LIMIT in SQL (not Python) so large tables don't load fully into memory.
+    if limit > 0:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    all_memories = [dict(r) for r in rows]
 
     if len(all_memories) == 0:
         out.warn("No memories found to export.")
-
-    if category:
-        all_memories = [m for m in all_memories if m.get("category") == category]
 
     if limit > 0:
         all_memories = all_memories[:limit]

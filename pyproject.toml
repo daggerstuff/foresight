@@ -1,6 +1,6 @@
 [project]
 name = "foresight"
-version = "0.18.1"
+version = "0.19.0"
 description = "Persistent memory for AI agents — CLI, TUI, MCP server, and Python SDK"
 readme = "README.md"
 license = "MIT"

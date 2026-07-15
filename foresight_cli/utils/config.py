@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,13 +17,13 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 
 # Env var → config key mapping
 ENV_MAP: dict[str, str] = {
-    "FORESIGHT_DB_PATH": "db_path",
+    "FORESIGHT_DB_URL": "db_url",
     "FORESIGHT_USER_ID": "user_id",
     "FORESIGHT_BANK_ID": "bank_id",
 }
 
 DEFAULTS: dict[str, Any] = {
-    "db_path": str(CONFIG_DIR / "memory.db"),
+    "db_url": "",  # No default; must be set via FORESIGHT_DB_URL env var or config
     "user_id": os.environ.get("USER", "default"),
     "bank_id": "default",
     "theme": "auto",
@@ -44,7 +45,7 @@ class TuiConfig:
 
 @dataclass
 class CliConfig:
-    db_path: str = DEFAULTS["db_path"]
+    db_url: str = DEFAULTS["db_url"]
     user_id: str = DEFAULTS["user_id"]
     bank_id: str = DEFAULTS["bank_id"]
     theme: str = DEFAULTS["theme"]
@@ -69,6 +70,14 @@ class CliConfig:
             if value := os.environ.get(env_var):
                 config_data[config_key] = value
 
+        # Deprecated env var (rolling-rollout safety): FORESIGHT_DB_PATH is no
+        # longer read now that storage is Postgres-only. Warn, but never use it.
+        if os.environ.get("FORESIGHT_DB_PATH") and not os.environ.get("FORESIGHT_DB_URL"):
+            sys.stderr.write(
+                "WARNING: FORESIGHT_DB_PATH is deprecated (SQLite backend removed). "
+                "Set FORESIGHT_DB_URL to the shared Postgres instance.\n"
+            )
+
         # Handle nested tui config
         tui_data = config_data.pop("tui", {})
         if isinstance(tui_data, dict):
@@ -83,8 +92,9 @@ class CliConfig:
     def save(self) -> None:
         """Save config to file."""
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR.chmod(0o700)
         data = {
-            "db_path": self.db_path,
+            "db_url": self.db_url,
             "user_id": self.user_id,
             "bank_id": self.bank_id,
             "theme": self.theme,
@@ -99,6 +109,11 @@ class CliConfig:
         CONFIG_PATH.chmod(0o600)
 
 
+def get_db_url() -> str:
+    """Get the configured database URL."""
+    return CliConfig.load().db_url
+
+
 def ensure_config() -> CliConfig:
     """Ensure config directory and default config exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -108,12 +123,6 @@ def ensure_config() -> CliConfig:
         CliConfig().save()
 
     return CliConfig.load()
-
-
-def get_db_path() -> str:
-    """Get the resolved database path."""
-    cfg = ensure_config()
-    return cfg.db_path
 
 
 def get_user_id(override: str | None = None) -> str | None:

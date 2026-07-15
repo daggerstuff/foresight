@@ -162,8 +162,7 @@ class _NarrativeCacheSingleton:
     def get_instance(cls) -> NarrativeCache:
         """Get or create global narrative cache instance."""
         if cls._instance is None:
-            cache_path = Path(DB_PATH).parent / "narrative_cache.sqlite"
-            cls._instance = NarrativeCache(cache_path)
+            cls._instance = NarrativeCache()
         return cls._instance
 
 
@@ -519,39 +518,35 @@ def _supports_execute_returning(conn: Any) -> bool:
 
 
 def get_db_connection(db_path: str | None = None):
-    """Get a database connection from the appropriate backend.
+    """Get a Postgres connection from the shared backend pool.
 
-    When PostgresBackend is active (``FORESIGHT_DB_URL`` set), acquires a
-    connection from the psycopg connection pool wrapped in a
-    ``PostgresPooledConnection`` that translates SQLite SQL to PostgreSQL
-    dialect transparently.
-
-    When the backend is SQLite or uninitialized, falls back to the existing
-    SQLite connection pool.  An explicit *db_path* overrides the default
-    ``DB_PATH`` for the SQLite case.
-
-    Parameters
-    ----------
-    db_path : str or None
-        Explicit path for the SQLite database file.  Ignored when a
-        Postgres backend is active.
+    Foresight is Postgres-only. The backend must be initialized first via
+    ``_initialize_backend()`` (which requires ``FORESIGHT_DB_URL``). There is
+    deliberately no SQLite fallback: if the backend is not a Postgres backend,
+    this raises ``RuntimeError`` instead of silently opening a local SQLite
+    store. That dual-store behavior is exactly the bug this migration removes.
 
     Returns
     -------
-    PooledConnection | PostgresPooledConnection
+    PostgresPooledConnection
         A connection-like object with ``execute()``, ``fetchone()``,
         ``fetchall()``, ``commit()``, and ``close()``.
     """
+    if _global_backend is None:
+        raise RuntimeError(
+            "Database backend not initialized. Call _initialize_backend() first "
+            "(requires FORESIGHT_DB_URL). Foresight is Postgres-only; no SQLite fallback."
+        )
+    if _global_backend.backend_type != "postgresql":
+        raise RuntimeError(
+            f"Database backend is '{_global_backend.backend_type}', expected 'postgresql'. "
+            "Foresight is Postgres-only; no SQLite fallback."
+        )
     _log = logging.getLogger("foresight.db")
-    if _global_backend is not None and _global_backend.backend_type == "postgresql":
-        _log.debug("get_db_connection: using PostgresBackend pool")
-        pool = _global_backend._pool
-        conn = pool.getconn()
-        return PostgresPooledConnection(conn, pool)
-    _log.debug("get_db_connection: using SQLite pool (_global_backend=%s)", _global_backend)
-    from foresight.connection_pool import DB_PATH as _POOL_DB_PATH
-
-    return get_pool(db_path or _POOL_DB_PATH).acquire()
+    _log.debug("get_db_connection: using PostgresBackend pool")
+    pool = _global_backend._pool
+    conn = pool.getconn()
+    return PostgresPooledConnection(conn, pool)
 
 
 SCHEMA_VERSION = 11

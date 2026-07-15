@@ -77,7 +77,7 @@ $ foresight init
 ╰────────────────────────────────────────────────────────────────────╯
 ```
 
-The setup wizard creates `~/.foresight/config.json` and initializes your SQLite database.  
+The setup wizard creates `~/.foresight/config.json` and initializes your PostgreSQL database (shared Ghost Postgres).  
 Done in under a second.
 
 ---
@@ -94,14 +94,14 @@ Foresight Diagnostics
   ✓ Python 3.11+
   ✓ Config dir exists
   ✓ Config file exists
-  ✓ Database file exists
+  ✓ Database connection exists
   ✓ User ID configured
   ✓ Bank ID configured
   ✓ Database responsive
 
 All 7 checks passed (3 env overrides)
 Active env overrides:
-  FORESIGHT_DB_PATH=/home/vivi/.foresight/memory.db
+  FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight
   FORESIGHT_USER_ID=vivi
   FORESIGHT_BANK_ID=pixelated
 ```
@@ -277,13 +277,17 @@ foresight tui                             # Full-screen Textual terminal UI
 ### Extras
 
 - **Shell completion**: `foresight --install-completion`
-- **Database path**: `export FORESIGHT_DB_PATH=/custom/path/memory.db`
+  - **Database URL**: `export FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight`
 - **Config file**: `~/.foresight/config.json`
 - **Docker databases**: See [Installation Guide](https://foresight.vectorize.io/installation)
 
 ---
 
 ## Architecture
+
+Foresight is **Postgres-only** — there is no local SQLite store. `FORESIGHT_DB_URL`
+must point at the shared Ghost Postgres instance; the daemon fails fast if it is
+unset.
 
 Foresight combines three layers:
 
@@ -299,7 +303,7 @@ Foresight combines three layers:
 ### Context blocks
 
 Context blocks are the Foresight-native continuity surface for active guidance
-and project state. They are persisted in SQLite and isolated by
+and project state. They are persisted in PostgreSQL (shared Ghost Postgres) and isolated by
 `(user_id, tenant_id)`, so the same user can carry different continuity state
 across tenants without leakage.
 
@@ -391,7 +395,7 @@ uv run foresight --help
       "args": ["run", "-m", "foresight"],
       "cwd": "/path/to/foresight",
       "env": {
-        "FORESIGHT_DB_PATH": "/home/user/.foresight/memory.db",
+        "FORESIGHT_DB_URL": "postgresql://user:pass@host:5432/foresight",
         "FORESIGHT_USER_ID": "username"
       }
     }
@@ -407,7 +411,7 @@ extensions:
     args: ['run', '-m', 'foresight']
     cwd: /path/to/foresight
     env:
-      FORESIGHT_DB_PATH: /home/user/.foresight/memory.db
+      FORESIGHT_DB_URL: postgresql://user:pass@host:5432/foresight
       FORESIGHT_USER_ID: username
     type: stdio
 ```
