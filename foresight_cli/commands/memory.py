@@ -203,21 +203,26 @@ def export(
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Export memories to a JSON/JSONL file."""
-    _init_and_user(user_id)
+    uid = _init_and_user(user_id)
+    from foresight.server import get_current_account_id, get_db_connection
 
-    all_memories = search_memories(
-        options=SearchOptions(query_type="list", limit=limit if limit > 0 else 10_000, offset=0)
-    )
-
-    if not isinstance(all_memories, list):
-        out.error("Failed to retrieve memories for export.")
-        raise typer.Exit(1)
+    tenant_id = get_current_account_id()
+    conn = get_db_connection()
+    if category:
+        rows = conn.execute(
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND category = ?",
+            (uid, tenant_id, category),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC",
+            (uid, tenant_id),
+        ).fetchall()
+    conn.close()
+    all_memories = [dict(r) for r in rows]
 
     if len(all_memories) == 0:
         out.warn("No memories found to export.")
-
-    if category:
-        all_memories = [m for m in all_memories if m.get("category") == category]
 
     if limit > 0:
         all_memories = all_memories[:limit]

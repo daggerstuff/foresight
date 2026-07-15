@@ -6,7 +6,6 @@ import contextlib
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 import typer
@@ -53,7 +52,7 @@ def status(
     if isinstance(result, dict):
         pairs = [
             ("Status", result.get("status", result.get("health", "unknown"))),
-            ("Database", result.get("database", result.get("db_path", "?"))),
+            ("Database", result.get("database", result.get("db_url", "?"))),
             ("Bank ID", result.get("bank_id", "?")),
             ("User ID", result.get("user_id", resolved_uid or "?")),
             ("Memory Count", str(result.get("memory_count", result.get("count", 0)))),
@@ -272,13 +271,12 @@ def doctor(
     check("Config dir exists", cfg.CONFIG_DIR.exists(), str(cfg.CONFIG_DIR))
     check("Config file exists", cfg.CONFIG_PATH.exists(), str(cfg.CONFIG_PATH))
 
-    # DB file
-    db_path = Path(config.db_path)
-    if db_path.exists():
-        size = db_path.stat().st_size
-        check("Database file exists", True, f"{size:,} bytes")
+    # DB URL (Postgres-only; no local SQLite file)
+    db_url = cfg.get_db_url()
+    if db_url:
+        check("Database URL configured", True, db_url)
     else:
-        check("Database file exists", False, "Not yet created (will be on first use)")
+        check("Database URL configured", False, "Set FORESIGHT_DB_URL env var")
 
     # Config values
     if config.user_id:
@@ -287,7 +285,7 @@ def doctor(
         check("Bank ID configured", True, config.bank_id)
 
     # Environment
-    for env_var in ["FORESIGHT_DB_PATH", "FORESIGHT_USER_ID", "FORESIGHT_BANK_ID"]:
+    for env_var in ["FORESIGHT_DB_URL", "FORESIGHT_USER_ID", "FORESIGHT_BANK_ID"]:
         if os.environ.get(env_var):
             warnings.append(f"{env_var}={os.environ[env_var]}")
 
@@ -406,7 +404,7 @@ def stats(
 
 @app.command()
 def config(
-    key: str | None = typer.Argument(None, help="Config key to view/set (e.g. user_id, db_path, bank_id)"),
+    key: str | None = typer.Argument(None, help="Config key to view/set (e.g. user_id, db_url, bank_id)"),
     value: str | None = typer.Argument(None, help="Value to set (omit to view current)"),
     reset: bool = typer.Option(False, "--reset", help="Reset config to defaults"),
     _user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
@@ -438,7 +436,7 @@ def config(
 
     # Show all config
     pairs = [
-        ("db_path", c.db_path),
+        ("db_url", c.db_url),
         ("user_id", c.user_id),
         ("bank_id", c.bank_id),
         ("theme", c.theme),

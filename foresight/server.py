@@ -162,8 +162,7 @@ class _NarrativeCacheSingleton:
     def get_instance(cls) -> NarrativeCache:
         """Get or create global narrative cache instance."""
         if cls._instance is None:
-            cache_path = Path(DB_PATH).parent / "narrative_cache.sqlite"
-            cls._instance = NarrativeCache(cache_path)
+            cls._instance = NarrativeCache()
         return cls._instance
 
 

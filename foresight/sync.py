@@ -2,8 +2,7 @@
 Offline-First Synchronization
 
 Provides offline-first sync capabilities:
-- Local storage (SQLite)
-- Operation queue with persistence
+- Operation queue with persistence (Postgres)
 - Sync manager with retry logic
 - Progress events for UI
 - Conflict resolution with CRDTs
@@ -13,16 +12,13 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
 
-from .connection_pool import get_pool
 from .crdt import LWWRegister, ORSet, VectorClock
 from .tenant_context import get_current_account_id
 
@@ -33,19 +29,21 @@ _OPERATION_COLUMNS = (
 )
 
 
-def _operation_from_row(row: sqlite3.Row | tuple[Any, ...]) -> Operation:
-    if isinstance(row, sqlite3.Row):
+def _operation_from_row(row: dict[str, Any] | tuple[Any, ...]) -> Operation:
+    if isinstance(row, dict):
         return Operation.from_dict(
             {
                 "id": row["id"],
                 "type": row["type"],
                 "entity_type": row["entity_type"],
                 "entity_id": row["entity_id"],
-                "payload": json.loads(row["payload"]),
+                "payload": json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"],
                 "created_at": row["created_at"],
                 "retry_count": row["retry_count"],
                 "last_attempt": row["last_attempt"],
-                "vector_clock": json.loads(row["vector_clock"]),
+                "vector_clock": json.loads(row["vector_clock"])
+                if isinstance(row["vector_clock"], str)
+                else row["vector_clock"],
             }
         )
 
@@ -55,11 +53,11 @@ def _operation_from_row(row: sqlite3.Row | tuple[Any, ...]) -> Operation:
             "type": row[2],
             "entity_type": row[3],
             "entity_id": row[4],
-            "payload": json.loads(row[5]),
+            "payload": json.loads(row[5]) if isinstance(row[5], str) else row[5],
             "created_at": row[6],
             "retry_count": row[7],
             "last_attempt": row[8],
-            "vector_clock": json.loads(row[9]),
+            "vector_clock": json.loads(row[9]) if isinstance(row[9], str) else row[9],
         }
     )
 
@@ -151,67 +149,48 @@ class SyncProgress:
 
 class OperationQueue:
     """
-    Persistent operation queue.
+    Persistent operation queue backed by Postgres.
 
     Stores operations that need to be synced when online.
+    Uses the shared ``operations`` table created by schema migrations.
     """
 
     def __init__(self, db_path: str | None = None):
         """Initialize operation queue.
 
         Args:
-            db_path: Path to SQLite database (default: ~/.foresight/operations.db)
+            db_path: Ignored — retained for backward compatibility with
+                callers that pass ``DB_PATH``. The queue always uses the
+                shared Postgres ``operations`` table.
         """
-        if db_path is None:
-            db_path = str(Path.home() / ".foresight" / "operations.db")
+        # No local SQLite file is created. Schema is managed by init_db().
+        pass
 
-        self.db_path = db_path
-        self._init_db()
+    def _get_conn(self):
+        """Acquire a Postgres connection via get_db_connection()."""
+        from .server import get_db_connection
 
-    def _init_db(self) -> None:
-        """Initialize database schema."""
-        db_path = Path(self.db_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS operations (
-                id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL DEFAULT 'default',
-                type TEXT NOT NULL,
-                entity_type TEXT NOT NULL,
-                entity_id TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                retry_count INTEGER DEFAULT 0,
-                last_attempt TEXT,
-                vector_clock TEXT DEFAULT '{}'
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ops_entity ON operations(entity_type, entity_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ops_created ON operations(created_at)")
-        # Migration: add tenant_id if table exists without it
-        try:
-            cols = [row[1] for row in conn.execute("PRAGMA table_info(operations)").fetchall()]
-            if cols and "tenant_id" not in cols:
-                conn.execute("ALTER TABLE operations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
-        except sqlite3.OperationalError:
-            logger.debug("operations table tenant_id column already exists")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ops_tenant ON operations(tenant_id)")
-        conn.commit()
-        pool.release(conn)
+        return get_db_connection()
 
     def enqueue(self, operation: Operation, tenant_id: str | None = None) -> None:
         """Add operation to queue."""
         tid = tenant_id or get_current_account_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
+        conn = self._get_conn()
         conn.execute(
             """
-            INSERT OR REPLACE INTO operations
+            INSERT INTO operations
             (id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, last_attempt, vector_clock)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                tenant_id = EXCLUDED.tenant_id,
+                type = EXCLUDED.type,
+                entity_type = EXCLUDED.entity_type,
+                entity_id = EXCLUDED.entity_id,
+                payload = EXCLUDED.payload,
+                created_at = EXCLUDED.created_at,
+                retry_count = EXCLUDED.retry_count,
+                last_attempt = EXCLUDED.last_attempt,
+                vector_clock = EXCLUDED.vector_clock
         """,
             (
                 operation.id,
@@ -227,18 +206,17 @@ class OperationQueue:
             ),
         )
         conn.commit()
-        pool.release(conn)
+        conn.close()
 
     def dequeue(self, tenant_id: str | None = None) -> Operation | None:
         """Get next operation from queue."""
         tid = tenant_id or get_current_account_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
+        conn = self._get_conn()
         row = conn.execute(
-            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1",
+            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = %s ORDER BY created_at LIMIT 1",
             (tid,),
         ).fetchone()
-        pool.release(conn)
+        conn.close()
 
         if row:
             return _operation_from_row(row)
@@ -247,22 +225,20 @@ class OperationQueue:
     def remove(self, operation_id: str, tenant_id: str | None = None) -> None:
         """Remove operation from queue."""
         tid = tenant_id or get_current_account_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        conn.execute("DELETE FROM operations WHERE id = ? AND tenant_id = ?", (operation_id, tid))
+        conn = self._get_conn()
+        conn.execute("DELETE FROM operations WHERE id = %s AND tenant_id = %s", (operation_id, tid))
         conn.commit()
-        pool.release(conn)
+        conn.close()
 
     def peek(self, tenant_id: str | None = None) -> list[Operation]:
         """Get all pending operations."""
         tid = tenant_id or get_current_account_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
+        conn = self._get_conn()
         rows = conn.execute(
-            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = ? ORDER BY created_at",
+            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = %s ORDER BY created_at",
             (tid,),
         ).fetchall()
-        pool.release(conn)
+        conn.close()
 
         operations = []
         for row in rows:
@@ -272,15 +248,14 @@ class OperationQueue:
     def count(self, tenant_id: str | None = None) -> int:
         """Get count of pending operations."""
         tid = tenant_id or get_current_account_id()
-        pool = get_pool(self.db_path)
-        conn = pool.acquire()
+        conn = self._get_conn()
         count_row = conn.execute(
-            "SELECT COUNT(*) AS operation_count FROM operations WHERE tenant_id = ?",
+            "SELECT COUNT(*) AS operation_count FROM operations WHERE tenant_id = %s",
             (tid,),
         ).fetchone()
-        pool.release(conn)
-        if isinstance(count_row, sqlite3.Row):
-            return int(count_row["operation_count"] or 0)
+        conn.close()
+        if isinstance(count_row, dict):
+            return int(count_row.get("operation_count", 0) or 0)
         return int((count_row or (0,))[0] or 0)
 
 
