@@ -62,10 +62,7 @@ client.onMessage((message) => {
 
 ```typescript
 type ConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'connected'
-  | 'reconnecting'
+  'disconnected' | 'connecting' | 'connected' | 'reconnecting'
 
 // Check state
 const state = client.getState()

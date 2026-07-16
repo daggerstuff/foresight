@@ -24,40 +24,39 @@ against this repository we follow the timeline below:
    ticket reference.
 2. **Rotate** — any leaked credential is invalidated at the upstream operator
    (database password, API token, signing key, etc.) before any further work.
-   The rotated replacement is delivered out-of-band to the maintainers
-   through the team's secret manager; it is **never** echoed in commit
-   messages, pull-request bodies, plan files, security advisories, or chat
-   transcripts.
+   The rotated replacement is delivered out-of-band to the maintainers through
+   the team's secret manager; it is **never** echoed in commit messages,
+   pull-request bodies, plan files, security advisories, or chat transcripts.
 3. **Sanitize working copy** — secret scan the local repository
-   (`git grep -F <redacted>` plus a full `git cat-file --batch-all-objects
---batch` scan against the object store, reachable + unreachable) before
-   crafting the history-rewrite branch.
+   (`git grep -F <redacted>` plus a full
+   `git cat-file --batch-all-objects --batch` scan against the object store,
+   reachable + unreachable) before crafting the history-rewrite branch.
 4. **Rewrite pushed history** via `git filter-repo` (`--replace-text`) on a
-   dedicated remediation branch. The branch is force-pushed and a pull
-   request opened against `master` — `master` itself is never
-   rewritten or force-pushed without explicit maintainer authorization.
-5. **Verify** — every leaked-commit reference (`git merge-base
---is-ancestor`) returns NEGATIVE after the rewrite, the GitHub commit
-   API returns the rewritten form, and the upstream secret-scan advisory
-   (e.g. GitGuardian, GitHub secret-scanning) clears.
-6. **Prevent recurrence** — add pre-commit secret scanning (e.g.
-   `ggshield`) plus a GitHub Actions `secrets-scan.yml` workflow that runs
-   on every push and pull request. Add a regression test that fails the
-   build if any string matched by the scanner appears in the working tree.
+   dedicated remediation branch. The branch is force-pushed and a pull request
+   opened against `master` — `master` itself is never rewritten or force-pushed
+   without explicit maintainer authorization.
+5. **Verify** — every leaked-commit reference (`git merge-base --is-ancestor`)
+   returns NEGATIVE after the rewrite, the GitHub commit API returns the
+   rewritten form, and the upstream secret-scan advisory (e.g. GitGuardian,
+   GitHub secret-scanning) clears.
+6. **Prevent recurrence** — add pre-commit secret scanning (e.g. `ggshield`)
+   plus a GitHub Actions `secrets-scan.yml` workflow that runs on every push and
+   pull request. Add a regression test that fails the build if any string
+   matched by the scanner appears in the working tree.
 
 ## Scope
 
 The following are within scope for coordinated disclosure:
 
-- Credential disclosure in commit history (database DSNs, API tokens,
-  private keys, signing keys, session cookies).
+- Credential disclosure in commit history (database DSNs, API tokens, private
+  keys, signing keys, session cookies).
 - Hardcoded credentials in source, fixtures, configuration templates, or
   documentation that ships in the published package.
-- Vulnerabilities in installed hooks, MCP servers, or remote procedure
-  endpoints that allow privilege escalation, data exfiltration, or
-  unauthorized memory access.
-- Dependency confusion, typosquatting, or supply-chain compromise of
-  declared dependencies.
+- Vulnerabilities in installed hooks, MCP servers, or remote procedure endpoints
+  that allow privilege escalation, data exfiltration, or unauthorized memory
+  access.
+- Dependency confusion, typosquatting, or supply-chain compromise of declared
+  dependencies.
 
 Out of scope:
 
@@ -68,9 +67,9 @@ Out of scope:
 
 ## Acknowledgments
 
-We thank the security research community — including Robin (Germany-based
-GitHub secret-scanner) — for the report that motivated this policy and the
-preventive controls now wired into the project's pre-commit and CI hooks.
+We thank the security research community — including Robin (Germany-based GitHub
+secret-scanner) — for the report that motivated this policy and the preventive
+controls now wired into the project's pre-commit and CI hooks.
 
 ## Past Incidents
 

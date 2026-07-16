@@ -2,10 +2,13 @@
   "name": "foresight-cli",
   "version": "0.0.1",
   "description": "Foresight CLI — persistent memory layer for AI agents (TypeScript reimplementation).",
-  "type": "module",
   "bin": {
     "foresight": "dist/index.mjs"
   },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -16,21 +19,15 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": [
-    "dist"
-  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "tsup && vitest run",
     "check-publish": "node scripts/check-publish.mjs",
     "link": "pnpm run check-publish && pnpm link --global"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
@@ -46,6 +43,9 @@
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

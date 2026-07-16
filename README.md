@@ -77,7 +77,8 @@ $ foresight init
 ╰────────────────────────────────────────────────────────────────────╯
 ```
 
-The setup wizard creates `~/.foresight/config.json` and initializes your PostgreSQL database (shared Ghost Postgres).  
+The setup wizard creates `~/.foresight/config.json` and initializes your
+PostgreSQL database (shared Ghost Postgres).  
 Done in under a second.
 
 ---
@@ -175,13 +176,15 @@ Full-screen Textual terminal UI. Three tabs:
 | **Blocks**    | View and edit context blocks live              |
 
 Keyboard navigation: `Tab` between tabs, `/` to search, `q` to quit.  
-It feels like a mission control dashboard for your brain. Everything refreshes live.
+It feels like a mission control dashboard for your brain. Everything refreshes
+live.
 
 ---
 
 #### Step 6 — Agent mode (machine output)
 
-When Foresight calls your agent, it uses `--agent` for pipe-safe, parseable output:
+When Foresight calls your agent, it uses `--agent` for pipe-safe, parseable
+output:
 
 ```bash
 $ foresight --agent status
@@ -277,17 +280,19 @@ foresight tui                             # Full-screen Textual terminal UI
 ### Extras
 
 - **Shell completion**: `foresight --install-completion`
-  - **Database URL**: `export FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight`
+  - **Database URL**:
+    `export FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight`
 - **Config file**: `~/.foresight/config.json`
-- **Docker databases**: See [Installation Guide](https://foresight.vectorize.io/installation)
+- **Docker databases**: See
+  [Installation Guide](https://foresight.vectorize.io/installation)
 
 ---
 
 ## Architecture
 
-Foresight is **Postgres-only** — there is no local SQLite store. `FORESIGHT_DB_URL`
-must point at the shared Ghost Postgres instance; the daemon fails fast if it is
-unset.
+Foresight is **Postgres-only** — there is no local SQLite store.
+`FORESIGHT_DB_URL` must point at the shared Ghost Postgres instance; the daemon
+fails fast if it is unset.
 
 Foresight combines three layers:
 
@@ -303,9 +308,9 @@ Foresight combines three layers:
 ### Context blocks
 
 Context blocks are the Foresight-native continuity surface for active guidance
-and project state. They are persisted in PostgreSQL (shared Ghost Postgres) and isolated by
-`(user_id, tenant_id)`, so the same user can carry different continuity state
-across tenants without leakage.
+and project state. They are persisted in PostgreSQL (shared Ghost Postgres) and
+isolated by `(user_id, tenant_id)`, so the same user can carry different
+continuity state across tenants without leakage.
 
 Default blocks:
 

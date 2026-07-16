@@ -5,35 +5,36 @@ description = "Persistent memory for AI agents — CLI, TUI, MCP server, and Pyt
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
-authors = [
-    { name = "Foresight Team", email = "team@vectorize.io" },
-]
+authors = [{ name = "Foresight Team", email = "team@vectorize.io" }]
 keywords = [
-    "mcp", "memory", "ai", "foresight",
-    "cli", "tui",
-    "claude", "llm", "agent",
-    "continuity", "context",
+  "mcp",
+  "memory",
+  "ai",
+  "foresight",
+  "cli",
+  "tui",
+  "claude",
+  "llm",
+  "agent",
+  "continuity",
+  "context",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Utilities",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Utilities",
 ]
 
-dependencies = [
-    "fastmcp>=3.2.0",
-    "psycopg2-binary>=2.9.12",
-    "redis>=5.0,<6.0",
-]
+dependencies = ["fastmcp>=3.2.0", "psycopg2-binary>=2.9.12", "redis>=5.0,<6.0"]
 
 [project.optional-dependencies]
 cli = ["typer>=0.9.0", "rich>=13.0"]
@@ -42,15 +43,15 @@ postgres = ["psycopg[binary,pool]>=3.2"]
 redis = ["redis>=5.0"]
 all = ["foresight[cli,tui,postgres,redis]"]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=4.0",
-    "typer>=0.9.0",
-    "rich>=13.0",
-    "textual>=1.0.0",
-    "hatchling>=1.0",
-    "build>=1.0",
-    "twine>=5.0",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=4.0",
+  "typer>=0.9.0",
+  "rich>=13.0",
+  "textual>=1.0.0",
+  "hatchling>=1.0",
+  "build>=1.0",
+  "twine>=5.0",
 ]
 
 [project.urls]
@@ -71,12 +72,12 @@ eval-baseline = "foresight.eval_harness:run_eval"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=4.0",
-    "typer>=0.9.0",
-    "rich>=13.0",
-    "textual>=1.0.0",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=4.0",
+  "typer>=0.9.0",
+  "rich>=13.0",
+  "textual>=1.0.0",
 ]
 
 [tool.pyright]
@@ -94,12 +95,12 @@ packages = ["foresight", "foresight_cli"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/foresight",
-    "/foresight_cli",
-    "/scripts",
-    "README.md",
-    "LICENSE",
-    "pyproject.toml",
+  "/foresight",
+  "/foresight_cli",
+  "/scripts",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml",
 ]
 
 [tool.pytest.ini_options]
@@ -109,7 +110,6 @@ testpaths = ["tests"]
 
 [tool.bandit]
 exclude_dirs = ["tests"]
-
 
 
 [tool.radarlint]
