@@ -3,6 +3,8 @@ import stat
 import threading
 import time
 
+import pytest
+
 from foresight.narrative_cache import NarrativeCache
 
 
@@ -271,6 +273,7 @@ def test_narrative_cache_stats(tmp_path) -> None:
     assert stats["eviction_count"] == 1
 
 
+@pytest.mark.skip(reason="WAL mode is SQLite-specific; NarrativeCache is now Postgres-only.")
 def test_narrative_cache_uses_wal_mode(tmp_path) -> None:
     path = tmp_path / "narratives.sqlite3"
     cache = NarrativeCache(path)
@@ -320,7 +323,10 @@ def test_narrative_cache_allows_cross_thread_access(tmp_path) -> None:
 
 
 def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=10, ttl_seconds=0.1)
+    # Use a longer TTL (2 s) and sleep (2.5 s) because Postgres network
+    # latency means a single put() can take > 0.1 s, causing the fresh entry
+    # to appear expired if we use the original 0.1 s TTL.
+    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=10, ttl_seconds=2.0)
     for index in range(9):
         cache.put(
             f"expired-{index}",
@@ -330,7 +336,7 @@ def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) 
             model_version="model-a",
             insights_hash=f"hash-{index}",
         )
-    time.sleep(0.15)
+    time.sleep(2.5)
 
     cache.put(
         "fresh",
@@ -361,6 +367,7 @@ def test_narrative_cache_close_is_idempotent(tmp_path) -> None:
     cache.close()
 
 
+@pytest.mark.skip(reason="NarrativeCache is now Postgres-only; no local SQLite file is created.")
 def test_narrative_cache_db_file_is_private(tmp_path) -> None:
     path = tmp_path / "narratives.sqlite3"
     NarrativeCache(path).close()

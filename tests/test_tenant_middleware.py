@@ -78,3 +78,32 @@ async def test_tenant_resets_after_request():
     ctx = MagicMock()
     await _run_middleware(ctx, tenant_in_args="during-request")
     assert get_current_account_id() == DEFAULT_TENANT_ID
+
+
+@pytest.mark.asyncio
+async def test_none_identity_value_is_silent():
+    """A present-but-None identity key must not produce a warning."""
+    reset_tenant_context()
+    ctx = MagicMock()
+    # None in metadata should fall back to default without logging warnings.
+    result = await _run_middleware(ctx, tenant_in_meta=None)
+    assert result == DEFAULT_TENANT_ID
+
+
+@pytest.mark.asyncio
+async def test_invalid_string_identity_is_rejected():
+    """A genuinely invalid (non-allowlisted) string ID is rejected."""
+    reset_tenant_context()
+    ctx = MagicMock()
+    message = MagicMock()
+    message.arguments = {}
+    meta = MagicMock()
+    meta.model_extra = {"account_id": "!!!invalid!!!"}
+    message.meta = meta
+    ctx.message = message
+    mw = TenantMiddleware()
+    async def call_next(c):
+        return "ok"
+    await mw.on_call_tool(ctx, call_next)
+    assert get_current_account_id() == DEFAULT_TENANT_ID
+    reset_tenant_context()

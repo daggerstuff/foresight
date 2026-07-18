@@ -435,8 +435,8 @@ MIGRATIONS: dict[int, list[str]] = {
             model_version TEXT NOT NULL,
             insights_hash TEXT NOT NULL,
             narrative TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            last_accessed_at REAL NOT NULL,
+            created_at DOUBLE PRECISION NOT NULL,
+            last_accessed_at DOUBLE PRECISION NOT NULL,
             access_count INTEGER NOT NULL DEFAULT 0
         )""",
         "CREATE INDEX IF NOT EXISTS idx_narrative_cache_tenant_user ON narrative_cache(tenant_id, user_id)",

@@ -33,26 +33,18 @@ from foresight.server import (
 
 
 @pytest.fixture(autouse=True)
-def setup_test_db(tmp_path, monkeypatch):
-    """Isolate DB per test function to prevent tenant memory limit issues.
+def setup_test_db(monkeypatch):
+    """Isolate DB per test function using the shared Postgres test backend.
 
-    Patches:
-    1. DB_PATH → temp file (so writes never hit ~/.foresight/memory.db)
-    2. Tenant context → '_test_' account (so queries never mix with production data)
+    The global Postgres backend is initialised once per session in
+    tests/conftest.py.  This fixture only sets tenant context and resets
+    the connection pool between tests.
     """
-    db_file = tmp_path / "test_memory.db"
-    monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
-
-    import foresight.config as config_module
-    from foresight.backend import SqliteBackend
-
-    import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
-    from foresight.server import init_db
+    from foresight.server import _initialize_backend
 
-    monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
-    monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
     reset_pool()
+    _initialize_backend()
 
     # Isolate tenant context so test data never lands in the 'default' tenant
     from foresight.tenant_context import (
@@ -63,8 +55,6 @@ def setup_test_db(tmp_path, monkeypatch):
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
 
-    backend = SqliteBackend(db_path=str(db_file))
-    init_db(backend=backend)
     yield
     reset_pool()
 

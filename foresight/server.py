@@ -549,7 +549,7 @@ def get_db_connection(db_path: str | None = None):
     return PostgresPooledConnection(conn, pool)
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 
 def _seed_default_tenant(conn) -> None:
@@ -949,11 +949,15 @@ _SCHEMA_MIGRATIONS = {
             model_version TEXT NOT NULL,
             insights_hash TEXT NOT NULL,
             narrative TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            last_accessed_at REAL NOT NULL,
+            created_at DOUBLE PRECISION NOT NULL,
+            last_accessed_at DOUBLE PRECISION NOT NULL,
             access_count INTEGER NOT NULL DEFAULT 0
         )""",
         "CREATE INDEX IF NOT EXISTS idx_narrative_cache_tenant_user ON narrative_cache(tenant_id, user_id)",
+    ],
+    13: [
+        "ALTER TABLE narrative_cache ALTER COLUMN created_at TYPE DOUBLE PRECISION",
+        "ALTER TABLE narrative_cache ALTER COLUMN last_accessed_at TYPE DOUBLE PRECISION",
     ],
 }
 

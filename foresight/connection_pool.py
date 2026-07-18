@@ -177,24 +177,31 @@ _pool_lock = threading.Lock()
 def get_pool(db_path: str | None = None) -> Any:
     """Return the active pool.
 
-    * When a Postgres backend is active → returns a ``_PsycopgPoolAdapter``.
-    * When ``db_path`` is provided (tests only) → returns the legacy SQLite
-      ``ConnectionPool`` keyed on the absolute path.
+    * When ``db_path`` is explicitly provided (tests only) → returns the
+      legacy SQLite ``ConnectionPool`` keyed on the absolute path.
+    * When a Postgres backend is active and no ``db_path`` is given → returns
+      a ``_PsycopgPoolAdapter``.
     * When neither condition is met → raises ``RuntimeError``. Production
       must have Postgres; tests must pass an explicit path.
     """
+    if db_path is not None:
+        with _pool_lock:
+            pool_path = os.path.abspath(db_path)
+            if pool_path not in _pools:
+                _pools[pool_path] = ConnectionPool(pool_path)
+            return _pools[pool_path]
+
     pg_pool = _active_postgres_pool()
     if pg_pool is not None:
         return _PsycopgPoolAdapter(pg_pool)
 
+    db_path = DB_PATH
     if db_path is None:
-        db_path = DB_PATH
-        if db_path is None:
-            raise RuntimeError(
-                "No Postgres backend active and no db_path provided. "
-                "Production: set FORESIGHT_DB_URL and ensure the server "
-                "initialized correctly. Tests: pass an explicit db_path."
-            )
+        raise RuntimeError(
+            "No Postgres backend active and no db_path provided. "
+            "Production: set FORESIGHT_DB_URL and ensure the server "
+            "initialized correctly. Tests: pass an explicit db_path."
+        )
 
     with _pool_lock:
         pool_path = os.path.abspath(db_path)

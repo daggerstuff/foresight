@@ -23,7 +23,14 @@ _VALID_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 
 def _sanitize_id(value: str) -> str | None:
-    """Return value if it passes the allowlist, else None."""
+    """Return value if it passes the allowlist, else None.
+
+    Non-string values (most commonly None when an optional identity key is
+    present but unset in request metadata/arguments) are ignored silently
+    rather than logged as warnings, since they are an expected normal case.
+    """
+    if value is None:
+        return None
     if isinstance(value, str) and _VALID_ID_RE.match(value):
         return value
     logger.warning("Rejected invalid ID from request context: %r", value)
