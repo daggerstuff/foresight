@@ -479,9 +479,10 @@ class GraphStore:
         _validate_input(user_id, tid)
         self._execute_sql(
             """
-        INSERT OR IGNORE INTO entity_relationships
+        INSERT INTO entity_relationships
         (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
         VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type) DO NOTHING
         """,
             (
                 tid,

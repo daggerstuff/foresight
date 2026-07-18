@@ -47,7 +47,7 @@ from .config import (
     REDIS_URL,
     USER_ID,
 )
-from .connection_pool import PooledConnection, get_pool
+from .connection_pool import PooledConnection
 from .context_blocks import (
     PENDING_ITEMS,
     SESSION_PATTERNS,
@@ -2329,63 +2329,57 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
         (SESSION_PATTERNS, "pattern"),
     ]
 
-    for block_name, category in block_map:
-        block = agent.state.get_block(block_name)
-        if not block or block.is_empty():
-            continue
-
-        # Block content is newline-separated entries like:
-        #   - [2026-04-20 12:00] some text
-        lines = [ln.strip() for ln in block.content.splitlines() if ln.strip()]
-        # Take the last 5 items to avoid replaying the entire history
-        recent = lines[-5:]
-
-        for line in recent:
-            content = f"[{block_name}] {line}"
-            tenant_id = get_current_account_id()
-            content_h = _content_hash(content)
-            conn = get_db_connection()
-            existing = conn.execute(
-                "SELECT id, activation_count FROM memories "
-                "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
-                "ORDER BY created_at DESC LIMIT 1",
-                (uid, tenant_id, content_h),
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
-                    "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-                    (now, existing["id"], uid, tenant_id),
-                )
-                conn.commit()
-                conn.close()
+    with get_db_connection() as conn:
+        for block_name, category in block_map:
+            block = agent.state.get_block(block_name)
+            if not block or block.is_empty():
                 continue
 
-            mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
-            is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, content)
-            conn.execute(
-                "INSERT OR IGNORE INTO memories "
-                "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
-                "created_at, updated_at, tags, emotional_context, metrics, "
-                "is_ghost, synthesized_from, is_sensitive, sensitivity_reason) "
-                "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?)",
-                (
-                    mid,
-                    content,
-                    content_h,
-                    category,
-                    uid,
-                    BANK_ID,
-                    tenant_id,
-                    now,
-                    now,
-                    1 if is_sensitive_bit else 0,
-                    sensitivity_reason,
-                ),
-            )
-            conn.commit()
-            conn.close()
-            stored += 1
+            lines = [ln.strip() for ln in block.content.splitlines() if ln.strip()]
+            recent = lines[-5:]
+
+            for line in recent:
+                content = f"[{block_name}] {line}"
+                tenant_id = get_current_account_id()
+                content_h = _content_hash(content)
+                existing = conn.execute(
+                    "SELECT id, activation_count FROM memories "
+                    "WHERE user_id = %s AND tenant_id = %s AND content_hash = %s AND is_ghost = 0 "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (uid, tenant_id, content_h),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE memories SET activation_count = activation_count + 1, updated_at = %s "
+                        "WHERE id = %s AND user_id = %s AND tenant_id = %s",
+                        (now, existing["id"], uid, tenant_id),
+                    )
+                    continue
+
+                mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
+                is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, content)
+                conn.execute(
+                    "INSERT INTO memories "
+                    "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
+                    "created_at, updated_at, tags, emotional_context, metrics, "
+                    "is_ghost, synthesized_from, is_sensitive, sensitivity_reason) "
+                    "VALUES (%s, %s, %s, 'arc', 'long_term', %s, %s, %s, %s, %s, %s, '[]', '{}', '{}', 0, '[]', %s, %s) "
+                    "ON CONFLICT (id) DO NOTHING",
+                    (
+                        mid,
+                        content,
+                        content_h,
+                        category,
+                        uid,
+                        BANK_ID,
+                        tenant_id,
+                        now,
+                        now,
+                        1 if is_sensitive_bit else 0,
+                        sensitivity_reason,
+                    ),
+                )
+                stored += 1
 
     return stored
 
