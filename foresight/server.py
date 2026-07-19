@@ -1880,8 +1880,13 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
 
 @mcp.tool(output_schema=None)
 def manage_memories(
-    options: MemoryAction,
+    options: MemoryAction | None = None,
     user_id: str | None = None,
+    action: Literal["store", "update", "delete", "archive"] | None = None,
+    memory_id: str | None = None,
+    content: str | None = None,
+    store_options: MemoryOptions | None = None,
+    updates: MemoryUpdateOptions | None = None,
 ) -> str:
     """
     Manage memory lifecycle: store, update, delete, or archive.
@@ -1889,7 +1894,23 @@ def manage_memories(
     Args:
         options: Action and parameters
         user_id: Optional user ID override
+        action: Flat parameter for action (optional, fallback if options not provided)
+        memory_id: Flat parameter for memory ID (optional, fallback if options not provided)
+        content: Flat parameter for content (optional, fallback if options not provided)
+        store_options: Flat parameter for store options (optional, fallback if options not provided)
+        updates: Flat parameter for updates (optional, fallback if options not provided)
     """
+    if options is None:
+        if action is None:
+            return "Error: either 'options' or 'action' must be provided."
+        options = MemoryAction(
+            action=action,
+            memory_id=memory_id,
+            content=content,
+            options=store_options,
+            updates=updates,
+        )
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
@@ -1974,8 +1995,19 @@ def _trace_retrieval(
 
 @mcp.tool(output_schema=None)
 def search_memories(
-    options: SearchOptions,
+    options: SearchOptions | None = None,
     user_id: str | None = None,
+    query_type: Literal["id", "keyword", "list"] | None = None,
+    query: str | None = None,
+    memory_id: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+    min_importance: float | None = None,
+    use_hybrid: bool | None = None,
+    use_cascade: bool | None = None,
+    cascade_depth: int | None = None,
+    cascade_limit: int | None = None,
+    debug: bool | None = None,
 ) -> str:
     """
     Unified search and retrieval for memories.
@@ -1984,7 +2016,44 @@ def search_memories(
     Args:
         options: Search parameters (query_type, query, memory_id, limit, etc.)
         user_id: Optional user ID override
+        query_type: Flat parameter for query type (optional)
+        query: Flat parameter for query string (optional)
+        memory_id: Flat parameter for memory ID (optional)
+        limit: Flat parameter for limit (optional)
+        offset: Flat parameter for offset (optional)
+        min_importance: Flat parameter for min importance (optional)
+        use_hybrid: Flat parameter for use hybrid (optional)
+        use_cascade: Flat parameter for use cascade (optional)
+        cascade_depth: Flat parameter for cascade depth (optional)
+        cascade_limit: Flat parameter for cascade limit (optional)
+        debug: Flat parameter for debug mode (optional)
     """
+    if options is None:
+        kwargs = {}
+        if query_type is not None:
+            kwargs["query_type"] = query_type
+        if query is not None:
+            kwargs["query"] = query
+        if memory_id is not None:
+            kwargs["memory_id"] = memory_id
+        if limit is not None:
+            kwargs["limit"] = limit
+        if offset is not None:
+            kwargs["offset"] = offset
+        if min_importance is not None:
+            kwargs["min_importance"] = min_importance
+        if use_hybrid is not None:
+            kwargs["use_hybrid"] = use_hybrid
+        if use_cascade is not None:
+            kwargs["use_cascade"] = use_cascade
+        if cascade_depth is not None:
+            kwargs["cascade_depth"] = cascade_depth
+        if cascade_limit is not None:
+            kwargs["cascade_limit"] = cascade_limit
+        if debug is not None:
+            kwargs["debug"] = debug
+        options = SearchOptions(**kwargs)
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
@@ -2265,14 +2334,28 @@ def _handle_context_block_update(agent, label: str, content: str | None) -> str:
 
 
 @mcp.tool(output_schema=None)
-def manage_context_blocks(options: ContextBlockAction, user_id: str | None = None) -> str:
+def manage_context_blocks(
+    options: ContextBlockAction | None = None,
+    user_id: str | None = None,
+    action: Literal["list", "get", "update", "reset", "clear"] | None = None,
+    label: str | None = None,
+    content: str | None = None,
+) -> str:
     """
     Manage Foresight context blocks (guidance, preferences, context).
 
     Args:
         options: Action and parameters (list, get, update, reset, clear)
         user_id: Optional user ID override
+        action: Flat parameter for action (optional, fallback if options not provided)
+        label: Flat parameter for block label (optional, fallback if options not provided)
+        content: Flat parameter for block content (optional, fallback if options not provided)
     """
+    if options is None:
+        if action is None:
+            return "Error: either 'options' or 'action' must be provided."
+        options = ContextBlockAction(action=action, label=label, content=content)
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
     agent = get_context_block_agent(uid, tenant_id)
@@ -3135,17 +3218,69 @@ def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
 
 
 @mcp.tool(output_schema=None)
-def manage_curation_runs(options: CurationRunAction, user_id: str | None = None) -> str:
+def manage_curation_runs(
+    options: CurationRunAction | None = None,
+    user_id: str | None = None,
+    action: Literal["create", "get", "list", "cancel", "archive"] | None = None,
+    run_id: str | None = None,
+    source_bank_id: str | None = None,
+    output_bank_id: str | None = None,
+    policy_mode: Literal["preserve", "rebalance", "rebuild"] | None = None,
+    tool_access: Literal["disabled", "observe", "operate"] | None = None,
+    output_mode: Literal["reviewable_output", "in_place"] | None = None,
+    instructions: str | None = None,
+    run_clustering: bool | None = None,
+    transcript_bundle: list[dict] | None = None,
+    session_id: str | None = None,
+    project_path: str | None = None,
+) -> str:
     """
     Manage async Foresight curation runs.
 
-    Actions:
-    - create: queue a new run
-    - get: fetch a single run
-    - list: list recent runs
-    - cancel: cancel a pending/running run
-    - archive: archive a terminal run
+    Args:
+        options: CurationRunAction options payload
+        user_id: Optional user ID override
+        action: Flat parameter for action (optional, fallback if options not provided)
+        run_id: Flat parameter for run ID (optional)
+        source_bank_id: Flat parameter for source bank ID (optional)
+        output_bank_id: Flat parameter for output bank ID (optional)
+        policy_mode: Flat parameter for policy mode (optional)
+        tool_access: Flat parameter for tool access (optional)
+        output_mode: Flat parameter for output mode (optional)
+        instructions: Flat parameter for instructions (optional)
+        run_clustering: Flat parameter for run clustering (optional)
+        transcript_bundle: Flat parameter for transcript bundle (optional)
+        session_id: Flat parameter for session ID (optional)
+        project_path: Flat parameter for project path (optional)
     """
+    if options is None:
+        if action is None:
+            return "Error: either 'options' or 'action' must be provided."
+        kwargs = {"action": action}
+        if run_id is not None:
+            kwargs["run_id"] = run_id
+        if source_bank_id is not None:
+            kwargs["source_bank_id"] = source_bank_id
+        if output_bank_id is not None:
+            kwargs["output_bank_id"] = output_bank_id
+        if policy_mode is not None:
+            kwargs["policy_mode"] = policy_mode
+        if tool_access is not None:
+            kwargs["tool_access"] = tool_access
+        if output_mode is not None:
+            kwargs["output_mode"] = output_mode
+        if instructions is not None:
+            kwargs["instructions"] = instructions
+        if run_clustering is not None:
+            kwargs["run_clustering"] = run_clustering
+        if transcript_bundle is not None:
+            kwargs["transcript_bundle"] = transcript_bundle
+        if session_id is not None:
+            kwargs["session_id"] = session_id
+        if project_path is not None:
+            kwargs["project_path"] = project_path
+        options = CurationRunAction(**kwargs)
+
     init_db()
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
@@ -4130,14 +4265,37 @@ def switch_tenant(tenant_id: str) -> str:
 
 
 @mcp.tool(output_schema=None)
-def query_memories_temporal(options: TemporalWindow, user_id: str | None = None) -> str:
+def query_memories_temporal(
+    options: TemporalWindow | None = None,
+    user_id: str | None = None,
+    window: Literal["today", "week", "month", "year"] | None = None,
+    trend: str | None = None,
+    category: str | None = None,
+    limit: int | None = None,
+) -> str:
     """
     Query memories based on temporal signals (window, trend).
 
     Args:
         options: Temporal query parameters (window, trend, category, limit)
         user_id: Optional user ID override
+        window: Flat parameter for time window (optional)
+        trend: Flat parameter for trend filter (optional)
+        category: Flat parameter for category filter (optional)
+        limit: Flat parameter for max results (optional)
     """
+    if options is None:
+        kwargs = {}
+        if window is not None:
+            kwargs["window"] = window
+        if trend is not None:
+            kwargs["trend"] = trend
+        if category is not None:
+            kwargs["category"] = category
+        if limit is not None:
+            kwargs["limit"] = limit
+        options = TemporalWindow(**kwargs)
+
     uid = user_id or USER_ID
     builder = get_temporal_query_builder()
 
@@ -4168,15 +4326,38 @@ def query_memories_temporal(options: TemporalWindow, user_id: str | None = None)
 
 
 @mcp.tool(output_schema=None)
-def get_system_status(options: SystemStatusOptions | None = None, user_id: str | None = None) -> str:
+def get_system_status(
+    options: SystemStatusOptions | None = None,
+    user_id: str | None = None,
+    include_trends: bool | None = None,
+    timeframe: str | None = None,
+    include_cache_metrics: bool | None = None,
+    enforce_hard_caps: bool | None = None,
+) -> str:
     """
     Get system health, memory statistics, and temporal trends.
     Args:
         options: Optional status and trend parameters
         user_id: Optional user ID override
+        include_trends: Flat parameter for including trends (optional)
+        timeframe: Flat parameter for timeframe (optional)
+        include_cache_metrics: Flat parameter for including cache metrics (optional)
+        enforce_hard_caps: Flat parameter for enforcing hard caps (optional)
     """
     uid = user_id or USER_ID
-    opts = options or SystemStatusOptions()
+    if options is None:
+        kwargs = {}
+        if include_trends is not None:
+            kwargs["include_trends"] = include_trends
+        if timeframe is not None:
+            kwargs["timeframe"] = timeframe
+        if include_cache_metrics is not None:
+            kwargs["include_cache_metrics"] = include_cache_metrics
+        if enforce_hard_caps is not None:
+            kwargs["enforce_hard_caps"] = enforce_hard_caps
+        opts = SystemStatusOptions(**kwargs)
+    else:
+        opts = options
     tenant_id = get_current_account_id()
     conn = get_db_connection()
     # Basic stats
