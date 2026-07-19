@@ -1001,6 +1001,8 @@ def init_db(backend=None):
                     err = str(e).lower()
                     if "duplicate column" in err or "already exists" in err:
                         continue
+                    if "sqlite" in backend.__class__.__name__.lower() and ("alter column" in stmt.lower() or "near \"type\"" in err):
+                        continue
                     raise
             backend.set_version(version, datetime.now(timezone.utc).isoformat())
 
