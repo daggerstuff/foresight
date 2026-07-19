@@ -154,14 +154,17 @@ def data(label: str, value: Any) -> None:
 
 
 def result_block(data: Any, title: str = "Result") -> None:
-    """Display a result block (JSON data)."""
+    """Display a result block.
+
+    Plain strings are rendered verbatim; all other types are pretty-printed as JSON.
+    """
     if _settings.mode == "agent":
         return
-    if _settings.pipe_safe:
-        # On stderr so it doesn't pollute stdout
-        _stderr_console.print(Panel(_json.dumps(data, indent=2, default=str), title=title))
-    else:
-        _stdout_console.print(Panel(_json.dumps(data, indent=2, default=str), title=title))
+    # search_memories() returns a pre-formatted string — render it directly so
+    # we don't JSON-encode it into escaped \\n and surrounding quotes.
+    body = data if isinstance(data, str) else _json.dumps(data, indent=2, default=str)
+    console = _stderr_console if _settings.pipe_safe else _stdout_console
+    console.print(Panel(body, title=title))
 
 
 def print_table(columns: list[str], rows: list[list[Any]], *, title: str | None = None) -> None:

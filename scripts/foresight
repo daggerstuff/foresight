@@ -10,10 +10,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_BIN="$PROJECT_DIR/.venv/bin"
 
-# Prefer uv, fall back to python -m
-if command -v uv &>/dev/null && [ -f "$PROJECT_DIR/pyproject.toml" ]; then
-    exec uv run --directory "$PROJECT_DIR" python -m foresight_cli.cli "$@"
+# Unset VIRTUAL_ENV to prevent uv from warning about venv path mismatch
+# when invoked from another project's shell environment.
+unset VIRTUAL_ENV
+
+# Prefer the installed venv entry point (avoids runpy double-import warning),
+# fall back to uv run, then bare python3.
+if [ -x "$VENV_BIN/foresight" ]; then
+    exec "$VENV_BIN/foresight" "$@"
+elif command -v uv &>/dev/null && [ -f "$PROJECT_DIR/pyproject.toml" ]; then
+    exec uv run --directory "$PROJECT_DIR" --active foresight "$@"
 elif command -v python3 &>/dev/null; then
     exec python3 -m foresight_cli.cli "$@"
 else
