@@ -1,26 +1,26 @@
-import ora, { type Ora } from "ora";
-import pc from "picocolors";
-import * as clack from "@clack/prompts";
+import * as clack from '@clack/prompts'
+import ora, { type Ora } from 'ora'
+import pc from 'picocolors'
 
-export { pc, clack };
+export { pc, clack }
 
 export function spinner(text: string): Ora {
-  return ora({ text, spinner: "dots" }).start();
+  return ora({ text, spinner: 'dots' }).start()
 }
 
 export function ok(text: string): void {
-  console.log(pc.green("✔ ") + text);
+  console.log(pc.green('✔ ') + text)
 }
 
 export function fail(text: string): void {
-  console.error(pc.red("✘ ") + text);
+  console.error(pc.red('✘ ') + text)
 }
 
 export function info(text: string): void {
-  console.log(pc.cyan("ℹ ") + text);
+  console.log(pc.cyan('ℹ ') + text)
 }
 
 export async function confirmPrompt(message: string): Promise<boolean> {
-  const result = await clack.confirm({ message });
-  return result === true;
+  const result = await clack.confirm({ message })
+  return result === true
 }
