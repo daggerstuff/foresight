@@ -16,15 +16,16 @@
 pip install foresight[all]
 ```
 
-That's it. Now run:
+That's it. Set your Postgres DSN, then run:
 
 ```bash
-foresight init          # First-time setup — creates config + database
+export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
+foresight init          # First-time setup — creates config + verifies database
 foresight doctor        # Health check — verify everything works
 foresight tui           # Launch the interactive TUI
 ```
 
-Three commands. You're live.
+Four commands. You're live.
 
 ---
 
@@ -61,9 +62,19 @@ On macOS/Linux with uv installed, `uv pip install foresight[all]` is ~3x faster.
 
 ---
 
-#### Step 2 — Init
+#### Step 2 — Set your database URL
 
-One command. No config file to write. No `.env` to hunt.
+Foresight is **Postgres-only** — set `FORESIGHT_DB_URL` before running anything:
+
+```bash
+export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
+```
+
+> **On Replit** — `DATABASE_URL` is injected automatically. The setup script
+> (`scripts/setup.sh`) and the managed workflow both pick it up without any
+> manual step.
+
+#### Step 3 — Init
 
 ```bash
 $ foresight init
@@ -77,12 +88,12 @@ $ foresight init
 ╰────────────────────────────────────────────────────────────────────╯
 ```
 
-The setup wizard creates `~/.foresight/config.json` and initializes your PostgreSQL database (shared Ghost Postgres).  
+Creates `~/.foresight/config.json` and verifies the PostgreSQL connection.
 Done in under a second.
 
 ---
 
-#### Step 3 — Doctor
+#### Step 4 — Doctor
 
 Before you trust it, verify it.
 
@@ -102,7 +113,7 @@ Foresight Diagnostics
 All 7 checks passed (3 env overrides)
 Active env overrides:
   FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight
-  FORESIGHT_USER_ID=vivi
+  FORESIGHT_IDENTITY=vivi
   FORESIGHT_BANK_ID=pixelated
 ```
 
@@ -110,7 +121,7 @@ Active env overrides:
 
 ---
 
-#### Step 4 — Store, list, retrieve
+#### Step 5 — Store, list, retrieve
 
 ```bash
 $ foresight store "First real memory from the CLI walkthrough"
@@ -160,7 +171,7 @@ Found 4 memories (hybrid search):
 
 ---
 
-#### Step 5 — TUI
+#### Step 6 — TUI
 
 ```bash
 foresight tui
@@ -179,7 +190,7 @@ It feels like a mission control dashboard for your brain. Everything refreshes l
 
 ---
 
-#### Step 6 — Agent mode (machine output)
+#### Step 7 — Agent mode (machine output)
 
 When Foresight calls your agent, it uses `--agent` for pipe-safe, parseable output:
 
@@ -207,9 +218,10 @@ $ foresight --json status
 
 ---
 
-#### Step 7 — Wire it to your AI agent
+#### Step 8 — Wire it to your AI agent
 
-Add to any MCP-compatible agent. Here's the Claude Code config:
+Add to any MCP-compatible agent. `FORESIGHT_DB_URL` is required in every
+client config. Here's the Claude Code config:
 
 ```json
 // ~/.claude.json or claude_desktop_config.json
@@ -217,7 +229,11 @@ Add to any MCP-compatible agent. Here's the Claude Code config:
   "mcpServers": {
     "foresight": {
       "command": "uvx",
-      "args": ["foresight-server"]
+      "args": ["foresight-server"],
+      "env": {
+        "FORESIGHT_DB_URL": "postgresql://user:pass@host:5432/db?sslmode=require",
+        "FORESIGHT_IDENTITY": "your-username"
+      }
     }
   }
 }
@@ -228,9 +244,10 @@ Add to any MCP-compatible agent. Here's the Claude Code config:
 ```bash
 Command: uvx
 Arguments: foresight-server
+Env: FORESIGHT_DB_URL=postgresql://user:pass@host:5432/db?sslmode=require
 ```
 
-**Goose** — same pattern, same command. Any stdio MCP client works.
+**Goose** — same pattern, same `env` block. Any stdio MCP client works.
 
 Once connected, your agent gets Foresight as a built-in tool. It can store
 memories from conversations, search across everything you've told it, and pull
@@ -338,7 +355,8 @@ the source bank through a staging-and-promotion flow.
 ## Quick start
 
 ```bash
-uv run foresight-server
+# FORESIGHT_DB_URL must be set first — see "Set your database URL" above
+FORESIGHT_DB_URL=$DATABASE_URL uv run foresight-server
 uv run foresight --help
 ```
 
@@ -357,25 +375,34 @@ uv run foresight --help
    cd foresight
    ```
 
-3. Install the package:
+3. Install the package (includes the Postgres driver):
 
    ```bash
-   pip install foresight[all]
+   uv sync --extra all
    ```
 
-4. Initialize your memory store:
+4. Set your Postgres DSN — **required before init**:
+
+   ```bash
+   export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
+   ```
+
+   > On Replit, `DATABASE_URL` is injected automatically.
+   > Run `scripts/setup.sh` and it is picked up for you.
+
+5. Initialize your memory store:
 
    ```bash
    foresight init
    ```
 
-5. Start the MCP server:
+6. Start the MCP server:
 
    ```bash
-   uvx --from foresight foresight-server
+   uv run foresight-server
    ```
 
-6. Explore the CLI:
+7. Explore the CLI:
 
    ```bash
    foresight --help
@@ -396,7 +423,7 @@ uv run foresight --help
       "cwd": "/path/to/foresight",
       "env": {
         "FORESIGHT_DB_URL": "postgresql://user:pass@host:5432/foresight",
-        "FORESIGHT_USER_ID": "username"
+        "FORESIGHT_IDENTITY": "username"
       }
     }
   }
@@ -412,7 +439,7 @@ extensions:
     cwd: /path/to/foresight
     env:
       FORESIGHT_DB_URL: postgresql://user:pass@host:5432/foresight
-      FORESIGHT_USER_ID: username
+      FORESIGHT_IDENTITY: username
     type: stdio
 ```
 

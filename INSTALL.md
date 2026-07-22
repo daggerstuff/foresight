@@ -17,8 +17,11 @@ uv add foresight
 git clone https://github.com/your-org/foresight.git
 cd foresight
 
-# Install with uv
-uv sync
+# Install with uv — include the postgres driver
+uv sync --extra all
+
+# Set your Postgres DSN (required — SQLite is no longer supported)
+export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
 
 # Run the server
 uv run foresight-server
@@ -30,8 +33,11 @@ uv run foresight-server
 git clone https://github.com/your-org/foresight.git
 cd foresight
 
-# Install in editable mode
-uv sync --dev
+# Install in editable mode with all extras (includes postgres driver)
+uv sync --extra all --dev
+
+# Set your Postgres DSN
+export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
 
 # Run tests
 uv run pytest
@@ -52,20 +58,23 @@ After installation, add to your `~/.claude/settings.json` or project's
       "command": "uv",
       "args": ["run", "foresight-server"],
       "env": {
-        "FORESIGHT_DB_PATH": "/home/user/.foresight/memory.db",
-        "FORESIGHT_USER_ID": "username"
+        "FORESIGHT_DB_URL": "postgresql://user:pass@host:5432/db?sslmode=require",
+        "FORESIGHT_IDENTITY": "username"
       }
     }
   }
 }
 ```
 
+> **Note:** `FORESIGHT_DB_URL` is required. `FORESIGHT_IDENTITY` sets the active
+> user identity (previously `FORESIGHT_USER_ID` — that name is deprecated).
+
 ## Verify installation
 
 ```bash
 # Check version
-uv run foresight-server --version
+uv run foresight --version
 
-# Or test connection
-foresight-server --health
+# Run diagnostics (7-point health check)
+uv run foresight system doctor
 ```
