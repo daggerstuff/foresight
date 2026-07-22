@@ -22,9 +22,12 @@ experimental TypeScript CLI reimplementation (`cli/`). Imported from GitHub
   `FORESIGHT_DB_URL=${DATABASE_URL}` so Foresight picks it up automatically
   (python-dotenv expands `${VAR}` against the existing environment).
 - Workflow **"Foresight MCP Server"** runs
-  `FORESIGHT_HOST=0.0.0.0 FORESIGHT_PORT=8000 uv run foresight-server`, serving
-  streamable-HTTP MCP at `http://<repl-domain>:8000/mcp`. This is a backend/API
+  `FORESIGHT_DB_URL=$DATABASE_URL FORESIGHT_HOST=0.0.0.0 FORESIGHT_PORT=8000 uv run foresight-server`,
+  serving streamable-HTTP MCP at `http://<repl-domain>:8000/mcp`. The shell expands
+  `$DATABASE_URL` at startup — no `.env` file needed. This is a backend/API
   workflow (console output), not a browser UI — nothing renders in the webview.
+- The `postgres` uv extra (`psycopg[binary,pool]>=3.2`) must be synced:
+  `uv sync --extra postgres`. This was run during setup and installs psycopg 3.x.
 - CLI usage from the shell: `uv run foresight --help`, `uv run foresight store "..."`,
   `uv run foresight system doctor`, `uv run foresight tui`.
 - One-liner setup script exists at `scripts/setup.sh`, but it predates the
