@@ -53,6 +53,8 @@ from .context_blocks import (
     SESSION_PATTERNS,
     USER_PREFERENCES,
     get_context_block_agent,
+    get_context_snapshot,
+    get_context_whisper,
 )
 from .crisis_detection import get_crisis_service
 from .decay_model import DecayConfigOptions, get_decay_model
@@ -4507,6 +4509,91 @@ def get_system_status(
         except Exception:
             result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
     return json.dumps(result, indent=2)
+
+
+# ─── Auto-injection: MCP prompts and resource ─────────────────────────────────
+# These surfaces let MCP clients (Claude Code, Cursor, Goose, etc.) pull the
+# user's current context blocks into every conversation automatically — no tool
+# call required from the user or the LLM.
+#
+# Clients that support MCP prompts (Claude Code, Cursor, Goose, etc.) can be
+# configured to always include "foresight_context_snapshot" or
+# "foresight_context_whisper" in the system context at session start.  The
+# "foresight://context/snapshot" resource gives the same content to clients that
+# prefer resource reads over prompts.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@mcp.prompt(
+    name="foresight_context_snapshot",
+    title="Foresight context snapshot",
+    description=(
+        "Your current context: guidance, preferences, pending items, and project "
+        "state from Foresight memory.  Include this at the start of every "
+        "conversation so the assistant has full continuity without being asked."
+    ),
+)
+def _prompt_context_snapshot() -> str:
+    """Return the full XML context block snapshot for the active identity.
+
+    Clients that auto-include server prompts will inject this content into the
+    system context at session start — no tool call needed from the user or LLM.
+    """
+    uid = get_current_user_id() or USER_ID
+    tenant_id = get_current_account_id() or DEFAULT_TENANT_ID
+    snapshot = get_context_snapshot(uid, tenant_id)
+    if not snapshot:
+        return (
+            "No context blocks are set yet.  Use manage_context_blocks to add "
+            "guidance, preferences, or project context."
+        )
+    return snapshot
+
+
+@mcp.prompt(
+    name="foresight_context_whisper",
+    title="Foresight guidance (whisper)",
+    description=(
+        "Lightweight version: only the guidance block from Foresight.  "
+        "Use instead of the full snapshot when you want a smaller system message."
+    ),
+)
+def _prompt_context_whisper() -> str:
+    """Return just the guidance block for the active identity.
+
+    Smaller than the full snapshot — useful for clients with tight context
+    budgets that only need behavioural guidance, not the full memory state.
+    """
+    uid = get_current_user_id() or USER_ID
+    tenant_id = get_current_account_id() or DEFAULT_TENANT_ID
+    whisper = get_context_whisper(uid, tenant_id)
+    if not whisper:
+        return (
+            "No guidance block is set.  Use manage_context_blocks to add guidance."
+        )
+    return whisper
+
+
+@mcp.resource(
+    "foresight://context/snapshot",
+    name="foresight_context_snapshot_resource",
+    title="Foresight context snapshot",
+    description=(
+        "Live context blocks snapshot (guidance, preferences, pending items, "
+        "project context).  Read this resource to pull the full context into a "
+        "conversation without a tool call."
+    ),
+    mime_type="text/xml",
+)
+def _resource_context_snapshot() -> str:
+    """Return the live XML context block snapshot for the active identity."""
+    uid = get_current_user_id() or USER_ID
+    tenant_id = get_current_account_id() or DEFAULT_TENANT_ID
+    snapshot = get_context_snapshot(uid, tenant_id)
+    return snapshot or "<foresight_memory_blocks />"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 def memory_status(
