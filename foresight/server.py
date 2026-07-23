@@ -3595,32 +3595,50 @@ def inject_context(
     include_details: bool = False,
     max_chars: int | None = None,
 ) -> str:
-    """Surface relevant memories based on conversation context.
+    """Surface relevant memories and context blocks for the current conversation.
 
-    Analyzes conversation text to find and return the most relevant memories
-    for grounding the AI's responses in prior context. Uses HybridRetriever
-    (keyword + TF-IDF + graph + temporal signals via RRF) for ranking.
+    ## When to call this (automatic / proactive use)
 
-     Args:
-         conversation_text: The current conversation text to analyze for context
-         user_id: Optional user ID override
-         max_memories: Maximum number of memories to return (default: 5)
-         min_relevance: Minimum relevance score threshold (default: 0.3)
-         include_details: If True, return JSON with formatted text plus structured
-             memories and context blocks grouped by InjectionPoint (default: False)
-         max_chars: Optional character budget for the formatted payload.
-             When set, output is truncated at sentence boundaries per lane
-             priority (static > dynamic > memories > blocks > safety).
-             Items that don't fit are progressively summarized or stubbed.
-             Default None = unbounded (legacy behavior).
+    Call this tool **without waiting to be asked** in these situations:
 
-     Returns:
-         Formatted string with relevant memories and context block signals.
-         If include_details=True, returns a JSON string with keys:
-         - formatted: the formatted text
-         - memories: list of dicts with memory_id, content, score, signals
-         - context_blocks: dict grouped by InjectionPoint
-         - budget: lane allocation details (only when max_chars is set)
+    - **At conversation start** — as soon as the user's first message arrives,
+      pass it as `conversation_text` so prior context and guidance are available
+      before you compose your first reply.
+    - **On topic shift** — whenever the user introduces a new subject, project,
+      person, or task that differs from the previous topic, call again with the
+      new message so relevant memories surface immediately.
+    - **On explicit recall signals** — phrases like "last time", "as we discussed",
+      "remember when", "you mentioned", or any reference to past work are strong
+      signals to call this right away.
+    - **Before acting on a task** — before writing code, making a plan, or giving
+      advice on a non-trivial request, call first so your answer is grounded in
+      what the user has already told you.
+
+    The output is short and additive — it will not hurt responses when nothing
+    relevant exists; it will only improve them when something does.
+
+    ## Parameters
+
+    Args:
+        conversation_text: The current conversation text to analyze for context
+        user_id: Optional user ID override
+        max_memories: Maximum number of memories to return (default: 5)
+        min_relevance: Minimum relevance score threshold (default: 0.3)
+        include_details: If True, return JSON with formatted text plus structured
+            memories and context blocks grouped by InjectionPoint (default: False)
+        max_chars: Optional character budget for the formatted payload.
+            When set, output is truncated at sentence boundaries per lane
+            priority (static > dynamic > memories > blocks > safety).
+            Items that don't fit are progressively summarized or stubbed.
+            Default None = unbounded (legacy behavior).
+
+    Returns:
+        Formatted string with relevant memories and context block signals.
+        If include_details=True, returns a JSON string with keys:
+        - formatted: the formatted text
+        - memories: list of dicts with memory_id, content, score, signals
+        - context_blocks: dict grouped by InjectionPoint
+        - budget: lane allocation details (only when max_chars is set)
     """
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
@@ -4511,86 +4529,56 @@ def get_system_status(
     return json.dumps(result, indent=2)
 
 
-# ─── Auto-injection: MCP prompts and resource ─────────────────────────────────
-# These surfaces let MCP clients (Claude Code, Cursor, Goose, etc.) pull the
-# user's current context blocks into every conversation automatically — no tool
-# call required from the user or the LLM.
-#
-# Clients that support MCP prompts (Claude Code, Cursor, Goose, etc.) can be
-# configured to always include "foresight_context_snapshot" or
-# "foresight_context_whisper" in the system context at session start.  The
-# "foresight://context/snapshot" resource gives the same content to clients that
-# prefer resource reads over prompts.
+# ─── Auto-injection: behavioral instruction prompt ────────────────────────────
+# This prompt tells the LLM *how* to use inject_context automatically — when
+# to call it, why, and what to do with the result.  Clients that include server
+# prompts in the system message (Claude Code, Cursor, Goose, etc.) will pick
+# this up and the LLM will start calling inject_context proactively without the
+# user ever having to ask.
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 @mcp.prompt(
-    name="foresight_context_snapshot",
-    title="Foresight context snapshot",
+    name="foresight_autocontext",
+    title="Foresight — automatic context injection",
     description=(
-        "Your current context: guidance, preferences, pending items, and project "
-        "state from Foresight memory.  Include this at the start of every "
-        "conversation so the assistant has full continuity without being asked."
+        "System instructions that make the assistant call inject_context "
+        "automatically at conversation start and on topic shifts, so prior "
+        "memories and context blocks surface without the user having to ask."
     ),
 )
-def _prompt_context_snapshot() -> str:
-    """Return the full XML context block snapshot for the active identity.
+def _prompt_autocontext() -> str:
+    """Return the behavioral instruction that triggers automatic inject_context calls.
 
-    Clients that auto-include server prompts will inject this content into the
-    system context at session start — no tool call needed from the user or LLM.
+    When a client includes this prompt in the system message, the LLM will call
+    inject_context on its own — at conversation start, on topic shifts, and on
+    recall signals — and weave the returned context into its replies without
+    waiting for the user to ask.
     """
-    uid = get_current_user_id() or USER_ID
-    tenant_id = get_current_account_id() or DEFAULT_TENANT_ID
-    snapshot = get_context_snapshot(uid, tenant_id)
-    if not snapshot:
-        return (
-            "No context blocks are set yet.  Use manage_context_blocks to add "
-            "guidance, preferences, or project context."
-        )
-    return snapshot
-
-
-@mcp.prompt(
-    name="foresight_context_whisper",
-    title="Foresight guidance (whisper)",
-    description=(
-        "Lightweight version: only the guidance block from Foresight.  "
-        "Use instead of the full snapshot when you want a smaller system message."
-    ),
-)
-def _prompt_context_whisper() -> str:
-    """Return just the guidance block for the active identity.
-
-    Smaller than the full snapshot — useful for clients with tight context
-    budgets that only need behavioural guidance, not the full memory state.
-    """
-    uid = get_current_user_id() or USER_ID
-    tenant_id = get_current_account_id() or DEFAULT_TENANT_ID
-    whisper = get_context_whisper(uid, tenant_id)
-    if not whisper:
-        return (
-            "No guidance block is set.  Use manage_context_blocks to add guidance."
-        )
-    return whisper
-
-
-@mcp.resource(
-    "foresight://context/snapshot",
-    name="foresight_context_snapshot_resource",
-    title="Foresight context snapshot",
-    description=(
-        "Live context blocks snapshot (guidance, preferences, pending items, "
-        "project context).  Read this resource to pull the full context into a "
-        "conversation without a tool call."
-    ),
-    mime_type="text/xml",
-)
-def _resource_context_snapshot() -> str:
-    """Return the live XML context block snapshot for the active identity."""
-    uid = get_current_user_id() or USER_ID
-    tenant_id = get_current_account_id() or DEFAULT_TENANT_ID
-    snapshot = get_context_snapshot(uid, tenant_id)
-    return snapshot or "<foresight_memory_blocks />"
+    return (
+        "You have access to the Foresight persistent memory system.\n\n"
+        "## Automatic context retrieval — follow these rules without being asked\n\n"
+        "1. **At conversation start**: Before composing your first reply, call "
+        "`inject_context` with the user's opening message as `conversation_text`. "
+        "Read the returned memories and context blocks and let them inform your "
+        "response naturally — do not quote them verbatim unless the user asks.\n\n"
+        "2. **On topic shift**: Whenever the user introduces a new subject, "
+        "project, person, or task, call `inject_context` again with the new "
+        "message before you reply.\n\n"
+        "3. **On recall signals**: Phrases like 'last time', 'as we discussed', "
+        "'remember when', 'you mentioned', or any reference to past work are "
+        "explicit triggers — call `inject_context` immediately.\n\n"
+        "4. **Before non-trivial actions**: Before writing code, making a plan, "
+        "or giving advice on a complex request, call `inject_context` first so "
+        "your answer is grounded in what the user has already shared.\n\n"
+        "## How to use the result\n\n"
+        "- Silently incorporate relevant memories into your answer.\n"
+        "- Apply any guidance or preferences you find (tone, format, constraints) "
+        "as if they were standing instructions.\n"
+        "- If nothing relevant is returned, proceed normally — do not mention the "
+        "absence of memories.\n"
+        "- Never tell the user you are calling inject_context unless they ask."
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
