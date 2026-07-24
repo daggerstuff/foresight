@@ -2499,6 +2499,28 @@ def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
     return len(result.entities)
 
 
+def _detect_git_root() -> str | None:
+    """Return the current git repository root, or None if not in a git repo.
+
+    Used by process_session_transcript to automatically fill project_path
+    without the caller having to discover or pass it.
+    """
+    import subprocess as _sp
+
+    try:
+        r = _sp.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
 @mcp.tool(output_schema=None)
 def process_session_transcript(
     session_id: str, messages: list[dict], project_path: str | None = None, user_id: str | None = None
@@ -2517,6 +2539,12 @@ def process_session_transcript(
     """
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
+
+    # Auto-detect the git repository root as project path when not supplied.
+    # Improves extraction quality at zero cost to the caller.
+    if project_path is None:
+        project_path = _detect_git_root()
+
     agent = get_context_block_agent(uid, tenant_id)
 
     _run_async(agent.process_transcript(session_id=session_id, messages=messages, project_path=project_path))
@@ -3690,6 +3718,15 @@ def inject_context(
         hybrid_result.signal_counts,
     )
 
+    # Side-effect: silently capture any phrase-triggered memories in the message
+    # ("remember this:", "decision:", "preference:", etc.) without the user
+    # needing to call a separate tool.
+    if conversation_text:
+        try:
+            _auto_capture_triggered(conversation_text, uid, tenant_id)
+        except Exception:
+            logger.debug("auto_capture_triggered failed (non-fatal)", exc_info=True)
+
     budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else None
 
     if budget is not None and budget.is_bounded:
@@ -3712,13 +3749,48 @@ def inject_context(
     return json.dumps(payload, indent=2)
 
 
+def _auto_capture_triggered(text: str, uid: str, tenant_id: str) -> None:
+    """Fire-and-forget phrase trigger capture called as a side effect of inject_context.
+
+    Scans the conversation text for trigger phrases ("remember this:", "decision:",
+    "preference:", "lesson:", etc.) and automatically stores matching content as
+    memories. Users get persistent memory just by typing naturally — no separate
+    tool call required.
+    """
+    matches = extract_triggered_memories(text, triggers=DEFAULT_TRIGGERS)
+    for match in matches:
+        try:
+            _handle_memory_store(
+                uid,
+                tenant_id,
+                MemoryAction(
+                    action="store",
+                    content=match.content,
+                    options=MemoryOptions(
+                        category=match.metadata.get("category", "fact"),
+                        scope=match.metadata.get("scope", "arc"),
+                        retention=match.metadata.get("retention", "long_term"),
+                        importance=float(match.metadata.get("importance", 0.6)),
+                    ),
+                ),
+            )
+            logger.debug("auto_capture_triggered: stored %r (trigger=%r)", match.content[:60], match.trigger)
+        except Exception:
+            logger.debug("auto_capture_triggered store failed (non-fatal)", exc_info=True)
+
+
 def _format_injection_output(
     memories: list[HybridResult],
     uid: str,
-    _tenant_id: str,
+    tenant_id: str,
     terms: list[str],
 ) -> str:
-    """Format memories and context block signals into a human-readable string."""
+    """Format memories and context block signals into a human-readable string.
+
+    Always surfaces all non-empty context blocks (not just term-matched ones) so
+    user_preferences and pending_items are visible regardless of query keywords.
+    Returns an empty string when there is nothing relevant — no noise for the LLM.
+    """
     lines: list[str] = []
     if memories:
         lines.append(f"[Relevant Context - {len(memories)} memories surfaced]")
@@ -3728,16 +3800,33 @@ def _format_injection_output(
                 snippet += "..."
             lines.append(f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}")
 
-    sub_lines = _context_block_notes_for_terms(uid, terms)
-    if sub_lines:
-        lines.append("")
-        lines.append("[Subconscious/Block Signals]")
-        lines.extend(sub_lines)
+    # Always surface ALL non-empty context blocks, not just term-matched ones.
+    # A preference set days ago is still relevant even if its words aren't in
+    # today's query.
+    try:
+        all_blocks = get_context_block_agent(uid, tenant_id).get_all_blocks()
+        if all_blocks:
+            if lines:
+                lines.append("")
+            lines.append("[Context Blocks]")
+            for block in all_blocks:
+                label = block.get("label", "")
+                content = (block.get("content") or "").strip()
+                if content:
+                    snippet = content[:200] + ("..." if len(content) > 200 else "")
+                    lines.append(f"  [{label}] {snippet}")
+    except Exception:
+        # Fall back to term-matched block signals if full block fetch fails
+        sub_lines = _context_block_notes_for_terms(uid, terms)
+        if sub_lines:
+            if lines:
+                lines.append("")
+            lines.append("[Context Blocks]")
+            lines.extend(sub_lines)
 
-    if not lines:
-        return "[Relevant Context - 0 memories surfaced]\nNo relevant memories found for this conversation."
-
-    return "\n".join(lines)
+    # Return empty string when nothing is relevant — cleaner than a noisy
+    # "0 memories surfaced" message that clutters the LLM's context.
+    return "\n".join(lines) if lines else ""
 
 
 def _format_injection_output_budgeted(
@@ -4467,6 +4556,21 @@ def get_system_status(
             "min_lane_chars": MIN_LANE_CHARS,
         },
     }
+    # Onboarding hint when the store is empty — gives agents a self-bootstrap path
+    # so a fresh install doesn't just silently return nothing on first use.
+    if count == 0:
+        result["onboarding"] = {
+            "status": "empty",
+            "hint": (
+                "Memory store is empty. Three ways to start: "
+                "(1) Set standing preferences — manage_context_blocks(action='update', "
+                "label='user_preferences', content='<your preferences>'). "
+                "(2) Store a fact or decision — manage_memories(action='store', "
+                "content='<what to remember>', store_options={'category': 'preference', "
+                "'scope': 'trait', 'retention': 'long_term', 'importance': 0.8}). "
+                "(3) Process a conversation — process_session_transcript(session_id='...', messages=[...])."
+            ),
+        }
     # Add temporal stats/trends if requested
     if opts.include_trends:
         builder = get_temporal_query_builder()
@@ -4548,36 +4652,54 @@ def get_system_status(
     ),
 )
 def _prompt_autocontext() -> str:
-    """Return the behavioral instruction that triggers automatic inject_context calls.
+    """Return the behavioral instruction that drives automatic memory retrieval and storage.
 
     When a client includes this prompt in the system message, the LLM will call
     inject_context on its own — at conversation start, on topic shifts, and on
-    recall signals — and weave the returned context into its replies without
-    waiting for the user to ask.
+    recall signals — and will proactively store preferences, decisions, and facts
+    as it learns them. Both halves together mean memory accumulates from day one
+    without the user ever having to ask.
     """
     return (
         "You have access to the Foresight persistent memory system.\n\n"
-        "## Automatic context retrieval — follow these rules without being asked\n\n"
-        "1. **At conversation start**: Before composing your first reply, call "
-        "`inject_context` with the user's opening message as `conversation_text`. "
-        "Read the returned memories and context blocks and let them inform your "
-        "response naturally — do not quote them verbatim unless the user asks.\n\n"
-        "2. **On topic shift**: Whenever the user introduces a new subject, "
-        "project, person, or task, call `inject_context` again with the new "
-        "message before you reply.\n\n"
-        "3. **On recall signals**: Phrases like 'last time', 'as we discussed', "
-        "'remember when', 'you mentioned', or any reference to past work are "
-        "explicit triggers — call `inject_context` immediately.\n\n"
-        "4. **Before non-trivial actions**: Before writing code, making a plan, "
-        "or giving advice on a complex request, call `inject_context` first so "
-        "your answer is grounded in what the user has already shared.\n\n"
-        "## How to use the result\n\n"
-        "- Silently incorporate relevant memories into your answer.\n"
-        "- Apply any guidance or preferences you find (tone, format, constraints) "
-        "as if they were standing instructions.\n"
-        "- If nothing relevant is returned, proceed normally — do not mention the "
-        "absence of memories.\n"
-        "- Never tell the user you are calling inject_context unless they ask."
+        "## Automatic context retrieval — follow without being asked\n\n"
+        "1. **At conversation start**: Before your first reply, call `inject_context` "
+        "with the user's opening message. Apply what comes back silently.\n\n"
+        "2. **On topic shift**: New subject, project, person, or task → call "
+        "`inject_context` again before replying.\n\n"
+        "3. **On recall signals**: 'Last time', 'as we discussed', 'you mentioned', "
+        "'remember when' → call `inject_context` immediately.\n\n"
+        "4. **Before non-trivial actions**: Before writing code, making a plan, or "
+        "giving advice on a complex request, call `inject_context` first.\n\n"
+        "## How to use retrieved context\n\n"
+        "- Incorporate relevant memories into your answer naturally — no quoting.\n"
+        "- Treat guidance and preferences found in context blocks as standing "
+        "instructions (tone, format, constraints, coding style).\n"
+        "- If nothing comes back, proceed normally — never mention the absence.\n"
+        "- Never announce that you called `inject_context`.\n\n"
+        "## Proactive memory storage — follow without being asked\n\n"
+        "5. **Capture stated preferences immediately**: When the user says how they "
+        "want things done ('I prefer X', 'always use Y', 'don't do Z'), call "
+        "`manage_context_blocks(action='update', label='user_preferences', "
+        "content='<preference>')` to append it. Do this silently.\n\n"
+        "6. **Store decisions and key facts**: When a non-trivial decision is made "
+        "or an important fact surfaces, call `manage_memories(action='store', "
+        "content='<concise summary>', store_options={'category': 'decision', "
+        "'scope': 'arc', 'retention': 'long_term', 'importance': 0.7})`. "
+        "One clear sentence per memory — never store the raw transcript.\n\n"
+        "7. **Track open tasks**: When a task is raised but not finished this session, "
+        "add it to `pending_items` via `manage_context_blocks(action='update', "
+        "label='pending_items', content='<task>')`.\n\n"
+        "8. **At session end**: When the conversation concludes, call "
+        "`process_session_transcript(session_id='<date>-<user>', messages=[...])`  "
+        "to extract and persist everything learned. Omit `project_path` — the server "
+        "detects it from git automatically.\n\n"
+        "## Storage rules\n\n"
+        "- Store the gist, not the transcript. One fact per memory.\n"
+        "- Never announce that you are storing something unless the user asks.\n"
+        "- Skip trivial chitchat — only store what would be worth knowing next session.\n"
+        "- Phrase triggers work automatically: if the user types 'remember this:', "
+        "'decision:', or 'preference:', the server captures it without any tool call."
     )
 
 

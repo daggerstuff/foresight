@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: daggerstuff
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Foresight
@@ -171,12 +171,11 @@ Replace `uvx` / `args: ["foresight-server"]` with:
 
 ---
 
-## 5. Auto-injection — call inject_context automatically
+## 5. Auto-injection and proactive storage
 
 The server registers an MCP prompt called **`foresight_autocontext`**. When a
-client includes it in the system message, you call `inject_context` on your own
-at conversation start, on topic shifts, and on recall signals — no user prompt
-needed.
+client includes it in the system message, you automatically retrieve context
+*and* build memory over time — with no user action required.
 
 **Enable in Claude Code** (run once per project):
 
@@ -186,19 +185,47 @@ needed.
 
 **What you must do when this prompt is active — follow without being asked:**
 
+### Retrieval
 1. **Conversation start** — before your first reply, call `inject_context` with
-   the user's opening message. Read what comes back and let it inform your
-   response silently.
-2. **Topic shift** — new subject, project, person, or task → call again before
-   replying.
-3. **Recall signals** — "last time", "as we discussed", "you mentioned", "remember
-   when" → call immediately.
+   the user's opening message. Apply what comes back silently.
+2. **Topic shift** — new subject, project, person, or task → call again.
+3. **Recall signals** — "last time", "as we discussed", "you mentioned" → call
+   immediately.
 4. **Before non-trivial actions** — code, plans, advice → call first.
-5. **Never announce the call.** Apply what you find invisibly. If nothing relevant
-   comes back, proceed normally.
 
-If the client does not support server prompts, reproduce this behaviour manually
-by calling `inject_context` at the start of every session.
+### Proactive storage
+5. **Capture stated preferences immediately** — "I prefer X", "always use Y",
+   "don't do Z" → call `manage_context_blocks(action='update',
+   label='user_preferences', content='<preference>')` silently.
+6. **Store decisions and key facts** — one-sentence summary, `scope='arc'`,
+   `category='decision'` or `'fact'`, `retention='long_term'`.
+7. **Track open tasks** — add to `pending_items` via `manage_context_blocks`.
+8. **At session end** — call `process_session_transcript` with the conversation
+   messages. Omit `project_path`; the server auto-detects it from git.
+
+**Rules for all of the above:**
+- Never announce retrieval or storage unless the user asks.
+- If `inject_context` returns nothing, proceed normally — no comment.
+- Store the gist, not the transcript. Skip trivial chitchat.
+
+### Phrase triggers (zero-config capture)
+The server automatically captures memories when the user types trigger phrases
+anywhere in their message — no tool call needed:
+
+| Phrase | Stored as |
+|---|---|
+| `remember this: …` | decision, arc scope, long-term |
+| `remember: …` | decision, arc scope, long-term |
+| `decision: …` | decision, arc scope, long-term |
+| `preference: …` | preference, trait scope, long-term |
+| `note to self: …` | preference, trait scope, long-term |
+| `important: …` | preference, trait scope, long-term |
+| `lesson: …` | learning, arc scope, long-term |
+| `fact: …` | fact, fact scope, short-term |
+| `note: …` | fact, fact scope, short-term |
+
+These are captured as a side effect of every `inject_context` call — the user
+just types naturally and the memory is stored.
 
 ---
 
