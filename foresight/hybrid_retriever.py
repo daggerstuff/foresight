@@ -346,7 +346,6 @@ class HybridRetriever:
                     "properties",
                     "created_at",
                     "updated_at",
-                    "confidence",
                 }
             elif table_name == "memory_entity_links":
                 cols = {
@@ -802,7 +801,9 @@ class HybridRetriever:
         has_relevance = "relevance_score" in link_cols
 
         relevance_col = ", COALESCE(AVG(mel.relevance_score), 1.0) as avg_relevance" if has_relevance else ""
-        entity_conf_col = ", COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf" if has_confidence else ", 1.0 as avg_entity_conf"
+        entity_conf_col = (
+            ", COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf" if has_confidence else ", 1.0 as avg_entity_conf"
+        )
         rows = self._fetch_rows(
             f"""
             SELECT
