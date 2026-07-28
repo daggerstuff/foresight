@@ -2431,14 +2431,14 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                 content_h = _content_hash(content)
                 existing = conn.execute(
                     "SELECT id, activation_count FROM memories "
-                    "WHERE user_id = %s AND tenant_id = %s AND content_hash = %s AND is_ghost = 0 "
+                    "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
                     "ORDER BY created_at DESC LIMIT 1",
                     (uid, tenant_id, content_h),
                 ).fetchone()
                 if existing:
                     conn.execute(
-                        "UPDATE memories SET activation_count = activation_count + 1, updated_at = %s "
-                        "WHERE id = %s AND user_id = %s AND tenant_id = %s",
+                        "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
+                        "WHERE id = ? AND user_id = ? AND tenant_id = ?",
                         (now, existing["id"], uid, tenant_id),
                     )
                     continue
@@ -2450,7 +2450,7 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                     "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
                     "created_at, updated_at, tags, emotional_context, metrics, "
                     "is_ghost, synthesized_from, is_sensitive, sensitivity_reason) "
-                    "VALUES (%s, %s, %s, 'arc', 'long_term', %s, %s, %s, %s, %s, %s, '[]', '{}', '{}', 0, '[]', %s, %s) "
+                    "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?) "
                     "ON CONFLICT (id) DO NOTHING",
                     (
                         mid,

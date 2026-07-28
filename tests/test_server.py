@@ -153,11 +153,11 @@ def test_store_memory_dedup_increments_activation_count():
 
     from foresight.server import get_db_connection
 
-    with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT activation_count FROM memories WHERE content = ?",
-            (unique,),
-        ).fetchone()
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT activation_count FROM memories WHERE content = ?",
+        (unique,),
+    ).fetchone()
     assert row is not None
     assert row["activation_count"] >= 2, f"expected >=2, got {row['activation_count']}"
 
@@ -547,8 +547,7 @@ def test_inject_context_no_match():
     ):
         result = inject_context("quantum computing algorithms", min_relevance=0.5)
 
-    assert "memories surfaced" not in result
-
+    assert "[Relevant Context" not in result
 
 def test_inject_context_empty_conversation_text():
     """inject_context with empty conversation text still works (no terms to match)."""
@@ -560,7 +559,6 @@ def test_inject_context_empty_conversation_text():
         result = inject_context("")
 
     assert "memories surfaced" not in result
-
 
 def test_inject_context_include_details_returns_json():
     """inject_context with include_details=True returns JSON with memories, context_blocks, formatted keys."""
@@ -858,8 +856,69 @@ def test_manage_context_blocks_are_tenant_isolated():
 
 
 def _make_curation_test_db():
-    """Dummy maker since table is already present on Postgres."""
-    return "postgres"
+    """Create a temp DB with the schemas required for curation workflow tests."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    conn = sqlite3.connect(tmp.name)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY, content TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            scope TEXT DEFAULT 'session', retention TEXT DEFAULT 'short_term',
+            category TEXT DEFAULT 'fact', user_id TEXT DEFAULT 'default',
+            bank_id TEXT DEFAULT 'default', created_at TEXT NOT NULL,
+            updated_at TEXT, tags TEXT DEFAULT '[]',
+            emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
+            vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
+            synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
+            importance REAL DEFAULT 1.0, activation_count INTEGER DEFAULT 0,
+            decay_rate REAL DEFAULT 0.01, retrieval_count INTEGER DEFAULT 0,
+            strength_trend TEXT DEFAULT 'stable', last_retrieved_at TEXT,
+            accessed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS curation_runs (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            source_bank_id TEXT NOT NULL,
+            output_bank_id TEXT NOT NULL,
+            policy_mode TEXT NOT NULL,
+            tool_access TEXT NOT NULL,
+            output_mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            instructions TEXT,
+            transcript_bundle_json TEXT,
+            session_id TEXT,
+            project_path TEXT,
+            summary_json TEXT DEFAULT '{}',
+            error_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            ended_at TEXT,
+            archived_at TEXT
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS operations (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            payload TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0,
+            last_attempt TEXT,
+            vector_clock TEXT DEFAULT '{}'
+        )"""
+    )
+    conn.commit()
+    conn.close()
+    return tmp.name
 
 
 def _seed_memory(
@@ -1579,8 +1638,38 @@ def test_handle_version_rollback_respects_tenant_scope():
             update_sql = sql
             break
 
-    assert update_sql is not None
-    assert "tenant_id =" in update_sql
+        options = VersionAction(action="rollback", memory_id=memory_id, to_version=2)
+
+        with (
+            patch("foresight.server.DB_PATH", db_path),
+            patch("foresight.connection_pool.DB_PATH", db_path),
+            patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+            patch("foresight.server.get_event_bus_with_stream"),
+            patch.dict("foresight.connection_pool._pools", {}, clear=True),
+        ):
+            result = _handle_version_rollback("user-1", "tenant-a", options)
+
+        assert "Rolled back" in result or "rolled" in result.lower()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        row_a = conn.execute(
+            "SELECT content, version FROM memories WHERE id = ? AND tenant_id = ?",
+            (memory_id, "tenant-a"),
+        ).fetchone()
+        assert row_a["content"] == "tenant-a target-version", "tenant-a should be rolled back"
+
+        row_b = conn.execute(
+            "SELECT content, version FROM memories WHERE id = ? AND tenant_id = ?",
+            (memory_id, "tenant-b"),
+        ).fetchone()
+        assert row_b["content"] == "tenant-b current", "tenant-b must NOT be modified"
+        assert row_b["version"] == 3, "tenant-b version must be untouched"
+
+        conn.close()
+    finally:
+        os.unlink(db_path)
 
 
 def test_standalone_rollback_to_version_respects_tenant_scope():
@@ -1609,8 +1698,38 @@ def test_standalone_rollback_to_version_respects_tenant_scope():
             update_sql = sql
             break
 
-    assert update_sql is not None
-    assert "tenant_id =" in update_sql
+        with (
+            patch("foresight.server.DB_PATH", db_path),
+            patch("foresight.connection_pool.DB_PATH", db_path),
+            patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+            patch("foresight.server.get_event_bus_with_stream"),
+            patch.dict("foresight.connection_pool._pools", {}, clear=True),
+            patch("foresight.server.get_current_account_id", return_value="tenant-a"),
+        ):
+            result = rollback_to_version(memory_id, 2, user_id="user-1")
+
+        assert "Rolled back" in result or "rolled" in result.lower()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        row_a = conn.execute(
+            "SELECT content, version FROM memories WHERE id = ? AND tenant_id = ?",
+            (memory_id, "tenant-a"),
+        ).fetchone()
+        assert row_a["content"] == "tenant-a target-version"
+        assert row_a["version"] == 3
+
+        row_b = conn.execute(
+            "SELECT content, version FROM memories WHERE id = ? AND tenant_id = ?",
+            (memory_id, "tenant-b"),
+        ).fetchone()
+        assert row_b["content"] == "tenant-b current"
+        assert row_b["version"] == 3
+
+        conn.close()
+    finally:
+        os.unlink(db_path)
 
 
 def test_memory_hard_cap_enforcement():

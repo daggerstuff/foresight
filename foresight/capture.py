@@ -327,12 +327,13 @@ class DedupeEngine:
             stored_content = f"[auto-captured/{candidate.category}] {candidate.content}"
             h = _content_hash(stored_content)
 
-            # Phase 1: exact hash match
+            # Phase 1: exact hash match (check both stored_content with prefix and raw candidate content)
+            raw_hash = _content_hash(candidate.content)
             row = conn.execute(
                 """SELECT id, activation_count FROM memories
-                   WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0
+                   WHERE user_id = ? AND tenant_id = ? AND (content_hash = ? OR content_hash = ?) AND is_ghost = 0
                    ORDER BY created_at DESC LIMIT 1""",
-                (user_id, tenant_id, h),
+                (user_id, tenant_id, h, raw_hash),
             ).fetchone()
 
             if row is not None:
@@ -359,8 +360,10 @@ class DedupeEngine:
                 (user_id, tenant_id, candidate.category),
             ).fetchall()
 
+            prefix_pattern = re.compile(r"^\[auto-captured/[^\]]+\]\s*")
             for row in recent:
-                existing_words = set(cls._tokenize(row["content"]))
+                clean_content = prefix_pattern.sub("", row["content"])
+                existing_words = set(cls._tokenize(clean_content))
                 union = candidate_words | existing_words
                 if not union:
                     continue

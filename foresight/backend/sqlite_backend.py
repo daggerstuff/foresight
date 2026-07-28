@@ -58,6 +58,7 @@ class SqliteBackend(DatabaseBackend):
         self._max_size = max_size
         self._max_idle_seconds = max_idle_seconds
         self._pool: ConnectionPool | None = None
+        self._backend_type = "sqlite"
         self.row_factory = CustomRow
 
     # ------------------------------------------------------------------

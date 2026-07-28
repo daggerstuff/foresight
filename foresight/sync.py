@@ -180,7 +180,7 @@ class OperationQueue:
             """
             INSERT INTO operations
             (id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, last_attempt, vector_clock)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 tenant_id = EXCLUDED.tenant_id,
                 type = EXCLUDED.type,
@@ -213,7 +213,7 @@ class OperationQueue:
         tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         row = conn.execute(
-            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = %s ORDER BY created_at LIMIT 1",
+            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1",
             (tid,),
         ).fetchone()
         conn.close()
@@ -226,7 +226,7 @@ class OperationQueue:
         """Remove operation from queue."""
         tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
-        conn.execute("DELETE FROM operations WHERE id = %s AND tenant_id = %s", (operation_id, tid))
+        conn.execute("DELETE FROM operations WHERE id = ? AND tenant_id = ?", (operation_id, tid))
         conn.commit()
         conn.close()
 
@@ -235,7 +235,7 @@ class OperationQueue:
         tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         rows = conn.execute(
-            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = %s ORDER BY created_at",
+            f"SELECT {_OPERATION_COLUMNS} FROM operations WHERE tenant_id = ? ORDER BY created_at",
             (tid,),
         ).fetchall()
         conn.close()
