@@ -232,9 +232,9 @@ class TestDedupeEngine:
         self, content: str, category: str = "decision", user_id: str = "_test_user_", tenant_id: str = "_test_"
     ):
         """Insert a memory directly so the engine can find it."""
-        from foresight.connection_pool import DB_PATH, get_pool
+        from foresight.connection_pool import get_pool
 
-        pool = get_pool(db_path=DB_PATH)
+        pool = get_pool()
         conn = pool.acquire()
         try:
             now = datetime.now(timezone.utc).isoformat()
@@ -242,17 +242,17 @@ class TestDedupeEngine:
             h = _content_hash(stored_content)
             mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
             conn.execute(
-                """INSERT OR IGNORE INTO memories
+                """INSERT INTO memories
                    (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                     created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, importance)
-                   VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, 'test_bank', ?, ?, ?, '[]', '{}', '{}', 0, '[]', 0.7)""",
+                   VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, 'test_bank', ?, ?, ?, '[]', '{}', '{}', 0, '[]', 0.7)
+                   ON CONFLICT (id) DO NOTHING""",
                 (mid, stored_content, h, category, user_id, tenant_id, now, now),
             )
             conn.commit()
             return mid
         finally:
             pool.release(conn)
-            conn.close()
 
     def test_unique(self):
         c = CapturedMemory(
