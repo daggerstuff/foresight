@@ -26,7 +26,7 @@ These were completed before this handoff and verified:
 1. **Log-noise bug** — `foresight/foresight/tenant_middleware.py`:
    `_sanitize_id()` now returns `None` silently for `None`/non-string values instead
    of logging `Rejected invalid ID from request context: None` on every normal
-   request. Genuinely invalid *string* IDs still warn.
+   request. Genuinely invalid _string_ IDs still warn.
    - Regression tests added in `foresight/tests/test_tenant_middleware.py`
      (`test_none_identity_value_is_silent`, `test_invalid_string_identity_is_rejected`).
    - This test file is green (7 passed).
@@ -55,32 +55,36 @@ These were completed before this handoff and verified:
 ## The actual problem: SQLite → Postgres test debt
 
 ### Root cause
+
 `foresight/foresight/server.py` was migrated to be **Postgres-only** (no SQLite
 fallback by design — see `get_db_connection()` at `server.py:536`, which raises
 `RuntimeError: Database backend not initialized. Call _initialize_backend() first
 (requires FORESIGHT_DB_URL)`). The test suite was **not** migrated alongside it.
 
 ### Evidence (from a full run with `.env` loaded, i.e. `FORESIGHT_DB_URL` set)
+
 65 failures, distributed as:
 
-| File | Failures | Nature |
-|------|----------|--------|
-| `tests/test_server.py` | 48 | Imports `sqlite3`, `SqliteBackend`; patches `FORESIGHT_DB_PATH` to temp file; calls `init_db()` — all SQLite-specific |
-| `tests/test_sync.py` | 22 | `temp_db` fixtures create `*.db` temp files; expect SQLite |
-| `tests/test_narrative_cache.py` | 22 | SQLite file / `wal` pragma assumptions |
-| `tests/test_recovery.py` | 18 | SQLite-specific SQL / file assertions |
-| `tests/test_tenant_context.py` | 13 | Backend init expectations |
-| `tests/test_tenant_isolation.py` | 8 | Tenant scoping against SQLite |
-| `tests/test_clustering_tools.py` | 8 | `Error: near ...` SQLite syntax (`INSERT OR IGNORE`, etc.) |
-| `tests/test_capture.py` | 6 | DB-backed |
-| `tests/test_reflection_narrative.py` | 6 | DB-backed |
-| `tests/test_graph_store_tenant.py` | 2 | DB-backed |
+| File                                 | Failures | Nature                                                                                                                |
+| ------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| `tests/test_server.py`               | 48       | Imports `sqlite3`, `SqliteBackend`; patches `FORESIGHT_DB_PATH` to temp file; calls `init_db()` — all SQLite-specific |
+| `tests/test_sync.py`                 | 22       | `temp_db` fixtures create `*.db` temp files; expect SQLite                                                            |
+| `tests/test_narrative_cache.py`      | 22       | SQLite file / `wal` pragma assumptions                                                                                |
+| `tests/test_recovery.py`             | 18       | SQLite-specific SQL / file assertions                                                                                 |
+| `tests/test_tenant_context.py`       | 13       | Backend init expectations                                                                                             |
+| `tests/test_tenant_isolation.py`     | 8        | Tenant scoping against SQLite                                                                                         |
+| `tests/test_clustering_tools.py`     | 8        | `Error: near ...` SQLite syntax (`INSERT OR IGNORE`, etc.)                                                            |
+| `tests/test_capture.py`              | 6        | DB-backed                                                                                                             |
+| `tests/test_reflection_narrative.py` | 6        | DB-backed                                                                                                             |
+| `tests/test_graph_store_tenant.py`   | 2        | DB-backed                                                                                                             |
 
 **Error signature breakdown:** 54 × `RuntimeError: Database backend not initialized…`,
 8 × `Error: near …` (SQLite SQL syntax), remainder are SQLite file-path assertions.
 
 ### Concrete example of the breakage
+
 `tests/test_server.py` (top of file):
+
 ```python
 import sqlite3
 from foresight.backend import SqliteBackend   # <-- class no longer exists in Postgres-only backend
@@ -92,6 +96,7 @@ def setup_test_db(tmp_path, monkeypatch):
     ...
     from foresight.server import init_db   # <-- now Postgres-based
 ```
+
 `SqliteBackend` does not exist in the current backend module → `ImportError` /
 `RuntimeError` at collection or call time.
 
@@ -123,7 +128,7 @@ fixture) — a SQLite file model that has no Postgres equivalent without a real 
 4. **Verify** with:
    ```bash
    cd /home/vivi/pixelated/foresight
-   set -a && . /home/vivi/pixelated/.env && set +a
+    set -a && . /data/vivi/pixelated/.env && set +a
    uv run --no-active -m pytest tests/ -q
    ```
    (The `.env` load matters — `FORESIGHT_DB_URL` must be in the process env, which a
@@ -136,7 +141,7 @@ fixture) — a SQLite file model that has no Postgres equivalent without a real 
 
 - **Postgres is available.** Local `postgres:17` Docker container is up
   (`pixelated-postgres`, port 5432). Prod `FORESIGHT_DB_URL` points at Ghost Postgres
-  `tsdb` (set in `/home/vivi/pixelated/.env`, line ~480).
+  `tsdb` (set in `/data/vivi/pixelated/.env`, line ~480).
 - **Service runs via systemd user unit:** `foresight-mcp.service`, launched by
   `scripts/memory/foresight-server.sh` (stdio→SSE when `FORESIGHT_PORT` set; currently
   `--port 8764`).
