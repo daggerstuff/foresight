@@ -19,7 +19,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -31,6 +31,8 @@ jobs:
           uv sync --frozen
 
       - name: Run unit tests
+        env:
+          FORESIGHT_DB_URL: ${{ secrets.FORESIGHT_DB_URL }}
         run: |
           uv run pytest tests/ -v --cov=foresight --cov-report=lcov
 

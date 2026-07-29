@@ -6,12 +6,9 @@ import os
 
 import pytest
 
-# Use the Ghost Postgres with a dedicated test schema for isolation.
-_TEST_DB_URL = (
-    "postgresql://tsdbadmin:h4ohtmJpE5DSqOwWGgTNCB-45gG6-Eb1@"
-    "l1jgvzcieb.epyzl1cudh.db.ghost.build:5432/tsdb?"
-    "sslmode=require&options=-csearch_path%3Dforesight_test"
-)
+_TEST_DB_URL = os.environ.get("FORESIGHT_DB_URL")
+if not _TEST_DB_URL:
+    raise pytest.skip("FORESIGHT_DB_URL not set — skipping tests that require PostgreSQL")
 
 
 @pytest.fixture(scope="session", autouse=True)
