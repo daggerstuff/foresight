@@ -973,13 +973,16 @@ def init_db(backend=None):
                  ``SqliteBackend`` for tests).
     """
     if backend is None:
-        db_path = Path(DB_PATH)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path = Path(DB_PATH) if DB_PATH else None
+        if db_path:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             backend = create_backend()
         except RuntimeError:
             from foresight.backend.sqlite_backend import SqliteBackend
 
+            if not db_path:
+                raise
             backend = SqliteBackend(db_path=str(db_path))
     backend.connect()
 
@@ -1003,7 +1006,9 @@ def init_db(backend=None):
                     err = str(e).lower()
                     if "duplicate column" in err or "already exists" in err:
                         continue
-                    if "sqlite" in backend.__class__.__name__.lower() and ("alter column" in stmt.lower() or "near \"type\"" in err):
+                    if "sqlite" in backend.__class__.__name__.lower() and (
+                        "alter column" in stmt.lower() or 'near "type"' in err
+                    ):
                         continue
                     raise
             backend.set_version(version, datetime.now(timezone.utc).isoformat())
