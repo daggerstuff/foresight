@@ -11,6 +11,8 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from foresight.backend.backend_migrations import ensure_schema_migrations_table
+
 if TYPE_CHECKING:
     from foresight.backend.base import DatabaseBackend
 
@@ -24,12 +26,10 @@ MIGRATIONS = [
 
 def run_migrations(backend: DatabaseBackend) -> None:
     """Run all pending migrations against the given backend."""
-    backend.execute("""
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            applied_at TEXT NOT NULL
-        )
-    """)
+    # Reconcile any wrong-shaped schema_migrations table (e.g. the app's
+    # id/name/executed_at shape) before reading applied versions, so a shared
+    # database can never crash run_migrations with UndefinedColumn.
+    ensure_schema_migrations_table(backend)
 
     applied = {row["version"] for row in backend.fetch("SELECT version FROM schema_migrations")}
 

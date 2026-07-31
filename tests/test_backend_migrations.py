@@ -120,6 +120,105 @@ class TestSqliteMigrationRunner:
             finally:
                 backend.close()
 
+    def test_wrong_shaped_schema_migrations_is_reconciled(self):
+        """A pre-existing app-shaped schema_migrations (id/name/executed_at) is
+        preserved under a legacy name and recreated with version/applied_at so
+        run_migrations no longer crashes with UndefinedColumn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "foresight.sqlite")
+            backend = SqliteBackend(db_path=db)
+            backend.connect()
+            try:
+                # Simulate the shape the pixelated db-migrate tool creates on
+                # shared databases (id/name/executed_at), including a row.
+                backend.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT, executed_at TEXT)")
+                backend.execute(
+                    "INSERT INTO schema_migrations (id, name, executed_at) VALUES (1, '013_consent_records.sql', '2026-07-31')"
+                )
+
+                applied = run_migrations(backend)
+
+                assert applied, "migrations should apply after reconcile"
+                assert backend.table_exists("schema_migrations_legacy")
+                legacy = backend.fetch("SELECT * FROM schema_migrations_legacy")
+                assert len(legacy) == 1
+                assert legacy[0]["name"] == "013_consent_records.sql"
+                # Recreated tracker has the expected shape and new versions.
+                assert backend.column_exists("schema_migrations", "version")
+                assert backend.column_exists("schema_migrations", "applied_at")
+                assert current_version(backend) == max(SCHEMA_MIGRATIONS)
+            finally:
+                backend.close()
+
+    def test_wrong_shaped_schema_migrations_with_existing_legacy(self):
+        """If schema_migrations_legacy already exists, the reconcile uses a
+        suffixed name so the rename never collides and data is preserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "foresight.sqlite")
+            backend = SqliteBackend(db_path=db)
+            backend.connect()
+            try:
+                backend.execute("CREATE TABLE schema_migrations_legacy (version INTEGER)")
+                backend.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT, executed_at TEXT)")
+                backend.execute(
+                    "INSERT INTO schema_migrations (id, name, executed_at) VALUES (7, '007_x.sql', '2026-07-30')"
+                )
+
+                applied = run_migrations(backend)
+
+                assert applied
+                assert backend.table_exists("schema_migrations_legacy_2")
+                legacy = backend.fetch("SELECT * FROM schema_migrations_legacy_2")
+                assert len(legacy) == 1
+                assert legacy[0]["name"] == "007_x.sql"
+                assert backend.column_exists("schema_migrations", "version")
+                assert current_version(backend) == max(SCHEMA_MIGRATIONS)
+            finally:
+                backend.close()
+
+
+# =============================================================================
+# server.init_db() path — the exact entrypoint that failed in CI (conftest
+# setup_postgres_backend → init_db → SELECT version FROM schema_migrations
+# crashed with UndefinedColumn on a shared DB with app-shaped schema_migrations).
+# =============================================================================
+
+
+class TestServerInitDbReconcilesWrongShapedSchemaMigrations:
+    def test_init_db_reconciles_app_shaped_schema_migrations(self):
+        """init_db() must reconcile a pre-existing app-shaped schema_migrations
+        (id/name/executed_at) instead of crashing with UndefinedColumn — the
+        exact failure class that broke foresight CI on the shared Neon DB."""
+        from foresight.server import init_db
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "foresight.sqlite")
+            backend = SqliteBackend(db_path=db)
+            backend.connect()
+            try:
+                # Simulate the shared DB's app-shaped table with a row.
+                backend.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT, executed_at TEXT)")
+                backend.execute(
+                    "INSERT INTO schema_migrations (id, name, executed_at) VALUES (13, '013_consent_records.sql', '2026-07-31')"
+                )
+            finally:
+                backend.close()
+
+            # Reconnect and run init_db — must not raise UndefinedColumn.
+            # (init_db() closes the backend in its finally block, so reconnect
+            # before asserting on the resulting schema.)
+            backend = SqliteBackend(db_path=db)
+            init_db(backend)
+            backend.connect()
+            try:
+                assert backend.column_exists("schema_migrations", "version")
+                assert backend.column_exists("schema_migrations", "applied_at")
+                legacy = backend.fetch("SELECT * FROM schema_migrations_legacy")
+                assert len(legacy) == 1
+                assert legacy[0]["name"] == "013_consent_records.sql"
+            finally:
+                backend.close()
+
 
 # =============================================================================
 # Base-class helpers — shared by both backends, exercised here
@@ -185,5 +284,36 @@ class TestPostgresMigrationRunner:
             assert applied == list(range(1, max_version + 1))
             assert current_version(backend) == max_version
             assert backend.table_exists("memories") is True
+        finally:
+            backend.close()
+
+    def test_wrong_shaped_schema_migrations_is_reconciled(self):
+        """Postgres: an app-shaped schema_migrations (id/name/executed_at) is
+        preserved under a legacy name and recreated with version/applied_at so
+        the runner no longer crashes with UndefinedColumn (the exact failure
+        class seen in foresight CI against the shared Neon DB)."""
+        dsn = os.environ["FORESIGHT_DB_URL_TEST"]
+        from foresight.backend.postgres_backend import PostgresBackend
+
+        backend = PostgresBackend(dsn=dsn)
+        backend.connect()
+        try:
+            backend.execute("DROP TABLE IF EXISTS schema_migrations CASCADE")
+            backend.execute("DROP TABLE IF EXISTS schema_migrations_legacy CASCADE")
+            backend.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT, executed_at TEXT)")
+            backend.execute(
+                "INSERT INTO schema_migrations (id, name, executed_at) VALUES (13, '013_consent_records.sql', '2026-07-31')"
+            )
+
+            applied = run_migrations(backend)
+
+            assert applied, "migrations should apply after reconcile"
+            assert backend.table_exists("schema_migrations_legacy")
+            legacy = backend.fetch("SELECT * FROM schema_migrations_legacy")
+            assert len(legacy) == 1
+            assert legacy[0]["name"] == "013_consent_records.sql"
+            assert backend.column_exists("schema_migrations", "version")
+            assert backend.column_exists("schema_migrations", "applied_at")
+            assert current_version(backend) == max(SCHEMA_MIGRATIONS)
         finally:
             backend.close()

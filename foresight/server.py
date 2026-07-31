@@ -35,6 +35,7 @@ from starlette.responses import JSONResponse
 
 from .auth import AuthMiddleware
 from .backend import RedisCompanion, create_backend
+from .backend.backend_migrations import ensure_schema_migrations_table
 from .block_registry import InjectionPoint, initialize_default_blocks
 from .capture import get_capture_pipeline
 from .clustering import ClusterResult, cluster_memories
@@ -987,12 +988,10 @@ def init_db(backend=None):
     backend.connect()
 
     try:
-        backend.execute("""
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            )
-        """)
+        # Reconcile any wrong-shaped schema_migrations table (e.g. the app's
+        # id/name/executed_at shape) before reading applied versions, so a
+        # shared database can never crash init_db with UndefinedColumn.
+        ensure_schema_migrations_table(backend)
 
         applied = {row["version"] for row in backend.fetch("SELECT version FROM schema_migrations")}
 
