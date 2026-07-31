@@ -58,6 +58,14 @@ class EventType(StrEnum):
     # System
     SYSTEM_ERROR = "system.error"
 
+    # Bias detection
+    BIAS_DETECTED = "bias.detected"
+    BIAS_THRESHOLD_EXCEEDED = "bias.threshold_exceeded"
+
+    # Crisis detection
+    CRISIS_DETECTED = "crisis.detected"
+    CRISIS_THRESHOLD_EXCEEDED = "crisis.threshold_exceeded"
+
 
 # =============================================================================
 # Event Base Class
