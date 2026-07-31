@@ -504,7 +504,11 @@ class _EventBusSingleton:
         try:
             from .server import _global_backend
 
-            if _global_backend is not None and _global_backend.backend_type == "postgresql":
+            if (
+                EventStore is SQLiteEventStore
+                and _global_backend is not None
+                and _global_backend.backend_type == "postgresql"
+            ):
                 return PostgresEventStore()
         except (ImportError, AttributeError):
             pass

@@ -57,13 +57,17 @@ def reset_test_tables():
     if server_module._global_backend is None:
         return
 
-    # Get list of tables in the foresight_test schema
+    # Get list of tables in the connection's current schema (the app tables
+    # live in `public`, not a dedicated `foresight_test` schema). Keep the
+    # schema_migrations bookkeeping table intact so init_db() stays idempotent
+    # across tests that call it directly.
     rows = server_module._global_backend.fetch(
         """
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_schema = 'foresight_test'
+        WHERE table_schema = current_schema()
         AND table_type = 'BASE TABLE'
+        AND table_name <> 'schema_migrations'
         """
     )
     tables = [r["table_name"] for r in rows]

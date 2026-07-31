@@ -232,9 +232,13 @@ class TestDedupeEngine:
         self, content: str, category: str = "decision", user_id: str = "_test_user_", tenant_id: str = "_test_"
     ):
         """Insert a memory directly so the engine can find it."""
+        from foresight.config import DB_PATH
         from foresight.connection_pool import get_pool
 
-        pool = get_pool()
+        # Route through the same SQLite pool the DedupeEngine.check calls use
+        # (they pass db_path=str(DB_PATH)); the bare get_pool() call would
+        # otherwise resolve to the global Postgres backend when it is active.
+        pool = get_pool(db_path=str(DB_PATH))
         conn = pool.acquire()
         try:
             now = datetime.now(timezone.utc).isoformat()
@@ -300,6 +304,8 @@ class TestDedupeEngine:
         assert result.status in ("NEAR_DUPLICATE", "DUPLICATE"), f"got {result.status}"
 
     def test_different_content_unique(self):
+        from foresight.config import DB_PATH
+
         self._seed_memory("Let's use MongoDB for documents", category="decision")
         c = CapturedMemory(
             content="Let's use Redis for caching",
@@ -308,11 +314,15 @@ class TestDedupeEngine:
             retention="long_term",
             importance=0.7,
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        # Keep the store consistent with _seed_memory: route through the
+        # same SQLite pool (db_path) instead of the global Postgres backend.
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         assert result.status == "UNIQUE"
 
     def test_different_category_no_false_dedup(self):
         """Same words but different category should not collide."""
+        from foresight.config import DB_PATH
+
         self._seed_memory("Let's use FastAPI for the service", category="decision")
         c = CapturedMemory(
             content="Let's use FastAPI for the service",
@@ -321,7 +331,9 @@ class TestDedupeEngine:
             retention="long_term",
             importance=0.6,
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        # Keep the store consistent with _seed_memory: route through the
+        # same SQLite pool (db_path) instead of the global Postgres backend.
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         # Content hash will differ since it includes the category prefix
         assert result.status == "UNIQUE"
 

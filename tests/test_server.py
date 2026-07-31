@@ -239,7 +239,9 @@ def _make_test_db():
 
 def _mock_db_connection(db_path):
     """Create a test DB connection with row_factory set (Python 3.13 compat)."""
-    return sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _decode_json_result(result: str) -> dict:
@@ -444,7 +446,9 @@ def _make_inject_test_db(memories=None):
 
 def _mock_db_with_rows(db_path):
     """Return a connection to the test DB."""
-    return sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _make_hybrid_result(memory_id, content, combined_score=0.8, **kwargs):
@@ -982,10 +986,15 @@ def _seed_memory(
     user_id: str,
     tenant_id: str = "_test_",
 ) -> None:
-    """Insert a memory row for curation tests."""
-    from foresight.server import get_db_connection
+    """Insert a memory row for curation tests.
 
-    conn = get_db_connection()
+    Writes directly to the SQLite test DB. Do NOT use get_db_connection()
+    here: when the global Postgres backend is active (conftest session
+    fixture), it resolves to Postgres and the seeded rows would never be
+    visible to the mocked sqlite get_db_connection the curation flows use.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT INTO memories
@@ -996,6 +1005,8 @@ def _seed_memory(
         ON CONFLICT (id) DO NOTHING""",
         (memory_id, content, tenant_id, user_id, bank_id, now, now),
     )
+    conn.commit()
+    conn.close()
 
 
 def test_manage_curation_runs_create_cancel_archive():
@@ -1313,6 +1324,7 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
     assert fetched["status"] == "canceled"
 
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     source_rows = conn.execute(
         "SELECT id, bank_id FROM memories WHERE user_id = ? AND bank_id = ?",
         (user_id, "source_bank"),
@@ -1413,6 +1425,7 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
     assert fetched["status"] == "canceled"
 
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     source_rows = conn.execute(
         "SELECT id, bank_id FROM memories WHERE user_id = ? AND bank_id = ? ORDER BY id",
         (user_id, "source_bank"),
@@ -1467,6 +1480,7 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
         _resume_pending_curation_runs()
 
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT id, status FROM curation_runs WHERE id IN ('cur_pending', 'cur_running') ORDER BY id"
     ).fetchall()
