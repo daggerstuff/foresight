@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-_TEST_DB_URL = os.environ.get("FORESIGHT_DB_URL")
+_TEST_DB_URL = os.environ.get("FORESIGHT_DB_URL") or ""
 if not _TEST_DB_URL:
     raise pytest.skip("FORESIGHT_DB_URL not set — skipping tests that require PostgreSQL")
 
