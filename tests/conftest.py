@@ -47,11 +47,8 @@ def setup_postgres_backend():
         server_module._global_backend.close()
 
 
-@pytest.fixture(autouse=True)
-def reset_test_tables():
-    """Truncate all application tables between tests to prevent cross-test bleed."""
-    yield
-
+def _truncate_all_tables() -> None:
+    """Truncate every application table in the public schema."""
     from foresight import server as server_module
 
     if server_module._global_backend is None:
@@ -82,3 +79,47 @@ def reset_test_tables():
             table_list = ", ".join(f'"{t}"' for t in tables)
             cur.execute(f"TRUNCATE {table_list} CASCADE")
         conn.commit()
+
+
+def _reset_in_memory_singletons() -> None:
+    """Reset module-level singletons so tests start from a clean state."""
+    try:
+        from foresight.event_bus import reset_event_bus
+
+        reset_event_bus()
+    except Exception:
+        pass
+
+    try:
+        from foresight.sync import reset_sync_manager
+
+        reset_sync_manager()
+    except Exception:
+        pass
+
+    try:
+        from foresight.capture import reset_capture_pipeline
+
+        reset_capture_pipeline()
+    except Exception:
+        pass
+
+    try:
+        from foresight.connection_pool import reset_pool
+
+        reset_pool()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def reset_test_tables():
+    """Truncate all application tables before AND after each test, and reset
+    in-memory singletons, to prevent cross-test state bleed."""
+    _truncate_all_tables()
+    _reset_in_memory_singletons()
+
+    yield
+
+    _truncate_all_tables()
+    _reset_in_memory_singletons()
