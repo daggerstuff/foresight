@@ -11,18 +11,31 @@ Usage:
 from __future__ import annotations
 
 import contextlib
+import os
 from enum import StrEnum
 from pathlib import Path
 
+import typer
 from dotenv import load_dotenv
 
-_project_root = Path(__file__).resolve().parent.parent.parent
-for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
-    if _candidate.exists():
-        load_dotenv(_candidate)
-        break
 
-import typer
+def _load_dotenv() -> None:
+    """Walk up to find .env: foresight/.env → pixelated/.env → home/.env.
+
+    Called from the Typer callback — never at import time — so importing
+    this module (e.g. in tests) has no side effects on the environment.
+    The console script entry points (foresight / foresight-cli) import this
+    module, so guarding behind ``if __name__ == "__main__"`` would break
+    .env loading there. Skipped entirely while under pytest so test
+    execution never loads a developer .env.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _project_root = Path(__file__).resolve().parent.parent.parent
+    for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
+        if _candidate.exists():
+            load_dotenv(_candidate)
+            break
 
 from .commands import analysis, blocks, curate, eval as eval_cmd, memory, system
 from .utils import config as cfg, output as out
@@ -89,6 +102,7 @@ def callback(  # noqa: PLR0913
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override", hidden=True),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
+    _load_dotenv()
     if agent:
         output = OutputMode.agent
     elif json_mode:
