@@ -12,6 +12,8 @@ Extended with explicit account/workspace memory scoping (PIX-317):
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Database
 # Neon / PostgreSQL is the primary backend. Set FORESIGHT_DB_URL in production.
 # Format: postgresql://user:password@host:port/dbname?sslmode=require
@@ -76,3 +78,30 @@ DEFAULT_BURST_LIMIT = 20  # burst requests
 # FORESIGHT_LLM_BURST_LIMIT      -- burst requests (default: 10)
 # FORESIGHT_LLM_MIN_INTERVAL     -- minimum seconds between requests (default: 0.5)
 # FORESIGHT_LLM_MAX_PROMPT_CHARS -- max prompt character length (default: 10000)
+
+
+def load_dotenv_walkup() -> None:
+    """Load the nearest .env, checking candidates in order:
+
+    1. ``.env`` — current working directory
+    2. ``_project_root/.env`` — the workspace root (parent of the
+       ``foresight/`` and ``foresight_cli/`` packages)
+    3. ``~/.env`` — home directory
+
+    Stops at the first candidate that exists. Called from entry points
+    (``main()`` / the Typer callback) — never at import time — so
+    importing a module has no side effects on the environment. Skipped
+    entirely while under pytest so test execution never loads a developer
+    .env.
+
+    Both entry-point modules (``foresight/__main__.py`` and
+    ``foresight_cli/cli.py``) live at the same depth below the workspace
+    root, so ``_project_root`` resolves identically for all callers.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _project_root = Path(__file__).resolve().parent.parent.parent
+    for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
+        if _candidate.exists():
+            load_dotenv(_candidate)
+            break
