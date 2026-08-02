@@ -3,8 +3,25 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
+
+# Load .env before checking for FORESIGHT_DB_URL so that `uv run pytest`
+# works without prefixing the env var manually.  Walk up from the tests/
+# directory to find the project root .env (same logic as server.py).
+try:
+    from dotenv import load_dotenv
+
+    for _candidate in [
+        Path(__file__).resolve().parent.parent / ".env",
+        Path.home() / ".env",
+    ]:
+        if _candidate.exists():
+            load_dotenv(_candidate, override=False)
+            break
+except ImportError:
+    pass  # python-dotenv not installed; rely on env being set externally
 
 _TEST_DB_URL = os.environ.get("FORESIGHT_DB_URL") or ""
 if not _TEST_DB_URL:
