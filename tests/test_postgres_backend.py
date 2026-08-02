@@ -91,7 +91,9 @@ class TestPostgresBackendHelpers:
     def test_ensure_sslmode_preserves_existing(self):
         """_ensure_sslmode does not duplicate sslmode when already set."""
         dsn = PostgresBackend._ensure_sslmode("postgresql://user:pass@host/db?sslmode=disable")
-        assert dsn == "postgresql://user:pass@host/db?sslmode=disable"
+        assert "sslmode=disable" in dsn
+        assert "keepalives=1" in dsn
+        assert "keepalives_idle=30" in dsn
         assert dsn.count("sslmode") == 1
 
     def test_redact_dsn_hides_password(self):
