@@ -1442,6 +1442,11 @@ mcp = FastMCP(
 )
 
 logger = logging.getLogger("foresight_server")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 RowLike = Mapping[str, Any] | sqlite3.Row
 
@@ -4231,6 +4236,89 @@ def _cache_invalidation_hook(ctx: MemoryHookContext) -> HookResult | None:
     return None
 
 
+def _run_decay_sweep() -> int:
+    """Run a single Ebbinghaus decay sweep against the Postgres backend.
+
+    Applies exponential decay to all non-ghost memories, updating
+    ``current_strength``, ``strength_trend``, and ``last_decay_at``.
+    Returns the number of rows updated.
+    """
+    if _global_backend is None:
+        logger.debug("Decay sweep skipped: no backend initialised")
+        return 0
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    sql = """
+        WITH decay_calc AS (
+            SELECT
+                id,
+                EXTRACT(EPOCH FROM (%s::timestamptz
+                    - COALESCE(last_decay_at, created_at)::timestamptz)
+                ) / 3600.0 AS hours_elapsed,
+                COALESCE(current_strength, importance) AS old_strength,
+                activation_count
+            FROM memories
+            WHERE is_ghost = 0
+        )
+        UPDATE memories m
+        SET
+            current_strength = GREATEST(
+                0.1,
+                dc.old_strength * POWER(0.5, dc.hours_elapsed / 168.0)
+            ),
+            strength_trend = CASE
+                WHEN GREATEST(
+                    0.1,
+                    dc.old_strength * POWER(0.5, dc.hours_elapsed / 168.0)
+                ) <= 0.2 THEN 'stale'
+                WHEN dc.activation_count >= 5 THEN 'strengthening'
+                WHEN dc.activation_count < 2
+                     AND dc.hours_elapsed > 168.0 THEN 'weakening'
+                ELSE 'stable'
+            END,
+            last_decay_at = %s
+        FROM decay_calc dc
+        WHERE m.id = dc.id
+          AND dc.hours_elapsed > 0.000278
+    """
+
+    try:
+        with _global_backend.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (now_iso, now_iso))
+                updated = cur.rowcount
+            conn.commit()
+        logger.info("Decay sweep complete: %d memories updated", updated)
+        return updated
+    except Exception:
+        logger.exception("Decay sweep failed")
+        return 0
+
+
+def _start_decay_sweep_thread() -> None:
+    """Start a daemon thread that runs decay sweeps at regular intervals.
+
+    Interval is configurable via ``FORESIGHT_DECAY_INTERVAL_HOURS`` env var
+    (default: 6 hours). The thread catches all exceptions and never dies.
+    An initial sweep runs 30 seconds after startup.
+    """
+    interval_hours = float(os.environ.get("FORESIGHT_DECAY_INTERVAL_HOURS", "6"))
+
+    def _sweep_loop() -> None:
+        time.sleep(30)
+        while True:
+            try:
+                _run_decay_sweep()
+            except Exception:
+                logger.exception("Decay sweep thread caught unexpected exception")
+            time.sleep(interval_hours * 3600)
+
+    thread = threading.Thread(target=_sweep_loop, daemon=True, name="foresight-decay-sweep")
+    thread.start()
+    logger.info("Decay sweep thread started (interval=%sh)", interval_hours)
+
+
 def main(host: str | None = None, port: int | None = None) -> None:
     """Start the Foresight MCP server.
 
@@ -4255,6 +4343,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
     initialize_stream_producer()
     _resume_pending_curation_runs()
+    _start_decay_sweep_thread()
 
     reg = get_memory_hook_registry()
     reg.register(MemoryHookType.PRE_STORE, _audit_hook, name="audit")
