@@ -7,6 +7,10 @@ on:
     branches: [master, main, develop]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -20,7 +24,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: '3.13'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
