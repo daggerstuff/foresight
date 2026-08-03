@@ -232,9 +232,13 @@ class TestDedupeEngine:
         self, content: str, category: str = "decision", user_id: str = "_test_user_", tenant_id: str = "_test_"
     ):
         """Insert a memory directly so the engine can find it."""
-        from foresight.connection_pool import DB_PATH, get_pool
+        from foresight.config import DB_PATH
+        from foresight.connection_pool import get_pool
 
-        pool = get_pool(db_path=DB_PATH)
+        # Route through the same SQLite pool the DedupeEngine.check calls use
+        # (they pass db_path=str(DB_PATH)); the bare get_pool() call would
+        # otherwise resolve to the global Postgres backend when it is active.
+        pool = get_pool(db_path=str(DB_PATH))
         conn = pool.acquire()
         try:
             now = datetime.now(timezone.utc).isoformat()
@@ -242,19 +246,20 @@ class TestDedupeEngine:
             h = _content_hash(stored_content)
             mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
             conn.execute(
-                """INSERT OR IGNORE INTO memories
+                """INSERT INTO memories
                    (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                     created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, importance)
-                   VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, 'test_bank', ?, ?, ?, '[]', '{}', '{}', 0, '[]', 0.7)""",
+                   VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, 'test_bank', ?, ?, ?, '[]', '{}', '{}', 0, '[]', 0.7)
+                   ON CONFLICT (id) DO NOTHING""",
                 (mid, stored_content, h, category, user_id, tenant_id, now, now),
             )
             conn.commit()
             return mid
         finally:
             pool.release(conn)
-            conn.close()
 
     def test_unique(self):
+        from foresight.config import DB_PATH
         c = CapturedMemory(
             content="Let's use Redis for caching",
             category="decision",
@@ -262,39 +267,45 @@ class TestDedupeEngine:
             retention="long_term",
             importance=0.7,
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         assert result.status == "UNIQUE"
         assert result.existing_id is None
 
     def test_duplicate_exact_match(self):
+        from foresight.config import DB_PATH
         content = "Let's use PostgreSQL for persistence"
         self._seed_memory(content, category="decision")
         c = CapturedMemory(content=content, category="decision", scope="arc", retention="long_term", importance=0.7)
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         assert result.status == "DUPLICATE"
         assert result.existing_id is not None
         assert result.similarity == 1.0
 
     def test_near_duplicate_high_overlap(self):
+        from foresight.config import DB_PATH
         content = "Let's use PostgreSQL for persistence because it's reliable and performant"
         self._seed_memory(content, category="decision")
         similar = "Let's use PostgreSQL for persistence since it's reliable and performant for our use case"
         c = CapturedMemory(content=similar, category="decision", scope="arc", retention="long_term", importance=0.7)
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         # Jaccard should be > 0.55
         assert result.status in ("NEAR_DUPLICATE", "DUPLICATE"), f"got {result.status}"
+        assert result.existing_id is not None
 
     def test_near_duplicate_by_same_user(self):
+        from foresight.config import DB_PATH
         content1 = "I prefer using FastAPI for building REST APIs and web services"
         self._seed_memory(content1, category="preference")
         content2 = "I always prefer FastAPI for building REST APIs and web services in Python"
         c = CapturedMemory(
             content=content2, category="preference", scope="trait", retention="long_term", importance=0.6
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         assert result.status in ("NEAR_DUPLICATE", "DUPLICATE"), f"got {result.status}"
 
     def test_different_content_unique(self):
+        from foresight.config import DB_PATH
+
         self._seed_memory("Let's use MongoDB for documents", category="decision")
         c = CapturedMemory(
             content="Let's use Redis for caching",
@@ -303,11 +314,15 @@ class TestDedupeEngine:
             retention="long_term",
             importance=0.7,
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        # Keep the store consistent with _seed_memory: route through the
+        # same SQLite pool (db_path) instead of the global Postgres backend.
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         assert result.status == "UNIQUE"
 
     def test_different_category_no_false_dedup(self):
         """Same words but different category should not collide."""
+        from foresight.config import DB_PATH
+
         self._seed_memory("Let's use FastAPI for the service", category="decision")
         c = CapturedMemory(
             content="Let's use FastAPI for the service",
@@ -316,7 +331,9 @@ class TestDedupeEngine:
             retention="long_term",
             importance=0.6,
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_")
+        # Keep the store consistent with _seed_memory: route through the
+        # same SQLite pool (db_path) instead of the global Postgres backend.
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
         # Content hash will differ since it includes the category prefix
         assert result.status == "UNIQUE"
 

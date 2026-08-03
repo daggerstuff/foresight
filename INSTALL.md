@@ -1,55 +1,69 @@
-# Installing Foresight MCP
+# Installing Foresight
 
-## Option 1: Install from PyPI (recommended)
+## One-liner (recommended)
 
 ```bash
-# Install with pip
-pip install foresight
-
-# Or with uv
-uv add foresight
+curl -fsSL https://raw.githubusercontent.com/daggerstuff/foresight/master/install.sh | bash
 ```
 
-## Option 2: Run directly from repo
+Or, from a cloned repo:
 
 ```bash
-# Clone the repo
-git clone https://github.com/your-org/foresight.git
-cd foresight
+bash install.sh
+```
 
-# Install with uv — include the postgres driver
-uv sync --extra all
+The installer will:
+- Check prerequisites (Python 3.12+, uv)
+- Install all dependencies (CLI + TUI + MCP server + Postgres driver)
+- Walk you through connecting a Postgres database if one isn't already configured
+- Initialise config and run a 7-point health check
 
-# Set your Postgres DSN (required — SQLite is no longer supported)
+> **Postgres is required.** SQLite is not supported. The installer will prompt
+> you to choose a provider (Neon, Supabase, Railway, Replit, local, or bring
+> your own DSN) if `FORESIGHT_DB_URL` is not already set.
+
+---
+
+## Option 2 — Install from PyPI
+
+```bash
+pip install foresight[all]
+# then set your DSN and init:
 export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
-
-# Run the server
-uv run foresight-server
+foresight system init
+foresight system doctor
 ```
 
-## Option 3: Development mode
+Extras breakdown:
+
+| Extra    | Includes                            |
+| -------- | ----------------------------------- |
+| `(none)` | MCP server only — no CLI, no TUI    |
+| `[cli]`  | CLI (`typer` + `rich`) — no TUI     |
+| `[tui]`  | CLI + TUI (`textual`) — no MCP      |
+| `[all]`  | Everything — CLI + TUI + MCP server |
+
+---
+
+## Option 3 — Development mode
 
 ```bash
-git clone https://github.com/your-org/foresight.git
+git clone https://github.com/daggerstuff/foresight.git
 cd foresight
 
-# Install in editable mode with all extras (includes postgres driver)
 uv sync --extra all --dev
 
-# Set your Postgres DSN
 export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
 
-# Run tests
-uv run pytest
-
-# Run server
-uv run foresight-server
+uv run pytest          # run the test suite
+uv run foresight-server  # start the MCP server
 ```
+
+---
 
 ## Add to Claude Code
 
-After installation, add to your `~/.claude/settings.json` or project's
-`.mcp.json`:
+After installation, add to `~/.claude/settings.json` or your project's `.mcp.json`:
 
 ```json
 {
@@ -66,15 +80,14 @@ After installation, add to your `~/.claude/settings.json` or project's
 }
 ```
 
-> **Note:** `FORESIGHT_DB_URL` is required. `FORESIGHT_IDENTITY` sets the active
-> user identity (previously `FORESIGHT_USER_ID` — that name is deprecated).
+> `FORESIGHT_DB_URL` is required. `FORESIGHT_IDENTITY` sets the active user
+> identity (`FORESIGHT_USER_ID` is deprecated).
+
+---
 
 ## Verify installation
 
 ```bash
-# Check version
 uv run foresight --version
-
-# Run diagnostics (7-point health check)
-uv run foresight system doctor
+uv run foresight system doctor    # 7-point health check
 ```

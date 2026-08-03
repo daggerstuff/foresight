@@ -120,18 +120,44 @@ from .graph_store import (
     get_graph_store as get_graph_store,
     reset_graph_store as reset_graph_store,
 )
-from .hooks import (
-    HookExecutor as HookExecutor,
-    HookRegistration as HookRegistration,
-    HookRegistryBase as HookRegistryBase,
-    HookType as HookType,
-    PostgresHookRegistry as PostgresHookRegistry,
-    SQLiteHookRegistry as SQLiteHookRegistry,
-    get_hook_executor as get_hook_executor,
-    list_hooks as list_hooks,
-    register_hook as register_hook,
-    unregister_hook as unregister_hook,
-)
+
+# Hooks module requires fastmcp — make optional so core modules
+# (triggers, event_bus, etc.) remain importable without it.
+try:
+    from .hooks import (
+        HookExecutor as HookExecutor,
+        HookRegistration as HookRegistration,
+        HookRegistryBase as HookRegistryBase,
+        HookType as HookType,
+        PostgresHookRegistry as PostgresHookRegistry,
+        SQLiteHookRegistry as SQLiteHookRegistry,
+        get_hook_executor as get_hook_executor,
+        list_hooks as list_hooks,
+        register_hook as register_hook,
+        unregister_hook as unregister_hook,
+    )
+except ImportError:
+
+    class _HookStub:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise ImportError(f"{self.__class__.__name__} requires fastmcp. Install with: pip install fastmcp")
+
+    HookExecutor = HookRegistration = HookRegistryBase = HookType = _HookStub
+    PostgresHookRegistry = SQLiteHookRegistry = _HookStub
+
+    def get_hook_executor(*_args: Any, **_kwargs: Any) -> Any:
+        raise ImportError("get_hook_executor requires fastmcp. Install with: pip install fastmcp")
+
+    def list_hooks(*_args: Any, **_kwargs: Any) -> Any:
+        raise ImportError("list_hooks requires fastmcp. Install with: pip install fastmcp")
+
+    def register_hook(*_args: Any, **_kwargs: Any) -> Any:
+        raise ImportError("register_hook requires fastmcp. Install with: pip install fastmcp")
+
+    def unregister_hook(*_args: Any, **_kwargs: Any) -> Any:
+        raise ImportError("unregister_hook requires fastmcp. Install with: pip install fastmcp")
+
+
 from .hybrid_retriever import (
     HybridResult as HybridResult,
     HybridRetriever as HybridRetriever,
@@ -202,57 +228,63 @@ from .semantic_search import (
     reset_semantic_search as reset_semantic_search,
     serialize_vector as serialize_vector,
 )
-from .server import (
-    AnalysisAction as AnalysisAction,
-    ContextBlockAction as ContextBlockAction,
-    CurationRunAction as CurationRunAction,
-    EntityAction as EntityAction,
-    EntityQuery as EntityQuery,
-    MemoryAction as MemoryAction,
-    MemoryOptions as MemoryOptions,
-    MemoryUpdateOptions as MemoryUpdateOptions,
-    SearchOptions as SearchOptions,
-    SubconsciousAction as SubconsciousAction,
-    SystemStatusOptions as SystemStatusOptions,
-    TemporalWindow as TemporalWindow,
-    VersionAction as VersionAction,
-    analyze_memories as analyze_memories,
-    apply_memory_decay as apply_memory_decay,
-    archive_memory as archive_memory,
-    create_document as create_document,
-    delete_document as delete_document,
-    delete_memory as delete_memory,
-    get_decay_config as get_decay_config,
-    get_decay_events as get_decay_events,
-    get_document as get_document,
-    get_memory as get_memory,
-    get_memory_source as get_memory_source,
-    get_memory_strength as get_memory_strength,
-    get_system_status as get_system_status,
-    inject_context as inject_context,
-    list_document_chunks as list_document_chunks,
-    list_memories as list_memories,
-    manage_context_blocks as manage_context_blocks,
-    manage_curation_runs as manage_curation_runs,
-    manage_entities as manage_entities,
-    manage_memories as manage_memories,
-    manage_memory_versions as manage_memory_versions,
-    manage_subconscious as manage_subconscious,
-    mcp as mcp,
-    memory_status as memory_status,
-    process_session_transcript as process_session_transcript,
-    query_clusters as query_clusters,
-    query_entities as query_entities,
-    query_memories as query_memories,
-    query_memories_temporal as query_memories_temporal,
-    reinforce_memory as reinforce_memory,
-    run_clustering as run_clustering,
-    search_memories as search_memories,
-    set_decay_config as set_decay_config,
-    store_memory as store_memory,
-    switch_tenant as switch_tenant,
-    update_memory as update_memory,
-)
+
+# Server module requires fastmcp — make optional so core modules
+# (triggers, event_bus, etc.) remain importable without it.
+try:
+    from .server import (
+        AnalysisAction as AnalysisAction,
+        ContextBlockAction as ContextBlockAction,
+        CurationRunAction as CurationRunAction,
+        EntityAction as EntityAction,
+        EntityQuery as EntityQuery,
+        MemoryAction as MemoryAction,
+        MemoryOptions as MemoryOptions,
+        MemoryUpdateOptions as MemoryUpdateOptions,
+        SearchOptions as SearchOptions,
+        SubconsciousAction as SubconsciousAction,
+        SystemStatusOptions as SystemStatusOptions,
+        TemporalWindow as TemporalWindow,
+        VersionAction as VersionAction,
+        analyze_memories as analyze_memories,
+        apply_memory_decay as apply_memory_decay,
+        archive_memory as archive_memory,
+        create_document as create_document,
+        delete_document as delete_document,
+        delete_memory as delete_memory,
+        get_decay_config as get_decay_config,
+        get_decay_events as get_decay_events,
+        get_document as get_document,
+        get_memory as get_memory,
+        get_memory_source as get_memory_source,
+        get_memory_strength as get_memory_strength,
+        get_system_status as get_system_status,
+        inject_context as inject_context,
+        list_document_chunks as list_document_chunks,
+        list_memories as list_memories,
+        manage_context_blocks as manage_context_blocks,
+        manage_curation_runs as manage_curation_runs,
+        manage_entities as manage_entities,
+        manage_memories as manage_memories,
+        manage_memory_versions as manage_memory_versions,
+        manage_subconscious as manage_subconscious,
+        mcp as mcp,
+        memory_status as memory_status,
+        process_session_transcript as process_session_transcript,
+        query_clusters as query_clusters,
+        query_entities as query_entities,
+        query_memories as query_memories,
+        query_memories_temporal as query_memories_temporal,
+        reinforce_memory as reinforce_memory,
+        run_clustering as run_clustering,
+        search_memories as search_memories,
+        set_decay_config as set_decay_config,
+        store_memory as store_memory,
+        switch_tenant as switch_tenant,
+        update_memory as update_memory,
+    )
+except ImportError:
+    pass
 from .temporal_queries import (
     TemporalQueryBuilder as TemporalQueryBuilder,
     TemporalQueryResult as TemporalQueryResult,

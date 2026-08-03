@@ -11,35 +11,14 @@ from foresight.server import generate_recovery_payload
 
 
 @pytest.fixture(autouse=True)
-def setup_test_db(tmp_path, monkeypatch):
-    """Isolate DB per test (same pattern as test_server.py)."""
-    db_file = tmp_path / "test_memory.db"
-    monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
-
-    import foresight.config as config_module
-    from foresight.backend import SqliteBackend
-
-    import foresight.connection_pool as conn_pool_module
-    from foresight.connection_pool import reset_pool
-    from foresight.server import init_db
-
-    monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
-    monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
-    reset_pool()
-
+def setup_test_db(monkeypatch):
+    """Setup test context with tenant context."""
     from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id("_recovery_test_user_")
     set_current_account_id("_recovery_test_")
 
-    backend = SqliteBackend(db_path=str(db_file))
-    backend.connect()
-    try:
-        init_db(backend=backend)
-    finally:
-        backend.close()
     yield
-    reset_pool()
 
     from foresight.tenant_context import reset_tenant_context
 
@@ -50,11 +29,12 @@ def _insert_memory(conn, memory_id: str, content: str, **overrides):
     """Insert a memory row with sensible defaults."""
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        """INSERT OR IGNORE INTO memories
+        """INSERT INTO memories
         (id, content, content_hash, tenant_id, user_id, scope, retention, category,
          bank_id, created_at, updated_at, tags, emotional_context, metrics,
          is_ghost, synthesized_from, version, importance, activation_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO NOTHING""",
         (
             memory_id,
             content,
@@ -77,22 +57,13 @@ def _insert_memory(conn, memory_id: str, content: str, **overrides):
             overrides.get("activation_count", 1),
         ),
     )
-    conn.commit()
-
-
-# =============================================================================
-# Tests
-# =============================================================================
 
 
 def _get_conn():
     """Get a direct connection to the test DB (for setup/assert)."""
-    from foresight.config import DB_PATH
+    from foresight.server import get_db_connection
 
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return get_db_connection()
 
 
 def test_recovery_with_session_memories():

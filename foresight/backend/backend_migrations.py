@@ -27,6 +27,7 @@ import logging
 from datetime import datetime, timezone
 
 from .base import DatabaseBackend
+from .postgres_backend import _translate_sql
 from .schema_ddl import MIGRATIONS
 
 logger = logging.getLogger(__name__)
@@ -52,15 +53,45 @@ def _is_idempotent_error(exc: Exception) -> bool:
     return any(hint in message for hint in _IDEMPOTENT_SQLITE_HINTS + _IDEMPOTENT_PG_HINTS)
 
 
-def _ensure_schema_migrations_table(backend: DatabaseBackend) -> None:
-    """Create the ``schema_migrations`` tracker table if missing.
+def ensure_schema_migrations_table(backend: DatabaseBackend) -> None:
+    """Ensure ``schema_migrations`` exists with the expected (version, applied_at) shape.
 
-    DDL is portable: psycopg v3 ``PostgresBackend._translate_sql`` rewrites
-    ``?`` → ``%s`` automatically so the same statement runs against both
-    SQLite and PostgreSQL.
+    Self-healing against shared databases: if a ``schema_migrations`` table
+    already exists but was created by a different tool with a different
+    column shape (e.g. the pixelated app's ``id/name/executed_at``), the
+    migration runner would previously crash with ``UndefinedColumn: column
+    "version" does not exist`` because ``CREATE TABLE IF NOT EXISTS`` is a
+    no-op and ``SELECT version`` then fails.
+
+    When a wrong-shaped table is detected, it is preserved by renaming it to
+    ``schema_migrations_legacy`` (its rows are never destroyed) and a fresh
+    ``version/applied_at`` table is created, so ``SELECT version FROM
+    schema_migrations`` always works afterwards. The DDL contains no ``?``
+    placeholders, so the Postgres dialect translation is a no-op either way.
     """
-    if backend.table_exists("schema_migrations"):
-        return
+    if backend.table_exists("schema_migrations") and not (
+        backend.column_exists("schema_migrations", "version")
+        and backend.column_exists("schema_migrations", "applied_at")
+    ):
+        # Wrong shape — keep the old data safe under a legacy name, then
+        # recreate with the shape this runner (and set_version) expects.
+        # Either missing column (version OR applied_at) triggers the
+        # reconcile, since SELECT version and the version/applied_at INSERT
+        # both require the full shape.
+        legacy_name = "schema_migrations_legacy"
+        if backend.table_exists(legacy_name):
+            # A legacy table already exists from a previous reconcile; pick
+            # a suffixed name so the rename below never collides.
+            suffix = 2
+            while backend.table_exists(f"{legacy_name}_{suffix}"):
+                suffix += 1
+            legacy_name = f"{legacy_name}_{suffix}"
+        backend.execute(f"ALTER TABLE schema_migrations RENAME TO {legacy_name}")
+        logger.warning(
+            "schema_migrations had an incompatible shape; renamed to %s and recreated",
+            legacy_name,
+        )
+
     with backend.connection() as conn:
         conn.execute(
             """
@@ -92,7 +123,7 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
     Returns the list of versions newly applied (in ascending order). If the
     backend is already up to date, returns an empty list.
     """
-    _ensure_schema_migrations_table(backend)
+    ensure_schema_migrations_table(backend)
     applied = _applied_versions(backend)
 
     newly_applied: list[int] = []
@@ -107,10 +138,23 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
                 # "database is locked" errors under concurrent write access.
                 if backend.backend_type == "sqlite":
                     conn.execute("BEGIN IMMEDIATE")
-                for stmt in statements:
+                # The runner executes DDL directly on the connection, so the
+                # SQLite-flavoured statements in MIGRATIONS must be translated
+                # to the PostgreSQL dialect when that backend is active (raw
+                # ``conn.execute`` bypasses PostgresBackend._translate_sql).
+                # Wrap each statement in a SAVEPOINT so an idempotent failure
+                # (e.g. duplicate column that MIGRATIONS[1] already created)
+                # rolls back only that statement. PostgreSQL aborts the whole
+                # transaction on any error, so without this the next statement
+                # dies with InFailedSqlTransaction.
+                for idx, stmt in enumerate(statements):
+                    savepoint = f"mig_v{version}_s{idx}"
+                    conn.execute(f"SAVEPOINT {savepoint}")
                     try:
-                        conn.execute(stmt)
+                        conn.execute(_translate_sql(stmt) if backend.backend_type == "postgresql" else stmt)
                     except Exception as exc:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                         if _is_idempotent_error(exc):
                             logger.debug(
                                 "Migration %s: skipping already-applied statement (%s)",
@@ -118,7 +162,13 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
                                 exc,
                             )
                             continue
+                        # Non-idempotent failure: restore the outer transaction
+                        # state explicitly so the pooled connection is never
+                        # returned mid-transaction, then propagate.
+                        conn.rollback()
                         raise
+                    else:
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 conn.commit()
         except Exception:
             logger.exception("Migration %s failed; aborting before any version is recorded", version)
@@ -133,8 +183,8 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
 
 def current_version(backend: DatabaseBackend) -> int:
     """Return the highest applied schema version (0 if none)."""
-    _ensure_schema_migrations_table(backend)
+    ensure_schema_migrations_table(backend)
     return backend.get_version()
 
 
-__all__ = ["current_version", "run_migrations"]
+__all__ = ["current_version", "ensure_schema_migrations_table", "run_migrations"]

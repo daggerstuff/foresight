@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
-# Use the Ghost Postgres with a dedicated test schema for isolation.
-_TEST_DB_URL = (
-    "postgresql://tsdbadmin:h4ohtmJpE5DSqOwWGgTNCB-45gG6-Eb1@"
-    "l1jgvzcieb.epyzl1cudh.db.ghost.build:5432/tsdb?"
-    "sslmode=require&options=-csearch_path%3Dforesight_test"
-)
+# Load .env before checking for FORESIGHT_DB_URL so that `uv run pytest`
+# works without prefixing the env var manually.  Walk up from the tests/
+# directory to find the project root .env (same logic as server.py).
+try:
+    from dotenv import load_dotenv
+
+    for _candidate in [
+        Path(__file__).resolve().parent.parent / ".env",
+        Path.home() / ".env",
+    ]:
+        if _candidate.exists():
+            load_dotenv(_candidate, override=False)
+            break
+except ImportError:
+    pass  # python-dotenv not installed; rely on env being set externally
+
+_TEST_DB_URL = os.environ.get("FORESIGHT_DB_URL") or ""
+if not _TEST_DB_URL:
+    raise pytest.skip("FORESIGHT_DB_URL not set — skipping tests that require PostgreSQL")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -50,23 +64,24 @@ def setup_postgres_backend():
         server_module._global_backend.close()
 
 
-@pytest.fixture(autouse=True)
-def reset_test_tables():
-    """Truncate all application tables between tests to prevent cross-test bleed."""
-    yield
-
+def _truncate_all_tables() -> None:
+    """Truncate every application table in the public schema."""
     from foresight import server as server_module
 
     if server_module._global_backend is None:
         return
 
-    # Get list of tables in the foresight_test schema
+    # Get list of tables in the connection's current schema (the app tables
+    # live in `public`, not a dedicated `foresight_test` schema). Keep the
+    # schema_migrations bookkeeping table intact so init_db() stays idempotent
+    # across tests that call it directly.
     rows = server_module._global_backend.fetch(
         """
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_schema = 'foresight_test'
+        WHERE table_schema = current_schema()
         AND table_type = 'BASE TABLE'
+        AND table_name <> 'schema_migrations'
         """
     )
     tables = [r["table_name"] for r in rows]
@@ -81,3 +96,47 @@ def reset_test_tables():
             table_list = ", ".join(f'"{t}"' for t in tables)
             cur.execute(f"TRUNCATE {table_list} CASCADE")
         conn.commit()
+
+
+def _reset_in_memory_singletons() -> None:
+    """Reset module-level singletons so tests start from a clean state."""
+    try:
+        from foresight.event_bus import reset_event_bus
+
+        reset_event_bus()
+    except Exception:
+        pass
+
+    try:
+        from foresight.sync import reset_sync_manager
+
+        reset_sync_manager()
+    except Exception:
+        pass
+
+    try:
+        from foresight.capture import reset_capture_pipeline
+
+        reset_capture_pipeline()
+    except Exception:
+        pass
+
+    try:
+        from foresight.connection_pool import reset_pool
+
+        reset_pool()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def reset_test_tables():
+    """Truncate all application tables before AND after each test, and reset
+    in-memory singletons, to prevent cross-test state bleed."""
+    _truncate_all_tables()
+    _reset_in_memory_singletons()
+
+    yield
+
+    _truncate_all_tables()
+    _reset_in_memory_singletons()

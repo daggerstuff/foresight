@@ -12,17 +12,9 @@ from __future__ import annotations
 
 import contextlib
 from enum import StrEnum
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-_project_root = Path(__file__).resolve().parent.parent.parent
-for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
-    if _candidate.exists():
-        load_dotenv(_candidate)
-        break
 
 import typer
+from foresight.config import load_dotenv_walkup
 
 from .commands import analysis, blocks, curate, eval as eval_cmd, memory, system
 from .utils import config as cfg, output as out
@@ -89,6 +81,7 @@ def callback(  # noqa: PLR0913
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override", hidden=True),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
+    load_dotenv_walkup()
     if agent:
         output = OutputMode.agent
     elif json_mode:

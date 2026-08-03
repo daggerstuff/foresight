@@ -58,6 +58,14 @@ class EventType(StrEnum):
     # System
     SYSTEM_ERROR = "system.error"
 
+    # Bias detection
+    BIAS_DETECTED = "bias.detected"
+    BIAS_THRESHOLD_EXCEEDED = "bias.threshold_exceeded"
+
+    # Crisis detection
+    CRISIS_DETECTED = "crisis.detected"
+    CRISIS_THRESHOLD_EXCEEDED = "crisis.threshold_exceeded"
+
 
 # =============================================================================
 # Event Base Class
@@ -504,7 +512,11 @@ class _EventBusSingleton:
         try:
             from .server import _global_backend
 
-            if _global_backend is not None and _global_backend.backend_type == "postgresql":
+            if (
+                EventStore is SQLiteEventStore
+                and _global_backend is not None
+                and _global_backend.backend_type == "postgresql"
+            ):
                 return PostgresEventStore()
         except (ImportError, AttributeError):
             pass

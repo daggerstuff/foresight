@@ -235,11 +235,29 @@ class PostgresBackend(DatabaseBackend):
 
     @staticmethod
     def _ensure_sslmode(dsn: str) -> str:
-        """Append ``sslmode=require`` when not already present."""
-        if "sslmode=" in dsn:
-            return dsn
-        separator = "&" if "?" in dsn else "?"
-        return f"{dsn}{separator}sslmode=require"
+        """Append ``sslmode=require`` and TCP keepalive parameters when absent.
+
+        Neon (serverless Postgres) closes idle connections after a short
+        timeout, causing ``psycopg.pool`` to log "discarding closed connection"
+        warnings and incur reconnect overhead.  TCP keepalives probe the
+        connection before Neon's idle reaper fires, keeping the socket alive
+        and eliminating the noise.
+        """
+        if "sslmode=" not in dsn:
+            separator = "&" if "?" in dsn else "?"
+            dsn = f"{dsn}{separator}sslmode=require"
+
+        keepalive_params = {
+            "keepalives": "1",
+            "keepalives_idle": "30",
+            "keepalives_interval": "10",
+            "keepalives_count": "3",
+        }
+        for key, val in keepalive_params.items():
+            if f"{key}=" not in dsn:
+                separator = "&" if "?" in dsn else "?"
+                dsn = f"{dsn}{separator}{key}={val}"
+        return dsn
 
     def _redact_dsn(self) -> str:
         """Return the DSN with password redacted for logging."""
