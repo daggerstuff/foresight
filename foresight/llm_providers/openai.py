@@ -1,6 +1,9 @@
-"""OpenAI Chat Completions API adapter.
+"""OpenAI-compatible Chat Completions API adapter.
 
-Uses the public ``https://api.openai.com/v1/chat/completions`` endpoint.
+Supports the public OpenAI endpoint AND any OpenAI-compatible endpoint
+(e.g. NVIDIA NIM, Azure OpenAI, Together AI) via the ``base_url`` parameter
+or ``FORESIGHT_LLM_BASE_URL`` env var.
+
 No SDK dependency; only the standard library.
 """
 
@@ -15,25 +18,33 @@ from typing import Any
 from foresight.llm_errors import LLMError, LLMRateLimitError
 
 DEFAULT_MODEL = "gpt-4o-mini"
-API_URL = "https://api.openai.com/v1/chat/completions"
+DEFAULT_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
 class OpenAIClient:
     provider: str = "openai"
 
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        *,
+        base_url: str = "",
+    ) -> None:
         if not api_key:
             raise LLMError("OpenAI API key is required. Set OPENAI_API_KEY or pass api_key=... explicitly.")
         if not model:
             raise LLMError("model is required and must be a non-empty string")
         self._api_key = api_key
         self.model = model
+        self._api_url = base_url.strip() or DEFAULT_API_URL
 
     @classmethod
     def from_env(cls) -> OpenAIClient:
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         model = os.environ.get("FORESIGHT_LLM_MODEL", DEFAULT_MODEL).strip()
-        return cls(api_key=api_key, model=model)
+        base_url = os.environ.get("FORESIGHT_LLM_BASE_URL", "").strip()
+        return cls(api_key=api_key, model=model, base_url=base_url)
 
     def complete(self, prompt: str, *, max_tokens: int = 1024) -> str:
         if not isinstance(prompt, str) or not prompt:
@@ -48,7 +59,7 @@ class OpenAIClient:
         }
         data = json.dumps(body).encode("utf-8")
         request = urllib.request.Request(
-            API_URL,
+            self._api_url,
             data=data,
             method="POST",
             headers={

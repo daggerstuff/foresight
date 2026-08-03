@@ -74,6 +74,7 @@ class LLMConfig:
     provider: str = "anthropic"
     model_version: str = ""
     api_key: str = ""
+    base_url: str = ""
     max_retries: int = 2
     timeout_ms: int = 60_000
     tenant_id_override: str = ""  # used in test mode to bypass audit
@@ -86,6 +87,7 @@ class LLMConfig:
         """
         provider = os.environ.get("FORESIGHT_LLM_PROVIDER", "anthropic").strip().lower()
         model_version = os.environ.get("FORESIGHT_LLM_MODEL", "").strip()
+        base_url = os.environ.get("FORESIGHT_LLM_BASE_URL", "").strip()
         max_retries = int(os.environ.get("FORESIGHT_LLM_MAX_RETRIES", "2").strip())
         timeout_ms = int(os.environ.get("FORESIGHT_LLM_TIMEOUT_MS", "60000").strip())
         tenant_id_override = os.environ.get("FORESIGHT_LLM_TENANT_OVERRIDE", "").strip()
@@ -107,6 +109,7 @@ class LLMConfig:
             provider=provider,
             model_version=model_version,
             api_key=api_key,
+            base_url=base_url,
             max_retries=max_retries,
             timeout_ms=timeout_ms,
             tenant_id_override=tenant_id_override,
@@ -231,7 +234,7 @@ class TenantLLMClient:
         if provider == "anthropic":
             return AnthropicClient(api_key=api_key, model=model)
         if provider == "openai":
-            return OpenAIClient(api_key=api_key, model=model)
+            return OpenAIClient(api_key=api_key, model=model, base_url=self._config.base_url)
 
         raise LLMProviderError(
             f"Unknown LLM provider '{provider}'. Set FORESIGHT_LLM_PROVIDER to 'anthropic' or 'openai'."

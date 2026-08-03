@@ -39,7 +39,7 @@ class RRFConfig:
     tfidf_cosine_weight: float = 0.7
     graph_weight: float = 0.8
     temporal_weight: float = 0.6
-    entity_weight: float = 0.0  # Separate entity-salience pass (0 = disabled)
+    entity_weight: float = 0.5  # Separate entity-salience pass (0 = disabled)
 
     # Trend modifiers for temporal scoring
     trend_mod_strengthening: float = 1.2

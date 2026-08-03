@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
 import hashlib
 import json
 import logging
@@ -422,11 +423,21 @@ class PostgresPooledConnection(PooledConnection):
             return row
         return PostgresRow(row)
 
+    def _ensure_healthy_conn(self):
+        """Replace the wrapped connection if Neon or the server closed it."""
+        if self._conn.closed or getattr(self._conn, "broken", False):
+            if hasattr(self._pool, "putconn"):
+                with contextlib.suppress(Exception):
+                    self._pool.putconn(self._conn)
+            self._conn = self._pool.getconn()
+            self._conn.autocommit = True
+
     def execute(self, sql, params=()):
         import re
 
         from foresight.backend.postgres_backend import _translate_sql
 
+        self._ensure_healthy_conn()
         sql_upper = sql.lstrip().upper()
         if sql_upper.startswith("PRAGMA "):
             match = re.search(r"PRAGMA\s+table_info\s*\(\s*([\'\"]?\w+[\'\"]?)\s*\)", sql, re.IGNORECASE)
@@ -3295,30 +3306,20 @@ def manage_curation_runs(
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided."
-        kwargs = {"action": action}
-        if run_id is not None:
-            kwargs["run_id"] = run_id
-        if source_bank_id is not None:
-            kwargs["source_bank_id"] = source_bank_id
-        if output_bank_id is not None:
-            kwargs["output_bank_id"] = output_bank_id
-        if policy_mode is not None:
-            kwargs["policy_mode"] = policy_mode
-        if tool_access is not None:
-            kwargs["tool_access"] = tool_access
-        if output_mode is not None:
-            kwargs["output_mode"] = output_mode
-        if instructions is not None:
-            kwargs["instructions"] = instructions
-        if run_clustering is not None:
-            kwargs["run_clustering"] = run_clustering
-        if transcript_bundle is not None:
-            kwargs["transcript_bundle"] = transcript_bundle
-        if session_id is not None:
-            kwargs["session_id"] = session_id
-        if project_path is not None:
-            kwargs["project_path"] = project_path
-        options = CurationRunAction(**kwargs)
+        options = CurationRunAction(
+            action=action,
+            run_id=run_id,
+            source_bank_id=source_bank_id,
+            output_bank_id=output_bank_id,
+            policy_mode=policy_mode if policy_mode is not None else "rebalance",
+            tool_access=tool_access if tool_access is not None else "observe",
+            output_mode=output_mode if output_mode is not None else "reviewable_output",
+            instructions=instructions,
+            run_clustering=run_clustering if run_clustering is not None else False,
+            transcript_bundle=transcript_bundle,
+            session_id=session_id,
+            project_path=project_path,
+        )
 
     init_db()
     uid = user_id or USER_ID
@@ -4334,6 +4335,9 @@ def main(host: str | None = None, port: int | None = None) -> None:
     # Create and connect the database backend (PIX-3994)
     _initialize_backend()
 
+    # Initialize Redis companion (PIX-3995) — must come after backend init
+    _initialize_redis()
+
     # Eagerly initialise services with the backend so lazy singletons
     # already have it when tool handlers call get_*() without args.
     if _global_backend is not None:
@@ -4383,7 +4387,12 @@ def main(host: str | None = None, port: int | None = None) -> None:
             event_bus=get_event_bus(),
             auth_callback=cast(Any, websocket_auth_callback),
         )
-        _run_async(websocket_server.start())
+
+        def _run_ws_in_thread():
+            asyncio.run(websocket_server.start())
+
+        ws_thread = threading.Thread(target=_run_ws_in_thread, daemon=True, name="foresight-websocket")
+        ws_thread.start()
 
     # Determine transport: streamable-http (full HTTP, stateless request/response) when port is set, stdio otherwise
     transport_port = port if port is not None else os.environ.get("FORESIGHT_PORT")

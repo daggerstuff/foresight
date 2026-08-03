@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
+import websockets
+
 from foresight.event_bus import EventType
 
 from .subscriptions import get_subscription_manager
@@ -377,19 +379,59 @@ class WebSocketServer:
         self._running = False
         self._task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
+        self._ws_server = None
+        self._stop_event: asyncio.Event | None = None
 
     async def start(self, host: str = "0.0.0.0", port: int = 8765) -> None:
         """Start the WebSocket server."""
         self._running = True
         logger.info(f"Starting WebSocket server on {host}:{port}")
 
-        # Start background tasks
+        self._ws_server = await websockets.serve(self._handle_ws_connection, host, port)
         self._task = asyncio.create_task(self._server_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # Subscribe to event bus
         if self._event_bus:
             self._subscribe_to_events()
+
+        self._stop_event = asyncio.Event()
+        await self._stop_event.wait()
+
+    async def _handle_ws_connection(self, websocket) -> None:
+        """Process an incoming WebSocket connection."""
+        conn_id = str(uuid.uuid4())
+        connection = Connection(
+            id=conn_id,
+            send=lambda msg: asyncio.ensure_future(websocket.send(msg)),
+            close=lambda: asyncio.ensure_future(websocket.close()),
+        )
+        connection.state = ConnectionState.CONNECTED
+        self.handler._connections[conn_id] = connection
+        logger.info(f"New WebSocket connection accepted: {conn_id}")
+
+        welcome = {
+            "type": "connection_accepted",
+            "connection_id": conn_id,
+            "message": "Connected to Foresight WebSocket server",
+            "heartbeat_interval": int(self._heartbeat_interval),
+        }
+        with contextlib.suppress(Exception):
+            await websocket.send(json.dumps(welcome))
+
+        try:
+            async for raw in websocket:
+                try:
+                    message = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    await websocket.send(json.dumps({"type": "error", "message": "Invalid JSON"}))
+                    continue
+                response = await self.handler.receive(conn_id, message)
+                if response:
+                    await websocket.send(json.dumps(response))
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            await self.handler.disconnect(conn_id)
 
     async def _server_loop(self) -> None:
         """
@@ -471,6 +513,12 @@ class WebSocketServer:
     async def stop(self) -> None:
         """Stop the WebSocket server."""
         self._running = False
+        if self._stop_event:
+            self._stop_event.set()
+        if self._ws_server:
+            self._ws_server.close()
+            with contextlib.suppress(Exception):
+                await self._ws_server.wait_closed()
         if self._task:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
