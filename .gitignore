@@ -35,6 +35,7 @@ pyrightconfig.json
 # Coverage reports
 packages/*/coverage/
 packages/*/src/test/
+coverage.lcov
 
 # Added by ggshield
 .cache_ggshield
