@@ -10,6 +10,8 @@ build/
 dist/
 .moderne/
 .agent/
+**/.git_ignore/**
+**/.git_disabled/**
 
 # Environments
 .env

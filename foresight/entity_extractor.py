@@ -240,22 +240,45 @@ Output (raw JSON only, no markdown):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-3-haiku-20240307",
+        model: str | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.1,
+        provider: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         """
         Initialize entity extractor.
 
         Args:
-            api_key: Anthropic API key (reads ANTHROPIC_API_KEY / OPENAI_API_KEY
-                     env vars if not provided).
-            model: Model to use for LLM extraction.
+            api_key: LLM API key. Reads FORESIGHT_LLM_API_KEY, then
+                     ANTHROPIC_API_KEY / OPENAI_API_KEY env vars if not provided.
+            model: Model to use for LLM extraction. Falls back to
+                   FORESIGHT_LLM_MODEL env var, then provider default.
             max_tokens: Max tokens for LLM response.
             temperature: Sampling temperature (low = more deterministic).
+            provider: LLM provider ("anthropic" or "openai"). Reads
+                      FORESIGHT_LLM_PROVIDER env var if not provided.
+                      "openai" covers NVIDIA NIM, Azure OpenAI, Together AI, etc.
+            base_url: Custom API base URL for OpenAI-compatible providers.
+                      Reads FORESIGHT_LLM_BASE_URL env var if not provided.
         """
-        self.api_key = api_key or ""
-        self.model = model
+        self.provider = (provider or os.environ.get("FORESIGHT_LLM_PROVIDER", "anthropic")).lower().strip()
+        self.base_url = base_url or os.environ.get("FORESIGHT_LLM_BASE_URL", "").strip()
+        self.api_key = (
+            api_key
+            or os.environ.get("FORESIGHT_LLM_API_KEY", "")
+            or os.environ.get("ANTHROPIC_API_KEY", "")
+            or os.environ.get("OPENAI_API_KEY", "")
+        )
+        # Model: explicit param > env var > provider default
+        if model:
+            self.model = model
+        elif env_model := os.environ.get("FORESIGHT_LLM_MODEL", "").strip():
+            self.model = env_model
+        elif self.provider == "openai":
+            self.model = "gpt-4o-mini"
+        else:
+            self.model = "claude-3-haiku-20240307"
         self.max_tokens = max_tokens
         self.temperature = temperature
 
@@ -281,8 +304,7 @@ Output (raw JSON only, no markdown):
         if not content.strip():
             return ExtractionResult(entities=[], relationships=[])
 
-        api_key = self.api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        if api_key:
+        if self.api_key:
             try:
                 return await self.extract_with_llm(content)
             except Exception as exc:
@@ -370,10 +392,10 @@ Output (raw JSON only, no markdown):
 
     async def extract_with_llm(self, content: str) -> ExtractionResult:
         """
-        Extract entities using the Anthropic API.
+        Extract entities using LLM API.
 
-        Requires ANTHROPIC_API_KEY to be set (or passed to __init__).
-        Falls back to rule-based extraction on any API error.
+        Routes to Anthropic or OpenAI-compatible API (NVIDIA NIM, Azure, etc.)
+        based on self.provider. Falls back to rule-based extraction on error.
 
         Args:
             content: Text to analyze.
@@ -388,62 +410,10 @@ Output (raw JSON only, no markdown):
             max_context = int(os.environ.get("FORESIGHT_ENTITY_EXTRACTION_MAX_CONTEXT", "1500"))
             prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=content[:max_context])
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-api-key": self.api_key,
-                        "anthropic-version": "2023-06-01",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": self.max_tokens,
-                        "temperature": self.temperature,
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
-                )
-                response.raise_for_status()
-
-            data = response.json()
-            json_text: str = data["content"][0]["text"]
-
-            # Strip markdown code fences using pre-compiled patterns
-            json_text = self._FENCE_START_RE.sub("", json_text)
-            json_text = self._FENCE_END_RE.sub("", json_text)
-            json_text = json_text.strip()
-
-            parsed = json.loads(json_text)
-
-            entities = [
-                Entity(
-                    id=self._generate_entity_id(e["name"], e["type"]),
-                    name=e["name"],
-                    entity_type=cast(EntityType, e["type"]),
-                    description=e.get("description"),
-                    properties=e.get("properties", {}),
-                    confidence=1.0,
-                )
-                for e in parsed.get("entities", [])
-            ]
-
-            entity_name_to_id = {e.name.lower(): e.id for e in entities}
-
-            relationships: list[Relationship] = []
-            for r in parsed.get("relationships", []):
-                src_id = entity_name_to_id.get(r["source"].lower()) or self._generate_entity_id(r["source"], "concept")
-                tgt_id = entity_name_to_id.get(r["target"].lower()) or self._generate_entity_id(r["target"], "concept")
-                relationships.append(
-                    Relationship(
-                        source_entity_id=src_id,
-                        target_entity_id=tgt_id,
-                        relationship_type=cast(RelationshipType, r["type"]),
-                        confidence=r.get("confidence", 1.0),
-                    )
-                )
-
-            relationships.sort(key=lambda r: r.confidence, reverse=True)
-            return ExtractionResult(entities=entities, relationships=relationships[:20])
+            if self.provider == "openai":
+                return await self._extract_openai_compat(prompt, content)
+            else:
+                return await self._extract_anthropic(prompt, content)
 
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
@@ -459,6 +429,94 @@ Output (raw JSON only, no markdown):
             logger.warning("LLM extraction failed, falling back to rules: %s", exc)
             return self._extract_rules_based(content)
 
+    async def _extract_anthropic(self, prompt: str, content: str) -> ExtractionResult:
+        """Extract entities via Anthropic Messages API."""
+        if httpx is None:
+            raise RuntimeError("httpx is not installed")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": self.model,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        json_text: str = data["content"][0]["text"]
+        return self._parse_llm_response(json_text, content)
+
+    async def _extract_openai_compat(self, prompt: str, content: str) -> ExtractionResult:
+        """Extract entities via OpenAI-compatible API (NVIDIA NIM, Azure, etc.)."""
+        if httpx is None:
+            raise RuntimeError("httpx is not installed")
+        api_url = self.base_url or "https://api.openai.com/v1/chat/completions"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                api_url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                json={
+                    "model": self.model,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        json_text: str = data["choices"][0]["message"]["content"]
+        return self._parse_llm_response(json_text, content)
+
+    def _parse_llm_response(self, json_text: str, content: str) -> ExtractionResult:
+        """Parse LLM JSON response into ExtractionResult."""
+        json_text = self._FENCE_START_RE.sub("", json_text)
+        json_text = self._FENCE_END_RE.sub("", json_text)
+        json_text = json_text.strip()
+
+        parsed = json.loads(json_text)
+
+        entities = [
+            Entity(
+                id=self._generate_entity_id(e["name"], e["type"]),
+                name=e["name"],
+                entity_type=cast(EntityType, e["type"]),
+                description=e.get("description"),
+                properties=e.get("properties", {}),
+                confidence=1.0,
+            )
+            for e in parsed.get("entities", [])
+        ]
+
+        entity_name_to_id = {e.name.lower(): e.id for e in entities}
+
+        relationships: list[Relationship] = []
+        for r in parsed.get("relationships", []):
+            src_id = entity_name_to_id.get(r["source"].lower()) or self._generate_entity_id(r["source"], "concept")
+            tgt_id = entity_name_to_id.get(r["target"].lower()) or self._generate_entity_id(r["target"], "concept")
+            relationships.append(
+                Relationship(
+                    source_entity_id=src_id,
+                    target_entity_id=tgt_id,
+                    relationship_type=cast(RelationshipType, r["type"]),
+                    confidence=r.get("confidence", 1.0),
+                )
+            )
+
+        relationships.sort(key=lambda r: r.confidence, reverse=True)
+        return ExtractionResult(entities=entities, relationships=relationships[:20])
+
 
 # ---------------------------------------------------------------------------
 # Global instance management (thread-safe)
@@ -472,11 +530,17 @@ class _EntityExtractorSingleton:
     _lock = threading.Lock()
 
     @classmethod
-    def get_instance(cls, api_key: str | None = None, model: str = "claude-3-haiku-20240307") -> EntityExtractor:
+    def get_instance(
+        cls,
+        api_key: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        base_url: str | None = None,
+    ) -> EntityExtractor:
         """Get or create the global entity extractor instance (thread-safe)."""
         with cls._lock:
             if cls._instance is None:
-                cls._instance = EntityExtractor(api_key=api_key, model=model)
+                cls._instance = EntityExtractor(api_key=api_key, model=model, provider=provider, base_url=base_url)
             return cls._instance
 
     @classmethod
@@ -488,10 +552,12 @@ class _EntityExtractorSingleton:
 
 def get_entity_extractor(
     api_key: str | None = None,
-    model: str = "claude-3-haiku-20240307",
+    model: str | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
 ) -> EntityExtractor:
     """Get or create the global entity extractor instance (thread-safe)."""
-    return _EntityExtractorSingleton.get_instance(api_key, model)
+    return _EntityExtractorSingleton.get_instance(api_key, model, provider, base_url)
 
 
 def reset_entity_extractor() -> None:

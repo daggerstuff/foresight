@@ -252,6 +252,7 @@ class PostgresBackend(DatabaseBackend):
             "keepalives_idle": "30",
             "keepalives_interval": "10",
             "keepalives_count": "3",
+            "connect_timeout": "10",
         }
         for key, val in keepalive_params.items():
             if f"{key}=" not in dsn:
