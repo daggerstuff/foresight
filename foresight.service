@@ -17,8 +17,6 @@
 [Unit]
 Description=Foresight MCP Server (FastMCP HTTP)
 Documentation=https://github.com/daggerstuff/foresight
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple

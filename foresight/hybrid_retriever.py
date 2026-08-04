@@ -255,7 +255,14 @@ class HybridRetriever:
         self.weights = merged
 
         # RRF smoothing constant: read from weights or fall back to class default.
-        self.rrf_k: float = self.weights.get("rrf_k", float(self.RRF_K))
+        rrf_k_raw = self.weights.get("rrf_k", float(self.RRF_K))
+        try:
+            rrf_k_val = float(rrf_k_raw)
+        except (TypeError, ValueError):
+            rrf_k_val = float(self.RRF_K)
+        if not math.isfinite(rrf_k_val) or rrf_k_val <= 0:
+            rrf_k_val = float(self.RRF_K)
+        self.rrf_k: float = rrf_k_val
 
         # Trend modifiers: read from weights or fall back to defaults.
         # Prefix each trend key with "trend_mod_" for explicit override.
@@ -1227,7 +1234,7 @@ def get_hybrid_retriever(
     backend: DatabaseBackend | None = None,
 ) -> HybridRetriever:
     """Get or create global hybrid retriever instance (thread-safe)."""
-    if weights is None:
+    if weights is None and _HybridRetrieverSingleton._instance is None:
         try:
             rrf_config = get_rrf_config()
             weights = rrf_config.to_dict()

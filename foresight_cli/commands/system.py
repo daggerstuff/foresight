@@ -340,7 +340,10 @@ def doctor(
 
     # Redis (optional companion cache)
     redis_url = os.environ.get("FORESIGHT_REDIS_URL", "")
-    check("Redis cache", bool(redis_url), "not set (in-process cache)" if not redis_url else "configured")
+    if redis_url:
+        check("Redis cache", True, "configured")
+    else:
+        check("Redis cache", True, "not set (in-process cache fallback)")
 
     # MCP HTTP transport (check if server is listening)
     import socket
@@ -352,17 +355,18 @@ def doctor(
         sock.connect(("127.0.0.1", mcp_port))
         check("MCP HTTP server", True, f"listening on :{mcp_port}")
     except (socket.timeout, ConnectionRefusedError, OSError):
-        check("MCP HTTP server", True, "not running (start with: foresight-server)")
+        check("MCP HTTP server", False, "not running (start with: foresight-server)")
     finally:
         sock.close()
 
     # Schema version
     try:
-        from foresight.backend import get_backend
+        from foresight.server import _global_backend
 
-        backend = get_backend()
-        if hasattr(backend, "fetch"):
-            row = backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
+        if _global_backend is None:
+            check("Schema version", True, "backend not initialized")
+        elif hasattr(_global_backend, "fetch"):
+            row = _global_backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
             if row:
                 version = row[0][0] if isinstance(row[0], (list, tuple)) else row[0].get("version", "?")
                 check("Schema version", True, f"v{version}")
@@ -370,8 +374,8 @@ def doctor(
                 check("Schema version", True, "no migrations applied")
         else:
             check("Schema version", True, "backend supports migrations")
-    except Exception:
-        check("Schema version", True, "check skipped")
+    except Exception as exc:
+        check("Schema version", False, f"check failed: {exc!s}")
 
     # Summary
     if out.get_settings().mode != "agent":

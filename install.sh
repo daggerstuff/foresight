@@ -256,11 +256,30 @@ if [ ! -f "$ENV_FILE" ]; then
   # Generate .env from template with all documented vars
   if [ -f "$ENV_TEMPLATE" ]; then
     cp "$ENV_TEMPLATE" "$ENV_FILE"
-    # Fill in the DB URL
+    # Fill in the DB URL (value-safe — use python to avoid sed quoting issues with query params)
     if [ "${FORESIGHT_DB_URL}" = "${DATABASE_URL:-}" ] && [ -n "${DATABASE_URL:-}" ]; then
-      sed -i "s|^FORESIGHT_DB_URL=.*|FORESIGHT_DB_URL=\${DATABASE_URL}|" "$ENV_FILE"
+      uv run python3 -c "
+import pathlib
+p = pathlib.Path('$ENV_FILE')
+text = p.read_text()
+for line in text.splitlines(True):
+    if line.startswith('FORESIGHT_DB_URL='):
+        text = text.replace(line, 'FORESIGHT_DB_URL=\${DATABASE_URL}\n')
+        break
+p.write_text(text)
+" 2>/dev/null || sed -i.bak "s|^FORESIGHT_DB_URL=.*|FORESIGHT_DB_URL=\${DATABASE_URL}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
     else
-      sed -i "s|^FORESIGHT_DB_URL=.*|FORESIGHT_DB_URL=${FORESIGHT_DB_URL}|" "$ENV_FILE"
+      uv run python3 -c "
+import pathlib
+p = pathlib.Path('$ENV_FILE')
+text = p.read_text()
+dsn = '''${FORESIGHT_DB_URL}'''
+for line in text.splitlines(True):
+    if line.startswith('FORESIGHT_DB_URL='):
+        text = text.replace(line, 'FORESIGHT_DB_URL=' + dsn + chr(10))
+        break
+p.write_text(text)
+" 2>/dev/null || sed -i.bak "s|^FORESIGHT_DB_URL=.*|FORESIGHT_DB_URL=${FORESIGHT_DB_URL}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
     fi
     _ok "Created .env from template (all vars documented)"
   else
@@ -300,21 +319,31 @@ SYSTEMD_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$SYSTEMD_DIR/foresight-mcp.service"
 SERVICE_TEMPLATE="$SCRIPT_DIR/foresight.service"
 
+# Create user systemd dir if missing (fresh Linux installs)
+if command -v systemctl &>/dev/null; then
+  mkdir -p "$SYSTEMD_DIR" 2>/dev/null || true
+fi
+
 if [ -d "$SYSTEMD_DIR" ]; then
   _label "Systemd service"
 
-  UV_PATH=$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")
-
-  if [ -f "$SERVICE_TEMPLATE" ]; then
-    sed "s|__PROJECT_DIR__|$SCRIPT_DIR|g; s|__UV_PATH__|$UV_PATH|g" "$SERVICE_TEMPLATE" > "$SERVICE_FILE"
-    systemctl --user daemon-reload 2>/dev/null
-    systemctl --user enable foresight-mcp 2>/dev/null
-    systemctl --user restart foresight-mcp 2>/dev/null
-    _ok "Installed + started foresight-mcp.service"
-  elif [ -f "$SERVICE_FILE" ]; then
-    _ok "Service file already exists"
+  # Guard: if user systemd session unavailable, warn and skip
+  if ! systemctl --user is-system-running &>/dev/null; then
+    _warn "systemd user session unavailable — skipping service install (manual setup: cp foresight.service ~/.config/systemd/user/)"
   else
-    _warn "No service template found — see foresight.service for manual setup"
+    UV_PATH=$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")
+
+    if [ -f "$SERVICE_TEMPLATE" ]; then
+      sed "s|__PROJECT_DIR__|$SCRIPT_DIR|g; s|__UV_PATH__|$UV_PATH|g" "$SERVICE_TEMPLATE" > "$SERVICE_FILE"
+      systemctl --user daemon-reload 2>/dev/null
+      systemctl --user enable foresight-mcp 2>/dev/null
+      systemctl --user restart foresight-mcp 2>/dev/null
+      _ok "Installed + started foresight-mcp.service"
+    elif [ -f "$SERVICE_FILE" ]; then
+      _ok "Service file already exists"
+    else
+      _warn "No service template found — see foresight.service for manual setup"
+    fi
   fi
 fi
 
@@ -334,16 +363,14 @@ if [ -f "$OPENCODE_CONFIG" ] || [ -d "$HOME/.config/opencode" ]; then
   if [ -f "$REPO_PLUGIN" ] && [ ! -f "$PLUGIN_SOURCE" ]; then
     cp "$REPO_PLUGIN" "$PLUGIN_SOURCE"
     _ok "Copied foresight-autoinject plugin"
+  elif [ ! -f "$REPO_PLUGIN" ]; then
+    _warn "foresight-autoinject.js not in repo — auto-inject plugin not installed (see README manual setup)"
   fi
 
-  # Patch opencode.json to add MCP server + plugin
+  # Patch opencode.json to add MCP server + plugin independently
   if [ -f "$OPENCODE_CONFIG" ]; then
-    # Check if foresight MCP already configured
-    if grep -q '"foresight"' "$OPENCODE_CONFIG" 2>/dev/null; then
-      _ok "OpenCode MCP already configured"
-    else
-      # Use python to safely merge JSON
-      uv run python3 -c "
+    # Use python to safely merge JSON (idempotent — adds MCP entry and plugin if missing)
+    uv run python3 -c "
 import json, sys
 with open('$OPENCODE_CONFIG', 'r') as f:
     config = json.load(f)
@@ -363,8 +390,7 @@ if plugin_entry not in plugins:
 
 with open('$OPENCODE_CONFIG', 'w') as f:
     json.dump(config, f, indent=2)
-" 2>/dev/null && _ok "Added Foresight MCP + plugin to opencode.json" || _warn "Could not patch opencode.json (edit manually)"
-    fi
+" 2>/dev/null && _ok "Patched opencode.json (Foresight MCP + plugin)" || _warn "Could not patch opencode.json (edit manually)"
   else
     # Create minimal opencode.json
     mkdir -p "$(dirname "$OPENCODE_CONFIG")"

@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -4344,6 +4345,12 @@ def _start_maintenance_gc_thread() -> None:
     and should not run unattended.
     """
     interval_hours = float(os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS", "24"))
+    if not (isinstance(interval_hours, (int, float)) and interval_hours > 0 and math.isfinite(interval_hours)):
+        logger.warning(
+            "Invalid FORESIGHT_MAINTENANCE_INTERVAL_HOURS=%r, falling back to 24h",
+            os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS"),
+        )
+        interval_hours = 24.0
 
     def _maintenance_loop() -> None:
         time.sleep(60)
@@ -4446,14 +4453,31 @@ def _run_scheduled_maintenance_gc() -> None:
                 decay_stats.edges_processed,
                 decay_stats.avg_decay_factor,
             )
+            prune_stats = run_edge_pruning(tid)
+            if prune_stats.edges_pruned:
+                logger.info(
+                    "Edge pruning for tenant=%s: %d stale edges pruned",
+                    tid,
+                    prune_stats.edges_pruned,
+                )
         except Exception:
-            logger.exception("Edge decay failed for tenant=%s", tid)
+            logger.exception("Edge decay/prune failed for tenant=%s", tid)
 
-    seen_tenants2: set[str] = set()
-    for _, tid in pairs:
-        if tid in seen_tenants2:
-            continue
-        seen_tenants2.add(tid)
+    ghost_tenants: set[str] = set()
+    try:
+        with _global_backend.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
+                for row in cur.fetchall():
+                    row_dict = dict(row) if not isinstance(row, dict) else row
+                    tid = row_dict.get("tenant_id", "default")
+                    if tid:
+                        ghost_tenants.add(tid)
+    except Exception:
+        logger.exception("Failed to query ghost cleanup tenants; falling back to maintenance pairs")
+        ghost_tenants = {tid for _, tid in pairs}
+
+    for tid in ghost_tenants:
         try:
             ghost_stats = run_ghost_cleanup(tid)
             logger.info(

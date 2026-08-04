@@ -295,6 +295,10 @@ generates `.env` from this template automatically.
 | `FORESIGHT_ALLOW_UNAUTHENTICATED` | No | — | Disable auth (local dev only) |
 | `FORESIGHT_DECAY_INTERVAL_HOURS` | No | `6` | Decay sweep interval |
 | `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | No | `24` | Maintenance + GC interval |
+| `FORESIGHT_LLM_RATE_LIMIT` | No | — | LLM calls per minute |
+| `FORESIGHT_LLM_BURST_LIMIT` | No | — | Max burst LLM calls |
+| `FORESIGHT_LLM_MIN_INTERVAL` | No | `0.5` | Min seconds between LLM calls |
+| `FORESIGHT_LLM_MAX_PROMPT_CHARS` | No | `10000` | Max prompt chars |
 
 LLM, Redis, and WebSocket are all optional — the system works without them,
 just with reduced features (no synthesis, in-process cache, stdio-only transport).
@@ -395,7 +399,7 @@ foresight-server --transport http --port 8764
 }
 ```
 
-3. Copy [`foresight-autoinject.js`](../plugins/foresight-autoinject.js) to
+3. Copy [`foresight-autoinject.js`](plugins/foresight-autoinject.js) to
    `~/.config/opencode/plugins/`.
 
 4. Restart OpenCode. Context blocks and relevant memories now auto-inject

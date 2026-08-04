@@ -28,7 +28,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .clustering import cluster_memories
@@ -448,6 +448,16 @@ class MemoryMaintenanceJob:
             combined = existing_content + " " + " ".join(additional_content)
 
         # --- Version snapshot: record pre-merge content for audit/rollback ---
+        try:
+            version_row = conn.execute(
+                "SELECT MAX(version) AS v FROM memory_versions WHERE memory_id = ? AND tenant_id = ?",
+                (primary_id, config.tenant_id),
+            ).fetchone()
+            current_version = (version_row["v"] if version_row and version_row["v"] else 0) or 0
+        except Exception:
+            current_version = 0
+        next_version = current_version + 1
+
         now_iso = datetime.now(timezone.utc).isoformat()
         version_id = str(uuid.uuid4())
         try:
@@ -460,7 +470,7 @@ class MemoryMaintenanceJob:
                     primary_id,
                     config.tenant_id,
                     existing_content,
-                    1,
+                    next_version,
                     now_iso,
                 ),
             )
@@ -840,7 +850,7 @@ class MemoryMaintenanceJob:
             AND importance <= ?
             AND COALESCE(activation_count, 0) <= ?
             AND created_at < ?
-            AND retention NOT IN ('permanent', 'long_term')
+            AND retention NOT IN ('permanent')
             ORDER BY importance ASC, activation_count ASC, created_at ASC
             LIMIT ?
             """,
@@ -1011,6 +1021,7 @@ class MemoryMaintenanceJob:
                 event_type="maintenance_contradiction",
                 payload=c.to_dict(),
                 entity_id=c.evidence_ids[0][:8] if c.evidence_ids else "unknown",
+                tenant_id=config.tenant_id,
             )
             stats.enhanced_contradictions += 1
 
@@ -1020,6 +1031,7 @@ class MemoryMaintenanceJob:
                 event_type="maintenance_trend",
                 payload=t.to_dict(),
                 entity_id=t.evidence_ids[0][:8] if t.evidence_ids else "unknown",
+                tenant_id=config.tenant_id,
             )
             stats.enhanced_trends += 1
 
@@ -1029,6 +1041,7 @@ class MemoryMaintenanceJob:
                 event_type="maintenance_insight",
                 payload=ins.to_dict(),
                 entity_id=ins.evidence_ids[0][:8] if ins.evidence_ids else "unknown",
+                tenant_id=config.tenant_id,
             )
             stats.enhanced_insights += 1
 
@@ -1039,7 +1052,9 @@ class MemoryMaintenanceJob:
             stats.enhanced_insights,
         )
 
-    def _emit_enhanced_event(self, conn: Any, event_type: str, payload: dict[str, Any], entity_id: str) -> None:
+    def _emit_enhanced_event(
+        self, conn: Any, event_type: str, payload: dict[str, Any], entity_id: str, tenant_id: str
+    ) -> None:
         try:
             conn.execute(
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
@@ -1048,7 +1063,7 @@ class MemoryMaintenanceJob:
                     hashlib.sha256(
                         f"{event_type}{entity_id}{datetime.now(timezone.utc).isoformat()}".encode()
                     ).hexdigest()[:16],
-                    "maintenance",
+                    tenant_id,
                     event_type,
                     datetime.now(timezone.utc).isoformat(),
                     "enhanced_synthesizer",
