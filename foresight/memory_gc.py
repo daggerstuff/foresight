@@ -171,16 +171,24 @@ class MemoryGC:
             stats.maintenance_events_pruned = cursor.rowcount
             conn.commit()
 
-            # Phase 3.5: Prune old memory_merge_history rows (mirror maintenance_events retention)
-            merge_cutoff = (start_time - timedelta(days=cfg.maintenance_events_retention_days)).isoformat()
-            cursor = conn.execute(
-                """
-                DELETE FROM memory_merge_history
-                WHERE merged_at < ? AND tenant_id = ?
-                """,
-                (merge_cutoff, tenant_id),
-            )
-            conn.commit()
+            try:
+                # Phase 3.5: Prune old memory_merge_history rows (mirror maintenance_events retention)
+                merge_cutoff = (start_time - timedelta(days=cfg.maintenance_events_retention_days)).isoformat()
+                cursor = conn.execute(
+                    """
+                    DELETE FROM memory_merge_history
+                    WHERE merged_at < ? AND tenant_id = ?
+                    """,
+                    (merge_cutoff, tenant_id),
+                )
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                if "no such table" in str(e):
+                    logging.getLogger(__name__).warning(
+                        "memory_merge_history table not found, skipping prune: %s", e
+                    )
+                else:
+                    raise
 
             # ------------------------------------------------------------------
             # Phase 4: Clean orphaned data (no FK cascade protection)
