@@ -4373,6 +4373,7 @@ def _run_scheduled_maintenance_gc() -> None:
         return
 
     pairs: list[tuple[str, str]] = []
+    ghost_tenants: set[str] = set()
     try:
         with _global_backend.connection() as conn:
             with conn.cursor() as cur:
@@ -4384,39 +4385,45 @@ def _run_scheduled_maintenance_gc() -> None:
                     tid = row_dict.get("tenant_id", "default")
                     if uid:
                         pairs.append((uid, tid))
+                cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
+                for row in cur.fetchall():
+                    row_dict = dict(row) if not isinstance(row, dict) else row
+                    tid = row_dict.get("tenant_id", "default")
+                    if tid:
+                        ghost_tenants.add(tid)
     except Exception:
         logger.exception("Failed to query user/tenant pairs for maintenance")
         return
 
     if not pairs:
-        logger.info("Maintenance/GC: no active user/tenant pairs found, skipping")
-        return
+        logger.info("Maintenance/GC: no active user/tenant pairs found, skipping maintenance")
+    else:
+        logger.info("Maintenance/GC starting for %d user/tenant pair(s)", len(pairs))
 
-    logger.info("Maintenance/GC starting for %d user/tenant pair(s)", len(pairs))
-
-    maintenance_modes = ["consolidate", "archive_stale", "synthesize", "prune_low_relevance", "enhanced_synthesize"]
-    job = MemoryMaintenanceJob()
-    for uid, tid in pairs:
-        try:
-            config = MaintenanceConfig(
-                tenant_id=tid,
-                user_id=uid,
-                modes=maintenance_modes,
-            )
-            stats = job.run(config)
-            logger.info(
-                "Maintenance complete for user=%s tenant=%s: %d dupes found, "
-                "%d auto-merged, %d stale archived, %d insights generated in %.2fs",
-                uid,
-                tid,
-                stats.duplicates_found,
-                stats.duplicates_auto_consolidated,
-                stats.stale_archived,
-                stats.insights_generated,
-                stats.maintenance_duration_seconds,
-            )
-        except Exception:
-            logger.exception("Maintenance failed for user=%s tenant=%s", uid, tid)
+    if pairs:
+        maintenance_modes = ["consolidate", "archive_stale", "synthesize", "prune_low_relevance", "enhanced_synthesize"]
+        job = MemoryMaintenanceJob()
+        for uid, tid in pairs:
+            try:
+                config = MaintenanceConfig(
+                    tenant_id=tid,
+                    user_id=uid,
+                    modes=maintenance_modes,
+                )
+                stats = job.run(config)
+                logger.info(
+                    "Maintenance complete for user=%s tenant=%s: %d dupes found, "
+                    "%d auto-merged, %d stale archived, %d insights generated in %.2fs",
+                    uid,
+                    tid,
+                    stats.duplicates_found,
+                    stats.duplicates_auto_consolidated,
+                    stats.stale_archived,
+                    stats.insights_generated,
+                    stats.maintenance_duration_seconds,
+                )
+            except Exception:
+                logger.exception("Maintenance failed for user=%s tenant=%s", uid, tid)
 
     seen_tenants: set[str] = set()
     for _, tid in pairs:
@@ -4462,20 +4469,6 @@ def _run_scheduled_maintenance_gc() -> None:
                 )
         except Exception:
             logger.exception("Edge decay/prune failed for tenant=%s", tid)
-
-    ghost_tenants: set[str] = set()
-    try:
-        with _global_backend.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
-                for row in cur.fetchall():
-                    row_dict = dict(row) if not isinstance(row, dict) else row
-                    tid = row_dict.get("tenant_id", "default")
-                    if tid:
-                        ghost_tenants.add(tid)
-    except Exception:
-        logger.exception("Failed to query ghost cleanup tenants; falling back to maintenance pairs")
-        ghost_tenants = {tid for _, tid in pairs}
 
     for tid in ghost_tenants:
         try:

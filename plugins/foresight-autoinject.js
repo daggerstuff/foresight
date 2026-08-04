@@ -46,6 +46,11 @@ const REQUEST_TIMEOUT_MS = 8000; // 8s — Foresight may do DB queries
 // Parse SSE response body to extract the JSON-RPC result.
 // Format: `event: message\ndata: {"jsonrpc":"2.0",...}`
 function parseSSE(body) {
+  try {
+    return JSON.parse(body);
+  } catch (_) {
+    // not plain JSON — fall through to SSE parsing
+  }
   const lines = body.split('\n');
   for (const line of lines) {
     if (line.startsWith('data: ')) {
@@ -135,47 +140,57 @@ async function callInjectContext(conversationText) {
 
 // --- Plugin hooks -----------------------------------------------------
 
-let lastUserMessage = '';
-let lastInjectedFor = ''; // dedup: don't re-inject for the same message
+const sessionState = new Map();
+const FAILURE_COOLDOWN_MS = 30000;
+let lastFailureAt = 0;
+
+function getSessionState(sessionId) {
+  if (!sessionState.has(sessionId)) {
+    sessionState.set(sessionId, { lastUserMessage: '', lastInjectedFor: '' });
+  }
+  return sessionState.get(sessionId);
+}
 
 export const ForesightAutoInject = async (_ctx) => {
+  const sessionId = (_ctx && (_ctx.sessionId || _ctx.session_id)) || 'default';
   return {
-    // Capture user message text for the next system.transform call
     'chat.message': async (_input, output) => {
       if (!output || !output.parts) return;
+      const state = getSessionState(sessionId);
       for (const part of output.parts) {
         if (part && part.type === 'text' && part.text) {
-          lastUserMessage = part.text;
+          state.lastUserMessage = part.text;
           break;
         }
       }
     },
 
-    // Before every LLM request, inject Foresight context into the system prompt
     'experimental.chat.system.transform': async (_input, output) => {
       if (!output || !Array.isArray(output.system)) return;
 
-      // Need a user message to inject for
-      const msg = lastUserMessage.trim();
+      const state = getSessionState(sessionId);
+      const msg = state.lastUserMessage.trim();
       if (!msg) return;
 
-      // Dedup: don't re-inject for the same message
-      if (msg === lastInjectedFor) return;
+      if (msg === state.lastInjectedFor) return;
 
-      // Call Foresight inject_context (non-fatal)
+      if (Date.now() - lastFailureAt < FAILURE_COOLDOWN_MS) return;
+
       let contextText;
       try {
         contextText = await callInjectContext(msg);
       } catch (_) {
-        return; // Foresight down or error — skip silently
+        lastFailureAt = Date.now();
+        return;
       }
 
-      if (!contextText || !contextText.trim()) return;
+      if (!contextText || !contextText.trim()) {
+        lastFailureAt = Date.now();
+        return;
+      }
 
-      // Mark as injected for this message
-      lastInjectedFor = msg;
+      state.lastInjectedFor = msg;
 
-      // Append to system prompt
       output.system.push(
         '[FORESIGHT CONTEXT]\n' + contextText + '\n[/FORESIGHT CONTEXT]'
       );

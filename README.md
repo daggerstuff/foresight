@@ -295,8 +295,8 @@ generates `.env` from this template automatically.
 | `FORESIGHT_ALLOW_UNAUTHENTICATED` | No | — | Disable auth (local dev only) |
 | `FORESIGHT_DECAY_INTERVAL_HOURS` | No | `6` | Decay sweep interval |
 | `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | No | `24` | Maintenance + GC interval |
-| `FORESIGHT_LLM_RATE_LIMIT` | No | — | LLM calls per minute |
-| `FORESIGHT_LLM_BURST_LIMIT` | No | — | Max burst LLM calls |
+| `FORESIGHT_LLM_RATE_LIMIT` | No | `60` | LLM calls per minute |
+| `FORESIGHT_LLM_BURST_LIMIT` | No | `10` | Max burst LLM calls |
 | `FORESIGHT_LLM_MIN_INTERVAL` | No | `0.5` | Min seconds between LLM calls |
 | `FORESIGHT_LLM_MAX_PROMPT_CHARS` | No | `10000` | Max prompt chars |
 

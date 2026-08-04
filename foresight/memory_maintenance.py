@@ -483,18 +483,20 @@ class MemoryMaintenanceJob:
         conn.execute(
             """UPDATE memories
                SET content = ?,
-                    is_ghost = 0,
-                    gist = ?,
-                    synthesized_from = ?,
-                    is_sensitive = ?,
-                    sensitivity_reason = ?
-                WHERE id = ? AND tenant_id = ? AND user_id = ?""",
+                   is_ghost = 0,
+                   gist = ?,
+                   synthesized_from = ?,
+                   is_sensitive = ?,
+                   sensitivity_reason = ?,
+                   version = ?
+               WHERE id = ? AND tenant_id = ? AND user_id = ?""",
             (
                 combined[:1000],
                 existing_content[:200],
                 str(list(existing_synth)),
                 1 if is_sensitive_bit else 0,
                 sensitivity_reason,
+                next_version,
                 primary_id,
                 config.tenant_id,
                 config.user_id,

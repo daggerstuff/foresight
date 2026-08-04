@@ -328,7 +328,7 @@ if [ -d "$SYSTEMD_DIR" ]; then
   _label "Systemd service"
 
   # Guard: if user systemd session unavailable, warn and skip
-  if ! systemctl --user is-system-running &>/dev/null; then
+  if ! systemctl --user show-environment &>/dev/null; then
     _warn "systemd user session unavailable — skipping service install (manual setup: cp foresight.service ~/.config/systemd/user/)"
   else
     UV_PATH=$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")
@@ -367,20 +367,21 @@ if [ -f "$OPENCODE_CONFIG" ] || [ -d "$HOME/.config/opencode" ]; then
     _warn "foresight-autoinject.js not in repo — auto-inject plugin not installed (see README manual setup)"
   fi
 
-  # Patch opencode.json to add MCP server + plugin independently
+  # Patch opencode.json to add MCP server + plugin independently (preserves existing config)
   if [ -f "$OPENCODE_CONFIG" ]; then
-    # Use python to safely merge JSON (idempotent — adds MCP entry and plugin if missing)
+    # Use python to safely merge JSON (idempotent — only adds missing entries, never overwrites)
     uv run python3 -c "
 import json, sys
 with open('$OPENCODE_CONFIG', 'r') as f:
     config = json.load(f)
 
 config.setdefault('mcp', {})
-config['mcp']['foresight'] = {
-    'type': 'remote',
-    'url': 'http://127.0.0.1:8764/mcp',
-    'enabled': True
-}
+if 'foresight' not in config['mcp']:
+    config['mcp']['foresight'] = {
+        'type': 'remote',
+        'url': 'http://127.0.0.1:8764/mcp',
+        'enabled': True
+    }
 
 plugins = config.get('plugin', [])
 plugin_entry = './plugins/foresight-autoinject.js'

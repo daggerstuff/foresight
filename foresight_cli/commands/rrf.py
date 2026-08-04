@@ -45,7 +45,7 @@ def _resolve_path(config_path: str | None) -> Path:
 
 
 def _emit_agent(payload: dict) -> None:
-    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.write(f"[JSON] {json.dumps(payload)}\n")
     sys.stdout.flush()
 
 
@@ -87,7 +87,7 @@ def set(
 ):
     """Set a single RRF weight and save to config file."""
     resolved = _resolve_path(config_path)
-    if key not in VALID_KEYS and key not in KEY_MAP:
+    if key not in VALID_KEYS:
         raise typer.BadParameter(f"Unknown key: {key}. Valid keys: {', '.join(sorted(KEY_MAP.keys()))}")
     _validate_weight(key, value)
 
