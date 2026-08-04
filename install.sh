@@ -334,10 +334,18 @@ if [ -d "$SYSTEMD_DIR" ]; then
     UV_PATH=$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")
 
     if [ -f "$SERVICE_TEMPLATE" ]; then
-      sed "s|__PROJECT_DIR__|$SCRIPT_DIR|g; s|__UV_PATH__|$UV_PATH|g" "$SERVICE_TEMPLATE" > "$SERVICE_FILE"
-      systemctl --user daemon-reload 2>/dev/null
-      systemctl --user enable foresight-mcp 2>/dev/null
-      systemctl --user restart foresight-mcp 2>/dev/null
+      uv run python3 -c "
+import pathlib, sys
+tpl = pathlib.Path(sys.argv[1])
+out = pathlib.Path(sys.argv[2])
+txt = tpl.read_text()
+txt = txt.replace('__PROJECT_DIR__', sys.argv[3])
+txt = txt.replace('__UV_PATH__', sys.argv[4])
+out.write_text(txt)
+" "$SERVICE_TEMPLATE" "$SERVICE_FILE" "$SCRIPT_DIR" "$UV_PATH"
+      systemctl --user daemon-reload 2>/dev/null || true
+      systemctl --user enable foresight-mcp 2>/dev/null || true
+      systemctl --user restart foresight-mcp 2>/dev/null || true
       _ok "Installed + started foresight-mcp.service"
     elif [ -f "$SERVICE_FILE" ]; then
       _ok "Service file already exists"
@@ -353,9 +361,10 @@ OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 OPENCODE_PLUGIN_DIR="$HOME/.config/opencode/plugins"
 PLUGIN_SOURCE="$OPENCODE_PLUGIN_DIR/foresight-autoinject.js"
 
-if [ -f "$OPENCODE_CONFIG" ] || [ -d "$HOME/.config/opencode" ]; then
+if [ -f "$OPENCODE_CONFIG" ] || [ -d "$HOME/.config/opencode" ] || command -v opencode &>/dev/null; then
   _label "OpenCode integration"
 
+  mkdir -p "$HOME/.config/opencode"
   mkdir -p "$OPENCODE_PLUGIN_DIR"
 
   # Copy plugin if we have it in the repo
@@ -415,10 +424,17 @@ fi
 
 _label "First memory"
 
-_spin "Storing welcome memory" \
-  uv run foresight store "Foresight initialized via install.sh — memory system is live and ready." 2>/dev/null \
-  && _ok "Welcome memory stored" \
-  || _warn "Could not store welcome memory (DB may need a moment to warm up)"
+_welcome_msg="Storing welcome memory"
+_welcome_log=$(mktemp)
+printf "  ${C_PURPLE}⣾${RESET}  ${C_WHITE}%s${RESET}   \r" "$_welcome_msg"
+if uv run foresight store "Foresight initialized via install.sh — memory system is live and ready." >"$_welcome_log" 2>&1; then
+  printf "\r  ${C_GREEN}${BOLD}✓${RESET}  ${C_WHITE}%s${RESET}   \n" "$_welcome_msg"
+  _ok "Welcome memory stored"
+else
+  printf "\r  ${C_RED}${BOLD}✗${RESET}  ${C_WHITE}%s${RESET}   \n" "$_welcome_msg"
+  _warn "Could not store welcome memory (DB may need a moment to warm up)"
+fi
+rm -f "$_welcome_log"
 
 # ── 10. PATH hint ─────────────────────────────────────────────────────────────
 

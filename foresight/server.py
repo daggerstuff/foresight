@@ -4372,19 +4372,23 @@ def _run_scheduled_maintenance_gc() -> None:
         logger.warning("Maintenance/GC skipped: no backend initialised")
         return
 
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[str, str, str]] = []
     ghost_tenants: set[str] = set()
     try:
         with _global_backend.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT user_id, tenant_id FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL")
+                cur.execute(
+                    "SELECT DISTINCT user_id, tenant_id, COALESCE(bank_id, 'default') AS bank_id "
+                    "FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL"
+                )
                 rows = cur.fetchall()
                 for row in rows:
                     row_dict = dict(row) if not isinstance(row, dict) else row
                     uid = row_dict.get("user_id", "")
                     tid = row_dict.get("tenant_id", "default")
+                    bid = row_dict.get("bank_id", "default")
                     if uid:
-                        pairs.append((uid, tid))
+                        pairs.append((uid, tid, bid))
                 cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
                 for row in cur.fetchall():
                     row_dict = dict(row) if not isinstance(row, dict) else row
@@ -4392,30 +4396,32 @@ def _run_scheduled_maintenance_gc() -> None:
                     if tid:
                         ghost_tenants.add(tid)
     except Exception:
-        logger.exception("Failed to query user/tenant pairs for maintenance")
+        logger.exception("Failed to query user/tenant/bank triples for maintenance")
         return
 
     if not pairs:
-        logger.info("Maintenance/GC: no active user/tenant pairs found, skipping maintenance")
+        logger.info("Maintenance/GC: no active user/tenant/bank triples found, skipping maintenance")
     else:
-        logger.info("Maintenance/GC starting for %d user/tenant pair(s)", len(pairs))
+        logger.info("Maintenance/GC starting for %d user/tenant/bank triple(s)", len(pairs))
 
     if pairs:
         maintenance_modes = ["consolidate", "archive_stale", "synthesize", "prune_low_relevance", "enhanced_synthesize"]
         job = MemoryMaintenanceJob()
-        for uid, tid in pairs:
+        for uid, tid, bid in pairs:
             try:
                 config = MaintenanceConfig(
                     tenant_id=tid,
                     user_id=uid,
+                    bank_id=bid,
                     modes=maintenance_modes,
                 )
                 stats = job.run(config)
                 logger.info(
-                    "Maintenance complete for user=%s tenant=%s: %d dupes found, "
+                    "Maintenance complete for user=%s tenant=%s bank=%s: %d dupes found, "
                     "%d auto-merged, %d stale archived, %d insights generated in %.2fs",
                     uid,
                     tid,
+                    bid,
                     stats.duplicates_found,
                     stats.duplicates_auto_consolidated,
                     stats.stale_archived,
@@ -4423,10 +4429,10 @@ def _run_scheduled_maintenance_gc() -> None:
                     stats.maintenance_duration_seconds,
                 )
             except Exception:
-                logger.exception("Maintenance failed for user=%s tenant=%s", uid, tid)
+                logger.exception("Maintenance failed for user=%s tenant=%s bank=%s", uid, tid, bid)
 
     seen_tenants: set[str] = set()
-    for _, tid in pairs:
+    for _, tid, _ in pairs:
         if tid in seen_tenants:
             continue
         seen_tenants.add(tid)
@@ -4448,7 +4454,7 @@ def _run_scheduled_maintenance_gc() -> None:
             logger.exception("GC failed for tenant=%s", tid)
 
     edge_tenants: set[str] = set()
-    for _, tid in pairs:
+    for _, tid, _ in pairs:
         if tid in edge_tenants:
             continue
         edge_tenants.add(tid)

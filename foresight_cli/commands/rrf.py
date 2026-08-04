@@ -134,7 +134,7 @@ def reset(
 ):
     """Reset config file to defaults."""
     resolved = _resolve_path(config_path)
-    if not yes:
+    if not yes and out.get_settings().mode not in ("agent", "json"):
         confirm = typer.confirm("Reset RRF config to defaults?")
         if not confirm:
             raise typer.Abort()

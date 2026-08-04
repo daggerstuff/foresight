@@ -38,7 +38,7 @@ class RRFConfig:
     keyword_weight: float = 1.0
     tfidf_cosine_weight: float = 0.7
     graph_weight: float = 0.8
-    temporal_weight: float = 0.6
+    temporal_weight: float = 0.8  # Aligned with HybridRetriever.DEFAULT_WEIGHTS
     entity_weight: float = 0.5  # Separate entity-salience pass (0 = disabled)
 
     # Trend modifiers for temporal scoring
@@ -71,22 +71,31 @@ class RRFConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RRFConfig":
-        """Create from dictionary."""
+        """Create from dictionary, coercing all values to finite positive floats."""
+        import math as _math
+
+        def _num(val: Any, default: float) -> float:
+            try:
+                f = float(val)
+            except (TypeError, ValueError):
+                return default
+            return f if (_math.isfinite(f) and f >= 0) else default
+
         return cls(
-            rrf_k=data.get("rrf_k", 60.0),
-            keyword_weight=data.get("keyword", 1.0),
-            tfidf_cosine_weight=data.get("tfidf_cosine", 0.7),
-            graph_weight=data.get("graph", 0.8),
-            temporal_weight=data.get("temporal", 0.6),
-            entity_weight=data.get("entity", 0.0),
-            trend_mod_strengthening=data.get("trend_mod_strengthening", 1.2),
-            trend_mod_stable=data.get("trend_mod_stable", 1.0),
-            trend_mod_weakening=data.get("trend_mod_weakening", 0.8),
-            trend_mod_stale=data.get("trend_mod_stale", 0.5),
-            category_mult_session=data.get("category_mult_session", 0.5),
-            category_mult_fact=data.get("category_mult_fact", 1.0),
-            category_mult_preference=data.get("category_mult_preference", 1.5),
-            category_mult_trait=data.get("category_mult_trait", 2.0),
+            rrf_k=_num(data.get("rrf_k", 60.0), 60.0),
+            keyword_weight=_num(data.get("keyword", 1.0), 1.0),
+            tfidf_cosine_weight=_num(data.get("tfidf_cosine", 0.7), 0.7),
+            graph_weight=_num(data.get("graph", 0.8), 0.8),
+            temporal_weight=_num(data.get("temporal", 0.8), 0.8),
+            entity_weight=_num(data.get("entity", 0.0), 0.0),
+            trend_mod_strengthening=_num(data.get("trend_mod_strengthening", 1.2), 1.2),
+            trend_mod_stable=_num(data.get("trend_mod_stable", 1.0), 1.0),
+            trend_mod_weakening=_num(data.get("trend_mod_weakening", 0.8), 0.8),
+            trend_mod_stale=_num(data.get("trend_mod_stale", 0.5), 0.5),
+            category_mult_session=_num(data.get("category_mult_session", 0.5), 0.5),
+            category_mult_fact=_num(data.get("category_mult_fact", 1.0), 1.0),
+            category_mult_preference=_num(data.get("category_mult_preference", 1.5), 1.5),
+            category_mult_trait=_num(data.get("category_mult_trait", 2.0), 2.0),
         )
 
     def to_json_file(self, path: str) -> None:

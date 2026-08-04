@@ -247,7 +247,13 @@ class HybridRetriever:
         self._backend = backend
         merged = self.DEFAULT_WEIGHTS.copy()
         if weights:
-            merged.update(weights)
+            for _k, _v in weights.items():
+                try:
+                    _f = float(_v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(_f) and _f >= 0:
+                    merged[_k] = _f
         if "semantic" not in merged and "tfidf_cosine" in merged:
             merged["semantic"] = merged["tfidf_cosine"]
         if "tfidf_cosine" not in merged and "semantic" in merged:

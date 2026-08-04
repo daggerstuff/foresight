@@ -35,6 +35,7 @@ from .clustering import cluster_memories
 from .config import DB_PATH
 from .connection_pool import get_pool
 from .enhanced_synthesizer import get_enhanced_synthesizer
+from .event_bus import EventType
 from .memory_types import MemoryObject, EmotionalMetadata
 from .sensitivity import resolve_is_sensitive
 
@@ -85,6 +86,7 @@ MAX_RUNTIME_SECONDS = 300
 class MaintenanceConfig:
     tenant_id: str = "default"
     user_id: str = "default"
+    bank_id: str | None = None
     modes: list[str] = field(default_factory=lambda: ["consolidate", "contradict", "archive_stale", "synthesize"])
     duplicate_threshold: float = 0.25
     consolidation_overlap_high: float = DUPLICATE_OVERLAP_HIGH
@@ -461,10 +463,20 @@ class MemoryMaintenanceJob:
         now_iso = datetime.now(timezone.utc).isoformat()
         version_id = str(uuid.uuid4())
         try:
+            prim_meta = conn.execute(
+                "SELECT tags, emotional_context, metrics FROM memories WHERE id = ? AND tenant_id = ?",
+                (primary_id, config.tenant_id),
+            ).fetchone()
+            prim_tags = prim_meta["tags"] if prim_meta and prim_meta["tags"] else "[]"
+            prim_emo = prim_meta["emotional_context"] if prim_meta and prim_meta["emotional_context"] else "{}"
+            prim_metrics = prim_meta["metrics"] if prim_meta and prim_meta["metrics"] else "{}"
+        except Exception:
+            prim_tags, prim_emo, prim_metrics = "[]", "{}", "{}"
+        try:
             conn.execute(
                 """INSERT INTO memory_versions
                    (id, memory_id, tenant_id, content, version, created_at, tags, emotional_context, metrics)
-                   VALUES (?, ?, ?, ?, ?, ?, '[]', '{}', '{}')""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     version_id,
                     primary_id,
@@ -472,6 +484,9 @@ class MemoryMaintenanceJob:
                     existing_content,
                     next_version,
                     now_iso,
+                    prim_tags,
+                    prim_emo,
+                    prim_metrics,
                 ),
             )
         except Exception:
@@ -685,7 +700,7 @@ class MemoryMaintenanceJob:
 
         stats.contradictions_found += len(flagged)
         for cand in flagged:
-            self._flag_contradiction_for_review(conn, cand)
+            self._flag_contradiction_for_review(conn, cand, config.tenant_id)
             stats.contradictions_flagged_review += 1
 
         logger.debug(
@@ -702,8 +717,10 @@ class MemoryMaintenanceJob:
                 return (pos_word, neg_word)
         return None
 
-    def _flag_contradiction_for_review(self, conn: Any, cand: ContradictionCandidate) -> None:
-        event_type = "maintenance_review:contradict"
+    def _flag_contradiction_for_review(
+        self, conn: Any, cand: ContradictionCandidate, tenant_id: str = "default"
+    ) -> None:
+        event_type = EventType.MAINTENANCE_CONTRADICTION.value
         # Get content for both memories for auditing purposes, redacting if sensitive
         content_a = ""
         content_b = ""
@@ -746,12 +763,12 @@ class MemoryMaintenanceJob:
                     hashlib.sha256(
                         f"{cand.memory_id_a}{cand.memory_id_b}{datetime.now(timezone.utc).isoformat()}".encode()
                     ).hexdigest()[:16],
-                    "maintenance",
+                    tenant_id,
                     event_type,
                     datetime.now(timezone.utc).isoformat(),
                     "maintenance_job",
                     cand.memory_id_a[:8],
-                    str(payload),
+                    json.dumps(payload),
                 ),
             )
             conn.commit()
@@ -929,13 +946,13 @@ class MemoryMaintenanceJob:
                     )
 
         for insight in insights[:20]:
-            self._emit_insight_event(conn, insight)
+            self._emit_insight_event(conn, insight, config.tenant_id)
         stats.insights_generated = len(insights)
 
         logger.debug("Synthesize phase: generated=%d", stats.insights_generated)
 
-    def _emit_insight_event(self, conn: Any, insight: SynthesisInsight) -> None:
-        event_type = "maintenance_insight"
+    def _emit_insight_event(self, conn: Any, insight: SynthesisInsight, tenant_id: str) -> None:
+        event_type = EventType.MAINTENANCE_INSIGHT.value
         payload = {
             "topic": insight.topic,
             "statement": insight.statement,
@@ -950,12 +967,12 @@ class MemoryMaintenanceJob:
                     hashlib.sha256(f"{insight.topic}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
                         :16
                     ],
-                    "maintenance",
+                    tenant_id,
                     event_type,
                     datetime.now(timezone.utc).isoformat(),
                     "maintenance_job",
                     insight.member_ids[0][:8] if insight.member_ids else "unknown",
-                    str(payload),
+                    json.dumps(payload),
                 ),
             )
             conn.commit()
@@ -1020,7 +1037,7 @@ class MemoryMaintenanceJob:
         for c in result.contradictions:
             self._emit_enhanced_event(
                 conn,
-                event_type="maintenance_contradiction",
+                event_type=EventType.MAINTENANCE_CONTRADICTION.value,
                 payload=c.to_dict(),
                 entity_id=c.evidence_ids[0][:8] if c.evidence_ids else "unknown",
                 tenant_id=config.tenant_id,
@@ -1030,7 +1047,7 @@ class MemoryMaintenanceJob:
         for t in result.temporal_trends:
             self._emit_enhanced_event(
                 conn,
-                event_type="maintenance_trend",
+                event_type=EventType.MAINTENANCE_TREND.value,
                 payload=t.to_dict(),
                 entity_id=t.evidence_ids[0][:8] if t.evidence_ids else "unknown",
                 tenant_id=config.tenant_id,
@@ -1040,7 +1057,7 @@ class MemoryMaintenanceJob:
         for ins in result.insights:
             self._emit_enhanced_event(
                 conn,
-                event_type="maintenance_insight",
+                event_type=EventType.MAINTENANCE_INSIGHT.value,
                 payload=ins.to_dict(),
                 entity_id=ins.evidence_ids[0][:8] if ins.evidence_ids else "unknown",
                 tenant_id=config.tenant_id,
@@ -1070,7 +1087,7 @@ class MemoryMaintenanceJob:
                     datetime.now(timezone.utc).isoformat(),
                     "enhanced_synthesizer",
                     entity_id,
-                    str(payload),
+                    json.dumps(payload),
                 ),
             )
             conn.commit()
