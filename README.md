@@ -10,22 +10,24 @@
 
 ---
 
-### One-liner install
+### Quick start (one command)
+
+```bash
+bash install.sh
+```
+
+The installer handles everything: dependencies, database setup, `.env`
+generation, schema init, health check, systemd service, OpenCode MCP
+auto-config, and your first memory. You just need a Postgres connection
+string (or pick a provider from the interactive menu).
+
+**Prefer manual?**
 
 ```bash
 pip install foresight[all]
-```
-
-That's it. Set your Postgres DSN, then run:
-
-```bash
 export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
-foresight init          # First-time setup — creates config + verifies database
-foresight doctor        # Health check — verify everything works
-foresight tui           # Launch the interactive TUI
+foresight init && foresight doctor && foresight tui
 ```
-
-Four commands. You're live.
 
 ---
 
@@ -46,6 +48,12 @@ Four commands. You're live.
 #### Step 1 — Install
 
 ```bash
+bash install.sh
+```
+
+Or manually:
+
+```bash
 pip install foresight[all]
 ```
 
@@ -62,163 +70,55 @@ On macOS/Linux with uv installed, `uv pip install foresight[all]` is ~3x faster.
 
 ---
 
-#### Step 2 — Set your database URL
+#### Step 2 — Database
 
-Foresight is **Postgres-only** — set `FORESIGHT_DB_URL` before running anything:
+Foresight is **Postgres-only**. The installer offers an interactive menu
+(Neon, Supabase, Railway, Replit, Local, Other) with signup links.
+
+Or set it manually:
 
 ```bash
 export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
 ```
 
-> **On Replit** — `DATABASE_URL` is injected automatically. The setup script
-> (`scripts/setup.sh`) and the managed workflow both pick it up without any
-> manual step.
+> **On Replit** — `DATABASE_URL` is injected automatically.
 
-#### Step 3 — Init
+#### Step 3 — Init + Doctor
 
 ```bash
-$ foresight init
-
-╭────────────────────────── Setup Complete ───────────────────────────╮
-│ Foresight is ready. Try:                                            │
-│   foresight status          # Check health                          │
-│   foresight store 'hello'  # Store a memory                        │
-│   foresight list            # List memories                         │
-│   foresight tui             # Launch the TUI                        │
-╰────────────────────────────────────────────────────────────────────╯
+foresight init          # Creates config + verifies database
+foresight doctor        # Health check — 11 checks including LLM, Redis, MCP
 ```
 
-Creates `~/.foresight/config.json` and verifies the PostgreSQL connection.
-Done in under a second.
+Doctor now checks: Python version, config dir/file, DB URL, user/bank ID,
+DB responsive, LLM provider, Redis cache, MCP HTTP server, schema version.
 
----
-
-#### Step 4 — Doctor
-
-Before you trust it, verify it.
+#### Step 4 — Store, list, retrieve
 
 ```bash
-$ foresight doctor
-
-Foresight Diagnostics
-
-  ✓ Python 3.11+
-  ✓ Config dir exists
-  ✓ Config file exists
-  ✓ Database connection exists
-  ✓ User ID configured
-  ✓ Bank ID configured
-  ✓ Database responsive
-
-All 7 checks passed (3 env overrides)
-Active env overrides:
-  FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight
-  FORESIGHT_IDENTITY=vivi
-  FORESIGHT_BANK_ID=pixelated
+foresight store "First real memory from the CLI walkthrough"
+foresight list
+foresight query "test"
+foresight get <id>
 ```
 
-7 green checks. Your memory system is healthy and ready.
-
----
-
-#### Step 5 — Store, list, retrieve
-
-```bash
-$ foresight store "First real memory from the CLI walkthrough"
-
-Memory stored: Stored memory 4d9440b9fb5c6961. Gate: auto. Reason: Normal
-information flow.
-```
-
-Memory saved. Now list them all:
-
-```bash
-$ foresight list
-
-Memories (4 found):
-- [4d9440b9fb5c6961] (session/short_term) This is a test memory from the real
-  CLI walkthrough
-- [ee8983a30fa0305f] (session/short_term) verification test memory from
-  end-to-end check
-- [fa11bc68adc42b64] (session/short_term) Test memory from CLI build
-- [1bed10c017d0b083] (trait/long_term) Purged 100K test artifacts from the
-  default tenant's Foresight memory store.
-```
-
-Retrieve a specific one by ID:
-
-```bash
-$ foresight get 4d9440b9fb5c6961
-
-╭───────────────────────── Memory 4d9440b9fb5c6961 ──────────────────────────╮
-│ [4d9440b9fb5c6961] (session/short_term)                                    │
-│ Content: This is a test memory from the real CLI walkthrough               │
-│ Tags: RISK_NONE, fact                                                       │
-╰─────────────────────────────────────────────────────────────────────────────╯
-```
-
-Search by keyword:
-
-```bash
-$ foresight query "test"
-
-Found 4 memories (hybrid search):
-- [fa11bc68adc42b64] Test memory from CLI build... (score=0.026, signals=keyword, temporal)
-- [1bed10c017d0b083] Purged 100K test artifacts... (score=0.026, signals=keyword, temporal)
-- [ee8983a30fa0305f] verification test memory from end-to-end check... (score=0.026, ...)
-- [4d9440b9fb5c6961] This is a test memory from the real CLI walkthrough... (score=0.025, ...)
-```
-
----
-
-#### Step 6 — TUI
+#### Step 5 — TUI
 
 ```bash
 foresight tui
 ```
 
-Full-screen Textual terminal UI. Three tabs:
+Full-screen Textual terminal UI. Three tabs: Dashboard, Memories, Blocks.
+Keyboard: `Tab` between tabs, `/` to search, `q` to quit.
 
-| Tab           | What it does                                   |
-| ------------- | ---------------------------------------------- |
-| **Dashboard** | Live stat cards, recent activity, memory chart |
-| **Memories**  | Browse every memory, search, store inline      |
-| **Blocks**    | View and edit context blocks live              |
-
-Keyboard navigation: `Tab` between tabs, `/` to search, `q` to quit.  
-It feels like a mission control dashboard for your brain. Everything refreshes live.
-
----
-
-#### Step 7 — Agent mode (machine output)
-
-When Foresight calls your agent, it uses `--agent` for pipe-safe, parseable output:
+#### Step 6 — Agent mode (machine output)
 
 ```bash
-$ foresight --agent status
-
-[JSON] {"status": "healthy", "memory_count": 4, "by_scope": {"session": 3, "trait": 1}, "tenant_id": "default"}
+foresight --agent status    # [JSON] {...}
+foresight --json status     # Pure JSON to stdout
 ```
 
-Or pure JSON with `--json`:
-
-```bash
-$ foresight --json status
-
-{
-  "status": "healthy",
-  "memory_count": 4,
-  "by_scope": {
-    "session": 3,
-    "trait": 1
-  },
-  "tenant_id": "default"
-}
-```
-
----
-
-#### Step 8 — Wire it to your AI agent
+#### Step 7 — Wire it to your AI agent
 
 Add to any MCP-compatible agent. `FORESIGHT_DB_URL` is required in every
 client config. Here's the Claude Code config:
@@ -360,55 +260,59 @@ FORESIGHT_DB_URL=$DATABASE_URL uv run foresight-server
 uv run foresight --help
 ```
 
-## Beginner friendly setup
+## Quick start (manual)
 
-1. Install **uv** if needed:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/daggerstuff/foresight.git
+cd foresight
+bash install.sh
+```
 
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
+Or if you already have the DSN:
 
-2. Clone the repository:
+```bash
+FORESIGHT_DB_URL=$DATABASE_URL uv run foresight-server
+uv run foresight --help
+```
 
-   ```bash
-   git clone https://github.com/yourorg/foresight.git
-   cd foresight
-   ```
+## Environment variables
 
-3. Install the package (includes the Postgres driver):
+All vars are documented in [`.env.example`](.env.example). The installer
+generates `.env` from this template automatically.
 
-   ```bash
-   uv sync --extra all
-   ```
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `FORESIGHT_DB_URL` | **Yes** | — | PostgreSQL connection string |
+| `FORESIGHT_IDENTITY` | No | `$USER` | User identity (`user` or `user@account`) |
+| `FORESIGHT_BANK_ID` | No | `default` | Memory bank isolation |
+| `FORESIGHT_LLM_PROVIDER` | No | — | LLM provider for synthesis/reflection |
+| `FORESIGHT_LLM_API_KEY` | No | — | LLM API key |
+| `FORESIGHT_LLM_BASE_URL` | No | — | LLM endpoint URL |
+| `FORESIGHT_LLM_MODEL` | No | — | LLM model name |
+| `FORESIGHT_REDIS_URL` | No | — | Redis companion cache (in-process cache if unset) |
+| `FORESIGHT_ENABLE_WS` | No | — | Enable WebSocket subscriptions |
+| `FORESIGHT_ALLOW_UNAUTHENTICATED` | No | — | Disable auth (local dev only) |
+| `FORESIGHT_DECAY_INTERVAL_HOURS` | No | `6` | Decay sweep interval |
+| `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | No | `24` | Maintenance + GC interval |
 
-4. Set your Postgres DSN — **required before init**:
+LLM, Redis, and WebSocket are all optional — the system works without them,
+just with reduced features (no synthesis, in-process cache, stdio-only transport).
 
-   ```bash
-   export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
-   ```
+## systemd service
 
-   > On Replit, `DATABASE_URL` is injected automatically.
-   > Run `scripts/setup.sh` and it is picked up for you.
+The installer auto-generates and installs a systemd user service from
+[`foresight.service`](foresight.service). Manual setup:
 
-5. Initialize your memory store:
+```bash
+cp foresight.service ~/.config/systemd/user/foresight-mcp.service
+# Edit to replace __PROJECT_DIR__ and __UV_PATH__
+systemctl --user daemon-reload
+systemctl --user enable --now foresight-mcp
+```
 
-   ```bash
-   foresight init
-   ```
-
-6. Start the MCP server:
-
-   ```bash
-   uv run foresight-server
-   ```
-
-7. Explore the CLI:
-
-   ```bash
-   foresight --help
-   foresight blocks --help
-   foresight curate --help
-   ```
+Check: `systemctl --user status foresight-mcp`  
+Logs: `journalctl --user -u foresight-mcp -f`
 
 ## Add to your MCP client
 
@@ -446,6 +350,59 @@ extensions:
 ### Other MCP clients
 
 Use the same stdio pattern with `uv run -m foresight`.
+
+### OpenCode — hands-off auto-inject
+
+The installer (`install.sh`) auto-configures OpenCode: it patches
+`opencode.json` to add the Foresight MCP server and copies the
+`foresight-autoinject.js` plugin. Just restart OpenCode after install.
+
+**Manual setup:**
+
+Foresight's `inject_context` tool is designed to fire at conversation start
+and on topic shifts, but MCP is request/response — the server can't push
+context to the client. In practice this meant the agent had to *remember*
+to call `inject_context` manually, which it rarely did.
+
+The `foresight-autoinject` plugin fixes this. It uses OpenCode's
+`experimental.chat.system.transform` hook to call `inject_context` via
+MCP HTTP transport before every LLM request and append the result to the
+system prompt — no agent action required.
+
+**Setup:**
+
+1. Run Foresight as an HTTP MCP server (Streamable HTTP transport):
+
+```bash
+export FORESIGHT_ENABLE_WS=1  # optional: WebSocket subscriptions
+foresight-server --transport http --port 8764
+```
+
+2. Add to `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "foresight": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8764/mcp",
+      "enabled": true
+    }
+  },
+  "plugin": [
+    "./plugins/foresight-autoinject.js"
+  ]
+}
+```
+
+3. Copy [`foresight-autoinject.js`](../plugins/foresight-autoinject.js) to
+   `~/.config/opencode/plugins/`.
+
+4. Restart OpenCode. Context blocks and relevant memories now auto-inject
+   into every system prompt — hands-off.
+
+The plugin is non-fatal: if Foresight is down, it skips silently. Dedup
+logic ensures it only injects once per new user message.
 
 ## Public surfaces
 

@@ -101,6 +101,9 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
+from .memory_gc import run_memory_gc, GCConfig
+from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
+from .ghost_cleanup import run_ghost_cleanup
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -4320,6 +4323,153 @@ def _start_decay_sweep_thread() -> None:
     logger.info("Decay sweep thread started (interval=%sh)", interval_hours)
 
 
+def _start_maintenance_gc_thread() -> None:
+    """Start a daemon thread that runs memory maintenance + GC on a schedule.
+
+    Interval is configurable via ``FORESIGHT_MAINTENANCE_INTERVAL_HOURS`` env
+    var (default: 24 hours). The thread catches all exceptions and never dies.
+    An initial run starts 60 seconds after startup.
+
+    Maintenance modes run automatically:
+    - consolidate: auto-merge near-duplicates (Jaccard >=0.70 overlap)
+    - archive_stale: ghost memories with low strength/importance
+    - synthesize: emit insight events for recurring topics
+
+    GC phases:
+    - Delete memories past retention TTL (ephemeral >24h, short_term >7d)
+    - Prune old decay events (>30d) and maintenance events (>60d)
+    - Clean orphaned entity links + embeddings
+
+    contradict mode is intentionally excluded — it flags for admin review only
+    and should not run unattended.
+    """
+    interval_hours = float(os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS", "24"))
+
+    def _maintenance_loop() -> None:
+        time.sleep(60)
+        while True:
+            try:
+                _run_scheduled_maintenance_gc()
+            except Exception:
+                logger.exception("Maintenance/GC thread caught unexpected exception")
+            time.sleep(interval_hours * 3600)
+
+    thread = threading.Thread(target=_maintenance_loop, daemon=True, name="foresight-maintenance-gc")
+    thread.start()
+    logger.info("Maintenance+GC thread started (interval=%sh)", interval_hours)
+
+
+def _run_scheduled_maintenance_gc() -> None:
+    """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
+    if _global_backend is None:
+        logger.warning("Maintenance/GC skipped: no backend initialised")
+        return
+
+    pairs: list[tuple[str, str]] = []
+    try:
+        with _global_backend.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT user_id, tenant_id FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL")
+                rows = cur.fetchall()
+                for row in rows:
+                    row_dict = dict(row) if not isinstance(row, dict) else row
+                    uid = row_dict.get("user_id", "")
+                    tid = row_dict.get("tenant_id", "default")
+                    if uid:
+                        pairs.append((uid, tid))
+    except Exception:
+        logger.exception("Failed to query user/tenant pairs for maintenance")
+        return
+
+    if not pairs:
+        logger.info("Maintenance/GC: no active user/tenant pairs found, skipping")
+        return
+
+    logger.info("Maintenance/GC starting for %d user/tenant pair(s)", len(pairs))
+
+    maintenance_modes = ["consolidate", "archive_stale", "synthesize", "prune_low_relevance", "enhanced_synthesize"]
+    job = MemoryMaintenanceJob()
+    for uid, tid in pairs:
+        try:
+            config = MaintenanceConfig(
+                tenant_id=tid,
+                user_id=uid,
+                modes=maintenance_modes,
+            )
+            stats = job.run(config)
+            logger.info(
+                "Maintenance complete for user=%s tenant=%s: %d dupes found, "
+                "%d auto-merged, %d stale archived, %d insights generated in %.2fs",
+                uid,
+                tid,
+                stats.duplicates_found,
+                stats.duplicates_auto_consolidated,
+                stats.stale_archived,
+                stats.insights_generated,
+                stats.maintenance_duration_seconds,
+            )
+        except Exception:
+            logger.exception("Maintenance failed for user=%s tenant=%s", uid, tid)
+
+    seen_tenants: set[str] = set()
+    for _, tid in pairs:
+        if tid in seen_tenants:
+            continue
+        seen_tenants.add(tid)
+        try:
+            gc_stats = run_memory_gc(tenant_id=tid)
+            logger.info(
+                "GC complete for tenant=%s: %d expired deleted, "
+                "%d decay events pruned, %d maintenance events pruned, "
+                "%d orphan links cleaned, %d orphan embeddings cleaned in %.2fs",
+                tid,
+                gc_stats.expired_memories_deleted,
+                gc_stats.decay_events_pruned,
+                gc_stats.maintenance_events_pruned,
+                gc_stats.orphan_links_cleaned,
+                gc_stats.orphan_embeddings_cleaned,
+                gc_stats.gc_duration_seconds,
+            )
+        except Exception:
+            logger.exception("GC failed for tenant=%s", tid)
+
+    edge_tenants: set[str] = set()
+    for _, tid in pairs:
+        if tid in edge_tenants:
+            continue
+        edge_tenants.add(tid)
+        try:
+            decay_stats = run_edge_decay_update(tid)
+            logger.info(
+                "Edge decay for tenant=%s: %d edges updated, avg decay %.3f",
+                tid,
+                decay_stats.edges_processed,
+                decay_stats.avg_decay_factor,
+            )
+        except Exception:
+            logger.exception("Edge decay failed for tenant=%s", tid)
+
+    seen_tenants2: set[str] = set()
+    for _, tid in pairs:
+        if tid in seen_tenants2:
+            continue
+        seen_tenants2.add(tid)
+        try:
+            ghost_stats = run_ghost_cleanup(tid)
+            logger.info(
+                "Ghost cleanup for tenant=%s: %d/%d deleted, ~%d bytes freed in %.2fs",
+                tid,
+                ghost_stats.ghost_memories_deleted,
+                ghost_stats.ghost_memories_found,
+                ghost_stats.bytes_freed,
+                ghost_stats.cleanup_duration_seconds,
+            )
+        except Exception:
+            logger.exception("Ghost cleanup failed for tenant=%s", tid)
+
+    logger.info("Maintenance/GC cycle complete")
+
+
 def main(host: str | None = None, port: int | None = None) -> None:
     """Start the Foresight MCP server.
 
@@ -4348,6 +4498,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
     initialize_stream_producer()
     _resume_pending_curation_runs()
     _start_decay_sweep_thread()
+    _start_maintenance_gc_thread()
 
     reg = get_memory_hook_registry()
     reg.register(MemoryHookType.PRE_STORE, _audit_hook, name="audit")

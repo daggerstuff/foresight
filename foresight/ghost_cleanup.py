@@ -114,9 +114,12 @@ class GhostMemoryCleanup:
                 cursor = conn.execute(
                     """
                     DELETE FROM memories
-                    WHERE tenant_id = ? AND is_ghost = 1
-                    AND created_at < ?
-                    LIMIT ?
+                    WHERE id IN (
+                        SELECT id FROM memories
+                        WHERE tenant_id = ? AND is_ghost = 1
+                        AND created_at < ?
+                        LIMIT ?
+                    )
                     """,
                     (tenant_id, cutoff_date.isoformat(), max_batch_size),
                 )
@@ -192,18 +195,22 @@ class GhostMemoryCleanup:
             )
             row = cursor.fetchone()
 
-            # Ghosts by age bucket
+            now = datetime.now(timezone.utc)
+            cutoff_7 = (now - timedelta(days=7)).isoformat()
+            cutoff_30 = (now - timedelta(days=30)).isoformat()
+            cutoff_90 = (now - timedelta(days=90)).isoformat()
+
             cursor = conn.execute(
                 """
                 SELECT
-                    SUM(CASE WHEN created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as last_7_days,
-                    SUM(CASE WHEN created_at > datetime('now', '-30 days') THEN 1 ELSE 0 END) as last_30_days,
-                    SUM(CASE WHEN created_at > datetime('now', '-90 days') THEN 1 ELSE 0 END) as last_90_days,
-                    SUM(CASE WHEN created_at < datetime('now', '-90 days') THEN 1 ELSE 0 END) as older_90_days
+                    SUM(CASE WHEN created_at > ? THEN 1 ELSE 0 END) as last_7_days,
+                    SUM(CASE WHEN created_at > ? THEN 1 ELSE 0 END) as last_30_days,
+                    SUM(CASE WHEN created_at > ? THEN 1 ELSE 0 END) as last_90_days,
+                    SUM(CASE WHEN created_at < ? THEN 1 ELSE 0 END) as older_90_days
                 FROM memories
                 WHERE tenant_id = ? AND is_ghost = 1
                 """,
-                (tenant_id,),
+                (cutoff_7, cutoff_30, cutoff_90, cutoff_90, tenant_id),
             )
             age_row = cursor.fetchone()
 

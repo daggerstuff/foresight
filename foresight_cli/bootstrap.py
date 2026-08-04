@@ -161,7 +161,6 @@ def ensure_loaded() -> None:
     # Import leaf modules first (fewest dependencies)
     leaf_order = [
         "foresight.config",
-        "foresight.schema",
         "foresight.connection_pool",
         "foresight.tenant_context",
         "foresight.sql_helpers",
@@ -181,9 +180,9 @@ def ensure_loaded() -> None:
         "foresight.memory_types",
         "foresight.memory_components",
         "foresight.enhanced_synthesizer",
-        "foresight.crisis_detection",
         "foresight.block_registry",
         "foresight.context_blocks",
+        "foresight.crisis_detection",
         "foresight.document_layer",
         "foresight.reflection_engine",
         "foresight.reflection_narrative",
@@ -194,7 +193,6 @@ def ensure_loaded() -> None:
         "foresight.narrative_cache",
         "foresight.ghost_cleanup",
         "foresight.graph_edge_decay",
-        "foresight.cluster_service",
         "foresight.memory_maintenance",
         "foresight.temporal_schema",
         "foresight.temporal_service",

@@ -20,10 +20,13 @@ All operations are:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -31,6 +34,8 @@ from typing import Any
 from .clustering import cluster_memories
 from .config import DB_PATH
 from .connection_pool import get_pool
+from .enhanced_synthesizer import get_enhanced_synthesizer
+from .memory_types import MemoryObject, EmotionalMetadata
 from .sensitivity import resolve_is_sensitive
 
 logger = logging.getLogger("foresight_maintenance")
@@ -69,6 +74,9 @@ DUPLICATE_OVERLAP_HIGH = 0.70  # Auto-consolidate threshold
 DUPLICATE_OVERLAP_MARGINAL = 0.30  # Flag for admin review
 STALE_STRENGTH_THRESHOLD = 0.2
 STALE_IMPORTANCE_THRESHOLD = 0.1
+LOW_RELEVANCE_IMPORTANCE_THRESHOLD = 0.3
+LOW_RELEVANCE_MIN_AGE_DAYS = 14
+LOW_RELEVANCE_MAX_ACTIVATIONS = 1
 MAX_BATCH_SIZE = 200
 MAX_RUNTIME_SECONDS = 300
 
@@ -83,6 +91,9 @@ class MaintenanceConfig:
     consolidation_overlap_marginal: float = DUPLICATE_OVERLAP_MARGINAL
     stale_strength_threshold: float = STALE_STRENGTH_THRESHOLD
     stale_importance_threshold: float = STALE_IMPORTANCE_THRESHOLD
+    low_relevance_importance_threshold: float = LOW_RELEVANCE_IMPORTANCE_THRESHOLD
+    low_relevance_min_age_days: int = LOW_RELEVANCE_MIN_AGE_DAYS
+    low_relevance_max_activations: int = LOW_RELEVANCE_MAX_ACTIVATIONS
     batch_size: int = MAX_BATCH_SIZE
     sensitive_only: bool = False
     tool_access: str = "observe"
@@ -135,7 +146,12 @@ class MaintenanceStats:
     contradictions_flagged_review: int = 0
     stale_found: int = 0
     stale_archived: int = 0
+    low_relevance_found: int = 0
+    low_relevance_pruned: int = 0
     insights_generated: int = 0
+    enhanced_contradictions: int = 0
+    enhanced_trends: int = 0
+    enhanced_insights: int = 0
     sensitive_excluded: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -150,7 +166,12 @@ class MaintenanceStats:
             "contradictions_flagged_review": self.contradictions_flagged_review,
             "stale_found": self.stale_found,
             "stale_archived": self.stale_archived,
+            "low_relevance_found": self.low_relevance_found,
+            "low_relevance_pruned": self.low_relevance_pruned,
             "insights_generated": self.insights_generated,
+            "enhanced_contradictions": self.enhanced_contradictions,
+            "enhanced_trends": self.enhanced_trends,
+            "enhanced_insights": self.enhanced_insights,
             "sensitive_excluded": self.sensitive_excluded,
             "errors": self.errors,
         }
@@ -178,8 +199,14 @@ class MemoryMaintenanceJob:
             if "archive_stale" in config.modes:
                 self._run_archive_stale(conn, config, stats)
 
+            if "prune_low_relevance" in config.modes:
+                self._run_prune_low_relevance(conn, config, stats)
+
             if "synthesize" in config.modes:
                 self._run_synthesize(conn, config, stats)
+
+            if "enhanced_synthesize" in config.modes:
+                self._run_enhanced_synthesize(conn, config, stats)
 
         except Exception as e:
             logger.exception("Maintenance job failed: %s", e)
@@ -189,14 +216,19 @@ class MemoryMaintenanceJob:
 
         stats.maintenance_duration_seconds = time.perf_counter() - t0
         logger.info(
-            "Maintenance complete: modes=%s duration=%.2fs dups=%d+%d contr=%d stale=%d insights=%d errors=%d",
+            "Maintenance complete: modes=%s duration=%.2fs dups=%d+%d contr=%d stale=%d low_rel=%d/%d insights=%d enh=[contr=%d tr=%d ins=%d] errors=%d",
             stats.modes_run,
             stats.maintenance_duration_seconds,
             stats.duplicates_auto_consolidated,
             stats.duplicates_flagged_review,
             stats.contradictions_flagged_review,
             stats.stale_archived,
+            stats.low_relevance_pruned,
+            stats.low_relevance_found,
             stats.insights_generated,
+            stats.enhanced_contradictions,
+            stats.enhanced_trends,
+            stats.enhanced_insights,
             len(stats.errors),
         )
         return stats
@@ -415,17 +447,38 @@ class MemoryMaintenanceJob:
         if additional_content:
             combined = existing_content + " " + " ".join(additional_content)
 
-        # Update primary memory with content and sensitivity in a single transaction
+        # --- Version snapshot: record pre-merge content for audit/rollback ---
+        now_iso = datetime.now(timezone.utc).isoformat()
+        version_id = str(uuid.uuid4())
+        try:
+            conn.execute(
+                """INSERT INTO memory_versions
+                   (id, memory_id, tenant_id, content, version, created_at, tags, emotional_context, metrics)
+                   VALUES (?, ?, ?, ?, ?, ?, '[]', '{}', '{}')""",
+                (
+                    version_id,
+                    primary_id,
+                    config.tenant_id,
+                    existing_content,
+                    1,
+                    now_iso,
+                ),
+            )
+        except Exception:
+            logger.debug("version snapshot insert failed for %s", primary_id, exc_info=True)
+
+        # Update primary memory with combined content.  Primary stays VISIBLE
+        # (is_ghost = 0) — the combined content must be retrievable.
         is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, combined[:1000])
         conn.execute(
             """UPDATE memories
                SET content = ?,
-                   is_ghost = 1,
-                   gist = ?,
-                   synthesized_from = ?,
-                   is_sensitive = ?,
-                   sensitivity_reason = ?
-               WHERE id = ? AND tenant_id = ? AND user_id = ?""",
+                    is_ghost = 0,
+                    gist = ?,
+                    synthesized_from = ?,
+                    is_sensitive = ?,
+                    sensitivity_reason = ?
+                WHERE id = ? AND tenant_id = ? AND user_id = ?""",
             (
                 combined[:1000],
                 existing_content[:200],
@@ -437,6 +490,31 @@ class MemoryMaintenanceJob:
                 config.user_id,
             ),
         )
+
+        # --- Merge history: record this consolidation event for audit ---
+        history_id = str(uuid.uuid4())
+        try:
+            conn.execute(
+                """INSERT INTO memory_merge_history
+                   (id, primary_id, merged_ids, tenant_id, user_id, cluster_id,
+                    avg_overlap, merged_at, merged_by, pre_merge_content, merged_content)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    history_id,
+                    primary_id,
+                    json.dumps(other_ids),
+                    config.tenant_id,
+                    config.user_id,
+                    cand.cluster_id,
+                    (sum(cand.overlap_scores.values()) / len(cand.overlap_scores)) if cand.overlap_scores else None,
+                    now_iso,
+                    "system",
+                    existing_content[:2000],
+                    combined[:2000],
+                ),
+            )
+        except Exception:
+            logger.debug("merge history insert failed for %s", primary_id, exc_info=True)
 
         # Ghost all other memories in a single query
         if other_ids:
@@ -746,6 +824,66 @@ class MemoryMaintenanceJob:
         )
         conn.commit()
 
+    def _run_prune_low_relevance(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
+        if config.sensitive_only and getattr(config, "tool_access", None) != "observe":
+            raise ValueError("sensitive_only prune_low_relevance requires tool_access=observe to prevent PHI loss")
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=config.low_relevance_min_age_days)).isoformat()
+        sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
+        cursor = conn.execute(
+            f"""
+            SELECT id, content, importance, activation_count, retention, created_at
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND is_ghost = 0
+            AND {sensitivity_filter}
+            AND importance <= ?
+            AND COALESCE(activation_count, 0) <= ?
+            AND created_at < ?
+            AND retention NOT IN ('permanent', 'long_term')
+            ORDER BY importance ASC, activation_count ASC, created_at ASC
+            LIMIT ?
+            """,
+            (
+                config.user_id,
+                config.tenant_id,
+                config.low_relevance_importance_threshold,
+                config.low_relevance_max_activations,
+                cutoff,
+                config.batch_size,
+            ),
+        )
+
+        pruned_ids: list[str] = []
+        for row in cursor.fetchall():
+            pruned_ids.append(row["id"])
+
+        stats.low_relevance_found = len(pruned_ids)
+
+        for mid in pruned_ids:
+            try:
+                content_row = conn.execute(
+                    "SELECT content FROM memories WHERE id = ?",
+                    (mid,),
+                ).fetchone()
+                if not content_row:
+                    continue
+                conn.execute(
+                    "UPDATE memories SET is_ghost = 1, gist = ? WHERE id = ?",
+                    ((content_row["content"] or "")[:200], mid),
+                )
+                conn.commit()
+                stats.low_relevance_pruned += 1
+            except Exception as e:
+                logger.warning("Prune low_relevance failed for %s: %s", mid, e)
+                stats.errors.append(f"prune_low_relevance:{mid}:{e}")
+
+        logger.debug(
+            "Prune low_relevance phase: found=%d pruned=%d",
+            stats.low_relevance_found,
+            stats.low_relevance_pruned,
+        )
+
     def _run_synthesize(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         memories = self._fetch_memories(conn, config)
         if len(memories) < 3:
@@ -805,6 +943,116 @@ class MemoryMaintenanceJob:
                     datetime.now(timezone.utc).isoformat(),
                     "maintenance_job",
                     insight.member_ids[0][:8] if insight.member_ids else "unknown",
+                    str(payload),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+    def _run_enhanced_synthesize(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
+        """Run EnhancedSynthesizer for deep contradiction/trend/insight analysis.
+
+        Requires >=5 non-ghosted memories. Emits events for contradictions,
+        temporal trends, and evidence-anchored insights.
+        """
+        memories = self._fetch_memories(conn, config, extra_where=" AND COALESCE(is_ghost, 0) = 0")
+        if len(memories) < 5:
+            logger.debug("Enhanced synthesize: skipped (only %d memories, need >=5)", len(memories))
+            return
+
+        mem_objs: list[MemoryObject] = []
+        for row in memories:
+            try:
+                tags = json.loads(row["tags"]) if row["tags"] else []
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            try:
+                emo_raw = json.loads(row["emotional_context"]) if row["emotional_context"] else {}
+                emo = EmotionalMetadata.from_dict(emo_raw) if emo_raw else None
+            except (json.JSONDecodeError, TypeError):
+                emo = None
+            mem_objs.append(
+                MemoryObject(
+                    id=row["id"],
+                    timestamp=row["created_at"],
+                    scope=row["scope"] or "arc",
+                    retention=row["retention"] or "long_term",
+                    content=row["content"],
+                    tags=tags,
+                    emotional_context=emo,
+                )
+            )
+
+        try:
+            result = asyncio.run(get_enhanced_synthesizer().synthesize(mem_objs, user_id=config.user_id))
+        except RuntimeError:
+            # Event loop already running -- use thread bridge
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    get_enhanced_synthesizer().synthesize(mem_objs, user_id=config.user_id),
+                )
+                result = future.result(timeout=60)
+        except Exception as e:
+            logger.warning("Enhanced synthesize failed: %s", e)
+            stats.errors.append(f"enhanced_synthesize:{e}")
+            return
+
+        if result is None:
+            logger.debug("Enhanced synthesize: no result (insufficient data)")
+            return
+
+        for c in result.contradictions:
+            self._emit_enhanced_event(
+                conn,
+                event_type="maintenance_contradiction",
+                payload=c.to_dict(),
+                entity_id=c.evidence_ids[0][:8] if c.evidence_ids else "unknown",
+            )
+            stats.enhanced_contradictions += 1
+
+        for t in result.temporal_trends:
+            self._emit_enhanced_event(
+                conn,
+                event_type="maintenance_trend",
+                payload=t.to_dict(),
+                entity_id=t.evidence_ids[0][:8] if t.evidence_ids else "unknown",
+            )
+            stats.enhanced_trends += 1
+
+        for ins in result.insights:
+            self._emit_enhanced_event(
+                conn,
+                event_type="maintenance_insight",
+                payload=ins.to_dict(),
+                entity_id=ins.evidence_ids[0][:8] if ins.evidence_ids else "unknown",
+            )
+            stats.enhanced_insights += 1
+
+        logger.debug(
+            "Enhanced synthesize: contradictions=%d trends=%d insights=%d",
+            stats.enhanced_contradictions,
+            stats.enhanced_trends,
+            stats.enhanced_insights,
+        )
+
+    def _emit_enhanced_event(self, conn: Any, event_type: str, payload: dict[str, Any], entity_id: str) -> None:
+        try:
+            conn.execute(
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    hashlib.sha256(
+                        f"{event_type}{entity_id}{datetime.now(timezone.utc).isoformat()}".encode()
+                    ).hexdigest()[:16],
+                    "maintenance",
+                    event_type,
+                    datetime.now(timezone.utc).isoformat(),
+                    "enhanced_synthesizer",
+                    entity_id,
                     str(payload),
                 ),
             )

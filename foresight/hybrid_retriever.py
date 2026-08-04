@@ -28,6 +28,8 @@ import logging
 import math
 import threading
 from collections import OrderedDict
+
+from .rrf_tuning import get_rrf_config
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -251,6 +253,9 @@ class HybridRetriever:
         if "tfidf_cosine" not in merged and "semantic" in merged:
             merged["tfidf_cosine"] = merged["semantic"]
         self.weights = merged
+
+        # RRF smoothing constant: read from weights or fall back to class default.
+        self.rrf_k: float = self.weights.get("rrf_k", float(self.RRF_K))
 
         # Trend modifiers: read from weights or fall back to defaults.
         # Prefix each trend key with "trend_mod_" for explicit override.
@@ -1011,13 +1016,13 @@ class HybridRetriever:
             score = 0.0
 
             if mid in keyword:
-                score += self.weights["keyword"] / (self.RRF_K + keyword[mid])
+                score += self.weights["keyword"] / (self.rrf_k + keyword[mid])
             if mid in tfidf_cosine:
-                score += self.weights["tfidf_cosine"] / (self.RRF_K + tfidf_cosine[mid])
+                score += self.weights["tfidf_cosine"] / (self.rrf_k + tfidf_cosine[mid])
             if mid in graph:
-                score += self.weights["graph"] / (self.RRF_K + graph[mid])
+                score += self.weights["graph"] / (self.rrf_k + graph[mid])
             if mid in temporal:
-                score += self.weights["temporal"] / (self.RRF_K + temporal[mid])
+                score += self.weights["temporal"] / (self.rrf_k + temporal[mid])
 
             scores[mid] = score
 
@@ -1222,6 +1227,12 @@ def get_hybrid_retriever(
     backend: DatabaseBackend | None = None,
 ) -> HybridRetriever:
     """Get or create global hybrid retriever instance (thread-safe)."""
+    if weights is None:
+        try:
+            rrf_config = get_rrf_config()
+            weights = rrf_config.to_dict()
+        except Exception:
+            pass
     return _HybridRetrieverSingleton.get_instance(db_path, weights, backend)
 
 

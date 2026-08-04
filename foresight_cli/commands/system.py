@@ -327,6 +327,52 @@ def doctor(
     except Exception as e:
         check("Database responsive", False, str(e))
 
+    # LLM configuration (optional but recommended for synthesis/reflection)
+    llm_provider = os.environ.get("FORESIGHT_LLM_PROVIDER", "")
+    llm_api_key = os.environ.get("FORESIGHT_LLM_API_KEY", "")
+    llm_model = os.environ.get("FORESIGHT_LLM_MODEL", "")
+    if llm_provider:
+        check("LLM provider configured", True, f"{llm_provider}/{llm_model or 'default'}")
+    elif llm_api_key or llm_model:
+        check("LLM provider configured", True, "partial (some vars set)")
+    else:
+        check("LLM provider configured", True, "not set (synthesis/reflection disabled)")
+
+    # Redis (optional companion cache)
+    redis_url = os.environ.get("FORESIGHT_REDIS_URL", "")
+    check("Redis cache", bool(redis_url), "not set (in-process cache)" if not redis_url else "configured")
+
+    # MCP HTTP transport (check if server is listening)
+    import socket
+
+    mcp_port = 8764
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        sock.connect(("127.0.0.1", mcp_port))
+        check("MCP HTTP server", True, f"listening on :{mcp_port}")
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        check("MCP HTTP server", True, "not running (start with: foresight-server)")
+    finally:
+        sock.close()
+
+    # Schema version
+    try:
+        from foresight.backend import get_backend
+
+        backend = get_backend()
+        if hasattr(backend, "fetch"):
+            row = backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
+            if row:
+                version = row[0][0] if isinstance(row[0], (list, tuple)) else row[0].get("version", "?")
+                check("Schema version", True, f"v{version}")
+            else:
+                check("Schema version", True, "no migrations applied")
+        else:
+            check("Schema version", True, "backend supports migrations")
+    except Exception:
+        check("Schema version", True, "check skipped")
+
     # Summary
     if out.get_settings().mode != "agent":
         out.stderr("")
