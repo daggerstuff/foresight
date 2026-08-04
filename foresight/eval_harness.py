@@ -573,7 +573,11 @@ class EvalHarness:
                     try:
                         conn.execute(stmt)
                     except Exception:
-                        pass  # Schema migration already applied, non-critical
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "Schema migration statement already applied, non-critical",
+                            exc_info=True,
+                        )
             conn.commit()
         finally:
             conn.close()
@@ -650,7 +654,11 @@ class EvalHarness:
                 )
                 count += 1
             except Exception:
-                pass  # Fixture seeding non-critical
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Fixture seeding failed, non-critical",
+                    exc_info=True,
+                )
 
         conn.commit()
 

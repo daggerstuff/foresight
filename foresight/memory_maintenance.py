@@ -858,14 +858,14 @@ class MemoryMaintenanceJob:
             raise ValueError("sensitive_only prune_low_relevance requires tool_access=observe to prevent PHI loss")
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=config.low_relevance_min_age_days)).isoformat()
-        sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
+        sensitive_val = 1 if config.sensitive_only else 0
         cursor = conn.execute(
-            f"""
+            """
             SELECT id, content, importance, activation_count, retention, created_at
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND is_ghost = 0
-            AND {sensitivity_filter}
+            AND COALESCE(is_sensitive, 0) = ?
             AND importance <= ?
             AND COALESCE(activation_count, 0) <= ?
             AND created_at < ?
@@ -876,6 +876,7 @@ class MemoryMaintenanceJob:
             (
                 config.user_id,
                 config.tenant_id,
+                sensitive_val,
                 config.low_relevance_importance_threshold,
                 config.low_relevance_max_activations,
                 cutoff,

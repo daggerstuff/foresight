@@ -183,7 +183,11 @@ class MemoryGC:
                 )
                 conn.commit()
             except Exception:
-                pass  # Table may not exist in test-only SQLite harness
+                import logging
+                logging.getLogger(__name__).warning(
+                    "memory_merge_history table may not exist in test-only SQLite harness, skipping cleanup",
+                    exc_info=True,
+                )
 
             # ------------------------------------------------------------------
             # Phase 4: Clean orphaned data (no FK cascade protection)

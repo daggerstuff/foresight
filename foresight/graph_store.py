@@ -283,7 +283,12 @@ class GraphStore:
                 cursor = conn.execute(f"PRAGMA table_info({table})")
                 columns = [row["name"] for row in cursor.fetchall()]
             except Exception:
-                continue  # Table doesn't exist yet, CREATE TABLE IF NOT EXISTS handles it
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Table %s info check failed, skipping", table,
+                    exc_info=True,
+                )
+                continue
 
             if "tenant_id" not in columns:
                 if table == "memory_entities":

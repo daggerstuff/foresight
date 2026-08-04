@@ -512,7 +512,11 @@ class MaintenanceEvalHarness:
                 )
                 count += 1
             except Exception:
-                pass  # Fixture seeding non-critical
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Fixture seeding failed, non-critical",
+                    exc_info=True,
+                )
 
         conn.commit()
         logger.info("Seeded %d fixture memories (%s)", count, self.db_path)
