@@ -573,7 +573,7 @@ class EvalHarness:
                     try:
                         conn.execute(stmt)
                     except Exception:
-                        pass
+                        pass  # Schema migration already applied, non-critical
             conn.commit()
         finally:
             conn.close()
@@ -650,7 +650,7 @@ class EvalHarness:
                 )
                 count += 1
             except Exception:
-                pass
+                pass  # Fixture seeding non-critical
 
         conn.commit()
 

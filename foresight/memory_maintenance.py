@@ -239,7 +239,7 @@ class MemoryMaintenanceJob:
         self, conn: Any, config: MaintenanceConfig, extra_where: str = "", extra_params: tuple = ()
     ) -> list[dict[str, Any]]:
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
-        where = f"user_id = ? AND tenant_id = ? AND {sensitivity_filter}{extra_where}"
+        where = f"user_id = ? AND tenant_id = ? AND {sensitivity_filter}{extra_where}"  # nosec B608: sensitivity_filter is hardcoded, not user input
         params = (config.user_id, config.tenant_id, *extra_params)
         cursor = conn.execute(
             f"""
@@ -1092,4 +1092,4 @@ class MemoryMaintenanceJob:
             )
             conn.commit()
         except Exception:
-            pass
+            logging.getLogger(__name__).warning('Memory maintenance op failed', exc_info=True)

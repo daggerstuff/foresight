@@ -512,7 +512,7 @@ class MaintenanceEvalHarness:
                 )
                 count += 1
             except Exception:
-                pass
+                pass  # Fixture seeding non-critical
 
         conn.commit()
         logger.info("Seeded %d fixture memories (%s)", count, self.db_path)
