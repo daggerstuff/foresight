@@ -28,6 +28,8 @@ import logging
 import math
 import threading
 from collections import OrderedDict
+
+from .rrf_tuning import get_rrf_config
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -245,12 +247,28 @@ class HybridRetriever:
         self._backend = backend
         merged = self.DEFAULT_WEIGHTS.copy()
         if weights:
-            merged.update(weights)
+            for _k, _v in weights.items():
+                try:
+                    _f = float(_v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(_f) and _f >= 0:
+                    merged[_k] = _f
         if "semantic" not in merged and "tfidf_cosine" in merged:
             merged["semantic"] = merged["tfidf_cosine"]
         if "tfidf_cosine" not in merged and "semantic" in merged:
             merged["tfidf_cosine"] = merged["semantic"]
         self.weights = merged
+
+        # RRF smoothing constant: read from weights or fall back to class default.
+        rrf_k_raw = self.weights.get("rrf_k", float(self.RRF_K))
+        try:
+            rrf_k_val = float(rrf_k_raw)
+        except (TypeError, ValueError):
+            rrf_k_val = float(self.RRF_K)
+        if not math.isfinite(rrf_k_val) or rrf_k_val <= 0:
+            rrf_k_val = float(self.RRF_K)
+        self.rrf_k: float = rrf_k_val
 
         # Trend modifiers: read from weights or fall back to defaults.
         # Prefix each trend key with "trend_mod_" for explicit override.
@@ -1011,13 +1029,13 @@ class HybridRetriever:
             score = 0.0
 
             if mid in keyword:
-                score += self.weights["keyword"] / (self.RRF_K + keyword[mid])
+                score += self.weights["keyword"] / (self.rrf_k + keyword[mid])
             if mid in tfidf_cosine:
-                score += self.weights["tfidf_cosine"] / (self.RRF_K + tfidf_cosine[mid])
+                score += self.weights["tfidf_cosine"] / (self.rrf_k + tfidf_cosine[mid])
             if mid in graph:
-                score += self.weights["graph"] / (self.RRF_K + graph[mid])
+                score += self.weights["graph"] / (self.rrf_k + graph[mid])
             if mid in temporal:
-                score += self.weights["temporal"] / (self.RRF_K + temporal[mid])
+                score += self.weights["temporal"] / (self.rrf_k + temporal[mid])
 
             scores[mid] = score
 
@@ -1222,6 +1240,16 @@ def get_hybrid_retriever(
     backend: DatabaseBackend | None = None,
 ) -> HybridRetriever:
     """Get or create global hybrid retriever instance (thread-safe)."""
+    if weights is None and _HybridRetrieverSingleton._instance is None:
+        try:
+            rrf_config = get_rrf_config()
+            weights = rrf_config.to_dict()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "RRF config load failed, using defaults",
+                exc_info=True,
+            )
     return _HybridRetrieverSingleton.get_instance(db_path, weights, backend)
 
 

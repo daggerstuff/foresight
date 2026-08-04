@@ -247,18 +247,51 @@ fi
 
 export FORESIGHT_DB_URL
 
-# ── 4. Persist to .env ────────────────────────────────────────────────────────
+# ── 4. Persist to .env (from template) ──────────────────────────────────────
 
 ENV_FILE="$SCRIPT_DIR/.env"
+ENV_TEMPLATE="$SCRIPT_DIR/.env.example"
 
-if [ ! -f "$ENV_FILE" ] || ! grep -q "FORESIGHT_DB_URL" "$ENV_FILE" 2>/dev/null; then
-  if [ "${FORESIGHT_DB_URL}" = "${DATABASE_URL:-}" ] && [ -n "${DATABASE_URL:-}" ]; then
-    # Keep portable — expand at runtime, not at install time
-    printf 'FORESIGHT_DB_URL=${DATABASE_URL}\n' >> "$ENV_FILE"
+if [ ! -f "$ENV_FILE" ]; then
+  # Generate .env from template with all documented vars
+  if [ -f "$ENV_TEMPLATE" ]; then
+    cp "$ENV_TEMPLATE" "$ENV_FILE"
+    # Fill in the DB URL (value-safe — use python to avoid sed quoting issues with query params)
+    if [ "${FORESIGHT_DB_URL}" = "${DATABASE_URL:-}" ] && [ -n "${DATABASE_URL:-}" ]; then
+      uv run python3 -c "
+import pathlib
+p = pathlib.Path('$ENV_FILE')
+text = p.read_text()
+for line in text.splitlines(True):
+    if line.startswith('FORESIGHT_DB_URL='):
+        text = text.replace(line, 'FORESIGHT_DB_URL=\${DATABASE_URL}\n')
+        break
+p.write_text(text)
+" 2>/dev/null || sed -i.bak "s|^FORESIGHT_DB_URL=.*|FORESIGHT_DB_URL=\${DATABASE_URL}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+    else
+      uv run python3 -c "
+import pathlib
+p = pathlib.Path('$ENV_FILE')
+text = p.read_text()
+dsn = '''${FORESIGHT_DB_URL}'''
+for line in text.splitlines(True):
+    if line.startswith('FORESIGHT_DB_URL='):
+        text = text.replace(line, 'FORESIGHT_DB_URL=' + dsn + chr(10))
+        break
+p.write_text(text)
+" 2>/dev/null || sed -i.bak "s|^FORESIGHT_DB_URL=.*|FORESIGHT_DB_URL=${FORESIGHT_DB_URL}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+    fi
+    _ok "Created .env from template (all vars documented)"
   else
+    # Fallback: minimal .env
     printf 'FORESIGHT_DB_URL=%s\n' "$FORESIGHT_DB_URL" >> "$ENV_FILE"
+    _ok "Saved connection string to .env"
   fi
-  _ok "Saved connection string to .env"
+elif ! grep -q "FORESIGHT_DB_URL" "$ENV_FILE" 2>/dev/null; then
+  printf 'FORESIGHT_DB_URL=%s\n' "$FORESIGHT_DB_URL" >> "$ENV_FILE"
+  _ok "Added FORESIGHT_DB_URL to .env"
+else
+  _ok ".env already configured"
 fi
 
 # ── 5. Config & schema init ───────────────────────────────────────────────────
@@ -277,10 +310,133 @@ _spin "Initializing config and database schema" \
 
 _label "Health check"
 
-_spin "Running diagnostics  (7 checks)" \
+_spin "Running diagnostics" \
   uv run foresight system doctor
 
-# ── 7. PATH hint ──────────────────────────────────────────────────────────────
+# ── 7. systemd service ────────────────────────────────────────────────────────
+
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+SERVICE_FILE="$SYSTEMD_DIR/foresight-mcp.service"
+SERVICE_TEMPLATE="$SCRIPT_DIR/foresight.service"
+
+# Create user systemd dir if missing (fresh Linux installs)
+if command -v systemctl &>/dev/null; then
+  mkdir -p "$SYSTEMD_DIR" 2>/dev/null || true
+fi
+
+if [ -d "$SYSTEMD_DIR" ]; then
+  _label "Systemd service"
+
+  # Guard: if user systemd session unavailable, warn and skip
+  if ! systemctl --user show-environment &>/dev/null; then
+    _warn "systemd user session unavailable — skipping service install (manual setup: cp foresight.service ~/.config/systemd/user/)"
+  else
+    UV_PATH=$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")
+
+    if [ -f "$SERVICE_TEMPLATE" ]; then
+      uv run python3 -c "
+import pathlib, sys
+tpl = pathlib.Path(sys.argv[1])
+out = pathlib.Path(sys.argv[2])
+txt = tpl.read_text()
+txt = txt.replace('__PROJECT_DIR__', sys.argv[3])
+txt = txt.replace('__UV_PATH__', sys.argv[4])
+out.write_text(txt)
+" "$SERVICE_TEMPLATE" "$SERVICE_FILE" "$SCRIPT_DIR" "$UV_PATH"
+      systemctl --user daemon-reload 2>/dev/null || true
+      systemctl --user enable foresight-mcp 2>/dev/null || true
+      systemctl --user restart foresight-mcp 2>/dev/null || true
+      _ok "Installed + started foresight-mcp.service"
+    elif [ -f "$SERVICE_FILE" ]; then
+      _ok "Service file already exists"
+    else
+      _warn "No service template found — see foresight.service for manual setup"
+    fi
+  fi
+fi
+
+# ── 8. OpenCode MCP auto-config ───────────────────────────────────────────────
+
+OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
+OPENCODE_PLUGIN_DIR="$HOME/.config/opencode/plugins"
+PLUGIN_SOURCE="$OPENCODE_PLUGIN_DIR/foresight-autoinject.js"
+
+if [ -f "$OPENCODE_CONFIG" ] || [ -d "$HOME/.config/opencode" ] || command -v opencode &>/dev/null; then
+  _label "OpenCode integration"
+
+  mkdir -p "$HOME/.config/opencode"
+  mkdir -p "$OPENCODE_PLUGIN_DIR"
+
+  # Copy plugin if we have it in the repo
+  REPO_PLUGIN="$SCRIPT_DIR/plugins/foresight-autoinject.js"
+  if [ -f "$REPO_PLUGIN" ] && [ ! -f "$PLUGIN_SOURCE" ]; then
+    cp "$REPO_PLUGIN" "$PLUGIN_SOURCE"
+    _ok "Copied foresight-autoinject plugin"
+  elif [ ! -f "$REPO_PLUGIN" ]; then
+    _warn "foresight-autoinject.js not in repo — auto-inject plugin not installed (see README manual setup)"
+  fi
+
+  # Patch opencode.json to add MCP server + plugin independently (preserves existing config)
+  if [ -f "$OPENCODE_CONFIG" ]; then
+    # Use python to safely merge JSON (idempotent — only adds missing entries, never overwrites)
+    uv run python3 -c "
+import json, sys
+with open('$OPENCODE_CONFIG', 'r') as f:
+    config = json.load(f)
+
+config.setdefault('mcp', {})
+if 'foresight' not in config['mcp']:
+    config['mcp']['foresight'] = {
+        'type': 'remote',
+        'url': 'http://127.0.0.1:8764/mcp',
+        'enabled': True
+    }
+
+plugins = config.get('plugin', [])
+plugin_entry = './plugins/foresight-autoinject.js'
+if plugin_entry not in plugins:
+    plugins.append(plugin_entry)
+    config['plugin'] = plugins
+
+with open('$OPENCODE_CONFIG', 'w') as f:
+    json.dump(config, f, indent=2)
+" 2>/dev/null && _ok "Patched opencode.json (Foresight MCP + plugin)" || _warn "Could not patch opencode.json (edit manually)"
+  else
+    # Create minimal opencode.json
+    mkdir -p "$(dirname "$OPENCODE_CONFIG")"
+    cat > "$OPENCODE_CONFIG" <<'OCJSON'
+{
+  "mcp": {
+    "foresight": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8764/mcp",
+      "enabled": true
+    }
+  },
+  "plugin": ["./plugins/foresight-autoinject.js"]
+}
+OCJSON
+    _ok "Created opencode.json with Foresight config"
+  fi
+fi
+
+# ── 9. First memory onboarding ───────────────────────────────────────────────
+
+_label "First memory"
+
+_welcome_msg="Storing welcome memory"
+_welcome_log=$(mktemp)
+printf "  ${C_PURPLE}⣾${RESET}  ${C_WHITE}%s${RESET}   \r" "$_welcome_msg"
+if uv run foresight store "Foresight initialized via install.sh — memory system is live and ready." >"$_welcome_log" 2>&1; then
+  printf "\r  ${C_GREEN}${BOLD}✓${RESET}  ${C_WHITE}%s${RESET}   \n" "$_welcome_msg"
+  _ok "Welcome memory stored"
+else
+  printf "\r  ${C_RED}${BOLD}✗${RESET}  ${C_WHITE}%s${RESET}   \n" "$_welcome_msg"
+  _warn "Could not store welcome memory (DB may need a moment to warm up)"
+fi
+rm -f "$_welcome_log"
+
+# ── 10. PATH hint ─────────────────────────────────────────────────────────────
 
 if ! command -v foresight &>/dev/null; then
   BIN_DIR="$VENV_BIN"
@@ -288,19 +444,32 @@ if ! command -v foresight &>/dev/null; then
   printf "\n    ${C_GREEN}export PATH=\"\$PATH:%s\"${RESET}\n\n" "$BIN_DIR"
 fi
 
-# ── 8. Success ────────────────────────────────────────────────────────────────
+# ── 11. Success ──────────────────────────────────────────────────────────────
 
 printf "\n"
 _border_top
 _bline "  ${C_GREEN}${BOLD}✓  All done — Foresight is ready.${RESET}"
 _border_empty
-_bline "  ${BOLD}Try it:${RESET}"
+_bline "  ${BOLD}What was configured:${RESET}"
+_border_empty
+_bline "  ${C_GRAY}✓ Dependencies installed${RESET}"
+_bline "  ${C_GRAY}✓ Database connected${RESET}"
+_bline "  ${C_GRAY}✓ .env generated  ${RESET}${C_GRAY}(all vars documented)${RESET}"
+_bline "  ${C_GRAY}✓ Schema initialized${RESET}"
+_bline "  ${C_GRAY}✓ Health check passed${RESET}"
+[ -f "$SERVICE_FILE" ] && _bline "  ${C_GRAY}✓ systemd service  ${RESET}${C_GRAY}(foresight-mcp.service)${RESET}"
+[ -f "$OPENCODE_CONFIG" ] && _bline "  ${C_GRAY}✓ OpenCode MCP      ${RESET}${C_GRAY}(auto-inject plugin)${RESET}"
+_bline "  ${C_GRAY}✓ Welcome memory stored${RESET}"
+_border_empty
+_bline "  ${BOLD}Next steps:${RESET}"
 _border_empty
 _bline "  ${C_GRAY}store a memory    ${RESET}${C_PINK}foresight store \"hello\"${RESET}"
 _bline "  ${C_GRAY}browse the TUI    ${RESET}${C_PINK}foresight tui${RESET}"
-_bline "  ${C_GRAY}start MCP server  ${RESET}${C_PINK}uv run foresight-server${RESET}"
+_bline "  ${C_GRAY}check service     ${RESET}${C_PINK}systemctl --user status foresight-mcp${RESET}"
 _bline "  ${C_GRAY}full command list  ${RESET}${C_PINK}foresight --help${RESET}"
 _border_empty
 _bline "  ${C_GRAY}docs  ${RESET}${C_BLUE}https://foresight.vectorize.io${RESET}"
+_border_empty
+_bline "  ${C_GRAY}Restart OpenCode for auto-inject to take effect.${RESET}"
 _border_bottom
 printf "\n"

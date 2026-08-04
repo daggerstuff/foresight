@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -132,7 +131,6 @@ class MemoryRelationshipStore:
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        conn.row_factory = sqlite3.Row
         return conn
 
     def _ensure_table(self) -> None:
@@ -450,6 +448,7 @@ class _MemoryRelationshipStoreSingleton:
     def get_instance(cls) -> MemoryRelationshipStore:
         """Return the process-singleton store, initializing lazily on first call."""
         if cls._instance is None:
+            assert DB_PATH is not None
             cls._instance = MemoryRelationshipStore(DB_PATH)
         return cls._instance
 

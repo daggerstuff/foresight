@@ -7,7 +7,11 @@ Adds temporal fields to existing memories table for:
 - Time-based queries (created_at, accessed_at)
 """
 
-import sqlite3
+from __future__ import annotations
+
+from typing import Any
+
+from .connection_pool import get_pool
 
 TEMPORAL_SCHEMA_SQL = """
 -- Temporal fields for memory decay and tracking
@@ -27,10 +31,6 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_accessed ON memories(user_id, acces
 CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(user_id, importance DESC, created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_strength_trend ON memories(user_id, strength_trend, created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category, created_at DESC);
-
--- Virtual table for full-text search (if not exists)
--- Note: Only create if memories table doesn't already have FTS
--- CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, tags, category, metadata, content=memories);
 """
 
 
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS decay_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'general',
-    half_life_hours REAL DEFAULT 168.0,  -- 1 week default
+    half_life_hours REAL DEFAULT 168.0,
     min_importance REAL DEFAULT 0.1,
     activation_boost REAL DEFAULT 1.2,
     strengthening_threshold INTEGER DEFAULT 5,
@@ -48,48 +48,43 @@ CREATE TABLE IF NOT EXISTS decay_config (
     UNIQUE(user_id, category)
 );
 
--- Default decay configurations
 INSERT OR IGNORE INTO decay_config (user_id, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, stale_threshold)
 VALUES
     ('default', 'general', 168.0, 0.1, 1.2, 5, 0.2),
-    ('default', 'preference', 336.0, 0.1, 1.2, 5, 0.2),  -- 2 weeks
-    ('default', 'conversation', 84.0, 0.1, 1.2, 5, 0.2),  -- 3.5 days
-    ('default', 'fact', 252.0, 0.1, 1.2, 5, 0.2),         -- 10 days
-    ('default', 'crisis', 8760.0, 0.1, 1.2, 5, 0.2);      -- 1 year (preserve crisis memories)
+    ('default', 'preference', 336.0, 0.1, 1.2, 5, 0.2),
+    ('default', 'conversation', 84.0, 0.1, 1.2, 5, 0.2),
+    ('default', 'fact', 252.0, 0.1, 1.2, 5, 0.2),
+    ('default', 'crisis', 8760.0, 0.1, 1.2, 5, 0.2);
 """
 
 
 def run_temporal_migrations(db_path: str) -> None:
     """Run temporal schema migrations on existing database."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    pool = get_pool(db_path)
+    conn = pool.acquire()
 
     try:
-        # Run schema alterations (ignore errors for existing columns)
         for statement in TEMPORAL_SCHEMA_SQL.split(";"):
             stmt = statement.strip()
             if stmt:
                 try:
-                    cursor.execute(stmt)
-                except sqlite3.OperationalError as e:
-                    # Ignore "duplicate column" errors - column already exists
+                    conn.execute(stmt)
+                except Exception as e:
                     if "duplicate column" not in str(e).lower():
                         raise
 
-        # Run decay config schema
         for statement in DECAY_CONFIG_SCHEMA.split(";"):
             stmt = statement.strip()
             if stmt:
                 try:
-                    cursor.execute(stmt)
-                except sqlite3.OperationalError as e:
-                    # Ignore errors for existing tables
+                    conn.execute(stmt)
+                except Exception as e:
                     if "already exists" not in str(e).lower():
                         raise
 
         conn.commit()
 
-    except sqlite3.Error as e:
+    except Exception as e:
         conn.rollback()
         raise RuntimeError("Migration failed: database error") from e
     finally:
@@ -98,12 +93,11 @@ def run_temporal_migrations(db_path: str) -> None:
 
 def initialize_decay_config(db_path: str, user_id: str) -> None:
     """Initialize decay configuration for a new user."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    pool = get_pool(db_path)
+    conn = pool.acquire()
 
     try:
-        # Copy default config for user
-        cursor.execute(
+        conn.execute(
             """
             INSERT OR IGNORE INTO decay_config
             (user_id, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, stale_threshold)
@@ -112,14 +106,13 @@ def initialize_decay_config(db_path: str, user_id: str) -> None:
         """,
             (user_id,),
         )
-
         conn.commit()
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
-    # Test migrations
     from .config import DB_PATH
 
+    assert DB_PATH is not None, "DB_PATH required"
     run_temporal_migrations(DB_PATH)

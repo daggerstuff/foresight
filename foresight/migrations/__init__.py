@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 MIGRATIONS = [
     (1, "foresight.migrations.001_add_tenant_to_graph_tables"),
     (2, "foresight.migrations.002_unified_schema"),
+    (14, "foresight.migrations.014_memory_merge_history"),
 ]
 
 

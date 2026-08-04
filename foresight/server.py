@@ -13,9 +13,9 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import re
-import sqlite3
 import threading
 import time
 import uuid
@@ -101,6 +101,9 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
+from .memory_gc import run_memory_gc, GCConfig
+from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
+from .ghost_cleanup import run_ghost_cleanup
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -980,22 +983,14 @@ def init_db(backend=None):
     """Initialize the database schema with idempotent versioned migrations.
 
     Args:
-        backend: Optional DatabaseBackend. None → create a backend
-                 (attempt Postgres via ``create_backend()``, fall back to
-                 ``SqliteBackend`` for tests).
+        backend: Optional DatabaseBackend. None → create a Postgres backend
+                 via ``create_backend()`` (requires ``FORESIGHT_DB_URL``).
     """
     if backend is None:
         db_path = Path(DB_PATH) if DB_PATH else None
         if db_path:
             db_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            backend = create_backend()
-        except RuntimeError:
-            from foresight.backend.sqlite_backend import SqliteBackend
-
-            if not db_path:
-                raise
-            backend = SqliteBackend(db_path=str(db_path))
+        backend = create_backend()
     backend.connect()
 
     try:
@@ -1459,7 +1454,7 @@ if not logger.handlers:
     logger.addHandler(_h)
     logger.setLevel(logging.INFO)
 
-RowLike = Mapping[str, Any] | sqlite3.Row
+RowLike = Mapping[str, Any]
 
 
 def _health_status_dict() -> dict[str, Any]:
@@ -4320,6 +4315,182 @@ def _start_decay_sweep_thread() -> None:
     logger.info("Decay sweep thread started (interval=%sh)", interval_hours)
 
 
+def _start_maintenance_gc_thread() -> None:
+    """Start a daemon thread that runs memory maintenance + GC on a schedule.
+
+    Interval is configurable via ``FORESIGHT_MAINTENANCE_INTERVAL_HOURS`` env
+    var (default: 24 hours). The thread catches all exceptions and never dies.
+    An initial run starts 60 seconds after startup.
+
+    Maintenance modes run automatically:
+    - consolidate: auto-merge near-duplicates (Jaccard >=0.70 overlap)
+    - archive_stale: ghost memories with low strength/importance
+    - synthesize: emit insight events for recurring topics
+
+    GC phases:
+    - Delete memories past retention TTL (ephemeral >24h, short_term >7d)
+    - Prune old decay events (>30d) and maintenance events (>60d)
+    - Clean orphaned entity links + embeddings
+
+    contradict mode is intentionally excluded — it flags for admin review only
+    and should not run unattended.
+    """
+    interval_hours = float(os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS", "24"))
+    if not (isinstance(interval_hours, (int, float)) and interval_hours > 0 and math.isfinite(interval_hours)):
+        logger.warning(
+            "Invalid FORESIGHT_MAINTENANCE_INTERVAL_HOURS=%r, falling back to 24h",
+            os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS"),
+        )
+        interval_hours = 24.0
+
+    def _maintenance_loop() -> None:
+        time.sleep(60)
+        while True:
+            try:
+                _run_scheduled_maintenance_gc()
+            except Exception:
+                logger.exception("Maintenance/GC thread caught unexpected exception")
+            time.sleep(interval_hours * 3600)
+
+    thread = threading.Thread(target=_maintenance_loop, daemon=True, name="foresight-maintenance-gc")
+    thread.start()
+    logger.info("Maintenance+GC thread started (interval=%sh)", interval_hours)
+
+
+def _run_scheduled_maintenance_gc() -> None:
+    """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
+    if _global_backend is None:
+        logger.warning("Maintenance/GC skipped: no backend initialised")
+        return
+
+    pairs: list[tuple[str, str, str]] = []
+    try:
+        with _global_backend.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT user_id, tenant_id, COALESCE(bank_id, 'default') AS bank_id "
+                    "FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL"
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    row_dict = dict(row) if not isinstance(row, dict) else row
+                    uid = row_dict.get("user_id", "")
+                    tid = row_dict.get("tenant_id", "default")
+                    bid = row_dict.get("bank_id", "default")
+                    if uid:
+                        pairs.append((uid, tid, bid))
+    except Exception:
+        logger.exception("Failed to query user/tenant/bank triples for maintenance")
+        return
+
+    ghost_tenants: set[str] = set()
+    try:
+        with _global_backend.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
+                for row in cur.fetchall():
+                    row_dict = dict(row) if not isinstance(row, dict) else row
+                    tid = row_dict.get("tenant_id", "default")
+                    if tid:
+                        ghost_tenants.add(tid)
+    except Exception:
+        logger.debug("ghost tenant query failed, falling back to maintenance pairs")
+        ghost_tenants = {tid for _, tid, _ in pairs}
+
+    if not pairs:
+        logger.info("Maintenance/GC: no active user/tenant/bank triples found, skipping maintenance")
+    else:
+        logger.info("Maintenance/GC starting for %d user/tenant/bank triple(s)", len(pairs))
+
+    if pairs:
+        maintenance_modes = ["consolidate", "archive_stale", "synthesize", "prune_low_relevance", "enhanced_synthesize"]
+        job = MemoryMaintenanceJob()
+        for uid, tid, bid in pairs:
+            try:
+                config = MaintenanceConfig(
+                    tenant_id=tid,
+                    user_id=uid,
+                    bank_id=bid,
+                    modes=maintenance_modes,
+                )
+                stats = job.run(config)
+                logger.info(
+                    "Maintenance complete for user=%s tenant=%s bank=%s: %d dupes found, "
+                    "%d auto-merged, %d stale archived, %d insights generated in %.2fs",
+                    uid,
+                    tid,
+                    bid,
+                    stats.duplicates_found,
+                    stats.duplicates_auto_consolidated,
+                    stats.stale_archived,
+                    stats.insights_generated,
+                    stats.maintenance_duration_seconds,
+                )
+            except Exception:
+                logger.exception("Maintenance failed for user=%s tenant=%s bank=%s", uid, tid, bid)
+
+    seen_tenants: set[str] = set()
+    for _, tid, _ in pairs:
+        if tid in seen_tenants:
+            continue
+        seen_tenants.add(tid)
+        try:
+            gc_stats = run_memory_gc(tenant_id=tid)
+            logger.info(
+                "GC complete for tenant=%s: %d expired deleted, "
+                "%d decay events pruned, %d maintenance events pruned, "
+                "%d orphan links cleaned, %d orphan embeddings cleaned in %.2fs",
+                tid,
+                gc_stats.expired_memories_deleted,
+                gc_stats.decay_events_pruned,
+                gc_stats.maintenance_events_pruned,
+                gc_stats.orphan_links_cleaned,
+                gc_stats.orphan_embeddings_cleaned,
+                gc_stats.gc_duration_seconds,
+            )
+        except Exception:
+            logger.exception("GC failed for tenant=%s", tid)
+
+    edge_tenants: set[str] = set()
+    for _, tid, _ in pairs:
+        if tid in edge_tenants:
+            continue
+        edge_tenants.add(tid)
+        try:
+            decay_stats = run_edge_decay_update(tid)
+            logger.info(
+                "Edge decay for tenant=%s: %d edges updated, avg decay %.3f",
+                tid,
+                decay_stats.edges_processed,
+                decay_stats.avg_decay_factor,
+            )
+            prune_stats = run_edge_pruning(tid)
+            if prune_stats.edges_pruned:
+                logger.info(
+                    "Edge pruning for tenant=%s: %d stale edges pruned",
+                    tid,
+                    prune_stats.edges_pruned,
+                )
+        except Exception:
+            logger.exception("Edge decay/prune failed for tenant=%s", tid)
+
+    for tid in ghost_tenants:
+        try:
+            ghost_stats = run_ghost_cleanup(tid)
+            logger.info(
+                "Ghost cleanup for tenant=%s: %d/%d deleted, ~%d bytes freed in %.2fs",
+                tid,
+                ghost_stats.ghost_memories_deleted,
+                ghost_stats.ghost_memories_found,
+                ghost_stats.bytes_freed,
+                ghost_stats.cleanup_duration_seconds,
+            )
+        except Exception:
+            logger.exception("Ghost cleanup failed for tenant=%s", tid)
+
+    logger.info("Maintenance/GC cycle complete")
+
+
 def main(host: str | None = None, port: int | None = None) -> None:
     """Start the Foresight MCP server.
 
@@ -4348,6 +4519,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
     initialize_stream_producer()
     _resume_pending_curation_runs()
     _start_decay_sweep_thread()
+    _start_maintenance_gc_thread()
 
     reg = get_memory_hook_registry()
     reg.register(MemoryHookType.PRE_STORE, _audit_hook, name="audit")

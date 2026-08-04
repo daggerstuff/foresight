@@ -75,4 +75,4 @@ class TestCreateBackend:
             msg = str(exc_info.value)
             assert "FORESIGHT_DB_URL" in msg
             assert "postgresql://" in msg
-            assert "SQLite" in msg
+            assert "Postgres" in msg

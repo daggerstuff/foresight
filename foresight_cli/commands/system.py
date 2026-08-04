@@ -327,6 +327,69 @@ def doctor(
     except Exception as e:
         check("Database responsive", False, str(e))
 
+    # LLM configuration (optional but recommended for synthesis/reflection)
+    llm_provider = os.environ.get("FORESIGHT_LLM_PROVIDER", "")
+    llm_api_key = os.environ.get("FORESIGHT_LLM_API_KEY", "")
+    llm_model = os.environ.get("FORESIGHT_LLM_MODEL", "")
+    supported_providers = {"openai", "anthropic", "gemini", "ollama", "vllm", "lmstudio", "none"}
+    if llm_provider:
+        if llm_provider.lower() not in supported_providers:
+            check("LLM provider configured", False, f"unsupported provider: {llm_provider}")
+        elif not llm_api_key and llm_provider.lower() not in {"ollama", "vllm", "lmstudio", "none"}:
+            check("LLM provider configured", False, f"{llm_provider} set but FORESIGHT_LLM_API_KEY missing")
+        else:
+            check("LLM provider configured", True, f"{llm_provider}/{llm_model or 'default'}")
+    elif llm_api_key or llm_model:
+        check("LLM provider configured", False, "partial (some vars set, FORESIGHT_LLM_PROVIDER missing)")
+    else:
+        check("LLM provider configured", True, "not set (synthesis/reflection disabled)")
+
+    # Redis (optional companion cache)
+    redis_url = os.environ.get("FORESIGHT_REDIS_URL", "")
+    if redis_url:
+        try:
+            import redis as _redis  # type: ignore[import-not-found]
+
+            _r = _redis.from_url(redis_url, socket_connect_timeout=0.5)
+            _r.ping()
+            check("Redis cache", True, "reachable")
+        except Exception as exc:
+            check("Redis cache", False, f"configured but unreachable: {exc!s}")
+    else:
+        check("Redis cache", True, "not set (in-process cache fallback)")
+
+    # MCP HTTP transport (check if server is listening)
+    import socket
+
+    mcp_port = int(os.environ.get("FORESIGHT_PORT", "8764"))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        sock.connect(("127.0.0.1", mcp_port))
+        check("MCP HTTP server", True, f"listening on :{mcp_port}")
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        check("MCP HTTP server", False, f"not running on :{mcp_port} (start with: foresight-server)")
+    finally:
+        sock.close()
+
+    # Schema version
+    try:
+        from foresight.server import _global_backend
+
+        if _global_backend is None:
+            check("Schema version", True, "backend not initialized")
+        elif hasattr(_global_backend, "fetch"):
+            row = _global_backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
+            if row:
+                version = row[0][0] if isinstance(row[0], (list, tuple)) else row[0].get("version", "?")
+                check("Schema version", True, f"v{version}")
+            else:
+                check("Schema version", True, "no migrations applied")
+        else:
+            check("Schema version", True, "backend supports migrations")
+    except Exception as exc:
+        check("Schema version", False, f"check failed: {exc!s}")
+
     # Summary
     if out.get_settings().mode != "agent":
         out.stderr("")

@@ -126,8 +126,8 @@ class MemoryGC:
                 while deleted < count_found:
                     cursor = conn.execute(
                         """
-                        DELETE FROM memories WHERE rowid IN (
-                            SELECT rowid FROM memories
+                        DELETE FROM memories WHERE id IN (
+                            SELECT id FROM memories
                             WHERE tenant_id = ? AND retention = ? AND created_at < ?
                             LIMIT ?
                         )
@@ -170,6 +170,24 @@ class MemoryGC:
             )
             stats.maintenance_events_pruned = cursor.rowcount
             conn.commit()
+
+            # Phase 3.5: Prune old memory_merge_history rows (mirror maintenance_events retention)
+            merge_cutoff = (start_time - timedelta(days=cfg.maintenance_events_retention_days)).isoformat()
+            try:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM memory_merge_history
+                    WHERE merged_at < ? AND tenant_id = ?
+                    """,
+                    (merge_cutoff, tenant_id),
+                )
+                conn.commit()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "memory_merge_history table may not exist in test-only SQLite harness, skipping cleanup",
+                    exc_info=True,
+                )
 
             # ------------------------------------------------------------------
             # Phase 4: Clean orphaned data (no FK cascade protection)

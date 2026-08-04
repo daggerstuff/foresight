@@ -102,14 +102,14 @@ class GraphEdgeDecay:
         conn = pool.acquire()
 
         try:
-            # Update decay factors using SQL calculation per row
+            # Update decay factors using Postgres-native SQL
             # decay_factor = 0.5 ^ (hours_elapsed / half_life)
             cursor = conn.execute(
                 """
                 UPDATE entity_relationships
-                SET decay_factor = MAX(0.0, MIN(1.0,
+                SET decay_factor = GREATEST(0.0, LEAST(1.0,
                     POWER(0.5,
-                        (JULIANDAY('now') - JULIANDAY(last_accessed)) * 24.0 / ?
+                        EXTRACT(EPOCH FROM (NOW() - last_accessed::timestamptz)) / 3600.0 / ?
                     )
                 ))
                 WHERE tenant_id = ?
@@ -180,9 +180,12 @@ class GraphEdgeDecay:
             cursor = conn.execute(
                 """
                 DELETE FROM entity_relationships
-                WHERE tenant_id = ?
-                AND (decay_factor * confidence) < ?
-                LIMIT ?
+                WHERE id IN (
+                    SELECT id FROM entity_relationships
+                    WHERE tenant_id = ?
+                    AND (decay_factor * confidence) < ?
+                    LIMIT ?
+                )
                 """,
                 (tenant_id, self.prune_threshold, max_prune_count),
             )

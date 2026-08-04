@@ -20,7 +20,6 @@ import hashlib
 import logging
 import math
 import re
-import sqlite3
 import struct
 import threading
 from dataclasses import dataclass, field
@@ -235,7 +234,6 @@ class SemanticSearch:
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        conn.row_factory = sqlite3.Row
         return conn
 
     def _ensure_table(self) -> None:
@@ -466,6 +464,7 @@ class _SemanticSearchSingleton:
         """Return the process-singleton SemanticSearch, initializing lazily."""
         with cls._lock:
             if cls._instance is None or cls._instance.provider != provider:
+                assert DB_PATH is not None
                 cls._instance = SemanticSearch(DB_PATH, provider=provider)
             return cls._instance
 

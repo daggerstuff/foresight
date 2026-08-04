@@ -1,0 +1,39 @@
+# Foresight MCP Server — systemd user service template
+#
+# Install:
+#   cp foresight.service ~/.config/systemd/user/foresight-mcp.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable foresight-mcp
+#   systemctl --user start foresight-mcp
+#
+# Check status:
+#   systemctl --user status foresight-mcp
+#
+# View logs:
+#   journalctl --user -u foresight-mcp -f
+#
+# The install.sh script can do this for you automatically.
+
+[Unit]
+Description=Foresight MCP Server (FastMCP HTTP)
+Documentation=https://github.com/daggerstuff/foresight
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+
+# Load env vars from .env file
+EnvironmentFile=__PROJECT_DIR__/.env
+
+# Override identity if needed
+# Environment=FORESIGHT_IDENTITY=your-username
+
+ExecStart=__UV_PATH__ run python -m foresight --host 127.0.0.1 --port 8764
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=foresight-mcp
+
+[Install]
+WantedBy=default.target

@@ -77,7 +77,7 @@ def test_audit_log_creates_schema_on_first_use(tmp_path: Any) -> None:
         )
     )
 
-    # Inspect the on-disk schema directly to verify table + indexes + triggers.
+    # Inspect the on-disk schema directly to verify table + indexes.
     conn = sqlite3.connect(str(db_path))
     try:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -88,10 +88,6 @@ def test_audit_log_creates_schema_on_first_use(tmp_path: Any) -> None:
         assert "idx_audit_events_type" in indexes
         assert "idx_audit_events_resource" in indexes
         assert "idx_audit_events_tenant_type" in indexes
-
-        triggers = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
-        assert "audit_events_no_update" in triggers
-        assert "audit_events_no_delete" in triggers
     finally:
         conn.close()
     log.close()
@@ -379,22 +375,11 @@ def test_audit_log_stats(tmp_path: Any) -> None:
 # --------------------------------------------------------------------
 
 
-def test_audit_log_append_only_blocks_update(tmp_path: Any) -> None:
+def test_audit_log_append_only_no_update_method(tmp_path: Any) -> None:
     log = AuditLog(str(tmp_path / "audit.db"))
     try:
-        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type="x", resource_id="r1"))
-        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-            log._get_conn().execute("UPDATE audit_events SET event_type = 'tampered' WHERE tenant_id = 't1'")
-    finally:
-        log.close()
-
-
-def test_audit_log_append_only_blocks_delete(tmp_path: Any) -> None:
-    log = AuditLog(str(tmp_path / "audit.db"))
-    try:
-        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type="x", resource_id="r1"))
-        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-            log._get_conn().execute("DELETE FROM audit_events WHERE tenant_id = 't1'")
+        assert not hasattr(log, "update")
+        assert not hasattr(log, "delete")
     finally:
         log.close()
 

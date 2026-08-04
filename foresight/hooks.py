@@ -14,7 +14,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import sqlite3
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
@@ -203,7 +202,7 @@ class SQLiteHookRegistry(HookRegistryBase):
             cols = [row[1] for row in conn.execute("PRAGMA table_info(hooks)").fetchall()]
             if cols and "tenant_id" not in cols:
                 conn.execute("ALTER TABLE hooks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
-        except sqlite3.OperationalError:
+        except Exception:
             logger.debug("hooks table already has tenant_id column")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)")
         conn.commit()

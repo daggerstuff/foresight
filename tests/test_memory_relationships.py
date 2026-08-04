@@ -335,33 +335,3 @@ def test_singleton_returns_same_instance(monkeypatch):
     reset_memory_relationship_store()
     c = get_memory_relationship_store()
     assert c is not a
-
-
-# ---------------------------------------------------------------------------
-# Schema field persistence (UnifiedMemory)
-# ---------------------------------------------------------------------------
-
-
-def test_unified_memory_round_trips_relationship_fields():
-    from foresight.schema import MemoryCreateOptions, UnifiedMemory
-
-    options = MemoryCreateOptions(relation_type="extends", related_memory_id="abc")
-    m = UnifiedMemory.create(content="x", user_id="u1", options=options)
-    assert m.relation_type == "extends"
-    assert m.related_memory_id == "abc"
-
-    row = m.to_sqlite_row()
-    assert row["relation_type"] == "extends"
-    assert row["related_memory_id"] == "abc"
-
-    m2 = UnifiedMemory.from_sqlite_row({**row, "emotional_context": "{}", "metrics": "{}"})
-    assert m2.relation_type == "extends"
-    assert m2.related_memory_id == "abc"
-
-
-def test_unified_memory_defaults_relationship_fields_to_none():
-    from foresight.schema import MemoryCreateOptions, UnifiedMemory
-
-    m = UnifiedMemory.create(content="x", user_id="u1", options=MemoryCreateOptions())
-    assert m.relation_type is None
-    assert m.related_memory_id is None

@@ -66,6 +66,12 @@ class EventType(StrEnum):
     CRISIS_DETECTED = "crisis.detected"
     CRISIS_THRESHOLD_EXCEEDED = "crisis.threshold_exceeded"
 
+    # Maintenance lifecycle
+    MAINTENANCE_CONSOLIDATION = "maintenance.consolidation"
+    MAINTENANCE_INSIGHT = "maintenance.insight"
+    MAINTENANCE_CONTRADICTION = "maintenance.contradiction"
+    MAINTENANCE_TREND = "maintenance.trend"
+
 
 # =============================================================================
 # Event Base Class

@@ -23,7 +23,7 @@ def setup_test_db(tmp_path, monkeypatch):
 
     import foresight.config as config_module
     import foresight.subconscious as subconscious_module
-    from foresight.backend import SqliteBackend
+    from tests._sqlite_backend import SqliteBackend
     from foresight.server import init_db
 
     import foresight.connection_pool as conn_pool_module
