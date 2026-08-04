@@ -4373,7 +4373,6 @@ def _run_scheduled_maintenance_gc() -> None:
         return
 
     pairs: list[tuple[str, str, str]] = []
-    ghost_tenants: set[str] = set()
     try:
         with _global_backend.connection() as conn:
             with conn.cursor() as cur:
@@ -4389,6 +4388,14 @@ def _run_scheduled_maintenance_gc() -> None:
                     bid = row_dict.get("bank_id", "default")
                     if uid:
                         pairs.append((uid, tid, bid))
+    except Exception:
+        logger.exception("Failed to query user/tenant/bank triples for maintenance")
+        return
+
+    ghost_tenants: set[str] = set()
+    try:
+        with _global_backend.connection() as conn:
+            with conn.cursor() as cur:
                 cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
                 for row in cur.fetchall():
                     row_dict = dict(row) if not isinstance(row, dict) else row
@@ -4396,8 +4403,8 @@ def _run_scheduled_maintenance_gc() -> None:
                     if tid:
                         ghost_tenants.add(tid)
     except Exception:
-        logger.exception("Failed to query user/tenant/bank triples for maintenance")
-        return
+        logger.debug("ghost tenant query failed, falling back to maintenance pairs")
+        ghost_tenants = {tid for _, tid, _ in pairs}
 
     if not pairs:
         logger.info("Maintenance/GC: no active user/tenant/bank triples found, skipping maintenance")

@@ -142,20 +142,25 @@ async function callInjectContext(conversationText) {
 
 const sessionState = new Map();
 const FAILURE_COOLDOWN_MS = 30000;
-let lastFailureAt = 0;
 
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
-    sessionState.set(sessionId, { lastUserMessage: '', lastInjectedFor: '' });
+    sessionState.set(sessionId, { lastUserMessage: '', lastInjectedFor: '', lastFailureAt: 0 });
   }
   return sessionState.get(sessionId);
 }
 
+function extractSessionId(_input, _ctx) {
+  if (_input && (_input.sessionId || _input.session_id)) return _input.sessionId || _input.session_id;
+  if (_ctx && (_ctx.sessionId || _ctx.session_id)) return _ctx.sessionId || _ctx.session_id;
+  return 'default';
+}
+
 export const ForesightAutoInject = async (_ctx) => {
-  const sessionId = (_ctx && (_ctx.sessionId || _ctx.session_id)) || 'default';
   return {
     'chat.message': async (_input, output) => {
       if (!output || !output.parts) return;
+      const sessionId = extractSessionId(_input, _ctx);
       const state = getSessionState(sessionId);
       for (const part of output.parts) {
         if (part && part.type === 'text' && part.text) {
@@ -168,24 +173,25 @@ export const ForesightAutoInject = async (_ctx) => {
     'experimental.chat.system.transform': async (_input, output) => {
       if (!output || !Array.isArray(output.system)) return;
 
+      const sessionId = extractSessionId(_input, _ctx);
       const state = getSessionState(sessionId);
       const msg = state.lastUserMessage.trim();
       if (!msg) return;
 
       if (msg === state.lastInjectedFor) return;
 
-      if (Date.now() - lastFailureAt < FAILURE_COOLDOWN_MS) return;
+      if (Date.now() - state.lastFailureAt < FAILURE_COOLDOWN_MS) return;
 
       let contextText;
       try {
         contextText = await callInjectContext(msg);
       } catch (_) {
-        lastFailureAt = Date.now();
+        state.lastFailureAt = Date.now();
         return;
       }
 
       if (!contextText || !contextText.trim()) {
-        lastFailureAt = Date.now();
+        state.lastFailureAt = Date.now();
         return;
       }
 

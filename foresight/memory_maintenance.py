@@ -511,7 +511,7 @@ class MemoryMaintenanceJob:
                 str(list(existing_synth)),
                 1 if is_sensitive_bit else 0,
                 sensitivity_reason,
-                next_version,
+                next_version + 1,
                 primary_id,
                 config.tenant_id,
                 config.user_id,
