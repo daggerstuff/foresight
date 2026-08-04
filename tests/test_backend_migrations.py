@@ -18,7 +18,7 @@ from foresight.backend.backend_migrations import (
     current_version,
     run_migrations,
 )
-from foresight.backend.sqlite_backend import SqliteBackend
+from tests._sqlite_backend import SqliteBackend
 
 # =============================================================================
 # SQLite backend — primary test surface (no external services required)

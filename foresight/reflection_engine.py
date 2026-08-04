@@ -15,7 +15,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import sqlite3
 import threading
 import uuid
 from collections.abc import Mapping
@@ -134,7 +133,7 @@ class ReflectionEngine:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
-    def _get_connection(self) -> sqlite3.Connection | PooledConnection:
+    def _get_connection(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
@@ -251,9 +250,7 @@ class ReflectionEngine:
             "total_memories": total,
         }
 
-    def _build_entity_summary(
-        self, conn: sqlite3.Connection | PooledConnection, user_id: str, tenant_id: str = "default"
-    ) -> dict[str, Any]:
+    def _build_entity_summary(self, conn: Any, user_id: str, tenant_id: str = "default") -> dict[str, Any]:
         """Build summary of entity patterns from graph, scoped to tenant."""
         # Top entity types
         cursor = conn.execute(
@@ -708,7 +705,7 @@ class ReflectionEngine:
 
     def _store_reflection(
         self,
-        conn: sqlite3.Connection | PooledConnection,
+        conn: Any,
         report: ReflectionReport,
         user_id: str,
         tenant_id: str,
@@ -768,6 +765,7 @@ class _ReflectionEngineSingleton:
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
+                    assert DB_PATH is not None
                     db_path = DB_PATH
                 cls._instance = ReflectionEngine(db_path)
             return cls._instance

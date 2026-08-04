@@ -232,7 +232,7 @@ def server_env(temp_db, monkeypatch):
     """Set up server environment with isolated DB and mocked USER_ID."""
     monkeypatch.setenv("FORESIGHT_DB_PATH", temp_db)
     import foresight.config as config_module
-    from foresight.backend import SqliteBackend
+    from tests._sqlite_backend import SqliteBackend
 
     import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool

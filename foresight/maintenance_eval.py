@@ -26,7 +26,6 @@ import hashlib
 import json
 import logging
 import os
-import sqlite3
 import tempfile
 import time
 from dataclasses import dataclass
@@ -409,7 +408,7 @@ class MaintenanceEvalHarness:
         self._db_path: str = db_path
         self._user_provided_db: bool = _user_provided
 
-        self._conn: sqlite3.Connection | None = None
+        self._conn: Any | None = None
         self._monkeypatches: list[tuple[Any, str, Any]] = []
 
     @property
@@ -420,12 +419,13 @@ class MaintenanceEvalHarness:
     # Database setup
     # ------------------------------------------------------------------
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> Any:
         if self._conn is not None:
             return self._conn
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        from .connection_pool import get_pool
+
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         self._conn = conn
         return conn
 
@@ -457,14 +457,14 @@ class MaintenanceEvalHarness:
             setattr(module, attr, orig)
         self._monkeypatches.clear()
 
-    def _count_memories(self, conn: sqlite3.Connection) -> int:
+    def _count_memories(self, conn: Any) -> int:
         row = conn.execute(
             "SELECT COUNT(*) AS cnt FROM memories WHERE user_id = ? AND tenant_id = ?",
             (FIXTURE_USER_ID, FIXTURE_TENANT_ID),
         ).fetchone()
         return row["cnt"] if row else 0
 
-    def _count_events(self, conn: sqlite3.Connection) -> int:
+    def _count_events(self, conn: Any) -> int:
         row = conn.execute("SELECT COUNT(*) AS cnt FROM events WHERE event_type LIKE 'maintenance%'").fetchone()
         return row["cnt"] if row else 0
 
@@ -510,9 +510,8 @@ class MaintenanceEvalHarness:
                         mem.get("strength_trend", "stable"),
                     ),
                 )
-                if conn.total_changes > 0:
-                    count += 1
-            except sqlite3.IntegrityError:
+                count += 1
+            except Exception:
                 pass
 
         conn.commit()

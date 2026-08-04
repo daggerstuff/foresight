@@ -1,8 +1,7 @@
 """Backend factory — selects and instantiates the correct DatabaseBackend.
 
 ``FORESIGHT_DB_URL`` (or an explicit ``db_url`` argument) is **required**.
-SQLite as a primary backend is no longer supported — tests use
-``SqliteBackend`` directly (see AD4).
+Postgres is the sole production backend.
 """
 
 from __future__ import annotations
@@ -45,6 +44,6 @@ def create_backend(db_url: str | None = None) -> DatabaseBackend:
 
     raise RuntimeError(
         "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. "
-        "SQLite-as-primary is no longer supported.\n"
+        "Postgres is the sole backend.\n"
         "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'"
     )

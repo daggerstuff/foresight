@@ -1,9 +1,8 @@
 """Database backend package for Foresight MCP.
 
-Provides the ``DatabaseBackend`` protocol and concrete implementations:
+Provides the ``DatabaseBackend`` protocol and concrete implementation:
 
-* ``SqliteBackend`` — default, wraps the existing SQLite connection pool
-* ``PostgresBackend`` — PostgreSQL via psycopg v3
+* ``PostgresBackend`` — PostgreSQL via psycopg v3 (sole production backend)
 * ``RedisCompanion`` — optional cross-process cache with graceful degradation
 
 Use ``create_backend()`` to instantiate the correct backend based on
@@ -20,14 +19,12 @@ from .base import DatabaseBackend
 from .postgres_backend import PostgresBackend
 from .redis_companion import RedisCompanion
 from .schema_ddl import MIGRATIONS as SCHEMA_MIGRATIONS
-from .sqlite_backend import SqliteBackend
 
 __all__ = [
     "SCHEMA_MIGRATIONS",
     "DatabaseBackend",
     "PostgresBackend",
     "RedisCompanion",
-    "SqliteBackend",
     "create_backend",
     "run_migrations",
 ]

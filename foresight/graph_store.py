@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -68,7 +67,7 @@ class GraphStore:
     - Memory-to-entity linking
     """
 
-    def __init__(self, db_path: str, backend: DatabaseBackend | None = None):
+    def __init__(self, db_path: str | None = None, backend: DatabaseBackend | None = None):
         self.db_path = db_path
         self.backend = backend
         if backend is None:
@@ -268,7 +267,7 @@ class GraphStore:
             conn.commit()
             logger.info("Graph store schema initialized")
 
-        except sqlite3.Error as e:
+        except Exception as e:
             conn.rollback()
             logger.error(f"Failed to initialize graph store: {e}")
             raise
@@ -283,7 +282,7 @@ class GraphStore:
                 # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query
                 cursor = conn.execute(f"PRAGMA table_info({table})")
                 columns = [row["name"] for row in cursor.fetchall()]
-            except sqlite3.OperationalError:
+            except Exception:
                 continue  # Table doesn't exist yet, CREATE TABLE IF NOT EXISTS will handle it
 
             if "tenant_id" not in columns:
@@ -296,7 +295,7 @@ class GraphStore:
                 logger.info(f"Migration: added tenant_id to {table}")
 
     @staticmethod
-    def _rebuild_entities_table(conn: sqlite3.Connection) -> None:
+    def _rebuild_entities_table(conn: Any) -> None:
         """Rebuild memory_entities table to add tenant_id in UNIQUE constraint."""
         conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_entities_new (
@@ -323,7 +322,7 @@ class GraphStore:
         conn.execute("ALTER TABLE memory_entities_new RENAME TO memory_entities")
 
     @staticmethod
-    def _rebuild_relationships_table(conn: sqlite3.Connection) -> None:
+    def _rebuild_relationships_table(conn: Any) -> None:
         """Rebuild entity_relationships table to add tenant_id in UNIQUE constraint."""
         conn.execute("""
             CREATE TABLE IF NOT EXISTS entity_relationships_new (
@@ -794,6 +793,8 @@ def get_graph_store(db_path: str | None = None, backend: DatabaseBackend | None 
         if _state["graph_store"] is None:
             if db_path is None:
                 db_path = DB_PATH
+            if db_path is None and backend is None:
+                raise RuntimeError("db_path or DB_PATH or backend required")
             _state["graph_store"] = GraphStore(db_path, backend=backend)
         return _state["graph_store"]
 
