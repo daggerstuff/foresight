@@ -11,6 +11,7 @@ Designed to run frequently alongside heavy maintenance operations.
 """
 
 import logging
+import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
