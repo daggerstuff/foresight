@@ -1245,11 +1245,7 @@ def get_hybrid_retriever(
             rrf_config = get_rrf_config()
             weights = rrf_config.to_dict()
         except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "RRF config load failed, using defaults",
-                exc_info=True,
-            )
+            pass
     return _HybridRetrieverSingleton.get_instance(db_path, weights, backend)
 
 
