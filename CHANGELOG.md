@@ -7,8 +7,9 @@ All notable changes to Foresight MCP are documented here.
 ### Added
 
 - `scripts/drain_sqlite_to_postgres.py`: drains any pre-existing standalone
-  SQLite data (`~/.foresight/operations.db`, `~/.foresight/narrative_cache.sqlite`)
-  into Postgres idempotently (`ON CONFLICT DO NOTHING`).
+  SQLite data (`~/.foresight/operations.db`,
+  `~/.foresight/narrative_cache.sqlite`) into Postgres idempotently
+  (`ON CONFLICT DO NOTHING`).
 - `scripts/rollout_fleet.sh`: fleet rollout helper for the Postgres-only
   migration. Dry-run by default; pass `--apply` to drain legacy SQLite and
   restart `foresight-mcp` on local / billy / gnasty.

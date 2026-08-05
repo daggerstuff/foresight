@@ -1,8 +1,13 @@
 # Foresight MCP — Deployment Guide
 
-Companion to `INSTALL.md` and `README.md`. This document records the **deploy-time** concerns of a Foresight MCP deployment: environment variables, backend selection, Neon specifics, surgical patches, and known caveats discovered while closing PIX-3996 (Multi-Agent Deployment Verification, Phase 7).
+Companion to `INSTALL.md` and `README.md`. This document records the
+**deploy-time** concerns of a Foresight MCP deployment: environment variables,
+backend selection, Neon specifics, surgical patches, and known caveats
+discovered while closing PIX-3996 (Multi-Agent Deployment Verification, Phase
+7).
 
-> **Audience**: operators bringing a Foresight MCP instance online against Neon Postgres.
+> **Audience**: operators bringing a Foresight MCP instance online against Neon
+> Postgres.
 
 ---
 
@@ -29,7 +34,8 @@ set -a; source .env.local; set +a
 # expect: PostgresBackend
 ```
 
-If `FORESIGHT_DB_URL` is unset, the factory raises `RuntimeError` — Postgres is required.
+If `FORESIGHT_DB_URL` is unset, the factory raises `RuntimeError` — Postgres is
+required.
 
 ---
 
@@ -47,13 +53,18 @@ If `FORESIGHT_DB_URL` is unset, the factory raises `RuntimeError` — Postgres i
 | `REDIS_URL_LOCAL`    | _Optional_  | Local Docker convention (`redis://[:pw]@127.0.0.1:6379`). **Diagnostic-only**; not consumed by Foresight at runtime — useful for local-dev smokes. | _none_                          |
 | `REDIS_URL_REMOTE`   | _Optional_  | Upstash / hosted broker URL (`rediss://default:[pw]@host:6379`). **Diagnostic-only**; cross-process smoke target.                                  | _none_                          |
 
-> **Security**: keep `FORESIGHT_DB_URL` and any Upstash credentials out of git. They belong in `~/.env` for shared team deployment of Foresight→Neon, with optional per-developer override in `~/.env.local` (last-source-wins via `foresight-server.sh`), or in the deployment platform's secret manager. Both files are gitignored via the `~/.gitignore` rule `/.env*`.
+> **Security**: keep `FORESIGHT_DB_URL` and any Upstash credentials out of git.
+> They belong in `~/.env` for shared team deployment of Foresight→Neon, with
+> optional per-developer override in `~/.env.local` (last-source-wins via
+> `foresight-server.sh`), or in the deployment platform's secret manager. Both
+> files are gitignored via the `~/.gitignore` rule `/.env*`.
 
 ---
 
 ## 3. Backend Selection
 
-Selection is purely string-prefix based, executed in `foresight/backend/__init__.py:create_backend()`:
+Selection is purely string-prefix based, executed in
+`foresight/backend/__init__.py:create_backend()`:
 
 ```python
 def create_backend() -> DatabaseBackend:
@@ -63,13 +74,16 @@ def create_backend() -> DatabaseBackend:
     raise RuntimeError("FORESIGHT_DB_URL is required (Postgres-only)")
 ```
 
-There is no autodetection beyond the URL prefix. **Use `postgresql://` (the canonical libpq scheme that `psycopg` understands).** `postgresql+psycopg://` or `pgbouncer://` will not match the prefix check.
+There is no autodetection beyond the URL prefix. **Use `postgresql://` (the
+canonical libpq scheme that `psycopg` understands).** `postgresql+psycopg://` or
+`pgbouncer://` will not match the prefix check.
 
 ---
 
 ## 4. Neon Postgres Specifics
 
-Neon's transaction-pooler endpoint wraps pgBouncer in front of the writer. The Flow:
+Neon's transaction-pooler endpoint wraps pgBouncer in front of the writer. The
+Flow:
 
 ```
 your process ──► ep-…-pooler.eastus2.azure.neon.tech:5432 (pgBouncer) ──► writer Neon compute
@@ -77,16 +91,28 @@ your process ──► ep-…-pooler.eastus2.azure.neon.tech:5432 (pgBouncer) �
 
 Important properties verified during PIX-3996:
 
-- **`sslmode=require` is mandatory.** Neon refuses non-TLS connections. The factory passes the URL verbatim to `psycopg_pool.ConnectionPool`, so the query string must carry the SSL directive.
-- **Two endpoints exist — pick one and stick with it.** `-pooler.eastus2.azure.neon.tech` is the connection-pooler (pgBouncer-mode). Drop the `-pooler` segment to talk directly to the writer (long-lived sessions, e.g. for migrations). Mixing them in one process can yield inconsistent snapshot states.
-- **Connection lifetime: ≤ 5 min recommended.** Neon idle-kills pooled connections. Configure your process to reconnect rather than hold sessions open. With `psycopg_pool`, this is automatic — the pool reopens dropped connections transparently.
-- **Write/read separation**: not generally required. For high write throughput, prefer the direct writer endpoint.
+- **`sslmode=require` is mandatory.** Neon refuses non-TLS connections. The
+  factory passes the URL verbatim to `psycopg_pool.ConnectionPool`, so the query
+  string must carry the SSL directive.
+- **Two endpoints exist — pick one and stick with it.**
+  `-pooler.eastus2.azure.neon.tech` is the connection-pooler (pgBouncer-mode).
+  Drop the `-pooler` segment to talk directly to the writer (long-lived
+  sessions, e.g. for migrations). Mixing them in one process can yield
+  inconsistent snapshot states.
+- **Connection lifetime: ≤ 5 min recommended.** Neon idle-kills pooled
+  connections. Configure your process to reconnect rather than hold sessions
+  open. With `psycopg_pool`, this is automatic — the pool reopens dropped
+  connections transparently.
+- **Write/read separation**: not generally required. For high write throughput,
+  prefer the direct writer endpoint.
 
 ---
 
 ## 5. The Four Surgical Corrections in `postgres_backend.py`
 
-Recorded on `chad/sentry-fixes-round5 @ b445754`. These are corrections that the lineage of the file picked up against psycopg 3.3.x; before this commit they prevented `PostgresBackend` from starting at all.
+Recorded on `chad/sentry-fixes-round5 @ b445754`. These are corrections that the
+lineage of the file picked up against psycopg 3.3.x; before this commit they
+prevented `PostgresBackend` from starting at all.
 
 | Where                  | Before                                                                         | After                                                                           | Why                                                                                                                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -96,15 +122,22 @@ Recorded on `chad/sentry-fixes-round5 @ b445754`. These are corrections that the
 | L113-114 (row factory) | `kwargs={"row_factory": DictRow}`                                              | `kwargs={"row_factory": dict_row}`                                              | Carries the import change into the pool's open configuration.                                                                                                                                   |
 | L118 (close)           | `self._pool.close()`                                                           | `self._pool.close(timeout=10.0)`                                                | Cosmetic — silences the cosmetic "couldn't stop thread" warning by waiting up to 10s for pool workers to flush. Functionally identical (workers are daemon threads).                            |
 
-If you upgrade `psycopg-pool` past 3.3.x in the future, re-verify these names — they may shift again.
+If you upgrade `psycopg-pool` past 3.3.x in the future, re-verify these names —
+they may shift again.
 
 ---
 
 ## 6. SQLite Backend — Historical (Tests Only)
 
-> SQLite is no longer used in production. The `SqliteBackend` class remains in `foresight/backend/sqlite_backend.py` for tests and local dev. The `backend_factory.py` factory is Postgres-only — it raises `RuntimeError` if no Postgres DSN is provided. The following notes are preserved for historical reference.
+> SQLite is no longer used in production. The `SqliteBackend` class remains in
+> `foresight/backend/sqlite_backend.py` for tests and local dev. The
+> `backend_factory.py` factory is Postgres-only — it raises `RuntimeError` if no
+> Postgres DSN is provided. The following notes are preserved for historical
+> reference.
 
-Substep C of PIX-3996 originally failed because of a **pre-existing bug** in `foresight/backend/sqlite_backend.py`. The fix was applied in `chad/sentry-fixes-round5 @ b445754`.
+Substep C of PIX-3996 originally failed because of a **pre-existing bug** in
+`foresight/backend/sqlite_backend.py`. The fix was applied in
+`chad/sentry-fixes-round5 @ b445754`.
 
 **The fix** — two-line surgical patch at `sqlite_backend.py:44-45`:
 
@@ -118,17 +151,29 @@ Substep C of PIX-3996 originally failed because of a **pre-existing bug** in `fo
     )
 ```
 
-The `__init__` parameters `max_size` and `max_idle_seconds` go out of scope when `connect()` runs. They were stored as `self._max_size` / `self._max_idle_seconds` (L110-111), so `connect()` now reads the cached values. The constructor signature is unchanged.
+The `__init__` parameters `max_size` and `max_idle_seconds` go out of scope when
+`connect()` runs. They were stored as `self._max_size` /
+`self._max_idle_seconds` (L110-111), so `connect()` now reads the cached values.
+The constructor signature is unchanged.
 
-**Fix 2.** `sqlite_backend.py:58-68` `connection()` contextmanager landed with three pre-existing pyright errors that guaranteed `NameError` for any `with self.connection():` caller. Body rewritten to `with self._pool.acquire() as conn: yield conn`. Pyright post-fix: `No diagnostics found`.
+**Fix 2.** `sqlite_backend.py:58-68` `connection()` contextmanager landed with
+three pre-existing pyright errors that guaranteed `NameError` for any
+`with self.connection():` caller. Body rewritten to
+`with self._pool.acquire() as conn: yield conn`. Pyright post-fix:
+`No diagnostics found`.
 
-> These fixes only matter if you run tests that use `SqliteBackend` directly. In production, the factory routes to `PostgresBackend`.
+> These fixes only matter if you run tests that use `SqliteBackend` directly. In
+> production, the factory routes to `PostgresBackend`.
 
 ---
 
 ## 7. Redis Companion Cache — Implemented
 
-Substeps B → F of PIX-3996 respond to the constraint that Foresight can't drop cross-process shared caching on a Redis-free broker. The class is `foresight/redis_cache.RedisCache`, instantiated by `reflection_narrative.generate_insight_narrative(...)` when the caller provides it via the `cache=` argument.
+Substeps B → F of PIX-3996 respond to the constraint that Foresight can't drop
+cross-process shared caching on a Redis-free broker. The class is
+`foresight/redis_cache.RedisCache`, instantiated by
+`reflection_narrative.generate_insight_narrative(...)` when the caller provides
+it via the `cache=` argument.
 
 **Class surface** — mirrors `NarrativeCache` exactly:
 
@@ -140,25 +185,35 @@ Substeps B → F of PIX-3996 respond to the constraint that Foresight can't drop
 | `stats` | (no args)                                                                              |
 | `close` | (no args)                                                                              |
 
-**Key derivation** — identical SHA-256 hashes across NarrativeCache and RedisCache:
+**Key derivation** — identical SHA-256 hashes across NarrativeCache and
+RedisCache:
 
 ```
 NarrativeCache._cache_key(...) → sha256 of (report_id, tenant_id, user_id, model_version, insights_hash)
 RedisCache._key(...)            → "{prefix}:narrative:{tenant_id}:{user_id}:{cache_key}"
 ```
 
-A `put` on one implementation guarantees a `get` hit on the other for the same logical row.
+A `put` on one implementation guarantees a `get` hit on the other for the same
+logical row.
 
 **Storage layout** (Redis):
 
 - Value keys: `{prefix}:narrative:{tenant_id}:{user_id}:{cache_key}`
 - Per-shard LRU sorted sets: `{prefix}:zset:{tenant_id}:{user_id}`
 
-**TTL** — `DEFAULT_TTL_SECONDS = 604_800` (=7d). Native via `SETEX`. The smoke verifies `c._client.ttl(entry_key) == 604800` for live entries.
+**TTL** — `DEFAULT_TTL_SECONDS = 604_800` (=7d). Native via `SETEX`. The smoke
+verifies `c._client.ttl(entry_key) == 604800` for live entries.
 
-**LRU eviction** — `DEFAULT_MAX_ENTRIES = 10_000`. Per-tenant, per-user shard sorted set scored by epoch timestamp; when `ZCARD > max_entries`, the oldest `overflow` entries are pipelined-DEL'd along with their narrative keys (`ZRANGE 0 overflow-1 WITHSCORES`, then `ZREM`). `Eviction count` propagates through `stats()`.
+**LRU eviction** — `DEFAULT_MAX_ENTRIES = 10_000`. Per-tenant, per-user shard
+sorted set scored by epoch timestamp; when `ZCARD > max_entries`, the oldest
+`overflow` entries are pipelined-DEL'd along with their narrative keys
+(`ZRANGE 0 overflow-1 WITHSCORES`, then `ZREM`). `Eviction count` propagates
+through `stats()`.
 
-**HIPAA-grade log safety** — `_sanitize_url(url)` re-substitutes passwords via `re.sub(r":[^:@]*@", ":***@", url)`. Verified live: `stats()["url"]` returns `rediss://default:***@witty-buffalo-119990.upstash.io:6379` — credentials never leave the process boundary in plain text.
+**HIPAA-grade log safety** — `_sanitize_url(url)` re-substitutes passwords via
+`re.sub(r":[^:@]*@", ":***@", url)`. Verified live: `stats()["url"]` returns
+`rediss://default:***@witty-buffalo-119990.upstash.io:6379` — credentials never
+leave the process boundary in plain text.
 
 **Multi-process shared caching** — verified (substep F smoke, Upstash broker):
 
@@ -168,23 +223,40 @@ Reader PID 101373: get("rpid", tenant_id="t-remote", ...) → "from-process-AAA-
 Cross-process value matches. CROSS_PROCESS_UPSTASH_VERIFIED.
 ```
 
-Plus local Docker smoke: `c.put(...)` → `c.get(...)` produces a HIT with TTL=604800 intact.
+Plus local Docker smoke: `c.put(...)` → `c.get(...)` produces a HIT with
+TTL=604800 intact.
 
-**Configuration** — see §2 (`REDIS_URL`). If `REDIS_URL` is empty, callers that explicitly construct `RedisCache(url, ...)` consume it on demand; Foresight's default cache is still the in-process dict in `reflection_narrative.py`. If you want Foresight to construct the cache automatically, see `foresight/reflection_narrative._get_default_cache()`.
+**Configuration** — see §2 (`REDIS_URL`). If `REDIS_URL` is empty, callers that
+explicitly construct `RedisCache(url, ...)` consume it on demand; Foresight's
+default cache is still the in-process dict in `reflection_narrative.py`. If you
+want Foresight to construct the cache automatically, see
+`foresight/reflection_narrative._get_default_cache()`.
 
 ---
 
 ## 8. The `--active` Flag Trap — Historical (retired) Context
 
-> **Status: historical.** The launcher `scripts/memory/foresight-server.sh` was hardened against ambient `VIRTUAL_ENV` in commit `e970f760c fix: harden foresight launcher against ambient VIRTUAL_ENV` (landed on `origin/staging`, June 2026). Production launches flow through the hardened launcher (`set -a; source .env; source .env.local; set +a; exec uv run ...`) and are no longer subject to the trap described below. The pattern documented here is preserved as the developer-machine / smoke-test idiom.
+> **Status: historical.** The launcher `scripts/memory/foresight-server.sh` was
+> hardened against ambient `VIRTUAL_ENV` in commit
+> `e970f760c fix: harden foresight launcher against ambient VIRTUAL_ENV` (landed
+> on `origin/staging`, June 2026). Production launches flow through the hardened
+> launcher (`set -a; source .env; source .env.local; set +a; exec uv run ...`)
+> and are no longer subject to the trap described below. The pattern documented
+> here is preserved as the developer-machine / smoke-test idiom.
 
-`uv run` defaults to the closest `.venv`. The host repo (`pixelated/`) ships an outer `.venv` that **lacks** `psycopg`, `psycopg-pool`, and `redis`. If you accidentally run with `--active` from anywhere outside `foresight/`, you'll end up using the outer venv and getting `ModuleNotFoundError`.
+`uv run` defaults to the closest `.venv`. The host repo (`pixelated/`) ships an
+outer `.venv` that **lacks** `psycopg`, `psycopg-pool`, and `redis`. If you
+accidentally run with `--active` from anywhere outside `foresight/`, you'll end
+up using the outer venv and getting `ModuleNotFoundError`.
 
 ```
 VIRTUAL_ENV=/home/vivi/pixelated/.venv does not match ... ignore
 ```
 
-That warning is log noise, not failure — but **only when you are already inside `foresight/`**. If you see it while `cwd` is somewhere else (e.g. `/home/vivi/pixelated/`), the launch silently falls back to the outer venv and will fail to `import psycopg` later.
+That warning is log noise, not failure — but **only when you are already inside
+`foresight/`**. If you see it while `cwd` is somewhere else (e.g.
+`/home/vivi/pixelated/`), the launch silently falls back to the outer venv and
+will fail to `import psycopg` later.
 
 Pattern that always works:
 
@@ -192,13 +264,17 @@ Pattern that always works:
 ( cd foresight && uv run python -c "from foresight.backend import create_backend; print(type(create_backend()).__name__)" )
 ```
 
-The parentheses matter — `cd` is scoped to the subshell. Don't `cd foresight && uv run ...` in the parent shell because the cd persists and contaminates subsequent commands.
+The parentheses matter — `cd` is scoped to the subshell. Don't
+`cd foresight && uv run ...` in the parent shell because the cd persists and
+contaminates subsequent commands.
 
 ---
 
 ## 9. Substep Verification Log (PIX-3996, Phase 7)
 
-> Scope pivot (m0244): "If we can't find any Redis implementation, then we need to add it, along with the postgresql." Substeps F + G were added in-flight per user direction (m0246).
+> Scope pivot (m0244): "If we can't find any Redis implementation, then we need
+> to add it, along with the postgresql." Substeps F + G were added in-flight per
+> user direction (m0246).
 
 | Substep                                                                | Status                  | Evidence                                                                                                                                                                                                                    |
 | ---------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -214,7 +290,10 @@ The parentheses matter — `cd` is scoped to the subshell. Don't `cd foresight &
 | J — Linear close                                                       | ✅ PASS                 | PIX-3996 transitioned In Progress → Done with substep verification comment.                                                                                                                                                 |
 | K — `connection()` contextmanager fix (post-close per m0274 directive) | ✅ PASS (historical)    | Body changed from `try: conn.execute(sql, params); conn.commit(); finally: self._pool.release(conn)` to `with self._pool.acquire() as conn: yield conn`. Pyright post-fix `No diagnostics found`. Preserved for test suite. |
 
-All edits scoped to `chad/sentry-fixes-round5 @ b445754` (foresight submodule). **All five files are uncommitted at the time of writing.** Per AGENTS.md "Never commit without explicit request", the commit + push is held back pending user authorization.
+All edits scoped to `chad/sentry-fixes-round5 @ b445754` (foresight submodule).
+**All five files are uncommitted at the time of writing.** Per AGENTS.md "Never
+commit without explicit request", the commit + push is held back pending user
+authorization.
 
 **Files touched in this PR:**
 

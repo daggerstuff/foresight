@@ -13,9 +13,11 @@ bash install.sh
 ```
 
 The installer will:
+
 - Check prerequisites (Python 3.12+, uv)
 - Install all dependencies (CLI + TUI + MCP server + Postgres driver)
-- Walk you through connecting a Postgres database if one isn't already configured
+- Walk you through connecting a Postgres database if one isn't already
+  configured
 - Initialise config and run a 7-point health check
 
 > **Postgres is required.** SQLite is not supported. The installer will prompt
@@ -63,7 +65,8 @@ uv run foresight-server  # start the MCP server
 
 ## Add to Claude Code
 
-After installation, add to `~/.claude/settings.json` or your project's `.mcp.json`:
+After installation, add to `~/.claude/settings.json` or your project's
+`.mcp.json`:
 
 ```json
 {

@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: daggerstuff
-  version: "1.1.0"
+  version: '1.1.0'
 ---
 
 # Foresight
@@ -83,23 +83,23 @@ fi
 Foresight is **Postgres-only**. `FORESIGHT_DB_URL` must be set before anything
 works.
 
-| Environment | Source of DSN |
-|---|---|
-| Replit | `$DATABASE_URL` is injected automatically — pass as `FORESIGHT_DB_URL=$DATABASE_URL` |
-| Supabase / Neon / Railway | Copy the connection string from the project dashboard |
-| Local Postgres | `postgresql://postgres:password@localhost:5432/foresight` |
+| Environment               | Source of DSN                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| Replit                    | `$DATABASE_URL` is injected automatically — pass as `FORESIGHT_DB_URL=$DATABASE_URL` |
+| Supabase / Neon / Railway | Copy the connection string from the project dashboard                                |
+| Local Postgres            | `postgresql://postgres:password@localhost:5432/foresight`                            |
 
 ---
 
 ## 3. Environment variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `FORESIGHT_DB_URL` | **Yes** | Postgres DSN |
+| Variable             | Required    | Description                                                                                                           |
+| -------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| `FORESIGHT_DB_URL`   | **Yes**     | Postgres DSN                                                                                                          |
 | `FORESIGHT_IDENTITY` | Recommended | `alice` → user_id=alice. `alice:acme-corp` → user_id=alice, account_id=acme-corp (groups memories across a workspace) |
-| `FORESIGHT_BANK_ID` | No | Memory bank namespace — separate pools, e.g. `work` vs `personal` |
-| `FORESIGHT_HOST` | No | Bind host (default `127.0.0.1`; set `0.0.0.0` for external access) |
-| `FORESIGHT_PORT` | No | Bind port (default `8000`) |
+| `FORESIGHT_BANK_ID`  | No          | Memory bank namespace — separate pools, e.g. `work` vs `personal`                                                     |
+| `FORESIGHT_HOST`     | No          | Bind host (default `127.0.0.1`; set `0.0.0.0` for external access)                                                    |
+| `FORESIGHT_PORT`     | No          | Bind port (default `8000`)                                                                                            |
 
 ---
 
@@ -156,8 +156,8 @@ extensions:
     command: uvx
     args: [foresight-server]
     envs:
-      FORESIGHT_DB_URL: "postgresql://..."
-      FORESIGHT_IDENTITY: "alice"
+      FORESIGHT_DB_URL: 'postgresql://...'
+      FORESIGHT_IDENTITY: 'alice'
 ```
 
 ### From a local clone (any client)
@@ -175,7 +175,7 @@ Replace `uvx` / `args: ["foresight-server"]` with:
 
 The server registers an MCP prompt called **`foresight_autocontext`**. When a
 client includes it in the system message, you automatically retrieve context
-*and* build memory over time — with no user action required.
+_and_ build memory over time — with no user action required.
 
 **Enable in Claude Code** (run once per project):
 
@@ -186,6 +186,7 @@ client includes it in the system message, you automatically retrieve context
 **What you must do when this prompt is active — follow without being asked:**
 
 ### Retrieval
+
 1. **Conversation start** — before your first reply, call `inject_context` with
    the user's opening message. Apply what comes back silently.
 2. **Topic shift** — new subject, project, person, or task → call again.
@@ -194,9 +195,11 @@ client includes it in the system message, you automatically retrieve context
 4. **Before non-trivial actions** — code, plans, advice → call first.
 
 ### Proactive storage
+
 5. **Capture stated preferences immediately** — "I prefer X", "always use Y",
-   "don't do Z" → call `manage_context_blocks(action='update',
-   label='user_preferences', content='<preference>')` silently.
+   "don't do Z" → call
+   `manage_context_blocks(action='update', label='user_preferences', content='<preference>')`
+   silently.
 6. **Store decisions and key facts** — one-sentence summary, `scope='arc'`,
    `category='decision'` or `'fact'`, `retention='long_term'`.
 7. **Track open tasks** — add to `pending_items` via `manage_context_blocks`.
@@ -204,25 +207,27 @@ client includes it in the system message, you automatically retrieve context
    messages. Omit `project_path`; the server auto-detects it from git.
 
 **Rules for all of the above:**
+
 - Never announce retrieval or storage unless the user asks.
 - If `inject_context` returns nothing, proceed normally — no comment.
 - Store the gist, not the transcript. Skip trivial chitchat.
 
 ### Phrase triggers (zero-config capture)
+
 The server automatically captures memories when the user types trigger phrases
 anywhere in their message — no tool call needed:
 
-| Phrase | Stored as |
-|---|---|
-| `remember this: …` | decision, arc scope, long-term |
-| `remember: …` | decision, arc scope, long-term |
-| `decision: …` | decision, arc scope, long-term |
-| `preference: …` | preference, trait scope, long-term |
-| `note to self: …` | preference, trait scope, long-term |
-| `important: …` | preference, trait scope, long-term |
-| `lesson: …` | learning, arc scope, long-term |
-| `fact: …` | fact, fact scope, short-term |
-| `note: …` | fact, fact scope, short-term |
+| Phrase             | Stored as                          |
+| ------------------ | ---------------------------------- |
+| `remember this: …` | decision, arc scope, long-term     |
+| `remember: …`      | decision, arc scope, long-term     |
+| `decision: …`      | decision, arc scope, long-term     |
+| `preference: …`    | preference, trait scope, long-term |
+| `note to self: …`  | preference, trait scope, long-term |
+| `important: …`     | preference, trait scope, long-term |
+| `lesson: …`        | learning, arc scope, long-term     |
+| `fact: …`          | fact, fact scope, short-term       |
+| `note: …`          | fact, fact scope, short-term       |
 
 These are captured as a side effect of every `inject_context` call — the user
 just types naturally and the memory is stored.
@@ -274,21 +279,21 @@ manage_memories(action="archive", memory_id="<id>")
 
 **Scope guide:**
 
-| Scope | Use for |
-|---|---|
-| `session` | Relevant only to this conversation |
-| `arc` | Project- or task-level; persists across sessions |
-| `trait` | Stable personal trait or long-running preference |
-| `fact` | Objective fact with no expiry expectation |
+| Scope     | Use for                                          |
+| --------- | ------------------------------------------------ |
+| `session` | Relevant only to this conversation               |
+| `arc`     | Project- or task-level; persists across sessions |
+| `trait`   | Stable personal trait or long-running preference |
+| `fact`    | Objective fact with no expiry expectation        |
 
 **Retention guide:**
 
-| Retention | Lifetime |
-|---|---|
-| `ephemeral` | Deleted after current session |
-| `short_term` | Days; subject to decay |
-| `long_term` | Indefinite unless manually removed |
-| `permanent` | Never decayed or auto-archived |
+| Retention    | Lifetime                           |
+| ------------ | ---------------------------------- |
+| `ephemeral`  | Deleted after current session      |
+| `short_term` | Days; subject to decay             |
+| `long_term`  | Indefinite unless manually removed |
+| `permanent`  | Never decayed or auto-archived     |
 
 ---
 
@@ -314,10 +319,10 @@ search_memories(query_type="id", memory_id="<id>")
 
 Three built-in blocks are always injected alongside memories during retrieval:
 
-| Label | Purpose |
-|---|---|
-| `user_preferences` | Tone, format, constraints, coding style |
-| `pending_items` | Open tasks and follow-ups |
+| Label              | Purpose                                     |
+| ------------------ | ------------------------------------------- |
+| `user_preferences` | Tone, format, constraints, coding style     |
+| `pending_items`    | Open tasks and follow-ups                   |
 | `session_patterns` | Recurring patterns observed across sessions |
 
 ```python
@@ -330,6 +335,7 @@ manage_context_blocks(action="reset",  label="session_patterns")  # restore defa
 ```
 
 **When to update:**
+
 - User states a preference → append to `user_preferences`
 - Task mentioned but not finished → add to `pending_items`
 - Session ends → summarise key patterns in `session_patterns`
@@ -338,8 +344,8 @@ manage_context_blocks(action="reset",  label="session_patterns")  # restore defa
 
 ### `process_session_transcript` — extract memories from a full conversation
 
-Call at the end of significant sessions. Runs the full capture pipeline,
-bridges context blocks into memories, and extracts entities into the graph.
+Call at the end of significant sessions. Runs the full capture pipeline, bridges
+context blocks into memories, and extracts entities into the graph.
 
 ```python
 process_session_transcript(
@@ -352,7 +358,8 @@ process_session_transcript(
 )
 ```
 
-Prefer this over manual `manage_memories` calls — it extracts more and deduplicates.
+Prefer this over manual `manage_memories` calls — it extracts more and
+deduplicates.
 
 ---
 
@@ -380,9 +387,9 @@ manage_curation_runs(action="list")                    # recent runs
 manage_curation_runs(action="cancel", run_id="<id>")   # cancel
 ```
 
-Run occasionally, not every session. `preserve` + `observe` is always safe.
-Use `rebalance` when the store has grown noisy. Never use `in_place` mode
-without understanding it modifies memories permanently.
+Run occasionally, not every session. `preserve` + `observe` is always safe. Use
+`rebalance` when the store has grown noisy. Never use `in_place` mode without
+understanding it modifies memories permanently.
 
 ---
 
@@ -401,29 +408,40 @@ metrics. Use to diagnose issues or confirm the server is healthy.
 ## 7. Best practices
 
 **Do:**
-- Call `inject_context` before any non-trivial reply — cost is low, benefit is high.
-- Store at the right scope. Fleeting observation → `session`. Project decision → `arc`. Personal trait → `trait` or `permanent`.
-- Update `user_preferences` immediately when the user states a preference — don't wait for end of session.
-- Keep `pending_items` current. Add items when they come up; remove or tick them off when done. Stale items waste injection budget every session.
+
+- Call `inject_context` before any non-trivial reply — cost is low, benefit is
+  high.
+- Store at the right scope. Fleeting observation → `session`. Project decision →
+  `arc`. Personal trait → `trait` or `permanent`.
+- Update `user_preferences` immediately when the user states a preference —
+  don't wait for end of session.
+- Keep `pending_items` current. Add items when they come up; remove or tick them
+  off when done. Stale items waste injection budget every session.
 - Use `process_session_transcript` at the end of meaningful sessions.
-- Set `FORESIGHT_IDENTITY` per user — without it all memories land in the same anonymous bucket and cannot be separated later.
+- Set `FORESIGHT_IDENTITY` per user — without it all memories land in the same
+  anonymous bucket and cannot be separated later.
 
 **Don't:**
-- Announce memory operations. Storing and retrieving memories should be invisible.
-- Put large blobs in context blocks. One preference per line, one task per line. Blocks are always injected.
-- Use `scope=session` for anything the user might reference next week. When in doubt, use `arc`.
+
+- Announce memory operations. Storing and retrieving memories should be
+  invisible.
+- Put large blobs in context blocks. One preference per line, one task per line.
+  Blocks are always injected.
+- Use `scope=session` for anything the user might reference next week. When in
+  doubt, use `arc`.
 - Store the same fact twice — run curation periodically to clean up.
-- Use `tool_access=operate` + `output_mode=in_place` curation without understanding it modifies in place. Always start with `observe`.
+- Use `tool_access=operate` + `output_mode=in_place` curation without
+  understanding it modifies in place. Always start with `observe`.
 
 ---
 
 ## 8. Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| Server won't start — `FORESIGHT_DB_URL` missing | Export it or pass inline: `FORESIGHT_DB_URL=... uvx foresight-server` |
-| `foresight doctor` shows DB failure | Verify DSN: `psql "$FORESIGHT_DB_URL" -c '\l'` |
-| Tools return empty results | Check `FORESIGHT_IDENTITY` — without it, user_id is empty and all queries miss. Run `search_memories(query_type="list")` to confirm store has data. |
-| MCP client can't connect | Confirm `FORESIGHT_HOST=0.0.0.0` when connecting from a remote client; check port matches `FORESIGHT_PORT`. |
-| Port already in use | Kill stale process: `pkill -f foresight-server`. Or change `FORESIGHT_PORT`. |
-| `inject_context` always returns no results | Store is empty. Start with `manage_memories(action="store", ...)` or run `process_session_transcript`. |
+| Symptom                                         | Fix                                                                                                                                                 |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server won't start — `FORESIGHT_DB_URL` missing | Export it or pass inline: `FORESIGHT_DB_URL=... uvx foresight-server`                                                                               |
+| `foresight doctor` shows DB failure             | Verify DSN: `psql "$FORESIGHT_DB_URL" -c '\l'`                                                                                                      |
+| Tools return empty results                      | Check `FORESIGHT_IDENTITY` — without it, user_id is empty and all queries miss. Run `search_memories(query_type="list")` to confirm store has data. |
+| MCP client can't connect                        | Confirm `FORESIGHT_HOST=0.0.0.0` when connecting from a remote client; check port matches `FORESIGHT_PORT`.                                         |
+| Port already in use                             | Kill stale process: `pkill -f foresight-server`. Or change `FORESIGHT_PORT`.                                                                        |
+| `inject_context` always returns no results      | Store is empty. Start with `manage_memories(action="store", ...)` or run `process_session_transcript`.                                              |

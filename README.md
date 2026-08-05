@@ -18,8 +18,8 @@ bash install.sh
 
 The installer handles everything: dependencies, database setup, `.env`
 generation, schema init, health check, systemd service, OpenCode MCP
-auto-config, and your first memory. You just need a Postgres connection
-string (or pick a provider from the interactive menu).
+auto-config, and your first memory. You just need a Postgres connection string
+(or pick a provider from the interactive menu).
 
 **Prefer manual?**
 
@@ -72,8 +72,8 @@ On macOS/Linux with uv installed, `uv pip install foresight[all]` is ~3x faster.
 
 #### Step 2 — Database
 
-Foresight is **Postgres-only**. The installer offers an interactive menu
-(Neon, Supabase, Railway, Replit, Local, Other) with signup links.
+Foresight is **Postgres-only**. The installer offers an interactive menu (Neon,
+Supabase, Railway, Replit, Local, Other) with signup links.
 
 Or set it manually:
 
@@ -90,8 +90,8 @@ foresight init          # Creates config + verifies database
 foresight doctor        # Health check — 11 checks including LLM, Redis, MCP
 ```
 
-Doctor now checks: Python version, config dir/file, DB URL, user/bank ID,
-DB responsive, LLM provider, Redis cache, MCP HTTP server, schema version.
+Doctor now checks: Python version, config dir/file, DB URL, user/bank ID, DB
+responsive, LLM provider, Redis cache, MCP HTTP server, schema version.
 
 #### Step 4 — Store, list, retrieve
 
@@ -120,8 +120,8 @@ foresight --json status     # Pure JSON to stdout
 
 #### Step 7 — Wire it to your AI agent
 
-Add to any MCP-compatible agent. `FORESIGHT_DB_URL` is required in every
-client config. Here's the Claude Code config:
+Add to any MCP-compatible agent. `FORESIGHT_DB_URL` is required in every client
+config. Here's the Claude Code config:
 
 ```json
 // ~/.claude.json or claude_desktop_config.json
@@ -194,17 +194,19 @@ foresight tui                             # Full-screen Textual terminal UI
 ### Extras
 
 - **Shell completion**: `foresight --install-completion`
-  - **Database URL**: `export FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight`
+  - **Database URL**:
+    `export FORESIGHT_DB_URL=postgresql://user:pass@host:5432/foresight`
 - **Config file**: `~/.foresight/config.json`
-- **Docker databases**: See [Installation Guide](https://foresight.vectorize.io/installation)
+- **Docker databases**: See
+  [Installation Guide](https://foresight.vectorize.io/installation)
 
 ---
 
 ## Architecture
 
-Foresight is **Postgres-only** — there is no local SQLite store. `FORESIGHT_DB_URL`
-must point at the shared Ghost Postgres instance; the daemon fails fast if it is
-unset.
+Foresight is **Postgres-only** — there is no local SQLite store.
+`FORESIGHT_DB_URL` must point at the shared Ghost Postgres instance; the daemon
+fails fast if it is unset.
 
 Foresight combines three layers:
 
@@ -220,9 +222,9 @@ Foresight combines three layers:
 ### Context blocks
 
 Context blocks are the Foresight-native continuity surface for active guidance
-and project state. They are persisted in PostgreSQL (shared Ghost Postgres) and isolated by
-`(user_id, tenant_id)`, so the same user can carry different continuity state
-across tenants without leakage.
+and project state. They are persisted in PostgreSQL (shared Ghost Postgres) and
+isolated by `(user_id, tenant_id)`, so the same user can carry different
+continuity state across tenants without leakage.
 
 Default blocks:
 
@@ -281,27 +283,27 @@ uv run foresight --help
 All vars are documented in [`.env.example`](.env.example). The installer
 generates `.env` from this template automatically.
 
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `FORESIGHT_DB_URL` | **Yes** | — | PostgreSQL connection string |
-| `FORESIGHT_IDENTITY` | No | `$USER` | User identity (`user` or `user@account`) |
-| `FORESIGHT_BANK_ID` | No | `default` | Memory bank isolation |
-| `FORESIGHT_LLM_PROVIDER` | No | — | LLM provider for synthesis/reflection |
-| `FORESIGHT_LLM_API_KEY` | No | — | LLM API key |
-| `FORESIGHT_LLM_BASE_URL` | No | — | LLM endpoint URL |
-| `FORESIGHT_LLM_MODEL` | No | — | LLM model name |
-| `FORESIGHT_REDIS_URL` | No | — | Redis companion cache (in-process cache if unset) |
-| `FORESIGHT_ENABLE_WS` | No | — | Enable WebSocket subscriptions |
-| `FORESIGHT_ALLOW_UNAUTHENTICATED` | No | — | Disable auth (local dev only) |
-| `FORESIGHT_DECAY_INTERVAL_HOURS` | No | `6` | Decay sweep interval |
-| `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | No | `24` | Maintenance + GC interval |
-| `FORESIGHT_LLM_RATE_LIMIT` | No | `60` | LLM calls per minute |
-| `FORESIGHT_LLM_BURST_LIMIT` | No | `10` | Max burst LLM calls |
-| `FORESIGHT_LLM_MIN_INTERVAL` | No | `0.5` | Min seconds between LLM calls |
-| `FORESIGHT_LLM_MAX_PROMPT_CHARS` | No | `10000` | Max prompt chars |
+| Variable                               | Required | Default   | Description                                       |
+| -------------------------------------- | -------- | --------- | ------------------------------------------------- |
+| `FORESIGHT_DB_URL`                     | **Yes**  | —         | PostgreSQL connection string                      |
+| `FORESIGHT_IDENTITY`                   | No       | `$USER`   | User identity (`user` or `user@account`)          |
+| `FORESIGHT_BANK_ID`                    | No       | `default` | Memory bank isolation                             |
+| `FORESIGHT_LLM_PROVIDER`               | No       | —         | LLM provider for synthesis/reflection             |
+| `FORESIGHT_LLM_API_KEY`                | No       | —         | LLM API key                                       |
+| `FORESIGHT_LLM_BASE_URL`               | No       | —         | LLM endpoint URL                                  |
+| `FORESIGHT_LLM_MODEL`                  | No       | —         | LLM model name                                    |
+| `FORESIGHT_REDIS_URL`                  | No       | —         | Redis companion cache (in-process cache if unset) |
+| `FORESIGHT_ENABLE_WS`                  | No       | —         | Enable WebSocket subscriptions                    |
+| `FORESIGHT_ALLOW_UNAUTHENTICATED`      | No       | —         | Disable auth (local dev only)                     |
+| `FORESIGHT_DECAY_INTERVAL_HOURS`       | No       | `6`       | Decay sweep interval                              |
+| `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | No       | `24`      | Maintenance + GC interval                         |
+| `FORESIGHT_LLM_RATE_LIMIT`             | No       | `60`      | LLM calls per minute                              |
+| `FORESIGHT_LLM_BURST_LIMIT`            | No       | `10`      | Max burst LLM calls                               |
+| `FORESIGHT_LLM_MIN_INTERVAL`           | No       | `0.5`     | Min seconds between LLM calls                     |
+| `FORESIGHT_LLM_MAX_PROMPT_CHARS`       | No       | `10000`   | Max prompt chars                                  |
 
-LLM, Redis, and WebSocket are all optional — the system works without them,
-just with reduced features (no synthesis, in-process cache, stdio-only transport).
+LLM, Redis, and WebSocket are all optional — the system works without them, just
+with reduced features (no synthesis, in-process cache, stdio-only transport).
 
 ## systemd service
 
@@ -363,15 +365,15 @@ The installer (`install.sh`) auto-configures OpenCode: it patches
 
 **Manual setup:**
 
-Foresight's `inject_context` tool is designed to fire at conversation start
-and on topic shifts, but MCP is request/response — the server can't push
-context to the client. In practice this meant the agent had to *remember*
-to call `inject_context` manually, which it rarely did.
+Foresight's `inject_context` tool is designed to fire at conversation start and
+on topic shifts, but MCP is request/response — the server can't push context to
+the client. In practice this meant the agent had to _remember_ to call
+`inject_context` manually, which it rarely did.
 
 The `foresight-autoinject` plugin fixes this. It uses OpenCode's
-`experimental.chat.system.transform` hook to call `inject_context` via
-MCP HTTP transport before every LLM request and append the result to the
-system prompt — no agent action required.
+`experimental.chat.system.transform` hook to call `inject_context` via MCP HTTP
+transport before every LLM request and append the result to the system prompt —
+no agent action required.
 
 **Setup:**
 
@@ -393,20 +395,18 @@ foresight-server --transport http --port 8764
       "enabled": true
     }
   },
-  "plugin": [
-    "./plugins/foresight-autoinject.js"
-  ]
+  "plugin": ["./plugins/foresight-autoinject.js"]
 }
 ```
 
 3. Copy [`foresight-autoinject.js`](plugins/foresight-autoinject.js) to
    `~/.config/opencode/plugins/`.
 
-4. Restart OpenCode. Context blocks and relevant memories now auto-inject
-   into every system prompt — hands-off.
+4. Restart OpenCode. Context blocks and relevant memories now auto-inject into
+   every system prompt — hands-off.
 
-The plugin is non-fatal: if Foresight is down, it skips silently. Dedup
-logic ensures it only injects once per new user message.
+The plugin is non-fatal: if Foresight is down, it skips silently. Dedup logic
+ensures it only injects once per new user message.
 
 ## Public surfaces
 

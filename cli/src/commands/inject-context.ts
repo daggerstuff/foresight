@@ -1,28 +1,29 @@
-import { Command, Option } from "commander";
-import { loadConfig } from "../lib/config.js";
-import { withClient } from "../lib/db.js";
-import { fail, info, spinner } from "../lib/ui.js";
-import { formatMemory } from "./format.js";
+import { Command, Option } from 'commander'
+
+import { loadConfig } from '../lib/config.js'
+import { withClient } from '../lib/db.js'
+import { fail, info, spinner } from '../lib/ui.js'
+import { formatMemory } from './format.js'
 
 interface InjectOpts {
-  text: string;
-  max: string;
-  json: boolean;
-  local?: boolean;
+  text: string
+  max: string
+  json: boolean
+  local?: boolean
 }
 
 export function registerInjectContext(cmd: Command): void {
   cmd
-    .command("inject-context")
-    .description("surface memories relevant to a snippet of conversation text")
-    .requiredOption("-t, --text <text>", "conversation text to match")
-    .option("-m, --max <n>", "max memories", "5")
-    .option("--json", "emit raw JSON array", false)
-    .addOption(new Option("--local", "internal: local-only mode").hideHelp())
+    .command('inject-context')
+    .description('surface memories relevant to a snippet of conversation text')
+    .requiredOption('-t, --text <text>', 'conversation text to match')
+    .option('-m, --max <n>', 'max memories', '5')
+    .option('--json', 'emit raw JSON array', false)
+    .addOption(new Option('--local', 'internal: local-only mode').hideHelp())
     .action(async (opts: InjectOpts) => {
-      const cfg = loadConfig();
-      const max = Number.parseInt(opts.max, 10) || 5;
-      const s = spinner("matching context");
+      const cfg = loadConfig()
+      const max = Number.parseInt(opts.max, 10) || 5
+      const s = spinner('matching context')
       try {
         const rows = await withClient(cfg, async (client) => {
           const res = await client.query(
@@ -34,20 +35,22 @@ export function registerInjectContext(cmd: Command): void {
               ORDER BY created_at DESC
               LIMIT $4`,
             [cfg.account, cfg.userId, `%${opts.text}%`, max],
-          );
-          return res.rows;
-        });
-        s.stop();
+          )
+          return res.rows
+        })
+        s.stop()
         if (rows.length === 0) {
-          info("no relevant context");
-          return;
+          info('no relevant context')
+          return
         }
-        if (opts.json) console.log(JSON.stringify(rows, null, 2));
-        else for (const m of rows) console.log(formatMemory(m as Record<string, unknown>));
+        if (opts.json) console.log(JSON.stringify(rows, null, 2))
+        else
+          for (const m of rows)
+            console.log(formatMemory(m as Record<string, unknown>))
       } catch (e) {
-        s.stop();
-        fail(e instanceof Error ? e.message : String(e));
-        process.exitCode = 1;
+        s.stop()
+        fail(e instanceof Error ? e.message : String(e))
+        process.exitCode = 1
       }
-    });
+    })
 }

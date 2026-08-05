@@ -12,6 +12,7 @@ dist/
 .agent/
 **/.git_ignore/**
 **/.git_disabled/**
+tests
 
 # Environments
 .env
@@ -45,3 +46,5 @@ coverage.lcov
 # OMC local state
 .omc/
 .omo/
+.agents/
+.pytest_cache
