@@ -134,19 +134,15 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
         statements = MIGRATIONS[version]
         try:
             with backend.connection() as conn:
-                # SQLite requires BEGIN IMMEDIATE for schema DDL to prevent
-                # "database is locked" errors under concurrent write access.
-                if backend.backend_type == "sqlite":
-                    conn.execute("BEGIN IMMEDIATE")
                 # The runner executes DDL directly on the connection, so the
                 # SQLite-flavoured statements in MIGRATIONS must be translated
-                # to the PostgreSQL dialect when that backend is active (raw
-                # ``conn.execute`` bypasses PostgresBackend._translate_sql).
-                # Wrap each statement in a SAVEPOINT so an idempotent failure
-                # (e.g. duplicate column that MIGRATIONS[1] already created)
-                # rolls back only that statement. PostgreSQL aborts the whole
-                # transaction on any error, so without this the next statement
-                # dies with InFailedSqlTransaction.
+                # to the PostgreSQL dialect (raw ``conn.execute`` bypasses
+                # PostgresBackend._translate_sql). Wrap each statement in a
+                # SAVEPOINT so an idempotent failure (e.g. duplicate column
+                # that MIGRATIONS[1] already created) rolls back only that
+                # statement. PostgreSQL aborts the whole transaction on any
+                # error, so without this the next statement dies with
+                # InFailedSqlTransaction.
                 for idx, stmt in enumerate(statements):
                     savepoint = f"mig_v{version}_s{idx}"
                     conn.execute(f"SAVEPOINT {savepoint}")

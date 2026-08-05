@@ -1,7 +1,7 @@
 """Tests for SqliteBackend connection pooling and query execution."""
 
 import pytest
-from foresight.backend.sqlite_backend import SqliteBackend
+from tests._sqlite_backend import SqliteBackend
 
 
 @pytest.fixture
@@ -137,9 +137,9 @@ def test_connection_exception_rollback(backend):
 
 def test_connect_default_db_path(monkeypatch, tmp_path):
     default_path = str(tmp_path / "default.db")
-    import foresight.backend.sqlite_backend
+    import tests._sqlite_backend as sqlite_backend_module
 
-    monkeypatch.setattr(foresight.backend.sqlite_backend, "DB_PATH", default_path)
+    monkeypatch.setattr(sqlite_backend_module, "DB_PATH", default_path)
 
     b = SqliteBackend()
     b.connect()

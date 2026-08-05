@@ -1,52 +1,21 @@
-"""SQLite backend — wraps the existing ConnectionPool behind DatabaseBackend.
+"""SQLite backend for tests only.
 
-This is the default backend used when ``FORESIGHT_DB_URL`` is not set.
-It preserves full backward compatibility with the existing SQLite database
-at ``FORESIGHT_DB_PATH`` (or the compiled-in default).
+Provides ``SqliteBackend`` — a ``DatabaseBackend`` implementation backed
+by a SQLite ``ConnectionPool``. Used by test fixtures that need a
+self-contained database without a running Postgres instance.
 """
 
 from __future__ import annotations
 
-import logging
-import sqlite3
-from collections.abc import Generator
-from contextlib import contextmanager
 from typing import Any
 
+from foresight.backend.base import DatabaseBackend
 from foresight.config import DB_PATH
-from foresight.connection_pool import ConnectionPool
-
-from .base import DatabaseBackend
-
-logger = logging.getLogger("foresight_sqlite_backend")
-
-
-class CustomRow:
-    def __init__(self, cursor, row):
-        self._row = sqlite3.Row(cursor, row)
-
-    def get(self, key, default=None):
-        try:
-            val = self._row[key]
-            return val if val is not None else default
-        except (IndexError, KeyError):
-            return default
-
-    def __getitem__(self, key):
-        return self._row[key]
-
-    def __iter__(self):
-        return iter(self._row)
-
-    def __len__(self):
-        return len(self._row)
-
-    def keys(self):
-        return self._row.keys()
+from foresight.connection_pool import ConnectionPool, CustomRow
 
 
 class SqliteBackend(DatabaseBackend):
-    """DatabaseBackend implementation backed by a SQLite ConnectionPool."""
+    """DatabaseBackend implementation backed by a SQLite ConnectionPool (tests only)."""
 
     def __init__(
         self,
@@ -61,13 +30,8 @@ class SqliteBackend(DatabaseBackend):
         self._backend_type = "sqlite"
         self.row_factory = CustomRow
 
-    # ------------------------------------------------------------------
-    # DatabaseBackend lifecycle
-    # ------------------------------------------------------------------
-
     def connect(self) -> None:
         path = self._db_path or DB_PATH
-        logger.debug("Initialising SqliteBackend with db_path=%s", path)
         self._pool = ConnectionPool(
             db_path=path,
             max_size=self._max_size,
@@ -77,29 +41,26 @@ class SqliteBackend(DatabaseBackend):
 
     def close(self) -> None:
         if self._pool is not None:
-            logger.debug("Closing SqliteBackend pool")
             self._pool.close_all()
             self._pool = None
 
-    # ------------------------------------------------------------------
-    # Connection lifecycle
-    # ------------------------------------------------------------------
+    def connection(self):
+        from contextlib import contextmanager
 
-    @contextmanager
-    def connection(self) -> Generator[Any]:
-        """Acquire a pooled SQLite connection and release it on exit."""
         if self._pool is None:
             raise RuntimeError("SqliteBackend not connected. Call connect() first.")
-        with self._pool.acquire() as conn:
-            try:
-                yield conn
-            except Exception:
-                conn.rollback()
-                raise
 
-    # ------------------------------------------------------------------
-    # Convenience — minor optimisation over base-class defaults
-    # ------------------------------------------------------------------
+        @contextmanager
+        def _ctx():
+            assert self._pool is not None
+            with self._pool.acquire() as conn:
+                try:
+                    yield conn
+                except Exception:
+                    conn.rollback()
+                    raise
+
+        return _ctx()
 
     def execute(self, sql: str, params: tuple | dict = ()) -> None:
         if self._pool is None:
@@ -127,10 +88,6 @@ class SqliteBackend(DatabaseBackend):
         with self._pool.acquire() as conn:
             row = conn.execute(sql, params).fetchone()
             return dict(row) if row else None
-
-    # ------------------------------------------------------------------
-    # Pool introspection
-    # ------------------------------------------------------------------
 
     def table_exists(self, table_name: str) -> bool:
         result = self.fetch_one(

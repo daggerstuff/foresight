@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 import threading
 import time
 from collections import deque
@@ -28,19 +27,46 @@ from .config import DB_PATH
 logger = logging.getLogger("foresight_connection_pool")
 
 
-class ConnectionPool:
-    """Thread-safe SQLite connection pool."""
+class CustomRow:
+    """Row wrapper for SQLite connections (test-only)."""
 
-    def __init__(self, db_path: str = DB_PATH, max_size: int = 10, max_idle_seconds: int = 300):
+    def __init__(self, cursor, row):
+        import sqlite3
+
+        self._row = sqlite3.Row(cursor, row)
+
+    def get(self, key, default=None):
+        try:
+            val = self._row[key]
+            return val if val is not None else default
+        except (IndexError, KeyError):
+            return default
+
+    def __getitem__(self, key):
+        return self._row[key]
+
+    def __iter__(self):
+        return iter(self._row)
+
+    def __len__(self):
+        return len(self._row)
+
+    def keys(self):
+        return self._row.keys()
+
+
+class ConnectionPool:
+    """Thread-safe SQLite connection pool (test-only)."""
+
+    def __init__(self, db_path: str | None = DB_PATH, max_size: int = 10, max_idle_seconds: int = 300):
         self.db_path = db_path
         self.max_size = max_size
         self.max_idle_seconds = max_idle_seconds
-        self._pool: deque[tuple[sqlite3.Connection, float]] = deque()  # (conn, last_used)
-        self._in_use: set[sqlite3.Connection] = set()
+        self._pool: deque[tuple[Any, float]] = deque()
+        self._in_use: set[Any] = set()
         self._lock = threading.Lock()
 
-    def acquire(self) -> PooledConnection:
-        """Get a connection from the pool."""
+    def acquire(self) -> Any:
         with self._lock:
             while self._pool:
                 raw, last_used = self._pool.popleft()
@@ -63,8 +89,7 @@ class ConnectionPool:
             self._in_use.add(conn)
             return PooledConnection(conn, self)
 
-    def release(self, conn: sqlite3.Connection | PooledConnection) -> None:
-        """Return a connection to the pool."""
+    def release(self, conn: Any) -> None:
         if isinstance(conn, PooledConnection):
             if conn._released:
                 return
@@ -90,20 +115,18 @@ class ConnectionPool:
             with suppress(Exception):
                 raw.close()
 
-    def _new_connection(self) -> sqlite3.Connection:
-        """Create a new database connection with proper settings."""
-        from foresight.backend.sqlite_backend import CustomRow
+    def _new_connection(self) -> Any:
+        import sqlite3
 
+        assert self.db_path is not None, "db_path required for SQLite connection"
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = CustomRow
 
-        # Performance pragmas
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def close_all(self) -> None:
-        """Close all connections (for shutdown/testing)."""
         with self._lock:
             for conn, _ in self._pool:
                 with suppress(Exception):
@@ -116,7 +139,6 @@ class ConnectionPool:
 
     @property
     def stats(self) -> dict:
-        """Pool statistics."""
         with self._lock:
             return {
                 "idle": len(self._pool),
@@ -219,14 +241,14 @@ def reset_pool() -> None:
 
 
 class PooledConnection:
-    """Wraps a sqlite3.Connection so .close() returns it to the pool.
+    """Wraps a connection so .close() returns it to the pool.
 
     All attribute access is delegated to the underlying connection,
     but calling .close() releases the connection back to the pool
     instead of truly closing it.
     """
 
-    def __init__(self, conn: sqlite3.Connection, pool: ConnectionPool):
+    def __init__(self, conn: Any, pool: ConnectionPool):
         self._conn = conn
         self._pool = pool
         self._released = False

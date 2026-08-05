@@ -323,7 +323,6 @@ class DedupeEngine:
         pool = get_pool(db_path)
         conn = pool.acquire()
         try:
-            conn.row_factory = __import__("sqlite3").Row
             stored_content = f"[auto-captured/{candidate.category}] {candidate.content}"
             h = _content_hash(stored_content)
 
@@ -459,7 +458,6 @@ class CapturePipeline:
         # Persist candidates
         conn = pool.acquire()
         try:
-            conn.row_factory = __import__("sqlite3").Row
             for _category, items in candidate_map.items():
                 if not items:
                     continue

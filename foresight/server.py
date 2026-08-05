@@ -16,7 +16,6 @@ import logging
 import math
 import os
 import re
-import sqlite3
 import threading
 import time
 import uuid
@@ -984,22 +983,14 @@ def init_db(backend=None):
     """Initialize the database schema with idempotent versioned migrations.
 
     Args:
-        backend: Optional DatabaseBackend. None → create a backend
-                 (attempt Postgres via ``create_backend()``, fall back to
-                 ``SqliteBackend`` for tests).
+        backend: Optional DatabaseBackend. None → create a Postgres backend
+                 via ``create_backend()`` (requires ``FORESIGHT_DB_URL``).
     """
     if backend is None:
         db_path = Path(DB_PATH) if DB_PATH else None
         if db_path:
             db_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            backend = create_backend()
-        except RuntimeError:
-            from foresight.backend.sqlite_backend import SqliteBackend
-
-            if not db_path:
-                raise
-            backend = SqliteBackend(db_path=str(db_path))
+        backend = create_backend()
     backend.connect()
 
     try:
@@ -1463,7 +1454,7 @@ if not logger.handlers:
     logger.addHandler(_h)
     logger.setLevel(logging.INFO)
 
-RowLike = Mapping[str, Any] | sqlite3.Row
+RowLike = Mapping[str, Any]
 
 
 def _health_status_dict() -> dict[str, Any]:

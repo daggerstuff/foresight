@@ -16,7 +16,7 @@ from foresight.server import query_memories, store_memory
 
 def _make_temp_db(db_path: str) -> None:
     """Create a fresh temporary database and run full migrations."""
-    from foresight.backend import SqliteBackend
+    from tests._sqlite_backend import SqliteBackend
 
     from foresight.server import init_db
 

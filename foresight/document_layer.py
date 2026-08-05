@@ -29,7 +29,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -424,7 +423,6 @@ class DocumentStore:
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        conn.row_factory = sqlite3.Row
         return conn
 
     def _ensure_tables(self) -> None:
@@ -840,6 +838,7 @@ class _DocumentStoreSingleton:
         """Return the process-singleton DocumentStore, initializing lazily."""
         with cls._lock:
             if cls._instance is None:
+                assert DB_PATH is not None
                 cls._instance = DocumentStore(DB_PATH)
             return cls._instance
 

@@ -21,7 +21,6 @@ Design points:
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -150,8 +149,8 @@ class DecayConfigOptions:
 class DecayRowContext:
     """Context for applying decay to a single memory row."""
 
-    conn: sqlite3.Connection
-    row: sqlite3.Row
+    conn: Any
+    row: Any
     user_id: str
     tenant_id: str
     now: datetime
@@ -194,7 +193,6 @@ class MemoryDecayService:
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
-        conn.row_factory = sqlite3.Row
         return conn
 
     def _ensure_tables(self) -> None:
@@ -628,7 +626,7 @@ class MemoryDecayService:
         ctx.stats.trend_counts[trend] = ctx.stats.trend_counts.get(trend, 0) + 1
 
     @staticmethod
-    def _insert_event(conn: sqlite3.Connection, *, params: DecayEventParams) -> None:
+    def _insert_event(conn: Any, *, params: DecayEventParams) -> None:
         conn.execute(
             """
             INSERT INTO memory_decay_events (
@@ -727,6 +725,7 @@ class _DecayModelSingleton:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH
+                assert db_path is not None, "db_path or DB_PATH required"
                 cls._instance = MemoryDecayService(db_path)
             return cls._instance
 

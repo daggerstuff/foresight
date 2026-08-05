@@ -239,7 +239,7 @@ class MemoryMaintenanceJob:
         self, conn: Any, config: MaintenanceConfig, extra_where: str = "", extra_params: tuple = ()
     ) -> list[dict[str, Any]]:
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
-        where = f"user_id = ? AND tenant_id = ? AND {sensitivity_filter}{extra_where}"
+        where = f"user_id = ? AND tenant_id = ? AND {sensitivity_filter}{extra_where}"  # nosec B608: sensitivity_filter is hardcoded, not user input
         params = (config.user_id, config.tenant_id, *extra_params)
         cursor = conn.execute(
             f"""
@@ -1093,3 +1093,118 @@ class MemoryMaintenanceJob:
             conn.commit()
         except Exception:
             pass
+
+    def _run_enhanced_synthesize(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
+        """Run EnhancedSynthesizer for deep contradiction/trend/insight analysis.
+
+        Requires >=5 non-ghosted memories. Emits events for contradictions,
+        temporal trends, and evidence-anchored insights.
+        """
+        memories = self._fetch_memories(conn, config, extra_where=" AND COALESCE(is_ghost, 0) = 0")
+        if len(memories) < 5:
+            logger.debug("Enhanced synthesize: skipped (only %d memories, need >=5)", len(memories))
+            return
+
+        mem_objs: list[MemoryObject] = []
+        for row in memories:
+            try:
+                tags = json.loads(row["tags"]) if row["tags"] else []
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            try:
+                emo_raw = json.loads(row["emotional_context"]) if row["emotional_context"] else {}
+                emo = EmotionalMetadata.from_dict(emo_raw) if emo_raw else None
+            except (json.JSONDecodeError, TypeError):
+                emo = None
+            mem_objs.append(
+                MemoryObject(
+                    id=row["id"],
+                    timestamp=row["created_at"],
+                    scope=row["scope"] or "arc",
+                    retention=row["retention"] or "long_term",
+                    content=row["content"],
+                    tags=tags,
+                    emotional_context=emo,
+                )
+            )
+
+        try:
+            result = asyncio.run(get_enhanced_synthesizer().synthesize(mem_objs, user_id=config.user_id))
+        except RuntimeError:
+            # Event loop already running -- use thread bridge
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    get_enhanced_synthesizer().synthesize(mem_objs, user_id=config.user_id),
+                )
+                result = future.result(timeout=60)
+        except Exception as e:
+            logger.warning("Enhanced synthesize failed: %s", e)
+            stats.errors.append(f"enhanced_synthesize:{e}")
+            return
+
+        if result is None:
+            logger.debug("Enhanced synthesize: no result (insufficient data)")
+            return
+
+        for c in result.contradictions:
+            self._emit_enhanced_event(
+                conn,
+                event_type=EventType.MAINTENANCE_CONTRADICTION.value,
+                payload=c.to_dict(),
+                entity_id=c.evidence_ids[0][:8] if c.evidence_ids else "unknown",
+                tenant_id=config.tenant_id,
+            )
+            stats.enhanced_contradictions += 1
+
+        for t in result.temporal_trends:
+            self._emit_enhanced_event(
+                conn,
+                event_type=EventType.MAINTENANCE_TREND.value,
+                payload=t.to_dict(),
+                entity_id=t.evidence_ids[0][:8] if t.evidence_ids else "unknown",
+                tenant_id=config.tenant_id,
+            )
+            stats.enhanced_trends += 1
+
+        for ins in result.insights:
+            self._emit_enhanced_event(
+                conn,
+                event_type=EventType.MAINTENANCE_INSIGHT.value,
+                payload=ins.to_dict(),
+                entity_id=ins.evidence_ids[0][:8] if ins.evidence_ids else "unknown",
+                tenant_id=config.tenant_id,
+            )
+            stats.enhanced_insights += 1
+
+        logger.debug(
+            "Enhanced synthesize: contradictions=%d trends=%d insights=%d",
+            stats.enhanced_contradictions,
+            stats.enhanced_trends,
+            stats.enhanced_insights,
+        )
+
+    def _emit_enhanced_event(
+        self, conn: Any, event_type: str, payload: dict[str, Any], entity_id: str, tenant_id: str
+    ) -> None:
+        try:
+            conn.execute(
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    hashlib.sha256(
+                        f"{event_type}{entity_id}{datetime.now(timezone.utc).isoformat()}".encode()
+                    ).hexdigest()[:16],
+                    tenant_id,
+                    event_type,
+                    datetime.now(timezone.utc).isoformat(),
+                    "enhanced_synthesizer",
+                    entity_id,
+                    json.dumps(payload),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            logging.getLogger(__name__).warning('Memory maintenance op failed', exc_info=True)

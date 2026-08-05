@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import tempfile
 import time
 from dataclasses import dataclass
@@ -511,7 +510,7 @@ class EvalHarness:
         self.user_id = user_id
         self.tenant_id = tenant_id
 
-        self._conn: sqlite3.Connection | None = None
+        self._conn: Any | None = None
         self._monkeypatches: list[tuple[Any, str, Any]] = []  # (module, attr, original_value)
 
     @property
@@ -522,13 +521,13 @@ class EvalHarness:
     # Database setup
     # ------------------------------------------------------------------
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get or create the SQLite connection."""
+    def _get_connection(self) -> Any:
         if self._conn is not None:
             return self._conn
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        from .connection_pool import get_pool
+
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         self._conn = conn
         return conn
 
@@ -561,16 +560,27 @@ class EvalHarness:
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
 
-        # Ensure schema exists — always use SqliteBackend so the harness
-        # database is self-contained regardless of FORESIGHT_DB_URL.
-        from foresight.backend import SqliteBackend
+        # Ensure schema exists using the connection pool
+        from .connection_pool import get_pool
 
-        backend = SqliteBackend(db_path=self.db_path)
-        backend.connect()
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
         try:
-            init_db(backend=backend)
+            from foresight.server import _SCHEMA_MIGRATIONS
+
+            for version in sorted(_SCHEMA_MIGRATIONS):
+                for stmt in _SCHEMA_MIGRATIONS[version]:
+                    try:
+                        conn.execute(stmt)
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "Schema migration statement already applied, non-critical",
+                            exc_info=True,
+                        )
+            conn.commit()
         finally:
-            backend.close()
+            conn.close()
 
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
@@ -589,7 +599,8 @@ class EvalHarness:
 
     def seed_fixtures(self) -> int:
         """Seed fixture memories into the database. Returns count of memories inserted."""
-        self._apply_patches()  # init_db() creates core schema via the patched connection pool
+        self._apply_patches()
+        self._conn = None
         conn = self._get_connection()
         now = datetime.now(timezone.utc)
 
@@ -641,10 +652,13 @@ class EvalHarness:
                         mem.get("strength_trend", "stable"),
                     ),
                 )
-                if conn.total_changes > 0 or count == 0:  # Best-effort count
-                    count += 1
-            except sqlite3.IntegrityError:
-                pass
+                count += 1
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Fixture seeding failed, non-critical",
+                    exc_info=True,
+                )
 
         conn.commit()
 
@@ -654,7 +668,7 @@ class EvalHarness:
         logger.info("Seeded %d fixture memories (%s)", count, self.db_path)
         return count
 
-    def _seed_entities(self, conn: sqlite3.Connection) -> None:
+    def _seed_entities(self, conn: Any) -> None:
         """Create entity records so graph search can link memory IDs to entity names."""
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS memory_entities (

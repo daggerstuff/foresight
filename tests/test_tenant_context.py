@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 from unittest.mock import patch
 
-from foresight.backend import SqliteBackend
+from tests._sqlite_backend import SqliteBackend
 from foresight.tenant_context import (
     DEFAULT_TENANT_ID,
     get_current_account_id,

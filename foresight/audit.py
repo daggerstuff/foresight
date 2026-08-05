@@ -1,6 +1,6 @@
 """Tenant-isolated audit log for foresight clinical workflows.
 
-Replaces the Python ``logging``-based stopgap (PIX-3738) with a SQLite
+Replaces the Python ``logging``-based stopgap (PIX-3738) with a
 table that supports queryable, tenant-isolated, retention-controlled
 audit events. Every event in the system that touches PHI or LLM-derived
 output should emit a row through this module.
@@ -8,10 +8,8 @@ output should emit a row through this module.
 Append-only tamper-evidence
 ---------------------------
 
-The ``audit_events`` table is enforced append-only at the SQLite layer
-via triggers (see ``_SCHEMA``). The application cannot ``UPDATE`` or
-``DELETE`` rows; attempts raise ``sqlite3.IntegrityError``. This is a
-deliberate HIPAA-grade control — the audit log must be tamper-evident.
+The ``audit_events`` table is append-only at the application layer —
+this module exposes no ``UPDATE`` or ``DELETE`` methods.
 
 Tenant isolation
 ----------------
@@ -29,14 +27,12 @@ runs), callers should fall back to ``logger.info(...)`` rather than
 requiring a database. The narrative module wires this fallback
 automatically via the optional ``audit_log`` parameter.
 
-Storage location
-----------------
+Storage
+-------
 
-Per the GAP-6c design, audit lives in a separate SQLite file alongside
-the memory store (``audit_events.db``). This avoids WAL contention
-with the hot-path memory tables and lets the audit file have its own
-retention/encryption policy. Callers control the path via the
-``db_path`` constructor argument.
+Audit events live in the main database (Postgres in production, SQLite
+in tests). The table and indexes are created by the server's schema
+migrations; this module creates them lazily if needed.
 """
 
 from __future__ import annotations
@@ -44,87 +40,43 @@ from __future__ import annotations
 import atexit
 import json
 import logging
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .connection_pool import get_pool
+
 logger = logging.getLogger("foresight_audit")
 
-# Event-type constants. These are strings (not an enum) so new event
-# types do not require code changes to the audit table. The narrative
-# module uses these; new modules that emit audit events should follow
-# the same lowercase_snake_case convention.
 NARRATIVE_GENERATED = "narrative_generated"
 NARRATIVE_FAILED = "narrative_failed"
 NARRATIVE_CACHE_HIT = "narrative_cache_hit"
 LLM_CALL_SUCCEEDED = "llm_call_succeeded"
 LLM_CALL_FAILED = "llm_call_failed"
 
-
-# SQL schema. The ``audit_events`` table is created lazily on first
-# connection. The two ``RAISE(ABORT, ...)`` triggers enforce
-# append-only semantics at the SQLite layer, independent of application
-# code. ``_SCHEMA`` is a multi-statement string; ``executescript`` is
-# the documented sqlite3 entry point for that.
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS audit_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    metadata_json TEXT NOT NULL,
-    created_at REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time
-    ON audit_events(tenant_id, created_at);
-
-CREATE INDEX IF NOT EXISTS idx_audit_events_type
-    ON audit_events(event_type);
-
-CREATE INDEX IF NOT EXISTS idx_audit_events_resource
-    ON audit_events(resource_id);
-
-CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_type
-    ON audit_events(tenant_id, event_type);
-
-CREATE TRIGGER IF NOT EXISTS audit_events_no_update
-BEFORE UPDATE ON audit_events
-BEGIN
-    SELECT RAISE(ABORT, 'audit_events is append-only: UPDATE is not allowed');
-END;
-
-CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
-BEFORE DELETE ON audit_events
-BEGIN
-    SELECT RAISE(ABORT, 'audit_events is append-only: DELETE is not allowed');
-END;
-"""
+_SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at REAL NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time ON audit_events(tenant_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_resource ON audit_events(resource_id)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_type ON audit_events(tenant_id, event_type)",
+]
 
 
 @dataclass(frozen=True)
 class AuditEvent:
-    """A single audit event to be persisted via :meth:`AuditLog.record`.
-
-    Attributes:
-        tenant_id: Required for isolation. Every read filters by this.
-        user_id: The user the event pertains to. Required.
-        event_type: A short snake_case string identifying the event
-            class. See module-level constants for common types.
-        resource_id: Identifier of the resource the event pertains to
-            (e.g. ``report_id`` for a narrative, model name for an
-            LLM call). Use empty string if not applicable.
-        metadata: A dict of event-specific metadata. The dict is
-            serialized as JSON; ``datetime`` and other non-JSON-native
-            types are coerced via ``default=str``. Do NOT include raw
-            PHI, raw memory ``content``, or raw LLM prompt/response
-            bodies in ``metadata``. Use hashes only.
-        created_at: Epoch seconds (UTC). Defaults to ``time.time()``
-            at construction; tests may pin it.
-    """
+    """A single audit event to be persisted via :meth:`AuditLog.record`."""
 
     tenant_id: str
     user_id: str
@@ -147,15 +99,14 @@ class AuditEvent:
 
 
 class AuditLog:
-    """Tenant-isolated audit log backed by SQLite.
+    """Tenant-isolated audit log backed by the connection pool.
 
-    The connection is opened lazily on first use, configured with WAL
-    mode and ``check_same_thread=False`` for cross-process safety. The
-    schema (table + indexes + append-only triggers) is created on
-    first use. A single instance is safe to share across threads; the
-    internal lock serializes writes.
+    The connection is acquired lazily on first use from the pool.
+    The schema (table + indexes) is created on first use if needed.
+    A single instance is safe to share across threads; the internal
+    lock serializes writes.
 
-    The instance registers an ``atexit`` handler that closes the
+    The instance registers an ``atexit`` handler that releases the
     underlying connection when the interpreter shuts down. Callers
     that want deterministic lifecycle (e.g. tests) should call
     :meth:`close` explicitly.
@@ -165,22 +116,17 @@ class AuditLog:
         if not db_path or not isinstance(db_path, str):
             raise ValueError("db_path is required and must be a non-empty string")
         self._db_path = db_path
-        self._conn: sqlite3.Connection | None = None
+        self._conn: Any | None = None
         self._lock = threading.Lock()
         self._closed = False
         atexit.register(self.close)
 
-    # ------------------------------------------------------------
-    # Connection lifecycle
-    # ------------------------------------------------------------
-
-    def _get_conn(self) -> sqlite3.Connection:
+    def _get_conn(self) -> Any:
         if self._conn is None:
-            conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.row_factory = sqlite3.Row
-            conn.executescript(_SCHEMA)
+            pool = get_pool(self._db_path)
+            conn = pool.acquire()
+            for stmt in _SCHEMA_STATEMENTS:
+                conn.execute(stmt)
             conn.commit()
             self._conn = conn
         return self._conn
@@ -190,7 +136,7 @@ class AuditLog:
             if self._conn is not None:
                 try:
                     self._conn.close()
-                except sqlite3.Error as exc:
+                except Exception as exc:
                     logger.warning("audit close failed: %s", exc)
                 self._conn = None
                 self._closed = True
@@ -201,24 +147,10 @@ class AuditLog:
     def __exit__(self, *exc_info: Any) -> None:
         self.close()
 
-    # ------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------
-
     def record(self, event: AuditEvent) -> None:
-        """Persist an audit event.
-
-        Append-only is enforced by SQLite triggers. Any attempt to
-        call this twice with the same event id is harmless — each
-        insert is independent.
-
-        Raises:
-            sqlite3.IntegrityError: If the database is closed or the
-                schema is missing. The narrative module catches this
-                and falls back to ``logger.info``.
-        """
+        """Persist an audit event. Append-only — no UPDATE or DELETE exposed."""
         if self._closed:
-            raise sqlite3.ProgrammingError("AuditLog is closed")
+            raise RuntimeError("AuditLog is closed")
         metadata_json = json.dumps(event.metadata, sort_keys=True, default=str)
         with self._lock:
             conn = self._get_conn()
@@ -239,10 +171,6 @@ class AuditLog:
             )
             conn.commit()
 
-    # ------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------
-
     def query(
         self,
         tenant_id: str,
@@ -252,28 +180,7 @@ class AuditLog:
         event_type: str | None = None,
         limit: int = 100,
     ) -> list[AuditEvent]:
-        """Query audit events for a single tenant.
-
-        Tenant isolation: ``tenant_id`` is a required positional
-        argument. There is intentionally no way to query across
-        tenants.
-
-        Args:
-            tenant_id: Required. Only events for this tenant are
-                returned.
-            since: If provided, only events with ``created_at >=
-                since`` are returned (epoch seconds).
-            until: If provided, only events with ``created_at <=
-                until`` are returned (epoch seconds).
-            event_type: If provided, only events of this type are
-                returned.
-            limit: Maximum number of events to return. Defaults to
-                100. The query orders by ``created_at DESC, id DESC``
-                so the most recent events come first.
-
-        Returns:
-            A list of :class:`AuditEvent` instances, possibly empty.
-        """
+        """Query audit events for a single tenant."""
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
         if limit <= 0:
@@ -328,14 +235,7 @@ class AuditLog:
         return int(conn.execute(sql, params).fetchone()["n"])
 
     def stats(self, tenant_id: str) -> dict[str, Any]:
-        """Aggregate stats for a tenant.
-
-        Returns a dict with:
-            * ``total`` — total event count
-            * ``by_type`` — ``{event_type: count}``
-            * ``first_at`` — earliest ``created_at`` (epoch seconds), or None
-            * ``last_at`` — latest ``created_at`` (epoch seconds), or None
-        """
+        """Aggregate stats for a tenant."""
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
         conn = self._get_conn()
