@@ -44,3 +44,4 @@ coverage.lcov
 
 # OMC local state
 .omc/
+.omo/
