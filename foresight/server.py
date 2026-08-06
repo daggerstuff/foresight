@@ -435,6 +435,45 @@ class PostgresPooledConnection(PooledConnection):
             self._conn = self._pool.getconn()
             self._conn.autocommit = True
 
+    @staticmethod
+    def _is_transient_conn_error(exc: Exception) -> bool:
+        """True if *exc* is a connection-level error worth a single retry.
+
+        Covers Neon ``AdminShutdown`` (PG class 57P01), generic ``OperationalError``
+        (connection lost mid-query), and ``InterfaceError`` (connection already
+        closed/broken).  These are transient: a fresh connection from the pool
+        will succeed.
+        """
+        try:
+            import psycopg
+            import psycopg.errors
+        except ImportError:
+            return False
+        transient_types = (
+            psycopg.OperationalError,
+            psycopg.InterfaceError,
+            psycopg.errors.AdminShutdown,
+        )
+        return isinstance(exc, transient_types)
+
+    def _execute_with_retry(self, pg_sql: str, params: tuple) -> Any:
+        """Execute *pg_sql* with one automatic retry on transient connection errors.
+
+        Neon serverless Postgres can ``pg_terminate_backend()`` a pooled
+        connection between the ``_ensure_healthy_conn()`` check and the actual
+        ``execute()`` call (scale-to-zero wake-up race).  This wraps the execute
+        in a try/except, refreshes the connection on a transient error, and
+        retries exactly once.  A second failure propagates to the caller.
+        """
+        try:
+            return self._conn.execute(pg_sql, params)
+        except Exception as exc:
+            if not self._is_transient_conn_error(exc):
+                raise
+            logging.warning("Transient connection error on execute(), refreshing connection: %s", exc)
+            self._ensure_healthy_conn()
+            return self._conn.execute(pg_sql, params)
+
     def execute(self, sql, params=()):
         import re
 
@@ -447,7 +486,7 @@ class PostgresPooledConnection(PooledConnection):
             if match:
                 table_name = match.group(1).strip("'\"")
                 pg_sql = "SELECT 0 as cid, column_name as name, 'TEXT' as type, 0 as notnull, NULL as dflt_value, 0 as pk FROM information_schema.columns WHERE table_name = %s"
-                self._last_result = self._conn.execute(pg_sql, (table_name,))
+                self._last_result = self._execute_with_retry(pg_sql, (table_name,))
                 self._rowcount = self._last_result.rowcount
                 return self
 
@@ -465,7 +504,7 @@ class PostgresPooledConnection(PooledConnection):
             return self
 
         pg_sql = _translate_sql(sql)
-        self._last_result = self._conn.execute(pg_sql, params)
+        self._last_result = self._execute_with_retry(pg_sql, params)
         self._rowcount = self._last_result.rowcount
         return self
 
@@ -476,7 +515,7 @@ class PostgresPooledConnection(PooledConnection):
         upper_sql = pg_sql.upper()
         if " RETURNING " not in upper_sql and upper_sql.lstrip().startswith(("INSERT ", "UPDATE ", "DELETE ")):
             pg_sql = f"{pg_sql} RETURNING *"
-        self._last_result = self._conn.execute(pg_sql, params)
+        self._last_result = self._execute_with_retry(pg_sql, params)
         self._rowcount = self._last_result.rowcount
         return self
 
