@@ -36,7 +36,7 @@
 // SSE response format: lines of `event: message\ndata: {json}` — we extract
 // the JSON from the `data:` line.
 
-const MCP_URL = process.env.FORESIGHT_MCP_URL || 'http://127.0.0.1:8764/mcp'
+const MCP_URL = process.env.FORESIGHT_MCP_URL ?? 'http://127.0.0.1:8764/mcp'
 const MCP_HEADERS = {
   'Content-Type': 'application/json',
   'Accept': 'application/json, text/event-stream',
@@ -160,20 +160,20 @@ function getSessionState(sessionId) {
 
 function extractSessionId(_input, _ctx) {
   if (_input && (_input.sessionId || _input.session_id))
-    return _input.sessionId || _input.session_id
+    return _input.sessionId ?? _input.session_id
   if (_ctx && (_ctx.sessionId || _ctx.session_id))
-    return _ctx.sessionId || _ctx.session_id
+    return _ctx.sessionId ?? _ctx.session_id
   return 'default'
 }
 
 export const ForesightAutoInject = async (_ctx) => {
   return {
     'chat.message': async (_input, output) => {
-      if (!output || !output.parts) return
+      if (!output?.parts) return
       const sessionId = extractSessionId(_input, _ctx)
       const state = getSessionState(sessionId)
       for (const part of output.parts) {
-        if (part && part.type === 'text' && part.text) {
+        if (part?.type === 'text' && part.text) {
           state.lastUserMessage = part.text
           break
         }
@@ -200,7 +200,7 @@ export const ForesightAutoInject = async (_ctx) => {
         return
       }
 
-      if (!contextText || !contextText.trim()) {
+      if (!contextText?.trim()) {
         state.lastFailureAt = Date.now()
         return
       }
