@@ -71,8 +71,8 @@ controls now wired into the project's pre-commit and CI hooks.
 
 ## Past Incidents
 
-| Report date | Researcher | Reference                                 | Resolution                                                                                                                                                                                        |
-| ----------- | ---------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Report date | Researcher | Reference                                 | Resolution                                                                                                                                                             |
+| ----------- | ---------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-07-08  | Robin      | `60be613c` (orphan, never reached origin) | Credential rotated at operator; local blob physically pruned via `git gc --prune=now`; prevention controls added. Credential string omitted from this table by policy. |
 
 (Acknowledgments are made in good faith; identity is recorded only when the

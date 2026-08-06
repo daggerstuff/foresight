@@ -18,10 +18,7 @@ export interface SubscriptionOptions {
 
 export type MessageHandler = (message: WebSocketMessage) => void
 export type ConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'connected'
-  | 'reconnecting'
+  'disconnected' | 'connecting' | 'connected' | 'reconnecting'
 
 export interface WebSocketMessage {
   type:
