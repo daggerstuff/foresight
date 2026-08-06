@@ -1,0 +1,19 @@
+foresight/server.py
+  s_1cc57332acbf8d::t_70c58e4269cee6 438-476,489,507,518
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7373147b310f7df93feb0b1899bd77903b609d23",
+  "prompts": {},
+  "sessions": {
+    "s_1cc57332acbf8d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_02c2c347bffeel2pxoXZq6O81g",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
