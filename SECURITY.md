@@ -36,13 +36,11 @@ against this repository we follow the timeline below:
    opened against `master` — `master` itself is never rewritten or force-pushed
    without explicit maintainer authorization.
 5. **Verify** — every leaked-commit reference (`git merge-base --is-ancestor`)
-   returns NEGATIVE after the rewrite, the GitHub commit API returns the
-   rewritten form, and the upstream secret-scan advisory (e.g. GitGuardian,
-   GitHub secret-scanning) clears.
-6. **Prevent recurrence** — add pre-commit secret scanning (e.g. `ggshield`)
-   plus a GitHub Actions `secrets-scan.yml` workflow that runs on every push and
-   pull request. Add a regression test that fails the build if any string
-   matched by the scanner appears in the working tree.
+   returns NEGATIVE after the rewrite and the GitHub commit API returns the
+   rewritten form.
+6. **Prevent recurrence** — add pre-commit secret scanning and a CI workflow
+   that runs on every push and pull request. Add a regression test that fails
+   the build if any string matched by the scanner appears in the working tree.
 
 ## Scope
 
@@ -75,7 +73,7 @@ controls now wired into the project's pre-commit and CI hooks.
 
 | Report date | Researcher | Reference                                 | Resolution                                                                                                                                                                                        |
 | ----------- | ---------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-07-08  | Robin      | `60be613c` (orphan, never reached origin) | Credential rotated at operator; local blob physically pruned via `git gc --prune=now`; prevention controls (ggshield pre-commit + CI) added. Credential string omitted from this table by policy. |
+| 2026-07-08  | Robin      | `60be613c` (orphan, never reached origin) | Credential rotated at operator; local blob physically pruned via `git gc --prune=now`; prevention controls added. Credential string omitted from this table by policy. |
 
 (Acknowledgments are made in good faith; identity is recorded only when the
 researcher consents.)
