@@ -430,6 +430,8 @@ class ContextBlockAgent:
             for msg in messages:
                 if msg["role"] == "user":
                     touched_labels.update(self._process_user_message(msg["content"], session_id))
+                elif msg["role"] == "assistant":
+                    touched_labels.update(self._process_assistant_message(msg["content"], session_id))
 
             self.state.session_count += 1
             self.state.last_sync = datetime.now(timezone.utc)
@@ -441,17 +443,97 @@ class ContextBlockAgent:
         """Process a user message for preferences, pending items, and project context."""
         touched_labels: set[str] = set()
         # Extract preferences
-        if any(phrase in content.lower() for phrase in ["i always", "i prefer", "i want", "don't ever", "never do"]):
+        lowered = content.lower()
+        preference_phrases = (
+            "i always", "i prefer", "i want", "i'd like", "i would like",
+            "i like", "i love", "i hate", "i usually", "i tend to",
+            "don't ever", "never do", "never use", "always use",
+            "please use", "make sure to", "from now on", "going forward",
+            "avoid using", "stop using", "i'd rather",
+        )
+        if any(phrase in lowered for phrase in preference_phrases):
             touched_labels.add(self._extract_preference(content))
 
         # Extract pending items (TODOs, unfinished work)
-        if any(phrase in content.upper() for phrase in ["TODO", "TO-DO", "NEED TO", "SHOULD", "MUST"]):
-            touched_labels.add(self._extract_pending_item(content, session_id))
+        pending_phrase = self._find_pending_trigger(lowered)
+        if pending_phrase:
+            snippet = self._extract_sentence_around(content, pending_phrase)
+            if snippet:
+                touched_labels.add(self._extract_pending_item(snippet, session_id))
 
         # Extract project context (architectural decisions, codebase structure)
         if self._looks_like_project_context(content):
             touched_labels.add(self._extract_project_context(content, session_id))
         return touched_labels
+
+    def _process_assistant_message(self, content: str, session_id: str) -> set[str]:
+        """Process an assistant message for project context and pending items.
+
+        Assistant messages often contain summaries of decisions, architectural
+        descriptions, and follow-up task mentions that are valuable for context
+        blocks. Preferences are skipped because they should originate from the
+        user, not the assistant.
+        """
+        touched_labels: set[str] = set()
+        # Extract project context from assistant messages (decisions, codebase facts)
+        if self._looks_like_project_context(content):
+            touched_labels.add(self._extract_project_context(content, session_id))
+
+        # Extract pending items mentioned by the assistant
+        lowered = content.lower()
+        pending_phrase = self._find_pending_trigger(lowered)
+        if pending_phrase:
+            snippet = self._extract_sentence_around(content, pending_phrase)
+            if snippet:
+                touched_labels.add(self._extract_pending_item(snippet, session_id))
+        return touched_labels
+
+    # Phrases that signal a pending / follow-up task.  Searched case-insensitively
+    # against the lowercased message.
+    _PENDING_TRIGGERS = (
+        "todo", "to-do", "need to", "needs to", "we should",
+        "still need to", "follow up", "follow-up", "don't forget to",
+        "plan to", "going to", "next we", "still have to", "have to",
+    )
+    # Bare "should" / "must" are noisy on their own ("this should work",
+    # "that must be the issue"), so they are only matched as part of
+    # compound phrases that clearly indicate a task.
+    _PENDING_COMPOUND = (
+        "we should", "you should", "i should",
+        "we must", "you must", "i must",
+        "should also", "should next", "should then",
+    )
+
+    def _find_pending_trigger(self, lowered: str) -> str | None:
+        """Return the first matching pending-phrase found in *lowered*, or None."""
+        for phrase in self._PENDING_TRIGGERS:
+            if phrase in lowered:
+                return phrase
+        for phrase in self._PENDING_COMPOUND:
+            if phrase in lowered:
+                return phrase
+        return None
+
+    @staticmethod
+    def _extract_sentence_around(content: str, phrase: str) -> str:
+        """Extract the sentence containing *phrase* from *content*.
+
+        Falls back to a 200-char window if no sentence boundary is found.
+        """
+        pos = content.lower().find(phrase)
+        if pos == -1:
+            return content.strip().replace("\n", " ")[:200]
+        # Find sentence boundaries around the match
+        start = content.rfind(".", 0, pos)
+        if start == -1:
+            start = content.rfind("\n", 0, pos)
+        start = 0 if start == -1 else start + 1
+        end = content.find(".", pos)
+        if end == -1:
+            end = content.find("\n", pos)
+        end = len(content) if end == -1 else end
+        sentence = content[start:end].strip().replace("\n", " ")
+        return sentence[:200]
 
     # Strong verbs: imply a codebase action. They no longer match alone — a
     # technical-object token (see has_technical_object below) is also required,
