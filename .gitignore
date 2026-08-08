@@ -12,7 +12,6 @@ dist/
 .agent/
 **/.git_ignore/**
 **/.git_disabled/**
-tests
 
 # Environments
 .env

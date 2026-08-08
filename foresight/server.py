@@ -4605,11 +4605,21 @@ def main(host: str | None = None, port: int | None = None) -> None:
         ws_thread = threading.Thread(target=_run_ws_in_thread, daemon=True, name="foresight-websocket")
         ws_thread.start()
 
-    # Determine transport: streamable-http (full HTTP, stateless request/response) when port is set, stdio otherwise
+    # Determine transport: streamable-http (full HTTP, stateless request/response) when port is set, stdio otherwise.
+    # stateless_http=True keeps the server stateless: HTTP MCP clients (e.g. the Copilot CLI transport) cache the
+    # Mcp-Session-Id from the initial handshake and never re-handshake, so any server restart that wipes the
+    # in-memory session dict would strand the client with 404 "Session expired" errors until the client is
+    # restarted. Stateless mode skips session tracking entirely, making server restarts safe.
     transport_port = port if port is not None else os.environ.get("FORESIGHT_PORT")
     if transport_port is not None:
         transport_host = host if host is not None else os.environ.get("FORESIGHT_HOST", "127.0.0.1")
-        mcp.run(transport="streamable-http", host=transport_host, port=int(transport_port), show_banner=False)
+        mcp.run(
+            transport="streamable-http",
+            host=transport_host,
+            port=int(transport_port),
+            stateless_http=True,
+            show_banner=False,
+        )
     else:
         mcp.run(show_banner=False)
 

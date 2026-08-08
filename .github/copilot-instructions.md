@@ -30,15 +30,6 @@ uv build
 uv run twine check dist/*
 ```
 
-Security scanning in this repo is part of the normal workflow:
-
-```bash
-pre-commit install
-```
-
-This enables the `ggshield` pre-commit hook configured in
-`.pre-commit-config.yaml`.
-
 ## High-level architecture
 
 Foresight has three connected surfaces:
