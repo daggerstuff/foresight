@@ -17,7 +17,7 @@ from foresight.context_blocks import register_context_block_schema
 from foresight.hybrid_retriever import HybridResult, HybridSearchResult
 from foresight_cli.cli import _decode_tool_result
 
-from foresight import memory_status, store_memory
+from foresight.server import memory_status, store_memory
 from foresight.server import (
     ContextBlockAction,
     CurationRunAction,
@@ -137,7 +137,7 @@ def test_store_memory_uses_content_hash_for_dedup():
     Regression: old code used 'content = ?' exact match. New code uses
     content_hash index for deterministic, index-based dedup.
     """
-    from foresight import store_memory
+    from foresight.server import store_memory
 
     unique_marker = hashlib.md5(
         f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()
@@ -153,7 +153,7 @@ def test_store_memory_uses_content_hash_for_dedup():
 
 def test_store_memory_dedup_increments_activation_count():
     """Duplicate store must bump activation_count, not create a new row."""
-    from foresight import store_memory
+    from foresight.server import store_memory
 
     unique = f"activation_bump_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
     r1 = store_memory(unique)
@@ -271,14 +271,30 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         tool_names = {tool.name for tool in await client.list_tools()}
 
     assert tool_names == {
+        "analyze_memories",
+        "apply_memory_decay",
+        "capture_triggered_memories",
+        "generate_recovery_payload",
+        "get_memory_relationships",
+        "get_relevant_memories",
         "get_system_status",
+        "index_memory_embedding",
         "inject_context",
+        "list_document_chunks",
         "manage_context_blocks",
         "manage_curation_runs",
+        "manage_entities",
         "manage_memories",
+        "manage_memory_versions",
         "process_session_transcript",
+        "query_clusters",
+        "query_entities",
         "query_memories_temporal",
+        "run_clustering",
+        "run_maintenance",
         "search_memories",
+        "semantic_search_memories",
+        "switch_tenant",
     }
 
 
@@ -301,7 +317,7 @@ async def test_local_mcp_calls_return_text_without_api_key(monkeypatch):
 @contextmanager
 def _patched_context_block_storage(db_path: str) -> Iterator[None]:
     """Point context-block persistence at a test database and isolate agent cache."""
-    from foresight import subconscious as subconscious_module
+    import foresight.subconscious as subconscious_module
 
     with (
         patch.object(subconscious_module, "DB_PATH", db_path),
@@ -1889,7 +1905,7 @@ def test_memory_hard_cap_enforcement():
         reset_hybrid_retriever()
         import foresight.server as server_module
 
-        server_module._narrative_cache = None
+        server_module._reflection_narrative_cache.clear()
         try:
             # Patch the limit to a small value for testing
             original_limit = server_module.DEFAULT_MAX_MEMORY_PER_TENANT
@@ -1911,7 +1927,7 @@ def test_memory_hard_cap_enforcement():
             conn_pool_module.DB_PATH = original_db_path
             reset_hybrid_retriever()
             reset_pool()
-            server_module._narrative_cache = None
+            server_module._reflection_narrative_cache.clear()
     finally:
         os.unlink(db_path)
 

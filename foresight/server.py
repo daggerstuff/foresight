@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .auth import AuthMiddleware
+from .auth import AuthMiddleware, get_auth_manager
 from .backend import RedisCompanion, create_backend
 from .backend.backend_migrations import ensure_schema_migrations_table
 from .block_registry import InjectionPoint, initialize_default_blocks
@@ -121,8 +121,14 @@ from .narrative_cache import NarrativeCache
 from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
 from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
+from .llm_client import TenantLLMClient
+from .llm_errors import LLMError, LLMNotConfiguredError
 from .reflection_engine import get_reflection_engine
-from .reflection_narrative import _default_cache as _reflection_narrative_cache
+from .reflection_narrative import (
+    ReflectionNarrativeError,
+    _default_cache as _reflection_narrative_cache,
+    generate_insight_narrative,
+)
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
     SemanticSearchError as _SemanticSearchError,
@@ -2328,6 +2334,7 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
     return "\n".join(res)
 
 
+@mcp.tool(output_schema=None)
 def manage_memory_versions(options: VersionAction, user_id: str | None = None) -> str:
     """
     Manage memory versioning: diff or rollback.
@@ -2662,6 +2669,7 @@ def process_session_transcript(
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
 
 
+@mcp.tool(output_schema=None)
 def capture_triggered_memories(
     text: str,
     user_id: str | None = None,
@@ -4045,6 +4053,7 @@ def _subconscious_context_for_terms(uid: str, terms: list[str]) -> list[str]:
     return _context_block_notes_for_terms(uid, terms)
 
 
+@mcp.tool(output_schema=None)
 def get_relevant_memories(
     query: str,
     user_id: str | None = None,
@@ -4186,6 +4195,7 @@ def _fetch_high_confidence_memories(
         conn.close()
 
 
+@mcp.tool(output_schema=None)
 def generate_recovery_payload(
     session_id: str,
     user_id: str | None = None,
@@ -4623,21 +4633,39 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
     # Initialize WebSocket server
     async def websocket_auth_callback(token: str) -> tuple[str, str] | None:
-        """Auth callback for WebSocket connections."""
-        # For now, use the same auth as the main server
-        # In a real implementation, this would check the token against the auth system
-        # and return (user_id, tenant_id) if valid, or None if invalid
+        """Auth callback for WebSocket connections.
+
+        Validates the token via the real AuthManager — first as an API key,
+        then as a session ID — and returns (user_id, tenant_id) on success.
+        """
         if not token:
             return None
 
-        # Simple validation: token must start with "user_" to be considered valid
-        # This is a placeholder for actual authentication logic
-        if token.startswith("user_"):
-            user_id = token
-            tenant_id = "default"
-            return user_id, tenant_id
+        auth_manager = get_auth_manager()
 
-        return None
+        # Try API key authentication first
+        user = auth_manager.authenticate_api_key(token)
+
+        # Fall back to session token validation
+        if user is None:
+            user = auth_manager.validate_session(token)
+
+        if user is None:
+            return None
+
+        # Resolve tenant: use "default" if user has access to all tenants,
+        # otherwise use the first allowed tenant
+        if not user.tenant_access:
+            tenant_id = "default"
+        elif "default" in user.tenant_access:
+            tenant_id = "default"
+        else:
+            tenant_id = user.tenant_access[0]
+
+        if not auth_manager.validate_user_tenant_access(user, tenant_id):
+            return None
+
+        return user.user_id, tenant_id
 
     # WebSocket server is opt-in: only enabled when FORESIGHT_ENABLE_WS is set.
     # The WS surface exists for live UI/inspector clients; stdio MCP tools do not
@@ -4709,6 +4737,7 @@ def set_tenant_context(tenant_id: str) -> None:
     set_current_tenant_id(tenant_id)
 
 
+@mcp.tool(output_schema=None)
 def switch_tenant(tenant_id: str) -> str:
     """
     Switch current tenant context.
@@ -5238,6 +5267,7 @@ def synthesize_profile(
 # =============================================================================
 
 
+@mcp.tool(output_schema=None)
 def manage_entities(action: EntityAction, user_id: str | None = None) -> str:
     """
     Manage entities and relationships (extract, link).
@@ -5296,6 +5326,7 @@ def _handle_entity_query_relationships(uid: str, store, query: EntityQuery) -> s
     return json.dumps([r.to_dict() for r in relationships], indent=2)
 
 
+@mcp.tool(output_schema=None)
 def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
     """
     Query entities and graph relationships.
@@ -5403,6 +5434,7 @@ def get_document(
     return json.dumps(doc.to_dict(), indent=2)
 
 
+@mcp.tool(output_schema=None)
 def list_document_chunks(
     document_id: str,
     user_id: str | None = None,
@@ -5542,6 +5574,7 @@ def _upsert_cluster_results(
     }
 
 
+@mcp.tool(output_schema=None)
 def run_clustering(
     user_id: str | None = None,
     min_similarity: float = 0.25,
@@ -5606,6 +5639,7 @@ def run_clustering(
     )
 
 
+@mcp.tool(output_schema=None)
 def query_clusters(
     user_id: str | None = None,
     limit: int = 50,
@@ -5693,6 +5727,7 @@ def link_memories(
     return json.dumps(rel.to_dict(), indent=2)
 
 
+@mcp.tool(output_schema=None)
 def get_memory_relationships(
     memory_id: str,
     user_id: str | None = None,
@@ -5767,6 +5802,7 @@ def traverse_memory_graph(
 # =============================================================================
 
 
+@mcp.tool(output_schema=None)
 def index_memory_embedding(
     memory_id: str,
     text: str,
@@ -5825,6 +5861,7 @@ def delete_memory_embedding(
     )
 
 
+@mcp.tool(output_schema=None)
 def semantic_search_memories(
     query: str,
     user_id: str | None = None,
@@ -5912,6 +5949,7 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     )
 
 
+@mcp.tool(output_schema=None)
 def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str:
     """
     Perform analysis on memories: synthesis or reflection.
@@ -5929,7 +5967,32 @@ def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str
     if options.action == "reflect":
         engine = get_reflection_engine()
         report = engine.reflect(uid, tenant_id=tenant_id, period=options.period)
-        return json.dumps(report.to_dict(), indent=2) if report else "No results."
+        if not report:
+            return "No results."
+
+        result_dict = report.to_dict()
+
+        # Attempt LLM-powered narrative enhancement (graceful fallback)
+        try:
+            llm_client = TenantLLMClient.from_env(tenant_id)
+
+            def _llm_call(prompt: str, _tid: str, _uid: str) -> str:
+                return llm_client.generate(prompt, user_id=_uid)
+
+            narrative = generate_insight_narrative(
+                report,
+                tenant_id=tenant_id,
+                user_id=uid,
+                llm_call=_llm_call,
+                model_version=f"{llm_client.provider}/{llm_client.model}",
+                cache=_reflection_narrative_cache,
+            )
+            if narrative:
+                result_dict["narrative"] = narrative
+        except (LLMNotConfiguredError, LLMError, ReflectionNarrativeError):
+            pass  # No LLM configured or call failed — return structured report only
+
+        return json.dumps(result_dict, indent=2)
 
     return f"Unknown action: {options.action}"
 
@@ -5974,6 +6037,7 @@ def get_memory_strength(
     return json.dumps(result, indent=2)
 
 
+@mcp.tool(output_schema=None)
 def apply_memory_decay(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -6137,6 +6201,7 @@ def get_decay_events(
     )
 
 
+@mcp.tool(output_schema=None)
 def run_maintenance(
     options: MaintenanceAction,
     user_id: str | None = None,
