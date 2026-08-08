@@ -49,15 +49,13 @@ from .config import (
     REDIS_URL,
     USER_ID,
 )
-from .connection_pool import PooledConnection
+from .connection_pool import PooledConnection, reset_pool
 from .context_blocks import (
     PENDING_ITEMS,
     PROJECT_CONTEXT,
     SESSION_PATTERNS,
     USER_PREFERENCES,
     get_context_block_agent,
-    get_context_snapshot,
-    get_context_whisper,
 )
 from .crisis_detection import get_crisis_service
 from .decay_model import DecayConfigOptions, get_decay_model
@@ -77,7 +75,10 @@ from .event_bus import (
     memory_retrieved,
     memory_stored,
     memory_updated,
+    sync_progress,
 )
+from .event_bus import EventType
+from .event_bus import _make_event
 from .graph_store import get_graph_store
 from .hooks import (
     HookResult,
@@ -102,7 +103,7 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
-from .memory_gc import run_memory_gc, GCConfig
+from .memory_gc import run_memory_gc
 from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
 from .ghost_cleanup import run_ghost_cleanup
 from .memory_relationships import (
@@ -142,7 +143,8 @@ from .stream_producer import (
     StreamPublisher,
     create_stream_producer,
 )
-from .sync import Operation, OperationQueue, OperationType
+from .consumer_group import ConsumerGroupConfig, ConsumerRecord, KafkaConsumerGroup
+from .sync import Operation, OperationQueue, OperationType, get_sync_manager, SyncProgress
 from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
 from .tenant_context import get_current_account_id, get_current_user_id, set_current_tenant_id
@@ -150,7 +152,6 @@ from .tenant_middleware import TenantMiddleware
 
 # WebSocket imports
 from .websocket.server import WebSocketServer
-from .websocket.subscriptions import SubscriptionManager
 
 DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
 DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
@@ -345,7 +346,7 @@ class MemoryAction(BaseModel):
 
 
 class VersionAction(BaseModel):
-    action: Literal["diff", "rollback"] = Field(..., description="Versioning action")
+    action: Literal["list", "diff", "rollback"] = Field(..., description="Versioning action")
     memory_id: str = Field(..., description="Memory ID")
     version1: int | None = Field(default=None, description="First version for diff")
     version2: int | None = Field(default=None, description="Second version for diff")
@@ -1155,7 +1156,8 @@ _SERVER_STATE: dict[str, Any] = {
     "memory_system_initialized": False,
     "safe_path_prefixes": None,
     "stream_publisher": None,
-    "subscription_manager": None,
+    "sync_manager": None,
+    "consumer_group": None,
     "tenant_context": None,
 }
 
@@ -1598,6 +1600,52 @@ def cleanup_stream_producer():
 
 
 atexit.register(cleanup_stream_producer)
+
+
+def _cleanup_background_systems() -> None:
+    """Gracefully stop background threads and release resources on exit."""
+    # Stop consumer group
+    consumer = _SERVER_STATE.get("consumer_group")
+    if consumer is not None:
+        try:
+            consumer.stop()
+            logger.info("Consumer group stopped")
+        except Exception as e:
+            logger.error(f"Error stopping consumer group: {e}")
+        finally:
+            _SERVER_STATE["consumer_group"] = None
+
+    # Mark sync manager offline
+    sync_mgr = _SERVER_STATE.get("sync_manager")
+    if sync_mgr is not None:
+        try:
+            sync_mgr.set_online(False)
+            logger.info("Sync manager set offline")
+        except Exception as e:
+            logger.error(f"Error stopping sync manager: {e}")
+        finally:
+            _SERVER_STATE["sync_manager"] = None
+
+    # Close database backend
+    global _global_backend
+    if _global_backend is not None:
+        try:
+            _global_backend.close()
+            logger.info("Database backend closed")
+        except Exception as e:
+            logger.error(f"Error closing database backend: {e}")
+        finally:
+            _global_backend = None
+
+    # Release all pooled connections
+    try:
+        reset_pool()
+        logger.info("Connection pool reset")
+    except Exception as e:
+        logger.error(f"Error resetting connection pool: {e}")
+
+
+atexit.register(_cleanup_background_systems)
 
 
 def get_event_bus_with_stream():
@@ -2298,6 +2346,12 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     return f"Rolled back memory {options.memory_id} to version {options.to_version} (now at {new_version})"
 
 
+def _handle_version_list(uid: str, tenant_id: str, options: VersionAction) -> str:
+    """Helper to list all versions of a memory."""
+    _ = tenant_id  # resolved internally by get_memory_versions
+    return get_memory_versions(options.memory_id, user_id=uid)
+
+
 def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> str:
     """Helper to handle memory version diff."""
     if options.version1 is None or options.version2 is None:
@@ -2345,6 +2399,9 @@ def manage_memory_versions(options: VersionAction, user_id: str | None = None) -
     """
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
+
+    if options.action == "list":
+        return _handle_version_list(uid, tenant_id, options)
 
     if options.action == "rollback":
         return _handle_version_rollback(uid, tenant_id, options)
@@ -2531,11 +2588,6 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                 stored += 1
 
     return stored
-
-
-def _bridge_subconscious_to_memories(agent, uid: str) -> int:
-    """Compatibility alias for the older helper name."""
-    return _bridge_context_blocks_to_memories(agent, uid)
 
 
 # Map capture-pipeline categories to context-block labels
@@ -3545,18 +3597,6 @@ def manage_curation_runs(
 
 
 # =============================================================================
-# WebSocket Subscription Tools
-# =============================================================================
-
-
-def get_subscription_manager() -> SubscriptionManager:
-    """Get or create the global subscription manager."""
-    if _SERVER_STATE["subscription_manager"] is None:
-        _SERVER_STATE["subscription_manager"] = SubscriptionManager()
-    return _SERVER_STATE["subscription_manager"]
-
-
-# =============================================================================
 # In-Context Memory Injection
 # =============================================================================
 
@@ -4048,11 +4088,6 @@ def _context_block_notes_for_terms(
     return lines
 
 
-def _subconscious_context_for_terms(uid: str, terms: list[str]) -> list[str]:
-    """Compatibility alias for the older helper name."""
-    return _context_block_notes_for_terms(uid, terms)
-
-
 @mcp.tool(output_schema=None)
 def get_relevant_memories(
     query: str,
@@ -4456,6 +4491,131 @@ def _start_maintenance_gc_thread() -> None:
     logger.info("Maintenance+GC thread started (interval=%sh)", interval_hours)
 
 
+def _start_sync_thread() -> None:
+    """Start a daemon thread that drains pending sync operations.
+
+    Initialises the global ``SyncManager`` singleton, wires its progress
+    callback to publish ``sync.progress`` events on the event bus, and runs
+    periodic sync cycles.  Interval is configurable via
+    ``FORESIGHT_SYNC_INTERVAL_SECONDS`` (default: 300). The first cycle
+    starts 30 seconds after launch so it does not compete with the
+    startup surge.
+    """
+    interval = float(os.environ.get("FORESIGHT_SYNC_INTERVAL_SECONDS", "300"))
+    if not (isinstance(interval, (int, float)) and interval > 0 and math.isfinite(interval)):
+        logger.warning(
+            "Invalid FORESIGHT_SYNC_INTERVAL_SECONDS=%r, falling back to 300s",
+            os.environ.get("FORESIGHT_SYNC_INTERVAL_SECONDS"),
+        )
+        interval = 300.0
+
+    node_id = os.environ.get("FORESIGHT_NODE_ID", "foresight-server")
+    mgr = get_sync_manager(node_id=node_id)
+    _SERVER_STATE["sync_manager"] = mgr
+    mgr.set_online(True)
+
+    # Publish sync.progress events on the event bus
+    def _on_progress(progress: SyncProgress) -> None:
+        try:
+            bus = get_event_bus_with_stream()
+            bus.publish(
+                sync_progress(
+                    status=progress.status.value,
+                    pending_count=progress.pending_operations,
+                    synced_count=progress.synced_operations,
+                    failed_count=len(progress.errors),
+                )
+            )
+        except Exception:
+            logger.debug("sync progress publish failed", exc_info=True)
+
+    mgr.on_progress(_on_progress)
+
+    def _sync_loop() -> None:
+        time.sleep(30)
+        while True:
+            try:
+                mgr.sync()
+            except Exception:
+                logger.exception("Sync thread caught unexpected exception")
+            time.sleep(interval)
+
+    thread = threading.Thread(target=_sync_loop, daemon=True, name="foresight-sync")
+    thread.start()
+    logger.info("Sync thread started (interval=%ss, node=%s)", interval, node_id)
+
+
+def _start_consumer_thread() -> None:
+    """Start a daemon thread that consumes events from the stream.
+
+    Only launches when the active stream producer is Kafka (Kinesis/Mock
+    do not have a consumer group implementation). The consumer subscribes
+    to the ``foresight.{env}.memory.`` topic prefix and forwards each
+    record back onto the local event bus so downstream subscribers
+    (audit, cache invalidation, etc.) process them as if they were local.
+
+    Disabled when ``FORESIGHT_ENABLE_CONSUMER`` is set to ``0``.
+    """
+    if os.environ.get("FORESIGHT_ENABLE_CONSUMER", "1") == "0":
+        logger.info("Consumer group disabled via FORESIGHT_ENABLE_CONSUMER=0")
+        return
+
+    publisher = _SERVER_STATE.get("stream_publisher")
+    if publisher is None or not isinstance(publisher.producer, KafkaProducer):
+        logger.info("Consumer group skipped: stream producer is not Kafka")
+        return
+
+    bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    environment = publisher.environment
+    group_id = os.environ.get("FORESIGHT_CONSUMER_GROUP_ID", "foresight-consumer")
+    # Subscribe to all memory event topics for this environment
+    topics = [f"foresight.{environment}.memory.{et.value}" for et in EventType]
+
+    config = ConsumerGroupConfig(
+        bootstrap_servers=bootstrap_servers,
+        group_id=group_id,
+        topics=topics,
+    )
+    consumer = KafkaConsumerGroup(config=config)
+    _SERVER_STATE["consumer_group"] = consumer
+
+    # Bridge consumed records back into the local event bus
+    def _handle_record(record: ConsumerRecord) -> None:
+        event_type_str = record.value.get("event_type", "")
+        try:
+            et = EventType(event_type_str)
+        except ValueError:
+            logger.debug("Consumer: unknown event_type %r, skipping", event_type_str)
+            return
+        # Publish as a local event without re-streaming to avoid infinite loop
+        local_bus = get_event_bus(stream_publisher=None)
+        local_bus.publish(
+            _make_event(
+                et,
+                record.value.get("actor", "system"),
+                record.value.get("entity_id", record.key or ""),
+                record.value.get("payload", {}),
+                record.value.get("metadata"),
+            )
+        )
+
+    def _handle_error(exc: Exception, record: ConsumerRecord) -> None:
+        logger.error("Consumer error processing record (topic=%s, offset=%d): %s", record.topic, record.offset, exc)
+
+    consumer.add_handler(_handle_record)
+    consumer.add_error_handler(_handle_error)
+
+    def _consume_loop() -> None:
+        try:
+            consumer.start()
+        except Exception:
+            logger.exception("Consumer thread caught unexpected exception")
+
+    thread = threading.Thread(target=_consume_loop, daemon=True, name="foresight-consumer")
+    thread.start()
+    logger.info("Consumer thread started (group=%s, topics=%d, servers=%s)", group_id, len(topics), bootstrap_servers)
+
+
 def _run_scheduled_maintenance_gc() -> None:
     """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
     if _global_backend is None:
@@ -4619,6 +4779,8 @@ def main(host: str | None = None, port: int | None = None) -> None:
     _resume_pending_curation_runs()
     _start_decay_sweep_thread()
     _start_maintenance_gc_thread()
+    _start_sync_thread()
+    _start_consumer_thread()
 
     reg = get_memory_hook_registry()
     reg.register(MemoryHookType.PRE_STORE, _audit_hook, name="audit")
@@ -5224,6 +5386,7 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
 # =============================================================================
 
 
+@mcp.tool(output_schema=None)
 def synthesize_profile(
     user_id: str | None = None,
     max_static_memories: int = 20,
@@ -5367,6 +5530,7 @@ def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
 # =============================================================================
 
 
+@mcp.tool(output_schema=None)
 def create_document(
     title: str,
     content: str,
@@ -5418,6 +5582,7 @@ def create_document(
     )
 
 
+@mcp.tool(output_schema=None)
 def get_document(
     document_id: str,
     user_id: str | None = None,
@@ -5449,6 +5614,7 @@ def list_document_chunks(
     return json.dumps([c.to_dict() for c in chunks], indent=2)
 
 
+@mcp.tool(output_schema=None)
 def get_memory_source(
     memory_id: str,
     user_id: str | None = None,
@@ -5469,6 +5635,7 @@ def get_memory_source(
     )
 
 
+@mcp.tool(output_schema=None)
 def delete_document(
     document_id: str,
     user_id: str | None = None,
@@ -5689,6 +5856,7 @@ def query_clusters(
 # =============================================================================
 
 
+@mcp.tool(output_schema=None)
 def link_memories(
     source_memory_id: str,
     target_memory_id: str,
@@ -5757,6 +5925,7 @@ def get_memory_relationships(
     return json.dumps([r.to_dict() for r in rels], indent=2)
 
 
+@mcp.tool(output_schema=None)
 def traverse_memory_graph(
     root_memory_id: str,
     user_id: str | None = None,
@@ -5837,6 +6006,7 @@ def index_memory_embedding(
     )
 
 
+@mcp.tool(output_schema=None)
 def delete_memory_embedding(
     memory_id: str,
     user_id: str | None = None,
@@ -6012,6 +6182,7 @@ def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str
 # =============================================================================
 
 
+@mcp.tool(output_schema=None)
 def get_memory_strength(
     memory_id: str,
     user_id: str | None = None,
@@ -6069,6 +6240,7 @@ def apply_memory_decay(
     )
 
 
+@mcp.tool(output_schema=None)
 def reinforce_memory(
     memory_id: str,
     user_id: str | None = None,
@@ -6102,6 +6274,7 @@ def reinforce_memory(
     return json.dumps({"ok": True, "action": "reinforce_memory", **result}, indent=2)
 
 
+@mcp.tool(output_schema=None)
 def get_decay_config(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -6124,6 +6297,7 @@ def get_decay_config(
     return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
 
 
+@mcp.tool(output_schema=None)
 def set_decay_config(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -6168,6 +6342,7 @@ def set_decay_config(
     return json.dumps({"ok": True, "action": "set_decay_config", **cfg.to_dict()}, indent=2)
 
 
+@mcp.tool(output_schema=None)
 def get_decay_events(
     user_id: str | None = None,
     tenant_id: str | None = None,

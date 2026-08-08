@@ -72,6 +72,9 @@ class EventType(StrEnum):
     MAINTENANCE_CONTRADICTION = "maintenance.contradiction"
     MAINTENANCE_TREND = "maintenance.trend"
 
+    # Sync lifecycle
+    SYNC_PROGRESS = "sync.progress"
+
 
 # =============================================================================
 # Event Base Class
@@ -681,6 +684,16 @@ def system_error(error_type: str, message: str, actor: str = "system") -> Event:
         actor,
         f"error:{error_type}",
         {"error_type": error_type, "message": message},
+    )
+
+
+def sync_progress(status: str, pending_count: int, synced_count: int, failed_count: int, actor: str = "system") -> Event:
+    """Emit sync progress event."""
+    return _make_event(
+        EventType.SYNC_PROGRESS,
+        actor,
+        f"sync:{status}",
+        {"status": status, "pending": pending_count, "synced": synced_count, "failed": failed_count},
     )
 
 
