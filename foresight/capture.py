@@ -66,6 +66,8 @@ class CaptureStats:
     duplicates: int = 0
     near_duplicates: int = 0
     skipped_candidates: int = 0
+    # (category, content) for each successfully stored candidate
+    stored_items: list[tuple[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +78,7 @@ class CaptureStats:
             "duplicates": self.duplicates,
             "near_duplicates": self.near_duplicates,
             "skipped_candidates": self.skipped_candidates,
+            "stored_items": self.stored_items,
         }
 
 
@@ -504,6 +507,7 @@ class CapturePipeline:
 
                     if dedupe.status != "DUPLICATE":
                         stats.stored += 1
+                        stats.stored_items.append((candidate.category, candidate.content))
         finally:
             pool.release(conn)
             conn.close()

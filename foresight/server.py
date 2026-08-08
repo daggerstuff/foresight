@@ -52,6 +52,7 @@ from .config import (
 from .connection_pool import PooledConnection
 from .context_blocks import (
     PENDING_ITEMS,
+    PROJECT_CONTEXT,
     SESSION_PATTERNS,
     USER_PREFERENCES,
     get_context_block_agent,
@@ -2530,6 +2531,49 @@ def _bridge_subconscious_to_memories(agent, uid: str) -> int:
     return _bridge_context_blocks_to_memories(agent, uid)
 
 
+# Map capture-pipeline categories to context-block labels
+_CAPTURE_TO_BLOCK = {
+    "preference": USER_PREFERENCES,
+    "pending_item": PENDING_ITEMS,
+    "pattern": SESSION_PATTERNS,
+    "decision": PROJECT_CONTEXT,
+}
+
+
+def _bridge_capture_memories_to_blocks(
+    agent,
+    stored_items: list[tuple[str, str]],
+) -> int:
+    """Sync capture-pipeline memories back into context blocks.
+
+    *stored_items* is a list of ``(category, content)`` tuples from
+    ``CaptureStats.stored_items``.  Each item is appended to the matching
+    block if it isn't already present, keeping blocks populated even when
+    the capture pipeline finds items that the transcript processor missed.
+
+    Returns the number of items appended.
+    """
+    appended = 0
+    modified_labels: set[str] = set()
+    for category, content in stored_items:
+        label = _CAPTURE_TO_BLOCK.get(category)
+        if not label:
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        block = agent.state.get_block(label)
+        existing_lines = {ln.strip() for ln in block.content.splitlines() if ln.strip()} if block and not block.is_empty() else set()
+        if content in existing_lines:
+            continue
+        agent.state.append_to_block(label, content)
+        modified_labels.add(label)
+        appended += 1
+    for label in modified_labels:
+        agent._persist_block(label)
+    return appended
+
+
 def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
     """Run entity extraction on transcript content and persist found entities.
 
@@ -2608,6 +2652,12 @@ def process_session_transcript(
 
     pipeline = get_capture_pipeline()
     stats = pipeline.run(session_id=session_id, messages=messages, user_id=uid, tenant_id=tenant_id)
+
+    # Sync capture-pipeline memories back into context blocks
+    if stats.stored_items:
+        bridged = _bridge_capture_memories_to_blocks(agent, stats.stored_items)
+        if bridged:
+            _bridge_context_blocks_to_memories(agent, uid)
 
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
 

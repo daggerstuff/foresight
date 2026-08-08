@@ -182,6 +182,52 @@ class ContextBlockState:
     session_count: int = 0
     user_id: str = "default"
     tenant_id: str = "default"
+    # Session pattern tracking (in-memory, resets per transcript processing)
+    _file_mentions: dict[str, int] = field(default_factory=dict)
+    _tool_mentions: dict[str, int] = field(default_factory=dict)
+    _error_mentions: dict[str, int] = field(default_factory=dict)
+
+    def reset_pattern_counters(self) -> None:
+        """Reset in-memory pattern counters for a new transcript."""
+        self._file_mentions.clear()
+        self._tool_mentions.clear()
+        self._error_mentions.clear()
+
+    def record_file_mention(self, path: str) -> None:
+        """Record a file path mention for pattern detection."""
+        self._file_mentions[path] = self._file_mentions.get(path, 0) + 1
+
+    def record_tool_mention(self, tool: str) -> None:
+        """Record a tool name mention for pattern detection."""
+        self._tool_mentions[tool] = self._tool_mentions.get(tool, 0) + 1
+
+    def record_error_mention(self, error: str) -> None:
+        """Record an error type mention for pattern detection."""
+        self._error_mentions[error] = self._error_mentions.get(error, 0) + 1
+
+    def get_hot_files(self, min_count: int = 2) -> list[tuple[str, int]]:
+        """Get files mentioned at least min_count times, sorted by frequency."""
+        return sorted(
+            [(p, c) for p, c in self._file_mentions.items() if c >= min_count],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+    def get_common_tools(self, min_count: int = 2) -> list[tuple[str, int]]:
+        """Get tools mentioned at least min_count times, sorted by frequency."""
+        return sorted(
+            [(t, c) for t, c in self._tool_mentions.items() if c >= min_count],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+    def get_common_errors(self, min_count: int = 2) -> list[tuple[str, int]]:
+        """Get errors mentioned at least min_count times, sorted by frequency."""
+        return sorted(
+            [(e, c) for e, c in self._error_mentions.items() if c >= min_count],
+            key=lambda x: x[1],
+            reverse=True,
+        )
 
     def initialize_defaults(self) -> None:
         """Initialize context blocks with registered default schemas and content."""
@@ -427,11 +473,19 @@ class ContextBlockAgent:
 
         touched_labels: set[str] = set()
         with self._lock:
+            # Reset pattern counters for this transcript
+            self.state.reset_pattern_counters()
+
             for msg in messages:
                 if msg["role"] == "user":
                     touched_labels.update(self._process_user_message(msg["content"], session_id))
                 elif msg["role"] == "assistant":
                     touched_labels.update(self._process_assistant_message(msg["content"], session_id))
+
+            # Extract session patterns from accumulated counters
+            pattern_label = self._extract_session_patterns(session_id)
+            if pattern_label:
+                touched_labels.add(pattern_label)
 
             self.state.session_count += 1
             self.state.last_sync = datetime.now(timezone.utc)
@@ -441,6 +495,7 @@ class ContextBlockAgent:
 
     def _process_user_message(self, content: str, session_id: str) -> set[str]:
         """Process a user message for preferences, pending items, and project context."""
+        self._record_patterns_from_content(content)
         touched_labels: set[str] = set()
         # Extract preferences
         lowered = content.lower()
@@ -467,13 +522,14 @@ class ContextBlockAgent:
         return touched_labels
 
     def _process_assistant_message(self, content: str, session_id: str) -> set[str]:
-        """Process an assistant message for project context and pending items.
+        """Process an assistant message for project context, pending items, and preferences.
 
         Assistant messages often contain summaries of decisions, architectural
         descriptions, and follow-up task mentions that are valuable for context
-        blocks. Preferences are skipped because they should originate from the
-        user, not the assistant.
+        blocks. We also extract preferences from assistant self-corrections
+        (e.g., "Actually, I'll use...", "Let me use...", "I'll go with...").
         """
+        self._record_patterns_from_content(content)
         touched_labels: set[str] = set()
         # Extract project context from assistant messages (decisions, codebase facts)
         if self._looks_like_project_context(content):
@@ -486,6 +542,24 @@ class ContextBlockAgent:
             snippet = self._extract_sentence_around(content, pending_phrase)
             if snippet:
                 touched_labels.add(self._extract_pending_item(snippet, session_id))
+
+        # Extract preferences from assistant self-corrections
+        # These indicate the assistant's own working preferences
+        assistant_preference_phrases = (
+            "actually, i'll", "actually i'll", "let me use", "i'll use",
+            "i'll go with", "i'm going to use", "i will use", "i'd use",
+            "i would use", "i prefer to", "i'd rather use", "i would rather",
+            "better to use", "should use", "prefer to use",
+        )
+        if any(phrase in lowered for phrase in assistant_preference_phrases):
+            # Extract the relevant sentence around the trigger
+            for phrase in assistant_preference_phrases:
+                if phrase in lowered:
+                    snippet = self._extract_sentence_around(content, phrase)
+                    if snippet:
+                        touched_labels.add(self._extract_preference(f"[Assistant preference] {snippet}"))
+                    break
+
         return touched_labels
 
     # Phrases that signal a pending / follow-up task.  Searched case-insensitively
@@ -503,6 +577,44 @@ class ContextBlockAgent:
         "we must", "you must", "i must",
         "should also", "should next", "should then",
     )
+
+    # Tool name patterns for detecting tool usage in transcripts
+    _TOOL_PATTERNS = (
+        r"\b(read|write|edit|bash|grep|glob|ls|cat|task|webfetch|websearch)\b",
+        r"\b(npm|pnpm|yarn|bun|pip|uv|poetry)\b",
+        r"\b(git|gh|wrangler|vercel|netlify)\b",
+        r"\b(vitest|jest|pytest|playwright|cypress)\b",
+        r"\b(ruff|pyright|mypy|oxlint|eslint|prettier)\b",
+        r"\b(docker|kubectl|helm|terraform|ansible)\b",
+    )
+
+    # Error patterns for detecting error mentions
+    _ERROR_PATTERNS = (
+        r"\b(error|exception|traceback|failed|failure)\b",
+        r"\b(assertionerror|valueerror|typeerror|referenceerror|syntaxerror)\b",
+        r"\b(timeout|connection refused|econnrefused|enetunreach)\b",
+        r"\b(404|500|502|503|504)\b",
+        r"\b(module not found|import error|no such file)\b",
+    )
+
+    def _record_patterns_from_content(self, content: str) -> None:
+        """Extract and record file paths, tool names, and errors from content."""
+        # File paths: match typical path patterns
+        file_paths = re.findall(r'\b(?:[./]\w+(?:/\w+)*|\w+(?:/\w+)+\.(?:py|ts|tsx|js|jsx|mjs|astro|md|yaml|yml|json|toml|rb|rs|go|sql))\b', content)
+        for path in file_paths:
+            self.state.record_file_mention(path)
+
+        # Tool mentions
+        for pattern in self._TOOL_PATTERNS:
+            tools = re.findall(pattern, content, re.IGNORECASE)
+            for tool in tools:
+                self.state.record_tool_mention(tool.lower())
+
+        # Error mentions
+        for pattern in self._ERROR_PATTERNS:
+            errors = re.findall(pattern, content, re.IGNORECASE)
+            for error in errors:
+                self.state.record_error_mention(error.lower())
 
     def _find_pending_trigger(self, lowered: str) -> str | None:
         """Return the first matching pending-phrase found in *lowered*, or None."""
@@ -582,7 +694,13 @@ class ContextBlockAgent:
     # Soft verbs/nouns: "we use", "uses", "architecture", "built on", "stack is".
     # Match ordinary English ("we use the red button"); require a technical-object
     # token (source path, file ext, or stack/layer noun) to qualify.
-    _PCX_SOFT_PHRASES = ("we use", "uses", "architecture", "architectural", "built on", "stack is")
+    _PCX_SOFT_PHRASES = (
+        "we use", "uses", "architecture", "architectural", "built on", "stack is",
+        "the api", "the endpoint", "the service", "the module", "the component",
+        "the client", "the server", "the database", "the orm", "the model",
+        "the controller", "the route", "the handler", "the middleware",
+        "depends on", "integrates with", "calls into", "wraps",
+    )
     # Stack / layer nouns that mark a message as a codebase fact. This list is the
     # "object" half of the verb/object association that gates project_context, so a
     # noun must be unambiguously technical — otherwise a generic verb + a generic
@@ -600,10 +718,18 @@ class ContextBlockAgent:
     # closing the false-positive hole. If bare "service" routing is ever needed, it
     # must be re-added in a *context-aware* form (e.g. only when qualified by a
     # technical adjective) rather than as a context-free token.
-    _PCX_STACK_NOUNS = ("transport", "middleware", "pipeline", "schema", "backend", "frontend",
-                        "gateway", "module", "daemon", "ingestion", "runtime",
-                        "orchestrator", "registry", "store", "cache", "queue", "layer",
-                        "contract", "handler", "entry point")
+    _PCX_STACK_NOUNS = (
+        "transport", "middleware", "pipeline", "schema", "backend", "frontend",
+        "gateway", "module", "daemon", "ingestion", "runtime",
+        "orchestrator", "registry", "store", "cache", "queue", "layer",
+        "contract", "handler", "entry point",
+        # Additional technical nouns for broader coverage
+        "api", "endpoint", "client", "server", "database", "orm", "model",
+        "controller", "route", "handler", "service", "component", "worker",
+        "scheduler", "broker", "publisher", "subscriber", "consumer", "producer",
+        "repository", "factory", "builder", "adapter", "facade", "proxy",
+        "configuration", "settings", "environment", "deployment", "infrastructure",
+    )
 
     def _looks_like_project_context(self, content: str) -> bool:
         """Heuristic: does this message state an architectural decision or codebase fact?
@@ -634,7 +760,12 @@ class ContextBlockAgent:
             content,
         ))
         has_stack_noun = any(re.search(rf"\b{re.escape(n)}\b", lowered) for n in self._PCX_STACK_NOUNS)
-        has_technical_object = has_file_ext or has_dir_path or has_stack_noun
+        # Detect "the X module/service/component/..." patterns as technical objects
+        has_named_component = bool(re.search(
+            r"\bthe\s+(api|endpoint|service|module|component|client|server|database|orm|model|controller|route|handler|middleware|worker|scheduler|broker|repository|factory|adapter|facade|proxy)\b",
+            lowered,
+        ))
+        has_technical_object = has_file_ext or has_dir_path or has_stack_noun or has_named_component
 
         # Strong decision verbs must co-occur with a code/architecture cue; otherwise
         # ordinary English ("I decided to migrate to another city") pollutes the block.
@@ -680,6 +811,40 @@ class ContextBlockAgent:
         self.state.append_to_block(PENDING_ITEMS, f"- [{timestamp}] {content.strip()} (session: {session_id})")
         logger.info(f"Extracted pending item: {content[:50]}...")
         return PENDING_ITEMS
+
+    def _extract_session_patterns(self, session_id: str) -> str | None:
+        """Extract recurring patterns from the current session transcript.
+
+        Detects:
+        - Hot files: files mentioned multiple times (indicating focus areas or struggle points)
+        - Common tools: tools used repeatedly (workflow patterns)
+        - Recurring errors: error types that appear multiple times
+        """
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        patterns = []
+
+        hot_files = self.state.get_hot_files(min_count=2)
+        if hot_files:
+            file_list = ", ".join(f"{p} ({c}x)" for p, c in hot_files[:5])
+            patterns.append(f"Hot files: {file_list}")
+
+        common_tools = self.state.get_common_tools(min_count=2)
+        if common_tools:
+            tool_list = ", ".join(f"{t} ({c}x)" for t, c in common_tools[:5])
+            patterns.append(f"Common tools: {tool_list}")
+
+        common_errors = self.state.get_common_errors(min_count=2)
+        if common_errors:
+            error_list = ", ".join(f"{e} ({c}x)" for e, c in common_errors[:5])
+            patterns.append(f"Recurring errors: {error_list}")
+
+        if not patterns:
+            return None
+
+        snippet = f"[{timestamp}] (session: {session_id}) " + "; ".join(patterns)
+        self.state.append_to_block(SESSION_PATTERNS, snippet)
+        logger.info(f"Extracted session_patterns from session {session_id}: {snippet[:80]}...")
+        return SESSION_PATTERNS
 
     def get_whisper(self) -> str:
         """Get the current whisper injection (guidance block in XML format)."""
