@@ -306,12 +306,21 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "analyze_memories",
         "apply_memory_decay",
         "capture_triggered_memories",
+        "create_document",
+        "delete_document",
+        "delete_memory_embedding",
         "generate_recovery_payload",
+        "get_decay_config",
+        "get_decay_events",
+        "get_document",
         "get_memory_relationships",
+        "get_memory_source",
+        "get_memory_strength",
         "get_relevant_memories",
         "get_system_status",
         "index_memory_embedding",
         "inject_context",
+        "link_memories",
         "list_document_chunks",
         "manage_context_blocks",
         "manage_curation_runs",
@@ -322,11 +331,15 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "query_clusters",
         "query_entities",
         "query_memories_temporal",
+        "reinforce_memory",
         "run_clustering",
         "run_maintenance",
         "search_memories",
         "semantic_search_memories",
+        "set_decay_config",
         "switch_tenant",
+        "synthesize_profile",
+        "traverse_memory_graph",
     }
 
 
@@ -1171,7 +1184,7 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
 
 def test_manage_curation_runs_reviewable_output_and_failure_status():
     """Curation runs keep failed output reviewable and persist error metadata."""
-    from foresight import server as server_module
+    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_failure_user"
@@ -1227,7 +1240,7 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
 
 def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_output():
     """Successful in-place runs archive the source bank and promote staged entries into it."""
-    from foresight import server as server_module
+    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_in_place_user"
@@ -1315,7 +1328,7 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
 
 def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched():
     """Canceled in-place runs do not promote or archive any source memories."""
-    from foresight import server as server_module
+    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_cancel_integrity_user"
@@ -1401,7 +1414,7 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
 
 def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
     """Cancellation landing after promotion starts must restore the source bank and keep the run canceled."""
-    from foresight import server as server_module
+    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_cancel_promotion_user"
@@ -1610,7 +1623,7 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
 
 def test_claim_curation_run_is_atomic_for_duplicate_workers():
     """Only one worker may claim a pending run even if execution is invoked twice."""
-    from foresight import server as server_module
+    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_atomic_claim_user"
