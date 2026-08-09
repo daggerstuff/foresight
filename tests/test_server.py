@@ -233,8 +233,40 @@ def test_status():
 
 
 def _make_test_db():
-    """Create a temporary DB with the memories schema for isolation."""
-    return "postgres"
+    """Create a temporary SQLite DB with the memories schema for isolation."""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY,
+            content TEXT,
+            content_hash TEXT,
+            scope TEXT,
+            retention TEXT,
+            category TEXT,
+            user_id TEXT,
+            bank_id TEXT,
+            tenant_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            tags TEXT,
+            emotional_context TEXT,
+            metrics TEXT,
+            is_ghost INTEGER DEFAULT 0,
+            synthesized_from TEXT,
+            is_sensitive INTEGER DEFAULT 0,
+            sensitivity_reason TEXT,
+            activation_count INTEGER DEFAULT 0
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_dedup "
+        "ON memories(user_id, tenant_id, content_hash, is_ghost)"
+    )
+    conn.commit()
+    conn.close()
+    return path
 
 
 def _mock_db_connection(db_path):
@@ -338,24 +370,27 @@ def test_bridge_context_blocks_to_memories():
     agent._extract_pending_item("TODO: add more tests", "sess_1")
 
     db_path = _make_test_db()
-    with (
-        patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
-        patch("foresight.server.BANK_ID", "test_bank"),
-    ):
-        stored = _bridge_context_blocks_to_memories(agent, "bridge_test_user")
+    try:
+        with (
+            patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+            patch("foresight.server.BANK_ID", "test_bank"),
+        ):
+            stored = _bridge_context_blocks_to_memories(agent, "bridge_test_user")
 
-    assert stored >= 2  # at least one preference + one pending
+        assert stored >= 2  # at least one preference + one pending
 
-    # Verify rows were actually inserted
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT category FROM memories WHERE user_id = ?",
-        ("bridge_test_user",),
-    ).fetchall()
-    conn.close()
-    categories = {r[0] for r in rows}
-    assert "preference" in categories
-    assert "pending" in categories
+        # Verify rows were actually inserted
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT category FROM memories WHERE user_id = ?",
+            ("bridge_test_user",),
+        ).fetchall()
+        conn.close()
+        categories = {r[0] for r in rows}
+        assert "preference" in categories
+        assert "pending" in categories
+    finally:
+        os.unlink(db_path)
 
 
 def test_bridge_context_blocks_dedup():
@@ -368,21 +403,24 @@ def test_bridge_context_blocks_dedup():
     agent._extract_preference("I prefer explicit returns")
 
     db_path = _make_test_db()
-    with (
-        patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
-        patch("foresight.server.BANK_ID", "test_bank"),
-    ):
-        _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
-        _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
+    try:
+        with (
+            patch("foresight.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+            patch("foresight.server.BANK_ID", "test_bank"),
+        ):
+            _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
+            _bridge_context_blocks_to_memories(agent, "dedup_bridge_user")
 
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT content FROM memories WHERE user_id = ?",
-        ("dedup_bridge_user",),
-    ).fetchall()
-    conn.close()
-    # Should have exactly one row (dedup on second call)
-    assert len(rows) == 1
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT content FROM memories WHERE user_id = ?",
+            ("dedup_bridge_user",),
+        ).fetchall()
+        conn.close()
+        # Should have exactly one row (dedup on second call)
+        assert len(rows) == 1
+    finally:
+        os.unlink(db_path)
 
 
 def test_bridge_transcript_entities():

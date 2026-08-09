@@ -725,7 +725,7 @@ class ContextBlockAgent:
         "contract", "handler", "entry point",
         # Additional technical nouns for broader coverage
         "api", "endpoint", "client", "server", "database", "orm", "model",
-        "controller", "route", "handler", "service", "component", "worker",
+        "controller", "route", "handler", "component", "worker",
         "scheduler", "broker", "publisher", "subscriber", "consumer", "producer",
         "repository", "factory", "builder", "adapter", "facade", "proxy",
         "configuration", "settings", "environment", "deployment", "infrastructure",

@@ -196,17 +196,24 @@ _pools: dict[str, ConnectionPool] = {}
 _pool_lock = threading.Lock()
 
 
+def _is_connection_url(value: str) -> bool:
+    """True when ``value`` is a database URL rather than a filesystem path."""
+    return value.startswith(("postgresql://", "postgres://"))
+
+
 def get_pool(db_path: str | None = None) -> Any:
     """Return the active pool.
 
-    * When ``db_path`` is explicitly provided (tests only) → returns the
+    * When ``db_path`` is a Postgres URL → routed to the active Postgres pool,
+      because a connection URL is not a filesystem path.
+    * When ``db_path`` is an explicit path (tests only) → returns the
       legacy SQLite ``ConnectionPool`` keyed on the absolute path.
     * When a Postgres backend is active and no ``db_path`` is given → returns
       a ``_PsycopgPoolAdapter``.
     * When neither condition is met → raises ``RuntimeError``. Production
       must have Postgres; tests must pass an explicit path.
     """
-    if db_path is not None:
+    if db_path is not None and not _is_connection_url(db_path):
         with _pool_lock:
             pool_path = os.path.abspath(db_path)
             if pool_path not in _pools:
@@ -216,6 +223,15 @@ def get_pool(db_path: str | None = None) -> Any:
     pg_pool = _active_postgres_pool()
     if pg_pool is not None:
         return _PsycopgPoolAdapter(pg_pool)
+
+    if db_path is not None:
+        # A Postgres URL was requested but no backend is initialized. Falling
+        # back to SQLite here would silently write to a different store.
+        raise RuntimeError(
+            "Postgres URL requested but no Postgres backend is active. "
+            "Initialize the backend (server._initialize_backend()) before "
+            "acquiring a pool."
+        )
 
     db_path = DB_PATH
     if db_path is None:

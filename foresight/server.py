@@ -420,7 +420,6 @@ class PostgresPooledConnection(PooledConnection):
     """
 
     def __init__(self, conn: Any, pool: Any) -> None:
-        conn.autocommit = True
         self._conn = conn
         self._pool: Any = pool
         self._last_result = None
@@ -440,7 +439,6 @@ class PostgresPooledConnection(PooledConnection):
                 with contextlib.suppress(Exception):
                     self._pool.putconn(self._conn)
             self._conn = self._pool.getconn()
-            self._conn.autocommit = True
 
     @staticmethod
     def _is_transient_conn_error(exc: Exception) -> bool:
@@ -549,6 +547,11 @@ class PostgresPooledConnection(PooledConnection):
     def close(self):
         if not self._released:
             self._released = True
+            # Commit any pending transaction before returning to the pool.
+            # Without this, the pool rolls back open transactions (INTRANS),
+            # discarding writes from code paths that don't call commit() explicitly.
+            with contextlib.suppress(Exception):
+                self._conn.commit()
             if hasattr(self._pool, "release"):
                 self._pool.release(self)
             elif hasattr(self._pool, "putconn"):

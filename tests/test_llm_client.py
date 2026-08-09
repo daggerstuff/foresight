@@ -307,6 +307,7 @@ def test_tenant_llm_client_per_tenant_override(monkeypatch: pytest.MonkeyPatch) 
     """Per-tenant API key takes precedence over global key."""
     monkeypatch.setenv("FORESIGHT_LLM_PROVIDER", "anthropic")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "global-key")
+    monkeypatch.delenv("FORESIGHT_LLM_API_KEY", raising=False)
     monkeypatch.setenv("FORESIGHT_LLM_TENANT_ACME_API_KEY", "acme-override-key")
     monkeypatch.setenv("FORESIGHT_LLM_MODEL", "claude-global")
 

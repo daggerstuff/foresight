@@ -154,8 +154,15 @@ def test_multiple_decisions_accumulate():
     assert content.count("\n- [") >= 2 or content.count("- [") >= 2
 
 
-def test_assistant_messages_are_ignored_for_project_context():
-    """Only user messages feed the producer — assistant turns must not."""
+def test_assistant_messages_populate_project_context():
+    """Assistant messages also feed the project_context producer.
+
+    Commit 67aaac6 deliberately added assistant-message processing because
+    assistant turns often contain decision summaries and architectural
+    descriptions. The assistant message 'We decided to migrate the auth
+    layer to OAuth2.' has a strong verb (decided/migrate) + stack noun
+    (layer/auth), so it must route to project_context.
+    """
     agent = ContextBlockAgent()
     _process(
         agent,
@@ -166,7 +173,11 @@ def test_assistant_messages_are_ignored_for_project_context():
         ],
     )
 
-    assert _project_context_is_empty(agent), "assistant message wrongly wrote project_context"
+    assert not _project_context_is_empty(agent), (
+        "assistant message with architectural decision should write project_context"
+    )
+    content = _project_context_content(agent)
+    assert "migrate" in content.lower() or "oauth" in content.lower()
 
 
 def test_snippet_truncated_to_200_chars():
