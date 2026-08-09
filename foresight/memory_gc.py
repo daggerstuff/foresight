@@ -165,9 +165,9 @@ class MemoryGC:
             cursor = conn.execute(
                 """
                 DELETE FROM events
-                WHERE event_type LIKE 'maintenance%' AND timestamp < ? AND tenant_id = ?
+                WHERE event_type LIKE ? AND timestamp < ? AND tenant_id = ?
                 """,
-                (maint_cutoff, tenant_id),
+                ("maintenance%", maint_cutoff, tenant_id),
             )
             stats.maintenance_events_pruned = cursor.rowcount
             conn.commit()

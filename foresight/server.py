@@ -1737,15 +1737,16 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
     # Store
     insert_sql = (
-        "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
+        "INSERT INTO memories (id, user_id, tenant_id, bank_id, category, scope, retention, "
         "content, content_hash, emotional_context, metrics, importance, activation_count, "
         "created_at, updated_at, tags, is_sensitive, sensitivity_reason) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     insert_params = (
         memory_id,
         uid,
         tenant_id,
+        BANK_ID,
         opts.category,
         memory.scope,
         memory.retention,

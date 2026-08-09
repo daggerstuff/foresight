@@ -465,7 +465,7 @@ class MaintenanceEvalHarness:
         return row["cnt"] if row else 0
 
     def _count_events(self, conn: Any) -> int:
-        row = conn.execute("SELECT COUNT(*) AS cnt FROM events WHERE event_type LIKE 'maintenance%'").fetchone()
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM events WHERE event_type LIKE ?", ("maintenance%",)).fetchone()
         return row["cnt"] if row else 0
 
     def seed_fixtures(self) -> int:
