@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from foresight import create_document, delete_document, get_document, list_document_chunks
-from foresight.server import init_db
+from foresight.server import create_document, delete_document, get_document, list_document_chunks, init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage source documents and their chunks.")

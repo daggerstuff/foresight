@@ -9,8 +9,7 @@ from textual.containers import Container, Horizontal
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
-from foresight import get_system_status
-from foresight.server import init_db
+from foresight.server import get_system_status, init_db
 
 
 class StatCard(Static):

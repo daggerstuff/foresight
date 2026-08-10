@@ -375,7 +375,7 @@ class SQLiteEventStore(EventStoreBase):
         finally:
             conn.close()
 
-    def _row_to_event(self, row: tuple) -> Event | None:
+    def _row_to_event(self, row: Any) -> Event | None:
         """Convert database row to Event, returning None for corrupt rows."""
         try:
             # row[1] is tenant_id (not stored in Event dataclass)

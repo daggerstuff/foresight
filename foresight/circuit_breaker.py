@@ -34,7 +34,7 @@ class CircuitBreakerOpenError(Exception):
 class CircuitBreaker:
     """Circuit breaker for protecting against cascading failures."""
 
-    def __init__(self, config: CircuitBreakerConfig = None):
+    def __init__(self, config: CircuitBreakerConfig | None = None):
         self.config = config or CircuitBreakerConfig()
         self._state = CircuitState.CLOSED
         self._failure_count = 0
@@ -131,7 +131,7 @@ class CircuitBreaker:
             self._last_failure_time = None
 
 
-def with_circuit_breaker(config: CircuitBreakerConfig = None):
+def with_circuit_breaker(config: CircuitBreakerConfig | None = None):
     """Decorator for circuit breaker protection."""
     breaker = CircuitBreaker(config)
 
@@ -140,7 +140,7 @@ def with_circuit_breaker(config: CircuitBreakerConfig = None):
         def wrapper(*args, **kwargs):
             return breaker.call(func, *args, **kwargs)
 
-        wrapper.circuit_breaker = breaker
+        setattr(wrapper, "circuit_breaker", breaker)
         return wrapper
 
     return decorator

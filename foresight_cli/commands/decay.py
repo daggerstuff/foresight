@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from foresight import (
+from foresight.server import (
     apply_memory_decay,
     generate_recovery_payload,
     get_decay_config,
@@ -13,8 +13,8 @@ from foresight import (
     get_memory_strength,
     get_relevant_memories,
     set_decay_config,
+    init_db,
 )
-from foresight.server import init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Decay, strength, recovery, and relevance operations.")

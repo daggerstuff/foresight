@@ -9,8 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from foresight import ContextBlockAction, manage_context_blocks
-from foresight.server import init_db
+from foresight.server import ContextBlockAction, manage_context_blocks, init_db
 
 BLOCK_LABELS = [
     "guidance",

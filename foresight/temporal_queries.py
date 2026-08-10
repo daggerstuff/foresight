@@ -58,7 +58,7 @@ class TemporalQueryBuilder:
     ``DatabaseBackend`` for backend-agnostic access.
     """
 
-    def __init__(self, db_path: str, backend: DatabaseBackend | None = None):
+    def __init__(self, db_path: str | None, backend: DatabaseBackend | None = None):
         """Initialize query builder.
 
         Parameters

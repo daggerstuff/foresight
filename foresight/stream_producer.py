@@ -12,6 +12,7 @@ Supports:
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import os
 import re
@@ -21,27 +22,24 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
-# Optional dependency imports
-try:
-    from kafka import KafkaProducer
+import importlib.util
 
-    HAS_KAFKA = True
-except ImportError:
-    HAS_KAFKA = False
-    KafkaProducer = None
-
-try:
-    import boto3
-
-    HAS_BOTO3 = True
-except ImportError:
-    HAS_BOTO3 = False
-    boto3 = None
+# Optional dependency availability flags
+HAS_KAFKA = importlib.util.find_spec("kafka") is not None
+HAS_BOTO3 = importlib.util.find_spec("boto3") is not None
 
 _TOPIC_ENTITY_RE = re.compile(r"[^a-zA-Z0-9._-]")
 _TOPIC_EVENT_RE = re.compile(r"[^a-zA-Z0-9._-]")
 _TOPIC_ENV_RE = re.compile(r"[^a-zA-Z0-9_-]")
 _MULTI_UNDERSCORE_RE = re.compile(r"_+")
+
+
+def _json_serializer(v: Any) -> bytes:
+    return json.dumps(v).encode("utf-8")
+
+
+def _key_serializer(k: Any) -> bytes:
+    return str(k).encode("utf-8") if k else b""
 
 
 class StreamType(StrEnum):
@@ -137,22 +135,20 @@ class KafkaProducer(StreamProducer):
         self.dlq_topic = dlq_topic
         self.enable_schema_validation = enable_schema_validation
         self.send_timeout = send_timeout
-        self._producer = None
+        self._producer: Any = None
         self._failed_messages: list[dict[str, Any]] = []
         self._max_failed_messages = 1000
-
-        # Lazy import to avoid requiring kafka-python when not used
-        self._kafka = None
 
     def _get_producer(self):
         """Lazy-load Kafka producer."""
         if self._producer is None:
             try:
-                self._kafka = KafkaProducer
-                self._producer = KafkaProducer(
+                _kafka = importlib.import_module("kafka")
+                _KP = _kafka.KafkaProducer
+                self._producer = _KP(
                     bootstrap_servers=self.bootstrap_servers.split(","),
-                    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    key_serializer=lambda k: k.encode("utf-8") if k else None,
+                    value_serializer=_json_serializer,
+                    key_serializer=_key_serializer,
                     retries=3,
                     retry_backoff_ms=100,
                 )
@@ -347,7 +343,8 @@ class KinesisProducer(StreamProducer):
         """Lazy-load Kinesis client."""
         if self._client is None:
             try:
-                self._client = boto3.client("kinesis", region_name=self.region)
+                _boto3 = importlib.import_module("boto3")
+                self._client = _boto3.client("kinesis", region_name=self.region)
             except ImportError:
                 raise ImportError("boto3 not installed. Install with: pip install boto3") from None
         return self._client
@@ -356,7 +353,7 @@ class KinesisProducer(StreamProducer):
         """Generate partition key for Kinesis."""
         return event.entity_id or "default"
 
-    def publish(self, _topic: str, event: StreamEvent) -> bool:
+    def publish(self, topic: str, event: StreamEvent) -> bool:
         """Publish event to Kinesis stream."""
         try:
             client = self._get_client()

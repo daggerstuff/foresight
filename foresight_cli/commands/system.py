@@ -10,8 +10,7 @@ from typing import Any
 
 import typer
 
-from foresight import get_system_status
-from foresight.server import _initialize_backend, init_db
+from foresight.server import get_system_status, _initialize_backend, init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="System management, diagnostics, and configuration.")
@@ -416,8 +415,7 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight import query_memories_temporal
-        from foresight.server import TemporalWindow
+        from foresight.server import query_memories_temporal, TemporalWindow
 
         temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:
@@ -549,7 +547,7 @@ def history(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight import get_decay_events
+        from foresight.server import get_decay_events
 
         raw = get_decay_events(user_id=resolved_uid, limit=limit)
         parsed: dict = json.loads(raw) if isinstance(raw, str) else raw

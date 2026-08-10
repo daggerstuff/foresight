@@ -1611,6 +1611,9 @@ atexit.register(cleanup_stream_producer)
 
 def _cleanup_background_systems() -> None:
     """Gracefully stop background threads and release resources on exit."""
+    # Suppress logging tracebacks during interpreter shutdown (streams may be closed)
+    logging.raiseExceptions = False
+
     # Stop consumer group
     consumer = _SERVER_STATE.get("consumer_group")
     if consumer is not None:
