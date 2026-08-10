@@ -261,3 +261,32 @@ def import_memories(
         imported += 1
 
     out.done(f"Imported {imported} memories from {path}")
+
+
+@app.command()
+def index(
+    memory_id: str = typer.Argument(..., help="Memory ID to index"),
+    text: str = typer.Argument(..., help="Text content to embed"),
+    provider: str | None = typer.Option(None, "--provider", help="Embedder provider name"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+):
+    """Compute and store an embedding vector for a memory."""
+    _init_and_user(user_id)
+    from foresight.server import index_memory_embedding
+
+    result = index_memory_embedding(memory_id=memory_id, text=text, user_id=user_id, provider=provider)
+    out.done(f"Indexed {memory_id}: {result}")
+
+
+@app.command()
+def unindex(
+    memory_id: str = typer.Argument(..., help="Memory ID to remove embedding for"),
+    provider: str | None = typer.Option(None, "--provider", help="Embedder provider name"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+):
+    """Remove a memory's stored embedding vector."""
+    _init_and_user(user_id)
+    from foresight.server import delete_memory_embedding
+
+    result = delete_memory_embedding(memory_id=memory_id, user_id=user_id, provider=provider)
+    out.warn(f"Unindexed {memory_id}: {result}")

@@ -239,7 +239,7 @@ class MemoryUpdateOptions(BaseModel):
 
 
 class SearchOptions(BaseModel):
-    query_type: Literal["id", "keyword", "list"] = Field(default="keyword", description="Type of search/retrieval")
+    query_type: Literal["id", "keyword", "list", "semantic"] = Field(default="keyword", description="Type of search/retrieval")
     query: str | None = Field(default=None, description="Search query string")
     memory_id: str | None = Field(default=None, description="Retrieve specific memory by ID")
     limit: int = Field(default=10, description="Maximum results")
@@ -253,6 +253,8 @@ class SearchOptions(BaseModel):
         default=False,
         description="Return structured trace with timing and signal metadata instead of formatted results",
     )
+    min_score: float = Field(default=0.0, description="Minimum cosine similarity for semantic search [-1.0, 1.0]")
+    provider: str | None = Field(default=None, description="Embedder provider name for semantic search")
 
 
 class ContextBlockAction(BaseModel):
@@ -2112,7 +2114,7 @@ def _trace_retrieval(
 def search_memories(
     options: SearchOptions | None = None,
     user_id: str | None = None,
-    query_type: Literal["id", "keyword", "list"] | None = None,
+    query_type: Literal["id", "keyword", "list", "semantic"] | None = None,
     query: str | None = None,
     memory_id: str | None = None,
     limit: int | None = None,
@@ -2123,10 +2125,12 @@ def search_memories(
     cascade_depth: int | None = None,
     cascade_limit: int | None = None,
     debug: bool | None = None,
+    min_score: float | None = None,
+    provider: str | None = None,
 ) -> str:
     """
     Unified search and retrieval for memories.
-    Supports ID lookup, content keyword search, and hybrid retrieval.
+    Supports ID lookup, content keyword search, semantic vector search, and hybrid retrieval.
 
     Args:
         options: Search parameters (query_type, query, memory_id, limit, etc.)
@@ -2142,6 +2146,8 @@ def search_memories(
         cascade_depth: Flat parameter for cascade depth (optional)
         cascade_limit: Flat parameter for cascade limit (optional)
         debug: Flat parameter for debug mode (optional)
+        min_score: Flat parameter for min semantic similarity score (optional)
+        provider: Flat parameter for embedder provider name (optional)
     """
     if options is None:
         kwargs = {}
@@ -2167,6 +2173,10 @@ def search_memories(
             kwargs["cascade_limit"] = cascade_limit
         if debug is not None:
             kwargs["debug"] = debug
+        if min_score is not None:
+            kwargs["min_score"] = min_score
+        if provider is not None:
+            kwargs["provider"] = provider
         options = SearchOptions(**kwargs)
 
     uid = user_id or USER_ID
@@ -2186,6 +2196,26 @@ def search_memories(
             query_override = r.modified_context.get("query", options.query)
             if query_override:
                 options.query = query_override
+
+    # 0. Semantic vector search
+    if options.query_type == "semantic":
+        if not options.query:
+            return "Error: query is required for semantic search."
+        prov = options.provider or _SEMANTIC_DEFAULT_PROVIDER
+        try:
+            store = get_semantic_search(provider=prov)
+            result = store.search(
+                query=options.query,
+                user_id=uid,
+                options=SemanticSearchOptions(
+                    limit=options.limit,
+                    min_score=options.min_score,
+                ),
+            )
+        except _SemanticSearchError as exc:
+            return f"Error: {exc}"
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+        return json.dumps(result.to_dict(), indent=2)
 
     # 1. Direct ID lookup
     if options.query_type == "id" or options.memory_id:
@@ -4092,7 +4122,6 @@ def _context_block_notes_for_terms(
     return lines
 
 
-@mcp.tool(output_schema=None)
 def get_relevant_memories(
     query: str,
     user_id: str | None = None,
@@ -4234,7 +4263,6 @@ def _fetch_high_confidence_memories(
         conn.close()
 
 
-@mcp.tool(output_schema=None)
 def generate_recovery_payload(
     session_id: str,
     user_id: str | None = None,
@@ -4367,6 +4395,31 @@ def _cache_invalidation_hook(ctx: MemoryHookContext) -> HookResult | None:
             get_hybrid_retriever().invalidate_tfidf_cache(ctx.user_id or "", ctx.tenant_id or "default")
         except Exception:
             logger.exception("Cache invalidation failed for memory %s", ctx.memory_id)
+    return None
+
+
+def _auto_index_embedding_hook(ctx: MemoryHookContext) -> HookResult | None:
+    """Auto-index an embedding vector after a memory is stored.
+
+    Best-effort: failures are logged and swallowed so they never break
+    the store pipeline.
+    """
+    if not ctx.memory_id or not ctx.content:
+        return None
+    try:
+        store = get_semantic_search()
+        store.index_memory(
+            memory_id=ctx.memory_id,
+            text=ctx.content,
+            user_id=ctx.user_id or USER_ID,
+            tenant_id=ctx.tenant_id or "default",
+        )
+    except Exception:
+        logger.debug(
+            "Auto-index embedding failed for memory %s: %s",
+            ctx.memory_id,
+            exc_info=True,
+        )
     return None
 
 
@@ -4796,6 +4849,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
     reg.register(MemoryHookType.PRE_DELETE, _audit_hook, name="audit")
     reg.register(MemoryHookType.POST_DELETE, _audit_hook, name="audit")
     reg.register(MemoryHookType.POST_DELETE, _cache_invalidation_hook, name="cache_invalidation")
+    reg.register(MemoryHookType.POST_STORE, _auto_index_embedding_hook, name="auto_index_embedding")
 
     # Initialize WebSocket server
     async def websocket_auth_callback(token: str) -> tuple[str, str] | None:
@@ -4903,7 +4957,6 @@ def set_tenant_context(tenant_id: str) -> None:
     set_current_tenant_id(tenant_id)
 
 
-@mcp.tool(output_schema=None)
 def switch_tenant(tenant_id: str) -> str:
     """
     Switch current tenant context.
@@ -5390,7 +5443,6 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def synthesize_profile(
     user_id: str | None = None,
     max_static_memories: int = 20,
@@ -5434,7 +5486,6 @@ def synthesize_profile(
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def manage_entities(action: EntityAction, user_id: str | None = None) -> str:
     """
     Manage entities and relationships (extract, link).
@@ -5493,7 +5544,6 @@ def _handle_entity_query_relationships(uid: str, store, query: EntityQuery) -> s
     return json.dumps([r.to_dict() for r in relationships], indent=2)
 
 
-@mcp.tool(output_schema=None)
 def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
     """
     Query entities and graph relationships.
@@ -5534,7 +5584,6 @@ def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def create_document(
     title: str,
     content: str,
@@ -5586,7 +5635,6 @@ def create_document(
     )
 
 
-@mcp.tool(output_schema=None)
 def get_document(
     document_id: str,
     user_id: str | None = None,
@@ -5603,7 +5651,6 @@ def get_document(
     return json.dumps(doc.to_dict(), indent=2)
 
 
-@mcp.tool(output_schema=None)
 def list_document_chunks(
     document_id: str,
     user_id: str | None = None,
@@ -5618,7 +5665,6 @@ def list_document_chunks(
     return json.dumps([c.to_dict() for c in chunks], indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_memory_source(
     memory_id: str,
     user_id: str | None = None,
@@ -5639,7 +5685,6 @@ def get_memory_source(
     )
 
 
-@mcp.tool(output_schema=None)
 def delete_document(
     document_id: str,
     user_id: str | None = None,
@@ -5745,7 +5790,6 @@ def _upsert_cluster_results(
     }
 
 
-@mcp.tool(output_schema=None)
 def run_clustering(
     user_id: str | None = None,
     min_similarity: float = 0.25,
@@ -5810,7 +5854,6 @@ def run_clustering(
     )
 
 
-@mcp.tool(output_schema=None)
 def query_clusters(
     user_id: str | None = None,
     limit: int = 50,
@@ -5899,7 +5942,6 @@ def link_memories(
     return json.dumps(rel.to_dict(), indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_memory_relationships(
     memory_id: str,
     user_id: str | None = None,
@@ -5929,7 +5971,6 @@ def get_memory_relationships(
     return json.dumps([r.to_dict() for r in rels], indent=2)
 
 
-@mcp.tool(output_schema=None)
 def traverse_memory_graph(
     root_memory_id: str,
     user_id: str | None = None,
@@ -5975,7 +6016,6 @@ def traverse_memory_graph(
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def index_memory_embedding(
     memory_id: str,
     text: str,
@@ -6010,7 +6050,6 @@ def index_memory_embedding(
     )
 
 
-@mcp.tool(output_schema=None)
 def delete_memory_embedding(
     memory_id: str,
     user_id: str | None = None,
@@ -6035,7 +6074,6 @@ def delete_memory_embedding(
     )
 
 
-@mcp.tool(output_schema=None)
 def semantic_search_memories(
     query: str,
     user_id: str | None = None,
@@ -6186,7 +6224,6 @@ def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str
 # =============================================================================
 
 
-@mcp.tool(output_schema=None)
 def get_memory_strength(
     memory_id: str,
     user_id: str | None = None,
@@ -6212,7 +6249,6 @@ def get_memory_strength(
     return json.dumps(result, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def apply_memory_decay(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -6244,7 +6280,6 @@ def apply_memory_decay(
     )
 
 
-@mcp.tool(output_schema=None)
 def reinforce_memory(
     memory_id: str,
     user_id: str | None = None,
@@ -6278,7 +6313,6 @@ def reinforce_memory(
     return json.dumps({"ok": True, "action": "reinforce_memory", **result}, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_decay_config(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -6301,7 +6335,6 @@ def get_decay_config(
     return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def set_decay_config(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -6346,7 +6379,6 @@ def set_decay_config(
     return json.dumps({"ok": True, "action": "set_decay_config", **cfg.to_dict()}, indent=2)
 
 
-@mcp.tool(output_schema=None)
 def get_decay_events(
     user_id: str | None = None,
     tenant_id: str | None = None,
@@ -6380,7 +6412,6 @@ def get_decay_events(
     )
 
 
-@mcp.tool(output_schema=None)
 def run_maintenance(
     options: MaintenanceAction,
     user_id: str | None = None,

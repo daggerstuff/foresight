@@ -133,3 +133,19 @@ def rollback(
         options=VersionAction(action="rollback", memory_id=memory_id, to_version=version),
     )
     out.warn(f"Rolled back {memory_id} to version {version}: {result}")
+
+
+@app.command()
+def versions(
+    memory_id: str = typer.Argument(..., help="Memory ID"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+):
+    """List all versions of a memory."""
+    _init_and_user(user_id)
+    result = manage_memory_versions(
+        options=VersionAction(action="list", memory_id=memory_id),
+    )
+    if out.get_settings().mode in ("agent", "json"):
+        out.print_json(result)
+    else:
+        out.result_block(result, title=f"Versions for {memory_id}")

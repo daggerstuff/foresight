@@ -573,3 +573,50 @@ def history(
         out.print_table(["Memory", "Event", "Strength", "Timestamp"], rows, title=f"Recent Events (last {limit})")
     else:
         out.info("No events found.")
+
+
+@app.command()
+def maintenance(
+    mode: str = typer.Option(
+        "all",
+        "--mode",
+        "-m",
+        help="Comma-separated modes (consolidate,contradict,archive_stale,synthesize) or 'all'",
+    ),
+    batch_size: int = typer.Option(200, "--batch-size", help="Max memories to process per mode"),
+    max_runtime: float = typer.Option(300, "--max-runtime", help="Wall-clock budget in seconds"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+):
+    """Run memory maintenance (consolidation, contradiction detection, stale archival)."""
+    _init_backend()
+    from foresight.server import MaintenanceAction, run_maintenance
+
+    modes_list = (
+        ["consolidate", "contradict", "archive_stale", "synthesize"]
+        if mode == "all"
+        else [m.strip() for m in mode.split(",")]
+    )
+    result = run_maintenance(
+        options=MaintenanceAction(
+            modes=modes_list,
+            batch_size=batch_size,
+            max_runtime_seconds=max_runtime,
+        ),
+        user_id=user_id,
+    )
+    if out.get_settings().mode in ("agent", "json"):
+        out.print_json(result)
+    else:
+        out.result_block(result, title="Maintenance Results")
+
+
+@app.command()
+def tenant(
+    tenant_id: str = typer.Argument(..., help="Tenant ID to switch to"),
+):
+    """Switch current tenant context."""
+    _init_backend()
+    from foresight.server import switch_tenant
+
+    result = switch_tenant(tenant_id=tenant_id)
+    out.done(f"Switched tenant: {result}")

@@ -16,7 +16,18 @@ from enum import StrEnum
 import typer
 from foresight.config import load_dotenv_walkup
 
-from .commands import analysis, blocks, curate, eval as eval_cmd, memory, rrf, system
+from .commands import (
+    analysis,
+    blocks,
+    curate,
+    decay,
+    documents,
+    eval as eval_cmd,
+    graph,
+    memory,
+    rrf,
+    system,
+)
 from .utils import config as cfg, output as out
 
 
@@ -44,8 +55,11 @@ app.add_typer(analysis.app, name="analysis", help="Synthesize, reflect, profile,
 app.add_typer(blocks.app, name="blocks", help="Manage context blocks.")
 app.add_typer(curate.app, name="curate", help="Manage curation runs.")
 app.add_typer(eval_cmd.app, name="eval", help="Run evaluation harness (PIX-3953).")
-app.add_typer(system.app, name="system", help="System status, init, doctor, config, stats, history.")
+app.add_typer(system.app, name="system", help="System status, init, doctor, config, stats, history, maintenance, tenant.")
 app.add_typer(rrf.app, name="rrf", help="View and tune RRF retrieval weights.")
+app.add_typer(documents.app, name="documents", help="Manage source documents and chunks.")
+app.add_typer(graph.app, name="graph", help="Graph, entity, and clustering operations.")
+app.add_typer(decay.app, name="decay", help="Decay, strength, recovery, and relevance.")
 
 # Top-level shorthand aliases (most common operations)
 app.command(name="store", rich_help_panel="Quick Commands")(memory.store)
