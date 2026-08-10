@@ -3802,7 +3802,7 @@ def inject_context(
     conversation_text: str,
     user_id: str | None = None,
     max_memories: int = 5,
-    min_relevance: float = 0.3,
+    min_relevance: float = 0.01,
     include_details: bool = False,
     max_chars: int | None = None,
 ) -> str:
@@ -3834,7 +3834,7 @@ def inject_context(
         conversation_text: The current conversation text to analyze for context
         user_id: Optional user ID override
         max_memories: Maximum number of memories to return (default: 5)
-        min_relevance: Minimum relevance score threshold (default: 0.3)
+        min_relevance: Minimum relevance score threshold (default: 0.01, RRF scores are typically 0.01-0.08)
         include_details: If True, return JSON with formatted text plus structured
             memories and context blocks grouped by InjectionPoint (default: False)
         max_chars: Optional character budget for the formatted payload.
@@ -4133,7 +4133,7 @@ def get_relevant_memories(
     query: str,
     user_id: str | None = None,
     limit: int = 5,
-    min_relevance: float = 0.1,
+    min_relevance: float = 0.01,
     max_chars: int | None = None,
 ) -> str:
     """Return structured list of relevant memories for a query.
@@ -4145,7 +4145,7 @@ def get_relevant_memories(
         query: Search query string
         user_id: Optional user ID override
         limit: Maximum number of memories to return (default: 5)
-        min_relevance: Minimum combined_score threshold (default: 0.1)
+        min_relevance: Minimum combined_score threshold (default: 0.01, RRF scores are typically 0.01-0.08)
         max_chars: Optional character budget for memory content. When set,
             each memory's content is truncated at sentence boundaries
             if the total payload would exceed this limit. Default None
