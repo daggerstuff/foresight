@@ -1,4 +1,10 @@
-"""Shared test fixtures for Foresight Postgres backend."""
+"""Shared test fixtures for Foresight Postgres backend.
+
+Tests run against a **dedicated test database** (``foresight_test``) to avoid
+wiping production data.  The test DB URL is derived from ``FORESIGHT_DB_URL``
+by replacing the database name with ``foresight_test``.  If
+``FORESIGHT_TEST_DB_URL`` is set explicitly, that takes precedence.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +29,19 @@ try:
 except ImportError:
     pass  # python-dotenv not installed; rely on env being set externally
 
-_TEST_DB_URL = os.environ.get("FORESIGHT_DB_URL") or ""
+# Derive the test database URL from FORESIGHT_DB_URL by swapping the database
+# name to "foresight_test".  This ensures tests never truncate the production
+# database.  FORESIGHT_TEST_DB_URL can override the derivation entirely.
+_prod_url = os.environ.get("FORESIGHT_DB_URL") or ""
+_test_url = os.environ.get("FORESIGHT_TEST_DB_URL") or ""
+if not _test_url and _prod_url:
+    # Replace the last path segment (database name) with "foresight_test"
+    base, _, query = _prod_url.partition("?")
+    _test_url = base.rsplit("/", 1)[0] + "/foresight_test"
+    if query:
+        _test_url += "?" + query
+
+_TEST_DB_URL = _test_url
 if not _TEST_DB_URL:
     raise pytest.skip("FORESIGHT_DB_URL not set — skipping tests that require PostgreSQL")
 
