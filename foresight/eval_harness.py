@@ -540,7 +540,6 @@ class EvalHarness:
         """
         import foresight.config as config_module
         import foresight.connection_pool as conn_pool_module
-        import foresight.hybrid_retriever as hr_module
         from foresight.connection_pool import reset_pool
         from foresight.hybrid_retriever import reset_hybrid_retriever
         from foresight.server import init_db
@@ -551,7 +550,7 @@ class EvalHarness:
         reset_hybrid_retriever()
 
         # Patch config DB_PATH in each module that holds a local binding
-        for mod in (config_module, conn_pool_module, hr_module):
+        for mod in (config_module, conn_pool_module):
             orig = mod.DB_PATH
             mod.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))

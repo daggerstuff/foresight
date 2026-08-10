@@ -1,11 +1,13 @@
 """
 Hybrid Retriever - Combined TF-IDF + Graph + Temporal Search.
 
-Fuses four retrieval signals:
+Fuses five retrieval signals:
 1. Keyword/BM25-style: Content matching with TF-IDF-like scoring
-2. TF-IDF Cosine: Bag-of-words cosine similarity (NOT neural embeddings)
-3. Graph: Entity-based expansion via graph traversal
-4. Temporal: Time-weighted importance scoring with decay
+2. TF-IDF Cosine: Bag-of-words cosine similarity (lexical overlap)
+3. Vector: True embedding cosine similarity over stored memory vectors
+   (see semantic_search.py; default LocalHashEmbedder, 384-dim)
+4. Graph: Entity-based expansion via graph traversal
+5. Temporal: Time-weighted importance scoring with decay
 
 Result merging uses Reciprocal Rank Fusion (RRF) for score combination,
 which is robust across different score distributions without tuning.
@@ -16,10 +18,10 @@ is high-value but indirect), tfidf_cosine=0.7 (topical similarity
 via TF-IDF vector cosine, NOT tfidf_cosine embeddings), temporal=0.6
 (recency is useful context but not a relevance signal by itself).
 
-NOTE: This implementation uses TF-IDF cosine similarity, NOT true
-tfidf_cosine search with neural embeddings. For actual tfidf_cosine search,
-implement an embedding service (see embedding_validation.py for
-dimension requirements when adding that capability).
+The `vector` signal reads from the `memory_embeddings` table populated
+by `index_memory_embedding`. It degrades gracefully to an empty ranking
+when no embeddings are indexed, so the fusion still works on lexical,
+graph, and temporal signals alone.
 """
 
 from __future__ import annotations
@@ -37,7 +39,6 @@ from datetime import datetime, timezone
 from typing import Any, ClassVar
 
 from .backend.base import DatabaseBackend
-from .config import DB_PATH
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_hybrid_retriever")
@@ -80,6 +81,7 @@ class HybridSearchOptions:
     use_keyword: bool = True
     use_tfidf_cosine: bool = True
     use_semantic: bool | None = None
+    use_vector: bool = True
     use_graph: bool = True
     use_temporal: bool = True
     fast_path_enabled: bool = True
@@ -91,6 +93,7 @@ class Rankings:
 
     keyword: dict[str, int] = field(default_factory=dict)
     tfidf_cosine: dict[str, int] = field(default_factory=dict)
+    vector: dict[str, int] = field(default_factory=dict)
     graph: dict[str, int] = field(default_factory=dict)
     temporal: dict[str, int] = field(default_factory=dict)
     semantic_label: str = "tfidf_cosine"
@@ -130,6 +133,7 @@ class HybridResult:
     keyword_score: float = 0.0
     tfidf_cosine_score: float = 0.0
     semantic_score: float = 0.0
+    vector_score: float = 0.0
     graph_score: float = 0.0
     temporal_score: float = 0.0
     combined_score: float = 0.0
@@ -159,6 +163,7 @@ class HybridResult:
             "keyword_score": round(self.keyword_score, 4),
             "tfidf_cosine_score": round(self.tfidf_cosine_score, 4),
             "semantic_score": round(self.semantic_score, 4),
+            "vector_score": round(self.vector_score, 4),
             "graph_score": round(self.graph_score, 4),
             "temporal_score": round(self.temporal_score, 4),
             "combined_score": round(self.combined_score, 4),
@@ -209,12 +214,14 @@ class HybridRetriever:
 
     RRF_K = 60  # RRF smoothing constant
 
-    # keyword=1.0 (primary relevance), graph=0.8 (indirect expansion),
-    # semantic=0.7 (topical similarity beyond exact match),
+    # keyword=1.0 (primary relevance), vector=0.9 (embedding similarity
+    # catches paraphrase/synonymy that lexical signals miss),
+    # graph=0.8 (indirect expansion), semantic=0.7 (lexical TF-IDF overlap),
     # temporal=0.8 (recency context with decay-aware scoring)
     DEFAULT_WEIGHTS: ClassVar[dict[str, float]] = {
         "keyword": 1.0,
         "semantic": 0.7,
+        "vector": 0.9,
         "graph": 0.8,
         "temporal": 0.8,
     }
@@ -245,6 +252,8 @@ class HybridRetriever:
     ):
         self.db_path = db_path
         self._backend = backend
+        self._vector_store: Any | None = None
+        self._vector_store_failed = False
         merged = self.DEFAULT_WEIGHTS.copy()
         if weights:
             for _k, _v in weights.items():
@@ -442,6 +451,7 @@ class HybridRetriever:
         limit = options.limit
         min_importance = options.min_importance
         use_keyword = options.use_keyword
+        use_vector = options.use_vector
         use_graph = options.use_graph
         use_temporal = options.use_temporal
         fast_path_enabled = options.fast_path_enabled
@@ -456,12 +466,14 @@ class HybridRetriever:
 
         keyword_ranking = self._run_keyword_search(query, user_id, tenant_id, limit) if use_keyword else {}
         tfidf_cosine_ranking = self._run_tfidf_search(query, user_id, tenant_id, limit) if use_tfidf_cosine else {}
+        vector_ranking = self._run_vector_search(query, user_id, tenant_id, limit) if use_vector else {}
         graph_ranking = self._run_graph_search(query, user_id, tenant_id, limit) if use_graph else {}
         temporal_ranking = self._run_temporal_search(user_id, tenant_id, limit, min_importance) if use_temporal else {}
 
         rankings = Rankings(
             keyword=keyword_ranking,
             tfidf_cosine=tfidf_cosine_ranking,
+            vector=vector_ranking,
             graph=graph_ranking,
             temporal=temporal_ranking,
             semantic_label=semantic_label,
@@ -472,6 +484,7 @@ class HybridRetriever:
         all_ids = set()
         all_ids.update(keyword_ranking.keys())
         all_ids.update(tfidf_cosine_ranking.keys())
+        all_ids.update(vector_ranking.keys())
         all_ids.update(graph_ranking.keys())
         all_ids.update(temporal_ranking.keys())
 
@@ -482,6 +495,7 @@ class HybridRetriever:
                 signal_counts={
                     "keyword": len(rankings.keyword),
                     "tfidf_cosine": len(rankings.tfidf_cosine),
+                    "vector": len(rankings.vector),
                     "graph": len(rankings.graph),
                     "temporal": len(rankings.temporal),
                 },
@@ -490,7 +504,9 @@ class HybridRetriever:
                 self._cache_result(cache_key, result)
             return result
 
-        merged = self._reciprocal_rank_fusion(keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking)
+        merged = self._reciprocal_rank_fusion(
+            keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking, vector_ranking
+        )
 
         early = self._try_early_termination(merged, rankings, user_id, options)
         if early is not None:
@@ -524,6 +540,7 @@ class HybridRetriever:
             "keyword": len(rankings.keyword),
             "tfidf_cosine": len(rankings.tfidf_cosine),
             "semantic": len(rankings.tfidf_cosine),
+            "vector": len(rankings.vector),
             "graph": len(rankings.graph),
             "temporal": len(rankings.temporal),
         }
@@ -543,6 +560,7 @@ class HybridRetriever:
             options.fast_path_enabled
             and options.use_keyword
             and not options.use_tfidf_cosine
+            and not options.use_vector
             and not options.use_graph
             and not options.use_temporal
             and len(rankings.keyword) >= options.limit
@@ -553,7 +571,13 @@ class HybridRetriever:
         second_score = merged[1][1]
         if top_score < FAST_PATH_EARLY_TERMINATION_RATIO * second_score:
             return None
-        all_ids = set(rankings.keyword) | set(rankings.tfidf_cosine) | set(rankings.graph) | set(rankings.temporal)
+        all_ids = (
+            set(rankings.keyword)
+            | set(rankings.tfidf_cosine)
+            | set(rankings.vector)
+            | set(rankings.graph)
+            | set(rankings.temporal)
+        )
         top_ids = [mid for mid, _ in merged[: options.limit]]
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, options.tenant_id)
         results = self._build_results(merged, memories, options.limit, rankings)
@@ -1009,17 +1033,23 @@ class HybridRetriever:
         tfidf_cosine: dict[str, int],
         graph: dict[str, int],
         temporal: dict[str, int],
+        vector: dict[str, int] | None = None,
     ) -> list[tuple]:
         """
         Merge ranked lists using Reciprocal Rank Fusion.
 
         RRF: score(d) = sum_i(w_i / (k + rank_i(d)))
 
+        `vector` is optional and trailing so existing 4-signal callers
+        (and tests) keep working unchanged.
+
         Returns list of (memory_id, rrf_score) sorted descending.
         """
+        vector = vector or {}
         all_ids = set()
         all_ids.update(keyword.keys())
         all_ids.update(tfidf_cosine.keys())
+        all_ids.update(vector.keys())
         all_ids.update(graph.keys())
         all_ids.update(temporal.keys())
 
@@ -1032,6 +1062,8 @@ class HybridRetriever:
                 score += self.weights["keyword"] / (self.rrf_k + keyword[mid])
             if mid in tfidf_cosine:
                 score += self.weights["tfidf_cosine"] / (self.rrf_k + tfidf_cosine[mid])
+            if mid in vector:
+                score += self.weights.get("vector", 0.9) / (self.rrf_k + vector[mid])
             if mid in graph:
                 score += self.weights["graph"] / (self.rrf_k + graph[mid])
             if mid in temporal:
@@ -1088,6 +1120,68 @@ class HybridRetriever:
     def _run_tfidf_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
         """Run TF-IDF search and return ranking dict."""
         return self._tfidf_cosine_search(query, user_id, tenant_id, limit * 3)
+
+    def _run_vector_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+        """Run embedding cosine search and return {memory_id: rank}.
+
+        Degrades to an empty ranking (never raises) when the embedding
+        store is unavailable or nothing has been indexed yet, so hybrid
+        search still works on the lexical/graph/temporal signals alone.
+        """
+        return self._vector_search(query, user_id, tenant_id, limit * 3)
+
+    def _vector_search(
+        self,
+        query: str,
+        user_id: str,
+        tenant_id: str,
+        limit: int,
+    ) -> dict[str, int]:
+        """Embedding cosine similarity search over `memory_embeddings`."""
+        if not query or not query.strip():
+            return {}
+        store = self._get_vector_store()
+        if store is None:
+            return {}
+        try:
+            from .semantic_search import SemanticSearchOptions
+
+            result = store.search(
+                query,
+                user_id,
+                options=SemanticSearchOptions(tenant_id=tenant_id, limit=limit, min_score=0.0),
+            )
+        except Exception as exc:  # noqa: BLE001 - signal must never break fusion
+            logger.debug("vector signal unavailable: %s", exc)
+            return {}
+
+        return {m.memory_id: rank + 1 for rank, m in enumerate(result.matches)}
+
+    def _get_vector_store(self) -> Any | None:
+        """Lazily build (and cache) a SemanticSearch bound to this retriever's DB.
+
+        Bound to `self.db_path` rather than the module singleton so that
+        tests and multi-DB deployments read embeddings from the same
+        database the rest of the retriever queries.
+        """
+        cached = getattr(self, "_vector_store", None)
+        if cached is not None:
+            return cached
+        if getattr(self, "_vector_store_failed", False):
+            return None
+        if not self.db_path:
+            self._vector_store_failed = True
+            return None
+        try:
+            from .semantic_search import SemanticSearch
+
+            store = SemanticSearch(self.db_path)
+        except Exception as exc:  # noqa: BLE001 - signal must never break fusion
+            logger.debug("vector store unavailable: %s", exc)
+            self._vector_store_failed = True
+            return None
+        self._vector_store = store
+        return store
 
     def _run_graph_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
         """Run graph search and return ranking dict with entity metadata side-channel."""
@@ -1146,6 +1240,9 @@ class HybridRetriever:
                     rankings.tfidf_cosine[memory_id], len(rankings.tfidf_cosine)
                 )
                 result.source_signals.append(rankings.semantic_label)
+            if memory_id in rankings.vector:
+                result.vector_score = self._rank_to_score(rankings.vector[memory_id], len(rankings.vector))
+                result.source_signals.append("vector")
             if memory_id in rankings.graph:
                 result.graph_score = self._rank_to_score(rankings.graph[memory_id], len(rankings.graph))
                 result.source_signals.append("graph")
@@ -1223,7 +1320,9 @@ class _HybridRetrieverSingleton:
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
-                    db_path = DB_PATH
+                    from .config import DB_PATH, DB_URL
+
+                    db_path = DB_PATH or DB_URL or ""
                 cls._instance = HybridRetriever(db_path, weights, backend)
             return cls._instance
 

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from .config import DB_PATH
+from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 from .embedding_validation import (
     EmbeddingDimensionError,
@@ -464,8 +464,13 @@ class _SemanticSearchSingleton:
         """Return the process-singleton SemanticSearch, initializing lazily."""
         with cls._lock:
             if cls._instance is None or cls._instance.provider != provider:
-                assert DB_PATH is not None
-                cls._instance = SemanticSearch(DB_PATH, provider=provider)
+                db_ref = DB_PATH or DB_URL
+                if not db_ref:
+                    raise SemanticSearchError(
+                        "Cannot initialize SemanticSearch: neither DB_PATH nor DB_URL is set. "
+                        "Set FORESIGHT_DB_URL for Postgres or FORESIGHT_DB_PATH for SQLite."
+                    )
+                cls._instance = SemanticSearch(db_ref, provider=provider)
             return cls._instance
 
     @classmethod

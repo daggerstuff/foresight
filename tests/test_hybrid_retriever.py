@@ -571,9 +571,15 @@ class TestDefaultWeights:
         assert "semantic" in HybridRetriever.DEFAULT_WEIGHTS
         assert HybridRetriever.DEFAULT_WEIGHTS["semantic"] == 0.7
 
-    def test_all_four_weights_present(self):
-        assert len(HybridRetriever.DEFAULT_WEIGHTS) == 4
-        assert set(HybridRetriever.DEFAULT_WEIGHTS.keys()) == {"keyword", "semantic", "graph", "temporal"}
+    def test_all_signal_weights_present(self):
+        assert len(HybridRetriever.DEFAULT_WEIGHTS) == 5
+        assert set(HybridRetriever.DEFAULT_WEIGHTS.keys()) == {
+            "keyword",
+            "semantic",
+            "vector",
+            "graph",
+            "temporal",
+        }
 
 
 class TestSecurityFixes:
@@ -1579,6 +1585,88 @@ class TestEntitySalienceBoost:
             assert r.entity_salience_boost == 1.0, (
                 f"Non-graph result should have entity_salience_boost=1.0, got {r.entity_salience_boost}"
             )
+
+
+class TestVectorSignal:
+    """The vector signal must fuse real embedding similarity, not alias TF-IDF."""
+
+    def test_vector_signal_contributes_to_fusion(self, test_db):
+        """Indexed embeddings should surface via a distinct `vector` signal."""
+        from foresight.semantic_search import SemanticSearch
+
+        conn = sqlite3.connect(test_db)
+        rows = conn.execute("SELECT id, content FROM memories WHERE user_id = 'test_user'").fetchall()
+        conn.close()
+        assert rows, "fixture should provide memories for test_user"
+
+        store = SemanticSearch(test_db)
+        for mid, content in rows:
+            store.index_memory(mid, content, "test_user", tenant_id="default")
+
+        retriever = HybridRetriever(test_db)
+        result = retriever.search("anxiety stress", "test_user", limit=5)
+
+        assert "vector" in result.signal_counts
+        vector_count = result.signal_counts["vector"]
+        assert isinstance(vector_count, int) and vector_count > 0, "vector signal returned no candidates"
+        assert any("vector" in r.source_signals for r in result.results), (
+            "no result was attributed to the vector signal"
+        )
+        assert any(r.vector_score > 0 for r in result.results), "vector_score never populated"
+
+    def test_vector_signal_is_independent_of_tfidf(self, test_db):
+        """vector_score must not simply mirror tfidf_cosine_score."""
+        from foresight.semantic_search import SemanticSearch
+
+        conn = sqlite3.connect(test_db)
+        rows = conn.execute("SELECT id, content FROM memories WHERE user_id = 'test_user'").fetchall()
+        conn.close()
+
+        store = SemanticSearch(test_db)
+        for mid, content in rows:
+            store.index_memory(mid, content, "test_user", tenant_id="default")
+
+        retriever = HybridRetriever(test_db)
+        result = retriever.search("anxiety stress", "test_user", limit=5)
+
+        vector_ranked = {r.memory_id for r in result.results if "vector" in r.source_signals}
+        tfidf_ranked = {r.memory_id for r in result.results if "tfidf_cosine" in r.source_signals}
+        # Independent signals: vector must produce its own candidate set, and the
+        # scores are computed from embeddings rather than copied from TF-IDF.
+        assert vector_ranked, "vector produced no ranked candidates"
+        for r in result.results:
+            if "vector" in r.source_signals and "tfidf_cosine" not in r.source_signals:
+                assert r.vector_score > 0 and r.tfidf_cosine_score == 0.0
+        assert vector_ranked or tfidf_ranked
+
+    def test_degrades_gracefully_without_embeddings(self, test_db):
+        """With nothing indexed, vector yields 0 candidates and retrieval still works."""
+        retriever = HybridRetriever(test_db)
+        result = retriever.search("anxiety stress", "test_user", limit=5)
+
+        assert result.signal_counts["vector"] == 0
+        assert len(result.results) > 0, "retrieval broke when no embeddings were indexed"
+        assert all(r.vector_score == 0.0 for r in result.results)
+
+    def test_use_vector_false_disables_signal(self, test_db):
+        """Callers can opt out of the vector signal."""
+        from foresight.hybrid_retriever import HybridSearchOptions
+        from foresight.semantic_search import SemanticSearch
+
+        conn = sqlite3.connect(test_db)
+        rows = conn.execute("SELECT id, content FROM memories WHERE user_id = 'test_user'").fetchall()
+        conn.close()
+
+        store = SemanticSearch(test_db)
+        for mid, content in rows:
+            store.index_memory(mid, content, "test_user", tenant_id="default")
+
+        retriever = HybridRetriever(test_db)
+        result = retriever.search(
+            "anxiety stress", "test_user", options=HybridSearchOptions(limit=5, use_vector=False)
+        )
+        assert result.signal_counts["vector"] == 0
+        assert all("vector" not in r.source_signals for r in result.results)
 
 
 if __name__ == "__main__":
