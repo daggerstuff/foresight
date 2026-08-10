@@ -239,7 +239,9 @@ class MemoryUpdateOptions(BaseModel):
 
 
 class SearchOptions(BaseModel):
-    query_type: Literal["id", "keyword", "list", "semantic"] = Field(default="keyword", description="Type of search/retrieval")
+    query_type: Literal["id", "keyword", "list", "semantic"] = Field(
+        default="keyword", description="Type of search/retrieval"
+    )
     query: str | None = Field(default=None, description="Search query string")
     memory_id: str | None = Field(default=None, description="Retrieve specific memory by ID")
     limit: int = Field(default=10, description="Maximum results")
@@ -2656,7 +2658,9 @@ def _bridge_capture_memories_to_blocks(
         if not content:
             continue
         block = agent.state.get_block(label)
-        existing_lines = {ln.strip() for ln in block.content.splitlines() if ln.strip()} if block and not block.is_empty() else set()
+        existing_lines = (
+            {ln.strip() for ln in block.content.splitlines() if ln.strip()} if block and not block.is_empty() else set()
+        )
         if content in existing_lines:
             continue
         agent.state.append_to_block(label, content)
@@ -4355,6 +4359,79 @@ def generate_recovery_payload(
     return result.formatted
 
 
+@mcp.tool(output_schema=None)
+def compaction_lifecycle(
+    session_id: str,
+    messages: list[dict],
+    exclude_memory_ids: str | None = None,
+    max_chars: int | None = None,
+    project_path: str | None = None,
+) -> str:
+    """Capture memories from about-to-be-lost transcript, then return recovery payload.
+
+    Designed for context-compaction lifecycle: call BEFORE the context window
+    is compressed so Foresight extracts and stores decisions/lessons from the
+    transcript, then inject the returned recovery payload AFTER compaction
+    to restore essential context without the agent needing to cooperate.
+
+    Combines process_session_transcript (capture) and generate_recovery_payload
+    (recover) into a single MCP call. The capture step is best-effort: if it
+    fails, the recovery payload is still returned so the caller always gets
+    context to inject. This is NOT atomic — there is no rollback if recovery
+    fails after capture succeeds.
+
+    PHI sensitivity: ``messages`` may contain clinical or patient-identifiable
+    content. All captured memories are stored under the authenticated user's
+    scope (``get_current_user_id()``) and tenant (``get_current_account_id()``).
+    Callers must ensure transcript content is appropriate to persist before
+    calling this tool.
+
+    Args:
+        session_id: Unique session identifier.
+        messages: List of message dicts with role/content — the transcript
+            about to be lost to compaction.
+        exclude_memory_ids: Optional comma-separated memory IDs already in
+            context (prevents re-injecting duplicates after compaction).
+        max_chars: Optional character budget for the recovery payload.
+            Truncates at sentence boundaries by lane priority
+            (session > project > blocks).
+        project_path: Optional project path for extraction context.
+            Auto-detected from git root when omitted.
+
+    Returns:
+        Recovery payload string for immediate injection into the
+        freshly compacted context window. The payload respects ``max_chars``
+        — capture status is logged but never prepended to the result.
+    """
+    uid = get_current_user_id()
+
+    # 1. Capture: extract and store memories from the about-to-be-lost transcript.
+    #    Best-effort — if capture fails we still return the recovery payload.
+    try:
+        process_session_transcript(
+            session_id=session_id,
+            messages=messages,
+            project_path=project_path,
+            user_id=uid,
+        )
+    except Exception:
+        logger.warning(
+            "compaction_lifecycle: capture failed for session %s; returning recovery payload without new memories",
+            session_id,
+            exc_info=True,
+        )
+
+    # 2. Recover: generate compact payload for re-injection
+    recovery_payload = generate_recovery_payload(
+        session_id=session_id,
+        user_id=uid,
+        exclude_memory_ids=exclude_memory_ids,
+        max_chars=max_chars,
+    )
+
+    return recovery_payload
+
+
 def _resume_pending_curation_runs() -> None:
     """Resume pending or interrupted curation runs on server startup."""
     conn = get_db_connection()
@@ -4403,6 +4480,10 @@ def _auto_index_embedding_hook(ctx: MemoryHookContext) -> HookResult | None:
 
     Best-effort: failures are logged and swallowed so they never break
     the store pipeline.
+
+    Limitation: this hook only fires on store. There are no corresponding
+    hooks for update or delete, so the semantic index can diverge silently
+    when memories change or are removed. See cubic finding #12.
     """
     if not ctx.memory_id or not ctx.content:
         return None

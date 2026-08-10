@@ -106,14 +106,10 @@ def test_memories_content_hash_backfill_computes_correct_hash():
         )
         conn.commit()
 
-        row = conn.execute(
-            "SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'"
-        ).fetchone()
+        row = conn.execute("SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'").fetchone()
         assert row[0] is None, "precondition: content_hash starts NULL"
 
-        rows = conn.execute(
-            "SELECT id, content FROM memories WHERE content_hash IS NULL"
-        ).fetchall()
+        rows = conn.execute("SELECT id, content FROM memories WHERE content_hash IS NULL").fetchall()
         for r in rows:
             conn.execute(
                 "UPDATE memories SET content_hash = ? WHERE id = ?",
@@ -121,9 +117,7 @@ def test_memories_content_hash_backfill_computes_correct_hash():
             )
         conn.commit()
 
-        row = conn.execute(
-            "SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'"
-        ).fetchone()
+        row = conn.execute("SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'").fetchone()
         assert row[0] == expected_hash, f"expected {expected_hash}, got {row[0]}"
 
         conn.close()
@@ -139,9 +133,7 @@ def test_store_memory_uses_content_hash_for_dedup():
     """
     from foresight.server import store_memory
 
-    unique_marker = hashlib.md5(
-        f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()
-    ).hexdigest()[:8]
+    unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:8]
     content = f"hash_dedup_test_{unique_marker}"
 
     result1 = store_memory(content)
@@ -261,8 +253,7 @@ def _make_test_db():
         )"""
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memories_dedup "
-        "ON memories(user_id, tenant_id, content_hash, is_ghost)"
+        "CREATE INDEX IF NOT EXISTS idx_memories_dedup ON memories(user_id, tenant_id, content_hash, is_ghost)"
     )
     conn.commit()
     conn.close()
@@ -305,6 +296,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
     assert tool_names == {
         "analyze_memories",
         "capture_triggered_memories",
+        "compaction_lifecycle",
         "get_system_status",
         "inject_context",
         "link_memories",
@@ -582,8 +574,7 @@ def test_inject_context_returns_formatted_output():
 def test_inject_context_respects_max_memories():
     """inject_context respects the max_memories limit."""
     results = [
-        _make_hybrid_result(f"mem{i}", f"Memory about python topic number {i}", combined_score=0.9)
-        for i in range(10)
+        _make_hybrid_result(f"mem{i}", f"Memory about python topic number {i}", combined_score=0.9) for i in range(10)
     ]
 
     with (
@@ -600,9 +591,7 @@ def test_inject_context_respects_max_memories():
 def test_inject_context_no_match():
     """inject_context with no matching memories returns empty context message."""
     results = [
-        _make_hybrid_result(
-            "mem1", "Completely unrelated content about sailing", combined_score=0.1, importance=0.1
-        ),
+        _make_hybrid_result("mem1", "Completely unrelated content about sailing", combined_score=0.1, importance=0.1),
     ]
 
     with (
@@ -630,9 +619,7 @@ def test_inject_context_empty_conversation_text():
 def test_inject_context_include_details_returns_json():
     """inject_context with include_details=True returns JSON with memories, context_blocks, formatted keys."""
     results = [
-        _make_hybrid_result(
-            "mem1", "User prefers Python type hints", combined_score=0.85, importance=0.8
-        ),
+        _make_hybrid_result("mem1", "User prefers Python type hints", combined_score=0.85, importance=0.8),
     ]
     with (
         _patch_hybrid_retriever(results, total_candidates=5, signal_counts={"keyword": 3}),
@@ -659,9 +646,7 @@ def test_get_relevant_memories_returns_structured_data():
         _make_hybrid_result("mem2", "Session discussed database migrations", combined_score=0.7),
     ]
     with (
-        _patch_hybrid_retriever(
-            results, total_candidates=5, signal_counts={"keyword": 3, "graph": 2}
-        ),
+        _patch_hybrid_retriever(results, total_candidates=5, signal_counts={"keyword": 3, "graph": 2}),
         patch("foresight.server.USER_ID", "inject_test_user"),
     ):
         result = get_relevant_memories("python type hints")
@@ -695,10 +680,7 @@ def test_get_relevant_memories_filters_by_min_relevance():
 
 def test_get_relevant_memories_respects_limit():
     """get_relevant_memories respects the limit parameter."""
-    results = [
-        _make_hybrid_result(f"mem{i}", f"Memory {i}", combined_score=0.9 - i * 0.05)
-        for i in range(10)
-    ]
+    results = [_make_hybrid_result(f"mem{i}", f"Memory {i}", combined_score=0.9 - i * 0.05) for i in range(10)]
     with (
         _patch_hybrid_retriever(results),
         patch("foresight.server.USER_ID", "inject_test_user"),
@@ -794,16 +776,12 @@ def test_manage_context_blocks_update_reset_clear_cycle():
     tmp.close()
 
     with _patched_context_block_storage(tmp.name):
-        listed = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id)
-        )
+        listed = _decode_json_result(manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id))
         assert listed["ok"] is True
         assert any(block["label"] == "core_directives" for block in listed["blocks"])
 
         initial_guidance = _decode_json_result(
-            manage_context_blocks(
-                ContextBlockAction(action="get", label="guidance"), user_id=user_id
-            )
+            manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
         )
         assert "No active guidance" in initial_guidance["content"]
 
@@ -825,23 +803,17 @@ def test_manage_context_blocks_update_reset_clear_cycle():
         }
 
         fetched = _decode_json_result(
-            manage_context_blocks(
-                ContextBlockAction(action="get", label="guidance"), user_id=user_id
-            )
+            manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
         )
         assert fetched["content"] == "Always show exact verification evidence."
 
         cleared = _decode_json_result(
-            manage_context_blocks(
-                ContextBlockAction(action="clear", label="guidance"), user_id=user_id
-            )
+            manage_context_blocks(ContextBlockAction(action="clear", label="guidance"), user_id=user_id)
         )
         assert cleared["message"] == "Cleared block 'guidance'"
 
         empty_fetch = _decode_json_result(
-            manage_context_blocks(
-                ContextBlockAction(action="get", label="guidance"), user_id=user_id
-            )
+            manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
         )
         assert empty_fetch["content"] == ""
 
@@ -851,9 +823,7 @@ def test_manage_context_blocks_update_reset_clear_cycle():
         assert all(block["label"] != "guidance" for block in listed_after_clear["blocks"])
 
         reset = _decode_json_result(
-            manage_context_blocks(
-                ContextBlockAction(action="reset", label="guidance"), user_id=user_id
-            )
+            manage_context_blocks(ContextBlockAction(action="reset", label="guidance"), user_id=user_id)
         )
         assert reset["message"] == "Reset block 'guidance' to default"
 
@@ -887,9 +857,7 @@ def test_registered_context_block_schema_allows_validated_custom_block():
         )
         assert fetched["content"] == "short note"
 
-        listed = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id)
-        )
+        listed = _decode_json_result(manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id))
         custom_block = next(block for block in listed["blocks"] if block["label"] == label)
         assert custom_block["description"] == "Short custom notes"
         assert custom_block["char_limit"] == 12
@@ -928,9 +896,7 @@ def test_manage_context_blocks_are_tenant_isolated():
         with patch("foresight.server.get_current_account_id", return_value="tenant-a"):
             update_a = _decode_json_result(
                 manage_context_blocks(
-                    ContextBlockAction(
-                        action="update", label="guidance", content="Tenant A guidance"
-                    ),
+                    ContextBlockAction(action="update", label="guidance", content="Tenant A guidance"),
                     user_id=user_id,
                 )
             )
@@ -938,17 +904,13 @@ def test_manage_context_blocks_are_tenant_isolated():
 
         with patch("foresight.server.get_current_account_id", return_value="tenant-b"):
             fetched_b = _decode_json_result(
-                manage_context_blocks(
-                    ContextBlockAction(action="get", label="guidance"), user_id=user_id
-                )
+                manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
             )
             assert fetched_b["content"] != "Tenant A guidance"
 
         with patch("foresight.server.get_current_account_id", return_value="tenant-a"):
             fetched_a = _decode_json_result(
-                manage_context_blocks(
-                    ContextBlockAction(action="get", label="guidance"), user_id=user_id
-                )
+                manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
             )
             assert fetched_a["content"] == "Tenant A guidance"
 
@@ -1080,28 +1042,20 @@ def test_manage_curation_runs_create_cancel_archive():
         assert created["run"]["output_bank_id"].startswith("curation:")
 
         fetched = json.loads(
-            manage_curation_runs(
-                CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
-            )
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
         )
         assert fetched["run"]["id"] == created["run"]["id"]
 
-        listed = json.loads(
-            manage_curation_runs(CurationRunAction(action="list", limit=5), user_id=user_id)
-        )
+        listed = json.loads(manage_curation_runs(CurationRunAction(action="list", limit=5), user_id=user_id))
         assert listed["runs"][0]["id"] == created["run"]["id"]
 
         canceled = json.loads(
-            manage_curation_runs(
-                CurationRunAction(action="cancel", run_id=created["run"]["id"]), user_id=user_id
-            )
+            manage_curation_runs(CurationRunAction(action="cancel", run_id=created["run"]["id"]), user_id=user_id)
         )
         assert canceled["run"]["status"] == "canceled"
 
         archived = json.loads(
-            manage_curation_runs(
-                CurationRunAction(action="archive", run_id=created["run"]["id"]), user_id=user_id
-            )
+            manage_curation_runs(CurationRunAction(action="archive", run_id=created["run"]["id"]), user_id=user_id)
         )
         assert archived["run"]["archived_at"] is not None
 
@@ -1121,9 +1075,7 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
     )
     in_place_result = json.loads(in_place)
     assert in_place_result["ok"] is False
-    assert (
-        in_place_result["error"]["message"] == "output_mode=in_place requires tool_access=operate"
-    )
+    assert in_place_result["error"]["message"] == "output_mode=in_place requires tool_access=operate"
 
     unsafe_output_bank = json.loads(
         manage_curation_runs(
@@ -1138,10 +1090,7 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
         )
     )
     assert unsafe_output_bank["ok"] is False
-    assert (
-        unsafe_output_bank["error"]["message"]
-        == "output_mode=in_place does not allow output_bank_id override"
-    )
+    assert unsafe_output_bank["error"]["message"] == "output_mode=in_place does not allow output_bank_id override"
 
     transcript = manage_curation_runs(
         CurationRunAction(
@@ -1163,9 +1112,7 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
 
     db_path = _make_curation_test_db()
     user_id = "curation_failure_user"
-    _seed_memory(
-        db_path, memory_id="mem1", content="Primary insight", bank_id="source_bank", user_id=user_id
-    )
+    _seed_memory(db_path, memory_id="mem1", content="Primary insight", bank_id="source_bank", user_id=user_id)
     events = []
 
     class _FakeBus:
@@ -1201,9 +1148,7 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
             )
         )
         fetched = json.loads(
-            manage_curation_runs(
-                CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
-            )
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
         )
         assert fetched["run"]["status"] == "failed"
         assert fetched["run"]["output_bank_id"].startswith("curation:")
@@ -1265,9 +1210,9 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
             )
         )
         run = created["run"]
-        fetched = json.loads(
-            manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id)
-        )["run"]
+        fetched = json.loads(manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id))[
+            "run"
+        ]
 
     assert fetched["status"] == "completed"
     assert fetched["output_mode"] == "in_place"
@@ -1289,9 +1234,7 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
         "SELECT id FROM memories WHERE user_id = ? AND bank_id = ?",
         (user_id, fetched["summary"]["staging_bank_id"]),
     ).fetchall()
-    original_memories = conn.execute(
-        "SELECT bank_id FROM memories WHERE id IN ('mem1', 'mem2') ORDER BY id"
-    ).fetchall()
+    original_memories = conn.execute("SELECT bank_id FROM memories WHERE id IN ('mem1', 'mem2') ORDER BY id").fetchall()
     conn.close()
 
     assert len(source_rows) == fetched["summary"]["output_memory_count"]
@@ -1358,9 +1301,7 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
             )
         )
         fetched = json.loads(
-            manage_curation_runs(
-                CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
-            )
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
         )["run"]
 
     assert fetched["status"] == "canceled"
@@ -1459,9 +1400,7 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
             )
         )
         fetched = json.loads(
-            manage_curation_runs(
-                CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
-            )
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
         )["run"]
 
     assert fetched["status"] == "canceled"
@@ -1653,9 +1592,9 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
 
         set_current_account_id("_test_")
 
-        fetched = json.loads(
-            manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id)
-        )["run"]
+        fetched = json.loads(manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id))[
+            "run"
+        ]
 
     conn = sqlite3.connect(db_path)
     output_rows = conn.execute(
@@ -1673,9 +1612,7 @@ def test_manage_curation_runs_list_initializes_schema_for_empty_database():
     db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 
     with patch("foresight.server.DB_PATH", db_path):
-        listed = json.loads(
-            manage_curation_runs(CurationRunAction(action="list", limit=5), user_id="fresh_user")
-        )
+        listed = json.loads(manage_curation_runs(CurationRunAction(action="list", limit=5), user_id="fresh_user"))
 
     assert listed == {"ok": True, "action": "list", "runs": []}
 
@@ -2021,9 +1958,7 @@ class TestSystemStatusHealth:
         ]
 
         with (
-            _patch_hybrid_retriever(
-                results, total_candidates=4, signal_counts={"keyword": 2, "graph": 1}
-            ),
+            _patch_hybrid_retriever(results, total_candidates=4, signal_counts={"keyword": 2, "graph": 1}),
             patch("foresight.server.USER_ID", "test_user"),
             patch("foresight.server.get_context_block_agent"),
         ):
@@ -2041,9 +1976,7 @@ class TestSystemStatusHealth:
         from foresight.server import _last_injection_stats, inject_context
 
         results = [
-            _make_hybrid_result(
-                "mem1", "sensitive clinical note about patient X", combined_score=0.9
-            ),
+            _make_hybrid_result("mem1", "sensitive clinical note about patient X", combined_score=0.9),
         ]
 
         with (
