@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from .config import DB_PATH
+from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 from .tenant_context import get_current_account_id
 
@@ -486,7 +486,7 @@ def get_temporal_query_builder(
     with _temporal_query_lock:
         if _MODULE_STATE["temporal_query_builder"] is None:
             if db_path is None:
-                db_path = DB_PATH
+                db_path = DB_PATH or DB_URL
             _MODULE_STATE["temporal_query_builder"] = TemporalQueryBuilder(db_path, backend=backend)
     return _MODULE_STATE["temporal_query_builder"]
 

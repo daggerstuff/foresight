@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from .backend.base import DatabaseBackend
-from .config import DB_PATH
+from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 from .entity_extractor import Entity, EntityType, ExtractionResult, Relationship, RelationshipType
 from .sql_helpers import build_type_filter
@@ -797,7 +797,7 @@ def get_graph_store(db_path: str | None = None, backend: DatabaseBackend | None 
     with _lock:
         if _state["graph_store"] is None:
             if db_path is None:
-                db_path = DB_PATH
+                db_path = DB_PATH or DB_URL
             if db_path is None and backend is None:
                 raise RuntimeError("db_path or DB_PATH or backend required")
             _state["graph_store"] = GraphStore(db_path, backend=backend)

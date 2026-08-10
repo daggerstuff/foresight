@@ -233,7 +233,7 @@ def get_pool(db_path: str | None = None) -> Any:
             "acquiring a pool."
         )
 
-    db_path = DB_PATH
+    db_path = DB_PATH or DB_URL
     if db_path is None:
         raise RuntimeError(
             "No Postgres backend active and no db_path provided. "

@@ -2219,6 +2219,10 @@ def search_memories(
             )
         except _SemanticSearchError as exc:
             return f"Error: {exc}"
+        # Reinforce surfaced memories (closes decay loop).
+        _auto_reinforce_batch(
+            [m.memory_id for m in result.matches], uid, tenant_id
+        )
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return json.dumps(result.to_dict(), indent=2)
 
@@ -2281,6 +2285,10 @@ def search_memories(
                     results.append(
                         f"- [{r.memory_id}] {r.content[:100]}... (score={r.combined_score:.3f}, signals={signals})"
                     )
+                # Reinforce surfaced memories (closes decay loop).
+                _auto_reinforce_batch(
+                    [r.memory_id for r in hybrid_result.results], uid, tenant_id
+                )
                 # ── POST_RETRIEVE hook (hybrid search) ─────────────────
                 get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
@@ -2310,6 +2318,8 @@ def search_memories(
         return "No memories found."
 
     results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
+    # Reinforce surfaced memories (closes decay loop).
+    _auto_reinforce_batch([r["id"] for r in rows], uid, tenant_id)
     # ── POST_RETRIEVE hook (fallback) ─────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
@@ -3901,6 +3911,11 @@ def inject_context(
         hybrid_result.signal_counts,
     )
 
+    # Reinforce surfaced memories so retrieval strengthens them (closes the
+    # decay loop: decay weakens, retrieval strengthens).
+    if memories:
+        _auto_reinforce_batch([m.memory_id for m in memories], uid, tenant_id)
+
     # Side-effect: silently capture any phrase-triggered memories in the message
     # ("remember this:", "decision:", "preference:", etc.) without the user
     # needing to call a separate tool.
@@ -4507,6 +4522,52 @@ def _auto_index_embedding_hook(ctx: MemoryHookContext) -> HookResult | None:
     return None
 
 
+def _auto_reinforce_hook(ctx: MemoryHookContext) -> HookResult | None:
+    """Reinforce a memory's strength when it is retrieved.
+
+    Closes the decay loop: decay weakens memories over time, retrieval
+    strengthens them.  Without this hook, activation_count stays at 0
+    forever and strength_trend never reflects actual usage.
+
+    Best-effort: failures are logged and swallowed so they never break
+    the retrieval pipeline.
+    """
+    if not ctx.memory_id:
+        return None
+    try:
+        get_decay_model().reinforce_memory(
+            memory_id=ctx.memory_id,
+            user_id=ctx.user_id or USER_ID,
+            tenant_id=ctx.tenant_id or "default",
+        )
+    except Exception:
+        logger.debug(
+            "Auto-reinforce failed for memory %s: %s",
+            ctx.memory_id,
+            exc_info=True,
+        )
+    return None
+
+
+def _auto_reinforce_batch(memory_ids: list[str], uid: str, tenant_id: str) -> None:
+    """Reinforce multiple memories after a hybrid search or injection.
+
+    Best-effort: failures are logged and swallowed.
+    """
+    if not memory_ids:
+        return
+    try:
+        model = get_decay_model()
+    except Exception:
+        logger.debug("Auto-reinforce batch: decay model unavailable")
+        return
+    for mid in memory_ids:
+        try:
+            model.reinforce_memory(memory_id=mid, user_id=uid, tenant_id=tenant_id)
+        except Exception:
+            logger.debug("Auto-reinforce failed for memory %s: %s", mid, exc_info=True)
+
+
 def _run_decay_sweep() -> int:
     """Run a single Ebbinghaus decay sweep against the Postgres backend.
 
@@ -4934,6 +4995,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
     reg.register(MemoryHookType.POST_DELETE, _audit_hook, name="audit")
     reg.register(MemoryHookType.POST_DELETE, _cache_invalidation_hook, name="cache_invalidation")
     reg.register(MemoryHookType.POST_STORE, _auto_index_embedding_hook, name="auto_index_embedding")
+    reg.register(MemoryHookType.POST_RETRIEVE, _auto_reinforce_hook, name="auto_reinforce")
 
     # Initialize WebSocket server
     async def websocket_auth_callback(token: str) -> tuple[str, str] | None:

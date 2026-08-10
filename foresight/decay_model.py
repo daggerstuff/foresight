@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import DB_PATH
+from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 from .tenant_context import get_current_account_id
 
@@ -724,7 +724,7 @@ class _DecayModelSingleton:
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
-                    db_path = DB_PATH
+                    db_path = DB_PATH or DB_URL
                 assert db_path is not None, "db_path or DB_PATH required"
                 cls._instance = MemoryDecayService(db_path)
             return cls._instance

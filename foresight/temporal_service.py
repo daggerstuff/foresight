@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from .config import DB_PATH
+from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_temporal")
@@ -495,7 +495,7 @@ class _TemporalServiceSingleton:
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
-                    db_path = DB_PATH
+                    db_path = DB_PATH or DB_URL
                 cls._instance = TemporalService(db_path)
             return cls._instance
 

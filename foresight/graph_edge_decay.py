@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .config import DB_PATH
+from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_graph_decay")
@@ -282,7 +282,7 @@ class _GraphEdgeDecaySingleton:
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
-                    db_path = DB_PATH
+                    db_path = DB_PATH or DB_URL
                 assert db_path is not None
                 cls._instance = GraphEdgeDecay(
                     db_path,
