@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from foresight import SearchOptions, search_memories, store_memory
-from foresight.server import init_db
+from foresight.server import SearchOptions, search_memories, store_memory, init_db
 
 MEMORY_CATEGORIES = ["fact", "preference", "insight", "observation", "decision", "goal"]
 
@@ -16,7 +17,7 @@ MEMORY_CATEGORIES = ["fact", "preference", "insight", "observation", "decision",
 class MemoryItem(ListItem):
     """A single memory in the list."""
 
-    def __init__(self, memory_data: dict, **kwargs) -> None:
+    def __init__(self, memory_data: Any, **kwargs) -> None:
         super().__init__(**kwargs)
         self.memory_data = memory_data
         mid = memory_data.get("memory_id", memory_data.get("id", "?"))

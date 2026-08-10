@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import json
 from pathlib import Path
 
 import typer
 
-from foresight import CurationRunAction, manage_curation_runs
-from foresight.server import init_db
+from foresight.server import CurationRunAction, manage_curation_runs, init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage async Foresight curation runs.")
@@ -23,7 +24,7 @@ def _init_and_user(user_id_override: str | None = None):
     return cfg.get_user_id(user_id_override)
 
 
-def _coerce(value: str, allowed: set[str], label: str) -> str:
+def _coerce(value: str, allowed: set[str], label: str) -> Any:
     if value not in allowed:
         choices = ", ".join(sorted(allowed))
         raise typer.BadParameter(f"{label} must be one of: {choices}")

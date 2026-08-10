@@ -552,7 +552,7 @@ class EvalHarness:
         # Patch config DB_PATH in each module that holds a local binding
         for mod in (config_module, conn_pool_module):
             orig = mod.DB_PATH
-            mod.DB_PATH = self.db_path
+            setattr(mod, "DB_PATH", self.db_path)
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Set tenant context

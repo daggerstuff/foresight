@@ -6,7 +6,7 @@ from typing import Literal
 
 import typer
 
-from foresight import (
+from foresight.server import (
     EntityQuery,
     get_memory_relationships,
     link_memories,
@@ -15,8 +15,9 @@ from foresight import (
     query_entities,
     run_clustering,
     traverse_memory_graph,
+    EntityAction,
+    init_db,
 )
-from foresight.server import EntityAction, init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Graph, entity, and clustering operations.")

@@ -6,16 +6,14 @@ import json
 
 import typer
 
-from foresight import (
+from foresight.server import (
     AnalysisAction,
-    ProfileConfig,
     VersionAction,
     analyze_memories,
     manage_memory_versions,
-    profile_to_prompt,
     synthesize_profile,
+    init_db,
 )
-from foresight.server import init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Analyze, synthesize, reflect, and version memories.")
@@ -73,18 +71,14 @@ def profile(
     uid = _init_and_user(user_id)
     result = synthesize_profile(
         uid,
-        config=ProfileConfig(
-            max_static_memories=max_static,
-            max_dynamic_memories=max_dynamic,
-            include_synthesis=not no_synthesis,
-        ),
+        max_static_memories=max_static,
+        max_dynamic_memories=max_dynamic,
+        include_synthesis=not no_synthesis,
+        format_prompt=prompt_format,
     )
 
-    if prompt_format:
-        result = profile_to_prompt(result)
-
     if out.get_settings().mode == "agent" or prompt_format:
-        out.console_print(result)
+        out.stdout(result)
         return
 
     try:
@@ -103,7 +97,7 @@ def profile(
             for d in dynamic_items:
                 out.stderr(f"  • {d}")
     except (json.JSONDecodeError, TypeError):
-        out.console_print(result)
+        out.stdout(result)
 
 
 @app.command()

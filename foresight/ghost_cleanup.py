@@ -246,6 +246,7 @@ class _GhostCleanupSingleton:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH
+                assert db_path is not None
                 cls._instance = GhostMemoryCleanup(db_path, ghost_ttl_days)
             return cls._instance
 

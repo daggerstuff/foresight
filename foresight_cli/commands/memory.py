@@ -7,16 +7,16 @@ from pathlib import Path
 
 import typer
 
-from foresight import (
+from foresight.server import (
     MemoryAction,
     MemoryUpdateOptions,
     SearchOptions,
+    init_db,
     manage_memories,
     reinforce_memory,
     search_memories,
     store_memory,
 )
-from foresight.server import init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Store, retrieve, search, and manage memories.")

@@ -38,7 +38,7 @@ class AnomalyResult:
     urgency: Urgency
     detected_terms: list[str]
     recommended_action: str
-    metadata: dict[str, Any] = None
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.metadata is None:
@@ -355,7 +355,7 @@ def get_anomaly_detector(detector_type: str = "mental_health", **kwargs) -> Anom
 
 
 # Legacy function for backward compatibility
-def get_crisis_service(sensitivity: Literal["low", "medium", "high"] = "medium") -> MentalHealthAnomalyDetector:
+def get_crisis_service(sensitivity: Literal["low", "medium", "high"] = "medium") -> AnomalyDetector:
     """
     Get crisis detection service (legacy name).
 

@@ -149,7 +149,7 @@ class ConnectionPool:
 
 def _active_postgres_pool() -> Any | None:
     try:
-        from foresight import server as _server
+        import foresight.server as _server
 
         backend = getattr(_server, "_global_backend", None)
     except Exception:  # pragma: no cover - defensive

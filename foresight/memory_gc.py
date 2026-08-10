@@ -251,6 +251,7 @@ class _MemoryGCSingleton:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH
+                assert db_path is not None
                 cls._instance = MemoryGC(db_path)
             return cls._instance
 

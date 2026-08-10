@@ -24,13 +24,17 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Optional kafka dependency
-try:
-    from kafka import KafkaConsumer, TopicPartition
+import importlib
 
-    HAS_KAFKA = True
-except Exception:
-    KafkaConsumer = None
-    TopicPartition = None
+HAS_KAFKA = True
+KafkaConsumer = None
+TopicPartition = None
+try:
+    _kafka_mod = importlib.import_module("kafka")
+    KafkaConsumer = _kafka_mod.KafkaConsumer
+    TopicPartition = getattr(_kafka_mod, "TopicPartition", None)
+    del _kafka_mod
+except ImportError:
     HAS_KAFKA = False
 
 

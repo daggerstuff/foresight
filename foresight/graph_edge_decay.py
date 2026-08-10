@@ -283,6 +283,7 @@ class _GraphEdgeDecaySingleton:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH
+                assert db_path is not None
                 cls._instance = GraphEdgeDecay(
                     db_path,
                     half_life_hours=half_life_hours,
