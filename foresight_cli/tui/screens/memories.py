@@ -9,26 +9,35 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
+# NOTE: ListItem requires a child widget (Label/Static), not markup via update()
+
 from foresight.server import SearchOptions, search_memories, store_memory, init_db
 
 MEMORY_CATEGORIES = ["fact", "preference", "insight", "observation", "decision", "goal"]
+
+# Category color mapping for visual distinction
+CATEGORY_COLORS: dict[str, str] = {
+    "fact": "#6c9fff",
+    "preference": "#c084fc",
+    "insight": "#5eead4",
+    "observation": "#fbbf24",
+    "decision": "#4ade80",
+    "goal": "#f87171",
+}
 
 
 class MemoryItem(ListItem):
     """A single memory in the list."""
 
     def __init__(self, memory_data: Any, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.memory_data = memory_data
         mid = memory_data.get("memory_id", memory_data.get("id", "?"))
         content = str(memory_data.get("content", ""))[:120]
         cat = memory_data.get("category", "-")
         scope = memory_data.get("scope", "-")
-        label = f"[bold]{mid[:12]}[/bold] [{cat}] ({scope}) {content}"
-        self._label = label
-
-    def on_mount(self) -> None:
-        self.update(self._label)
+        color = CATEGORY_COLORS.get(cat, "#6c9fff")
+        label_text = f"[bold]{mid[:12]}[/bold] [{color}]{cat}[/] ({scope}) {content}"
+        super().__init__(Label(label_text), **kwargs)
+        self.memory_data = memory_data
 
 
 class MemoriesScreen(Screen):
@@ -86,9 +95,11 @@ class MemoriesScreen(Screen):
         if isinstance(item, MemoryItem):
             detail = self.query_one("#memory-detail", Static)
             data = item.memory_data
+            cat = data.get("category", "-")
+            color = CATEGORY_COLORS.get(cat, "#6c9fff")
             detail.update(
                 f"[bold]ID:[/bold] {data.get('memory_id', data.get('id', '?'))}\n"
-                f"[bold]Category:[/bold] {data.get('category', '-')}\n"
+                f"[bold]Category:[/bold] [{color}]{cat}[/]\n"
                 f"[bold]Scope:[/bold] {data.get('scope', '-')}\n"
                 f"[bold]Retention:[/bold] {data.get('retention', '-')}\n"
                 f"[bold]Importance:[/bold] {data.get('importance', '-')}\n"

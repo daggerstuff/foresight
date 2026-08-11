@@ -21,11 +21,11 @@ class StatCard(Static):
         self._value = value
 
     def on_mount(self) -> None:
-        self.update(f"[bold]{self._label}[/bold]\n\n[size=24]{self._value}[/size]")
+        self.update(f"[bold]{self._label}[/bold]\n\n[bold]{self._value}[/bold]")
 
     def set_value(self, value: str) -> None:
         self._value = value
-        self.update(f"[bold]{self._label}[/bold]\n\n[size=24]{value}[/size]")
+        self.update(f"[bold]{self._label}[/bold]\n\n[bold]{value}[/bold]")
 
 
 class DashboardScreen(Screen):

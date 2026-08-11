@@ -22,18 +22,28 @@ BLOCK_LABELS = [
     "self_improvement",
 ]
 
+# Label color mapping for visual distinction
+LABEL_COLORS: dict[str, str] = {
+    "guidance": "#5eead4",
+    "pending_items": "#fbbf24",
+    "project_context": "#6c9fff",
+    "user_preferences": "#c084fc",
+    "session_patterns": "#4ade80",
+    "core_directives": "#f87171",
+    "tool_guidelines": "#6c9fff",
+    "self_improvement": "#c084fc",
+}
+
 
 class BlockItem(ListItem):
     """A context block in the list."""
 
     def __init__(self, label: str, content: str = "", **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.block_label = label
         preview = (content or "(empty)")[:80]
-        self._display = f"[bold]{label}[/bold]  [dim]{preview}[/dim]"
-
-    def on_mount(self) -> None:
-        self.update(self._display)
+        color = LABEL_COLORS.get(label, "#6c9fff")
+        display_text = f"[{color}]●[/] [bold]{label}[/bold]  [dim]{preview}[/dim]"
+        super().__init__(Label(display_text), **kwargs)
+        self.block_label = label
 
 
 class BlocksScreen(Screen):
@@ -103,6 +113,7 @@ class BlocksScreen(Screen):
         item = event.item
         if isinstance(item, BlockItem):
             detail = self.query_one("#block-detail", Static)
+            color = LABEL_COLORS.get(item.block_label, "#6c9fff")
             try:
                 result = manage_context_blocks(options=ContextBlockAction(action="get", label=item.block_label))
                 if isinstance(result, str):
@@ -112,9 +123,9 @@ class BlocksScreen(Screen):
                     content = result.get("content", "(empty)")
                 else:
                     content = str(result)
-                detail.update(f"[bold]{item.block_label}[/bold]\n\n{content}")
+                detail.update(f"[{color} bold]{item.block_label}[/]\n\n{content}")
             except Exception as e:
-                detail.update(f"[bold]{item.block_label}[/bold]\n\n[red]Error: {e}[/red]")
+                detail.update(f"[{color} bold]{item.block_label}[/]\n\n[red]Error: {e}[/red]")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button actions."""
@@ -125,6 +136,7 @@ class BlocksScreen(Screen):
 
         label = selected.block_label
         detail = self.query_one("#block-detail", Static)
+        color = LABEL_COLORS.get(label, "#6c9fff")
 
         if event.button.id == "btn-update":
             input_widget = self.query_one("#block-content-input", Input)
@@ -133,7 +145,7 @@ class BlocksScreen(Screen):
                 try:
                     init_db()
                     manage_context_blocks(options=ContextBlockAction(action="update", label=label, content=content))
-                    detail.update(f"[bold]{label}[/bold]\n\n{content}")
+                    detail.update(f"[{color} bold]{label}[/]\n\n{content}")
                     input_widget.value = ""
                     self.refresh_data()
                 except Exception as e:
@@ -143,7 +155,7 @@ class BlocksScreen(Screen):
             try:
                 init_db()
                 manage_context_blocks(options=ContextBlockAction(action="reset", label=label))
-                detail.update(f"[bold]{label}[/bold]\n\n(Reset to default)")
+                detail.update(f"[{color} bold]{label}[/]\n\n(Reset to default)")
                 self.refresh_data()
             except Exception as e:
                 detail.update(f"[red]Error resetting block: {e}[/red]")
@@ -152,7 +164,7 @@ class BlocksScreen(Screen):
             try:
                 init_db()
                 manage_context_blocks(options=ContextBlockAction(action="clear", label=label))
-                detail.update(f"[bold]{label}[/bold]\n\n(Cleared)")
+                detail.update(f"[{color} bold]{label}[/]\n\n(Cleared)")
                 self.refresh_data()
             except Exception as e:
                 detail.update(f"[red]Error clearing block: {e}[/red]")
