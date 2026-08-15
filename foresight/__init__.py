@@ -17,7 +17,7 @@ Includes:
 # - Compliance exporters for HIPAA, SOC2, GDPR -- Removed
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .block_registry import (
     DEFAULT_BLOCK_SCHEMAS as DEFAULT_BLOCK_SCHEMAS,
@@ -315,80 +315,6 @@ from .temporal_service import (
     reset_temporal_service as reset_temporal_service,
 )
 
-# Optional stream producer and consumer dependencies
-if TYPE_CHECKING:
-    from .consumer_group import (
-        ConsumerRecord as ConsumerRecord,
-        ConsumerState as ConsumerState,
-        ConsumerStats as ConsumerStats,
-        KafkaConsumerGroup as KafkaConsumerGroup,
-    )
-    from .stream_producer import (
-        KafkaProducer as KafkaProducer,
-        KinesisProducer as KinesisProducer,
-        MockProducer as MockProducer,
-        StreamEvent as StreamEvent,
-        StreamProducer as StreamProducer,
-        StreamPublisher as StreamPublisher,
-        StreamType as StreamType,
-        create_stream_producer as create_stream_producer,
-    )
-
-    _stream_producer_available = True
-    _consumer_group_available = True
-else:
-    # Stream producer (optional)
-    try:
-        from .stream_producer import (
-            KafkaProducer,
-            KinesisProducer,
-            MockProducer,
-            StreamEvent,
-            StreamProducer,
-            StreamPublisher,
-            StreamType,
-            create_stream_producer,
-        )
-
-        _stream_producer_available = True
-    except ImportError:
-        _stream_producer_available = False
-
-        class _OptionalStreamDependencyStub:
-            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-                raise ImportError(
-                    f"{self.__class__.__name__} requires kafka-python or boto3. "
-                    "Install with: pip install kafka-python boto3"
-                )
-
-        StreamProducer = StreamPublisher = StreamEvent = StreamType = _OptionalStreamDependencyStub
-        KafkaProducer = KinesisProducer = MockProducer = _OptionalStreamDependencyStub
-
-        def create_stream_producer(*_args: Any, **_kwargs: Any) -> Any:
-            raise ImportError(
-                "create_stream_producer requires kafka-python or boto3. Install with: pip install kafka-python boto3"
-            )
-
-    # Consumer group (optional)
-    try:
-        from .consumer_group import (
-            ConsumerRecord,
-            ConsumerState,
-            ConsumerStats,
-            KafkaConsumerGroup,
-        )
-
-        _consumer_group_available = True
-    except ImportError:
-        _consumer_group_available = False
-
-        class _OptionalConsumerDependencyStub:
-            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-                raise ImportError(
-                    f"{self.__class__.__name__} requires kafka-python. Install with: pip install kafka-python"
-                )
-
-        KafkaConsumerGroup = ConsumerRecord = ConsumerStats = ConsumerState = _OptionalConsumerDependencyStub
 # CRDT and Sync exports
 from .crdt import (
     LWWMap as LWWMap,
@@ -439,9 +365,6 @@ __all__ = [
     "CapturedMemory",
     "Connection",
     "ConnectionState",
-    "ConsumerRecord",
-    "ConsumerState",
-    "ConsumerStats",
     "ContextBlock",
     "ContextBlockAction",
     "ContextBlockAgent",
@@ -483,9 +406,6 @@ __all__ = [
     "InjectionBudget",
     "InjectionPoint",
     "Insight",
-    "KafkaConsumerGroup",
-    "KafkaProducer",
-    "KinesisProducer",
     "LLMDocumentExtractor",
     "LWWMap",
     "LWWRegister",
@@ -506,7 +426,6 @@ __all__ = [
     "MemoryRelationshipStore",
     "MemoryUpdateOptions",
     "MergeStrategy",
-    "MockProducer",
     "ORSet",
     "Operation",
     "OperationQueue",
@@ -527,10 +446,6 @@ __all__ = [
     "SemanticSearchError",
     "SemanticSearchResult",
     "SessionClassifier",
-    "StreamEvent",
-    "StreamProducer",
-    "StreamPublisher",
-    "StreamType",
     "StrengthEvent",
     "SubconsciousAction",
     "Subscription",
@@ -564,7 +479,6 @@ __all__ = [
     "content_hash",
     "cosine_similarity",
     "create_document",
-    "create_stream_producer",
     "delete_document",
     "delete_memory",
     "delete_memory_embedding",

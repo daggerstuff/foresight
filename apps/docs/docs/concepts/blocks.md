@@ -14,7 +14,7 @@ Context blocks are named containers that hold high-signal context with:
 
 - stable labels for retrieval and updates
 - explicit default content
-- SQLite-backed persistence
+- Postgres-backed persistence
 - tenant isolation by `(user_id, tenant_id)`
 - XML snapshot and whisper views for prompt injection
 - clear separation between active continuity and long-term memory banks

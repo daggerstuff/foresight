@@ -1,11 +1,10 @@
 """Portable schema DDL for Foresight MCP.
 
 Single source of truth for all CREATE TABLE / ALTER TABLE / CREATE INDEX
-statements that Foresight needs to bootstrap a fresh database. The same
-set is used by both the SQLite default and the PostgreSQL (psycopg v3)
-deployment; ``PostgresBackend._translate_sql`` then performs the dialect
-rewrite (``?`` → ``%s``, ``INTEGER PRIMARY KEY AUTOINCREMENT`` → ``SERIAL``,
-``BLOB`` → ``BYTEA``) so we do not need two parallel DDL trees.
+statements that Foresight needs to bootstrap a fresh database.
+``PostgresBackend._translate_sql`` performs the dialect rewrite
+(``?`` → ``%s``, ``INTEGER PRIMARY KEY AUTOINCREMENT`` → ``SERIAL``,
+``BLOB`` → ``BYTEA``) so the same DDL works against PostgreSQL.
 
 The dictionary is intentionally keyed by an integer version so the
 migration runner (``backend_migrations.run_migrations``) can apply
@@ -277,13 +276,16 @@ MIGRATIONS: dict[int, list[str]] = {
         # this ensures the index also exists when schema_ddl.MIGRATIONS drives
         # the migration.
         "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_created ON memories(tenant_id, user_id, created_at DESC)",
-        # 002_unified_schema columns — added by a separate migration runner
-        # (migrations/002_unified_schema.py) that is not integrated with the
-        # versioned schema_ddl system.  Fold them in here so the schema_ddl
-        # SOT is truly complete.
+        # 002_unified_schema columns — folded into the versioned schema_ddl
+        # system so the SOT is truly complete.
         "ALTER TABLE memories ADD COLUMN schema_version TEXT",
         "ALTER TABLE memories ADD COLUMN source_service TEXT",
         # ── graph_store tables ──────────────────────────────────────────────
+        # 001_add_tenant_to_graph_tables — for databases that already have
+        # these tables without tenant_id, the ALTER TABLE below adds it.
+        # CREATE TABLE IF NOT EXISTS handles fresh databases (with tenant_id
+        # in the DDL); the ALTER then hits a harmless "duplicate column"
+        # idempotent error.
         """CREATE TABLE IF NOT EXISTS memory_entities (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -297,6 +299,7 @@ MIGRATIONS: dict[int, list[str]] = {
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(tenant_id, user_id, name, entity_type)
         )""",
+        "ALTER TABLE memory_entities ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
         "CREATE INDEX IF NOT EXISTS idx_entities_user ON memory_entities(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_entities_tenant ON memory_entities(tenant_id)",
         "CREATE INDEX IF NOT EXISTS idx_memory_entities_tenant ON memory_entities(tenant_id)",
@@ -320,6 +323,7 @@ MIGRATIONS: dict[int, list[str]] = {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
         )""",
+        "ALTER TABLE entity_relationships ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
         "CREATE INDEX IF NOT EXISTS idx_rel_source ON entity_relationships(source_entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_rel_target ON entity_relationships(target_entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_rel_user ON entity_relationships(user_id)",
@@ -333,6 +337,7 @@ MIGRATIONS: dict[int, list[str]] = {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (memory_id, entity_id)
         )""",
+        "ALTER TABLE memory_entity_links ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
         "CREATE INDEX IF NOT EXISTS idx_links_memory ON memory_entity_links(memory_id)",
         "CREATE INDEX IF NOT EXISTS idx_links_entity ON memory_entity_links(entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_links_user ON memory_entity_links(user_id)",
@@ -440,6 +445,29 @@ MIGRATIONS: dict[int, list[str]] = {
             access_count INTEGER NOT NULL DEFAULT 0
         )""",
         "CREATE INDEX IF NOT EXISTS idx_narrative_cache_tenant_user ON narrative_cache(tenant_id, user_id)",
+    ],
+    13: [
+        "ALTER TABLE narrative_cache ALTER COLUMN created_at TYPE DOUBLE PRECISION",
+        "ALTER TABLE narrative_cache ALTER COLUMN last_accessed_at TYPE DOUBLE PRECISION",
+    ],
+    14: [
+        """CREATE TABLE IF NOT EXISTS memory_merge_history (
+            id TEXT PRIMARY KEY,
+            primary_id TEXT NOT NULL,
+            merged_ids TEXT NOT NULL DEFAULT '[]',
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT,
+            cluster_id TEXT,
+            avg_overlap REAL,
+            merged_at TEXT NOT NULL,
+            merged_by TEXT DEFAULT 'system',
+            pre_merge_content TEXT,
+            merged_content TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_primary ON memory_merge_history(primary_id)",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_tenant ON memory_merge_history(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_user ON memory_merge_history(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_merged_at ON memory_merge_history(merged_at)",
     ],
 }
 

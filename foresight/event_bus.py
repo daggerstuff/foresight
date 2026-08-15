@@ -146,7 +146,8 @@ class EventStoreBase(ABC):
     """Abstract base class for event stores.
 
     Defines the interface that all event store backends must implement.
-    Concrete implementations: SQLiteEventStore (default), PostgresEventStore (future).
+    Concrete implementations: PostgresEventStore (production default),
+    SQLiteEventStore (test-only).
     """
 
     @abstractmethod
@@ -181,13 +182,18 @@ class EventStoreBase(ABC):
 
 
 # =============================================================================
-# Event Store (SQLite-based)
+# Event Store (SQLite-based, test-only)
 # =============================================================================
 
 
 class SQLiteEventStore(EventStoreBase):
     """
-    Persistent event store using SQLite.
+    Persistent event store using SQLite (test-only).
+
+    In production, PostgresEventStore is used via _create_store() which
+    checks the active backend type. SQLiteEventStore is retained as the
+    default EventStore alias so tests can monkeypatch it without spinning
+    up a Postgres backend.
 
     Stores all events in append-only log.
     Supports temporal queries and event replay.
@@ -197,7 +203,8 @@ class SQLiteEventStore(EventStoreBase):
         """Initialize event store.
 
         Args:
-            db_path: Path to SQLite database (default: ~/.foresight/events.db)
+            db_path: Path to SQLite database (test-only; defaults to
+                ~/.foresight/events.db when no explicit path is provided)
         """
         if db_path is None:
             db_path = str(Path.home() / ".foresight" / "events.db")
@@ -411,29 +418,20 @@ class EventBus:
     - Event filtering by type
     - Event persistence
     - Error handling with continue-on-error
-    - Stream publishing (Kafka/Kinesis)
     """
 
     def __init__(
         self,
         store: EventStoreBase | None = None,
-        stream_publisher: Any | None = None,
     ):
         """Initialize event bus.
 
         Args:
             store: Event store for persistence (default: in-memory store)
-            stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
         """
         self._handlers: dict[EventType, list[EventHandler]] = {}
         self._store = store
-        self._stream_publisher = stream_publisher
         self._lock = threading.Lock()
-
-    def set_stream_publisher(self, stream_publisher: Any | None) -> None:
-        """Attach or replace the stream publisher after bus initialization."""
-        with self._lock:
-            self._stream_publisher = stream_publisher
 
     def publish(self, event: Event) -> None:
         """
@@ -444,14 +442,6 @@ class EventBus:
         # Persist event
         if self._store:
             self._store.append(event)
-
-        # Publish to stream (Kafka/Kinesis) if configured
-        if self._stream_publisher:
-            try:
-                self._stream_publisher.publish_event(event)
-            except Exception as e:
-                logger.warning(f"Stream publishing failed: {e}")
-                # Don't let stream publishing failures block the event
 
         # Snapshot handlers under lock, invoke outside to avoid holding lock during I/O
         with self._lock:
@@ -497,18 +487,12 @@ class _EventBusSingleton:
     _lock = threading.Lock()
 
     @classmethod
-    def get_instance(cls, stream_publisher: Any | None = None) -> EventBus:
-        """Get the global event bus instance.
-
-        Args:
-            stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
-        """
+    def get_instance(cls) -> EventBus:
+        """Get the global event bus instance."""
         with cls._lock:
             if cls._instance is None:
                 cls._store = cls._create_store()
-                cls._instance = EventBus(cls._store, stream_publisher)
-            elif stream_publisher is not None:
-                cls._instance.set_stream_publisher(stream_publisher)
+                cls._instance = EventBus(cls._store)
             return cls._instance
 
     @classmethod
@@ -539,13 +523,9 @@ class _EventBusSingleton:
             cls._store = None
 
 
-def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
-    """Get the global event bus instance.
-
-    Args:
-        stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
-    """
-    return _EventBusSingleton.get_instance(stream_publisher)
+def get_event_bus() -> EventBus:
+    """Get the global event bus instance."""
+    return _EventBusSingleton.get_instance()
 
 
 def reset_event_bus() -> None:
@@ -896,5 +876,6 @@ class PostgresEventStore(EventStoreBase):
             return None
 
 
-# Backward-compatible alias
+# Backward-compatible alias (test-only default; production uses PostgresEventStore
+# via _create_store() which checks the active backend type)
 EventStore = SQLiteEventStore

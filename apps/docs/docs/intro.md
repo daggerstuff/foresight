@@ -81,7 +81,7 @@ client.subscribeToEvents(['memory.stored', 'memory.updated'])
 
 | Feature                | Description                                                                 |
 | ---------------------- | --------------------------------------------------------------------------- |
-| **Event Sourcing**     | Every operation is an event, stored in SQLite with full audit trail         |
+| **Event Sourcing**     | Every operation is an event, stored in Postgres with full audit trail       |
 | **Domain-Agnostic**    | Anomaly detection works for mental health, security, finance, or any domain |
 | **Composable Schemas** | Define custom memory block types with validation                            |
 | **Real-time Sync**     | WebSocket subscriptions for live updates                                    |

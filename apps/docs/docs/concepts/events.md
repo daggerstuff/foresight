@@ -38,17 +38,17 @@ interface Event {
 
 ## Event Persistence
 
-Events are stored in SQLite at `~/.foresight/events.db`:
+Events are stored in Postgres (the same database backing the rest of Foresight):
 
 ```sql
 CREATE TABLE events (
   id TEXT PRIMARY KEY,
   event_type TEXT NOT NULL,
-  timestamp TEXT NOT NULL,
+  timestamp TIMESTAMPTZ NOT NULL,
   actor TEXT NOT NULL,
   entity_id TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  metadata TEXT DEFAULT '{}'
+  payload JSONB NOT NULL,
+  metadata JSONB DEFAULT '{}'
 );
 ```
 

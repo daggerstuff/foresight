@@ -1,10 +1,8 @@
 """Backend-agnostic migration runner for Foresight MCP.
 
 Runs pending schema migrations against any ``DatabaseBackend`` implementation
-— the SQLite default or the PostgreSQL backend — and records each applied
-version in ``schema_migrations``. Equivalent semantics to the legacy
-``foresight.migrations.run_migrations(db_path)`` helper, but usable
-against a backend chosen at runtime via ``FORESIGHT_DB_URL``.
+and records each applied version in ``schema_migrations``. DDL statements come
+from the single source of truth in ``schema_ddl.MIGRATIONS``.
 
 Usage::
 
@@ -144,6 +142,11 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
                 # error, so without this the next statement dies with
                 # InFailedSqlTransaction.
                 for idx, stmt in enumerate(statements):
+                    # ALTER COLUMN ... TYPE is Postgres-only; SQLite uses
+                    # type affinity so the type change is a no-op there.
+                    if backend.backend_type != "postgresql" and "ALTER COLUMN" in stmt.upper():
+                        logger.debug("Migration %s: skipping Postgres-only ALTER COLUMN on %s", version, backend.backend_type)
+                        continue
                     savepoint = f"mig_v{version}_s{idx}"
                     conn.execute(f"SAVEPOINT {savepoint}")
                     try:

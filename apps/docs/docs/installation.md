@@ -81,11 +81,11 @@ foresight --install-completion
 
 ### Environment Variables
 
-| Variable            | Description             | Default                  |
-| ------------------- | ----------------------- | ------------------------ |
-| `FORESIGHT_DB_PATH` | Path to SQLite database | `~/.foresight/memory.db` |
-| `FORESIGHT_USER_ID` | Default user ID         | System user              |
-| `FORESIGHT_BANK_ID` | Memory bank identifier  | `default`                |
+| Variable              | Description                          | Default        |
+| --------------------- | ------------------------------------ | -------------- |
+| `FORESIGHT_DB_URL`    | Postgres connection string (required) | —              |
+| `FORESIGHT_USER_ID`   | Default user ID                      | System user    |
+| `FORESIGHT_BANK_ID`   | Memory bank identifier               | `default`      |
 
 ### Config File
 
@@ -118,7 +118,7 @@ Expected output:
 ```json
 {
   "status": "healthy",
-  "database": "/home/user/.foresight/memory.db",
+  "database": "postgresql://user@localhost:5432/foresight",
   "bank_id": "default",
   "user_id": "user",
   "memory_count": 0,
@@ -131,7 +131,7 @@ Expected output:
 
 ### Import Errors
 
-Ensure you're using Python 3.11+:
+Ensure you're using Python 3.12+:
 
 ```bash
 python --version
@@ -147,11 +147,15 @@ mkdir -p ~/.foresight
 chmod 700 ~/.foresight
 ```
 
-### SQLite Errors
+### Database Connection Errors
 
-The database is created automatically. If you need to reset:
+Foresight requires a Postgres database. Ensure `FORESIGHT_DB_URL` is set and
+the database is reachable:
 
 ```bash
-rm ~/.foresight/memory.db
-# Database will be recreated on next operation
+# Verify the connection string is set
+echo $FORESIGHT_DB_URL
+
+# Test connectivity
+psql "$FORESIGHT_DB_URL" -c "SELECT 1"
 ```

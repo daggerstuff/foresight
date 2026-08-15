@@ -77,8 +77,6 @@ from .event_bus import (
     memory_updated,
     sync_progress,
 )
-from .event_bus import EventType
-from .event_bus import _make_event
 from .graph_store import get_graph_store
 from .hooks import (
     HookResult,
@@ -137,13 +135,6 @@ from .semantic_search import (
     get_semantic_search,
 )
 from .sensitivity import resolve_is_sensitive
-from .stream_producer import (
-    KafkaProducer,
-    KinesisProducer,
-    StreamPublisher,
-    create_stream_producer,
-)
-from .consumer_group import ConsumerGroupConfig, ConsumerRecord, KafkaConsumerGroup
 from .sync import Operation, OperationQueue, OperationType, get_sync_manager, SyncProgress
 from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
@@ -620,7 +611,7 @@ def get_db_connection(db_path: str | None = None):
     return PostgresPooledConnection(conn, pool)
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def _seed_default_tenant(conn) -> None:
@@ -863,7 +854,7 @@ _SCHEMA_MIGRATIONS = {
     ],
     # v12 — Register 11 tables that individual modules create inline with
     # CREATE TABLE IF NOT EXISTS, plus 002_unified_schema columns. Mirrors
-    # foreight_mcp/backend/schema_ddl.py MIGRATIONS[12].
+    # foresight/backend/schema_ddl.py MIGRATIONS[12].
     12: [
         # 002_unified_schema columns
         "ALTER TABLE memories ADD COLUMN schema_version TEXT",
@@ -1030,6 +1021,25 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE narrative_cache ALTER COLUMN created_at TYPE DOUBLE PRECISION",
         "ALTER TABLE narrative_cache ALTER COLUMN last_accessed_at TYPE DOUBLE PRECISION",
     ],
+    14: [
+        """CREATE TABLE IF NOT EXISTS memory_merge_history (
+            id TEXT PRIMARY KEY,
+            primary_id TEXT NOT NULL,
+            merged_ids TEXT NOT NULL DEFAULT '[]',
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT,
+            cluster_id TEXT,
+            avg_overlap REAL,
+            merged_at TEXT NOT NULL,
+            merged_by TEXT DEFAULT 'system',
+            pre_merge_content TEXT,
+            merged_content TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_primary ON memory_merge_history(primary_id)",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_tenant ON memory_merge_history(tenant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_user ON memory_merge_history(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_merge_history_merged_at ON memory_merge_history(merged_at)",
+    ],
 }
 
 
@@ -1162,9 +1172,7 @@ def _initialize_redis() -> None:
 _SERVER_STATE: dict[str, Any] = {
     "memory_system_initialized": False,
     "safe_path_prefixes": None,
-    "stream_publisher": None,
     "sync_manager": None,
-    "consumer_group": None,
     "tenant_context": None,
 }
 
@@ -1568,62 +1576,10 @@ async def health_endpoint(_request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=code)
 
 
-def initialize_stream_producer():
-    """Initialize stream producer for Kafka/Kinesis event publishing."""
-    try:
-        producer = create_stream_producer(environment=get_current_account_id() or "dev")
-        publisher = StreamPublisher(producer, environment=get_current_account_id() or "dev")
-        _SERVER_STATE["stream_publisher"] = publisher
-        logger.info("Stream publisher initialized successfully")
-        if isinstance(producer, KafkaProducer):
-            logger.info(f"Using Kafka stream producer: {producer.bootstrap_servers}")
-        elif isinstance(producer, KinesisProducer):
-            logger.info("Using Kinesis stream producer")
-        else:
-            logger.info("Using mock stream producer")
-        return publisher
-    except Exception as e:
-        logger.warning(f"Failed to initialize stream producer: {e}")
-        return None
-
-
-def get_stream_publisher():
-    return _SERVER_STATE["stream_publisher"]
-
-
-def cleanup_stream_producer():
-    """Clean up stream producer."""
-    publisher = _SERVER_STATE["stream_publisher"]
-    if publisher:
-        try:
-            if hasattr(publisher.producer, "close"):
-                publisher.producer.close()
-            _SERVER_STATE["stream_publisher"] = None
-            logger.info("Stream publisher closed")
-        except Exception as e:
-            logger.error(f"Error closing stream producer: {e}")
-        finally:
-            _SERVER_STATE["stream_publisher"] = None
-
-
-atexit.register(cleanup_stream_producer)
-
-
 def _cleanup_background_systems() -> None:
     """Gracefully stop background threads and release resources on exit."""
     # Suppress logging tracebacks during interpreter shutdown (streams may be closed)
     logging.raiseExceptions = False
-
-    # Stop consumer group
-    consumer = _SERVER_STATE.get("consumer_group")
-    if consumer is not None:
-        try:
-            consumer.stop()
-            logger.info("Consumer group stopped")
-        except Exception as e:
-            logger.error(f"Error stopping consumer group: {e}")
-        finally:
-            _SERVER_STATE["consumer_group"] = None
 
     # Mark sync manager offline
     sync_mgr = _SERVER_STATE.get("sync_manager")
@@ -1659,7 +1615,7 @@ atexit.register(_cleanup_background_systems)
 
 
 def get_event_bus_with_stream():
-    return get_event_bus(stream_publisher=_SERVER_STATE["stream_publisher"])
+    return get_event_bus()
 
 
 def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
@@ -4747,77 +4703,6 @@ def _start_sync_thread() -> None:
     logger.info("Sync thread started (interval=%ss, node=%s)", interval, node_id)
 
 
-def _start_consumer_thread() -> None:
-    """Start a daemon thread that consumes events from the stream.
-
-    Only launches when the active stream producer is Kafka (Kinesis/Mock
-    do not have a consumer group implementation). The consumer subscribes
-    to the ``foresight.{env}.memory.`` topic prefix and forwards each
-    record back onto the local event bus so downstream subscribers
-    (audit, cache invalidation, etc.) process them as if they were local.
-
-    Disabled when ``FORESIGHT_ENABLE_CONSUMER`` is set to ``0``.
-    """
-    if os.environ.get("FORESIGHT_ENABLE_CONSUMER", "1") == "0":
-        logger.info("Consumer group disabled via FORESIGHT_ENABLE_CONSUMER=0")
-        return
-
-    publisher = _SERVER_STATE.get("stream_publisher")
-    if publisher is None or not isinstance(publisher.producer, KafkaProducer):
-        logger.info("Consumer group skipped: stream producer is not Kafka")
-        return
-
-    bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    environment = publisher.environment
-    group_id = os.environ.get("FORESIGHT_CONSUMER_GROUP_ID", "foresight-consumer")
-    # Subscribe to all memory event topics for this environment
-    topics = [f"foresight.{environment}.memory.{et.value}" for et in EventType]
-
-    config = ConsumerGroupConfig(
-        bootstrap_servers=bootstrap_servers,
-        group_id=group_id,
-        topics=topics,
-    )
-    consumer = KafkaConsumerGroup(config=config)
-    _SERVER_STATE["consumer_group"] = consumer
-
-    # Bridge consumed records back into the local event bus
-    def _handle_record(record: ConsumerRecord) -> None:
-        event_type_str = record.value.get("event_type", "")
-        try:
-            et = EventType(event_type_str)
-        except ValueError:
-            logger.debug("Consumer: unknown event_type %r, skipping", event_type_str)
-            return
-        # Publish as a local event without re-streaming to avoid infinite loop
-        local_bus = get_event_bus(stream_publisher=None)
-        local_bus.publish(
-            _make_event(
-                et,
-                record.value.get("actor", "system"),
-                record.value.get("entity_id", record.key or ""),
-                record.value.get("payload", {}),
-                record.value.get("metadata"),
-            )
-        )
-
-    def _handle_error(exc: Exception, record: ConsumerRecord) -> None:
-        logger.error("Consumer error processing record (topic=%s, offset=%d): %s", record.topic, record.offset, exc)
-
-    consumer.add_handler(_handle_record)
-    consumer.add_error_handler(_handle_error)
-
-    def _consume_loop() -> None:
-        try:
-            consumer.start()
-        except Exception:
-            logger.exception("Consumer thread caught unexpected exception")
-
-    thread = threading.Thread(target=_consume_loop, daemon=True, name="foresight-consumer")
-    thread.start()
-    logger.info("Consumer thread started (group=%s, topics=%d, servers=%s)", group_id, len(topics), bootstrap_servers)
-
-
 def _run_scheduled_maintenance_gc() -> None:
     """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
     if _global_backend is None:
@@ -4977,12 +4862,10 @@ def main(host: str | None = None, port: int | None = None) -> None:
         get_graph_store(backend=_global_backend)
         get_temporal_query_builder(backend=_global_backend)
 
-    initialize_stream_producer()
     _resume_pending_curation_runs()
     _start_decay_sweep_thread()
     _start_maintenance_gc_thread()
     _start_sync_thread()
-    _start_consumer_thread()
 
     reg = get_memory_hook_registry()
     reg.register(MemoryHookType.PRE_STORE, _audit_hook, name="audit")

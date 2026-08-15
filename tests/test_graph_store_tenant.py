@@ -144,7 +144,7 @@ def test_migration_adds_tenant_id_to_existing_db():
 
         # Run migration
         from tests._sqlite_backend import SqliteBackend
-        from foresight.migrations import run_migrations
+        from foresight.backend.backend_migrations import run_migrations
 
         backend = SqliteBackend(db_path=db_path)
         backend.connect()

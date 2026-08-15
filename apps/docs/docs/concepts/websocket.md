@@ -82,26 +82,6 @@ client.onMessage((msg) => {
 setInterval(() => client.ping(), 30000)
 ```
 
-## Python MCP Tools
-
-```python
-from foresight import ws_subscribe, ws_unsubscribe, ws_status
-
-# Subscribe
-ws_subscribe(
-    subscription_id="my-sub",
-    event_types=["memory.stored", "memory.updated"],
-    entity_filter="memory:*"
-)
-
-# Check status
-status = ws_status()
-print(status)
-
-# List subscriptions
-subscriptions = ws_list_subscriptions()
-```
-
 ## Related
 
 - [Events](./events) - Event system

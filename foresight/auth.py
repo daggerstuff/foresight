@@ -17,7 +17,7 @@ from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
 from mcp.types import TextContent
 
-from .config import DB_PATH, DEFAULT_DB_PATH
+from .config import DB_PATH
 from .connection_pool import get_pool
 from .tenant_middleware import resolve_tenant_id_from_message
 
@@ -115,8 +115,6 @@ class AuthManager:
     """Manages user authentication and authorization."""
 
     def __init__(self, db_path: str | None = DB_PATH):
-        if db_path is None:
-            db_path = DEFAULT_DB_PATH
         self.db_path = db_path
         self._init_db()
 

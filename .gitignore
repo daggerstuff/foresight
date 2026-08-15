@@ -47,3 +47,5 @@ coverage.lcov
 .omo/
 .agents/
 .pytest_cache
+# Docusaurus build output
+apps/docs/.docusaurus/

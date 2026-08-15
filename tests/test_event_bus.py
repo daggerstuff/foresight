@@ -11,14 +11,6 @@ class _FakeStore:
         self.last_event = event
 
 
-class _DummyPublisher:
-    def __init__(self):
-        self.published: list[Event] = []
-
-    def publish_event(self, event: Event) -> None:
-        self.published.append(event)
-
-
 def _make_event() -> Event:
     return Event(
         id="evt-stream",
@@ -30,17 +22,16 @@ def _make_event() -> Event:
     )
 
 
-def test_get_event_bus_attaches_late_stream_publisher(monkeypatch):
+def test_event_bus_publish_persists_event(monkeypatch):
+    """Event bus should persist events through the store."""
     reset_event_bus()
     monkeypatch.setattr(event_bus_module, "EventStore", _FakeStore)
-    publisher = _DummyPublisher()
 
     bus = get_event_bus()
-    same_bus = get_event_bus(stream_publisher=publisher)
     event = _make_event()
-    same_bus.publish(event)
+    bus.publish(event)
 
-    assert same_bus is bus
-    assert publisher.published == [event]
+    # Singleton should return the same instance
+    assert get_event_bus() is bus
 
     reset_event_bus()

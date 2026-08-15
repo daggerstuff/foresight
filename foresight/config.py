@@ -1,7 +1,7 @@
 """Shared configuration constants for the Foresight MCP server.
 
-Centralizes DB configuration (Postgres primary, SQLite for tests),
-USER_ID, ACCOUNT_ID, and rate-limit defaults.
+Centralizes DB configuration (Postgres-only in production; SQLite for tests
+via explicit FORESIGHT_DB_PATH), USER_ID, ACCOUNT_ID, and rate-limit defaults.
 
 Extended with explicit account/workspace memory scoping (PIX-317):
 - user_id: Individual user identity
@@ -15,14 +15,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Database
-# Neon / PostgreSQL is the primary backend. Set FORESIGHT_DB_URL in production.
+# Neon / PostgreSQL is the only production backend. Set FORESIGHT_DB_URL in production.
 # Format: postgresql://user:password@host:port/dbname?sslmode=require
 DB_URL = os.environ.get("FORESIGHT_DB_URL", "")
 
-# SQLite path (tests / local dev only). When DB_URL is set, DB_PATH defaults
-# to None so get_pool() routes to Postgres instead of creating a SQLite file.
-DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
-DB_PATH = os.environ.get("FORESIGHT_DB_PATH", None if DB_URL else DEFAULT_DB_PATH)
+# SQLite path (tests only). Set FORESIGHT_DB_PATH to use a local SQLite database
+# for test fixtures. When unset, DB_PATH is None and get_pool() routes to the
+# active Postgres backend — or raises RuntimeError if none is active.
+DB_PATH = os.environ.get("FORESIGHT_DB_PATH", None)
 
 # Optional Redis companion cache (overrides the in-process dict cache when set).
 # See foresight/redis_cache.RedisCache for the consuming API.
