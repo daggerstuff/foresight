@@ -22,7 +22,7 @@ from collections import deque
 from contextlib import suppress
 from typing import Any
 
-from .config import DB_PATH
+from .config import DB_PATH, DB_URL
 
 logger = logging.getLogger("foresight_connection_pool")
 

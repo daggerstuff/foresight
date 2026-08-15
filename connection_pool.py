@@ -148,18 +148,26 @@ class _PsycopgPoolAdapter:
 
     def release(self, conn: Any) -> None:
         try:
-            conn.close()
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("release() failed to close PostgresPooledConnection", exc_info=True)
+            if hasattr(conn, '_pool') and conn._pool is self._pool:
+                conn.close()
+            else:
+                conn.close()
+        except Exception:
+            logger.warning("Pool adapter release() failed to close connection", exc_info=True)
+            raise
 
     @property
     def stats(self) -> dict:
+        idle = in_use = 0
+        max_size = None
         try:
-            idle = self._pool._pool.free()
-            in_use = self._pool._pool.size() - idle
+            if hasattr(self._pool, '_pool') and self._pool._pool is not None:
+                idle = self._pool._pool.free()
+                in_use = self._pool._pool.size() - idle
+            max_size = getattr(self._pool, "_max_pool_size", None)
         except Exception:
-            idle, in_use = 0, 0
-        return {"idle": idle, "in_use": in_use, "max_size": getattr(self._pool, "_max_pool_size", None)}
+            logger.debug("Pool stats retrieval failed", exc_info=True)
+        return {"idle": idle, "in_use": in_use, "max_size": max_size}
 
 
 _pools: dict[str, ConnectionPool] = {}
