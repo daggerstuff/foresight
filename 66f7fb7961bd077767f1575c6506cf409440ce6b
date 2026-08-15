@@ -1,0 +1,25 @@
+foresight_cli/tui/screens/dashboard.py
+  s_ada65dc30fc0ca::t_68ae3eafe7a874 24,28
+foresight_cli/tui/screens/memories.py
+  s_ada65dc30fc0ca::t_9036af5d3d7a1f 12-13,18-27,37-40
+foresight_cli/tui/app.py
+  s_ada65dc30fc0ca::t_68ae3eafe7a874 109
+foresight_cli/tui/screens/blocks.py
+  s_ada65dc30fc0ca::t_9036af5d3d7a1f 44-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "66f7fb7961bd077767f1575c6506cf409440ce6b",
+  "prompts": {},
+  "sessions": {
+    "s_ada65dc30fc0ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_011631468ffeLd4OaZSMLZjnF4",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
