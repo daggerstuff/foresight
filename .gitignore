@@ -49,3 +49,4 @@ coverage.lcov
 .pytest_cache
 # Docusaurus build output
 apps/docs/.docusaurus/
+AUDIT_REPORT.md
