@@ -81,11 +81,11 @@ foresight --install-completion
 
 ### Environment Variables
 
-| Variable              | Description                          | Default        |
-| --------------------- | ------------------------------------ | -------------- |
-| `FORESIGHT_DB_URL`    | Postgres connection string (required) | —              |
-| `FORESIGHT_USER_ID`   | Default user ID                      | System user    |
-| `FORESIGHT_BANK_ID`   | Memory bank identifier               | `default`      |
+| Variable            | Description                           | Default     |
+| ------------------- | ------------------------------------- | ----------- |
+| `FORESIGHT_DB_URL`  | Postgres connection string (required) | —           |
+| `FORESIGHT_USER_ID` | Default user ID                       | System user |
+| `FORESIGHT_BANK_ID` | Memory bank identifier                | `default`   |
 
 ### Config File
 
