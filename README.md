@@ -43,12 +43,12 @@ bash install.sh
 
 <div align="center">
 
-| Surface | What it is |
-|:---|:---|
-| `foresight` CLI | 20+ commands for storing, searching, and managing memories |
-| `foresight tui` | Interactive terminal interface — keyboard-first, full-screen |
-| `foresight-server` | MCP server for Claude Code, Cursor, Goose, any MCP client |
-| Python SDK | Import directly for custom tooling and scripts |
+| Surface            | What it is                                                   |
+| :----------------- | :----------------------------------------------------------- |
+| `foresight` CLI    | 20+ commands for storing, searching, and managing memories   |
+| `foresight tui`    | Interactive terminal interface — keyboard-first, full-screen |
+| `foresight-server` | MCP server for Claude Code, Cursor, Goose, any MCP client    |
+| Python SDK         | Import directly for custom tooling and scripts               |
 
 </div>
 
@@ -56,6 +56,6 @@ bash install.sh
 
 <div align="center">
 
-*The best agents remember. The rest repeat their mistakes.*
+_The best agents remember. The rest repeat their mistakes._
 
 </div>
