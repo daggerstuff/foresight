@@ -2041,3 +2041,65 @@ class TestSystemStatusHealth:
         assert "memory_count" in data
         assert "by_scope" in data
         assert "stale_count" in data
+
+
+def test_manage_context_blocks_flat_aliases_and_extra_fields():
+    """manage_context_blocks handles block_name, name, block, key aliases and extra fields."""
+    from foresight.server import manage_context_blocks, ContextBlockAction
+
+    # Test flat block_name parameter
+    res = manage_context_blocks(action="update", block_name="project_context", content="Test context content")
+    data = json.loads(res)
+    assert data["ok"] is True
+    assert data["label"] == "project_context"
+
+    # Test flat name parameter
+    res2 = manage_context_blocks(action="get", name="project_context")
+    data2 = json.loads(res2)
+    assert data2["ok"] is True
+    assert data2["content"] == "Test context content"
+
+    # Test ContextBlockAction model alias with extra fields
+    action_obj = ContextBlockAction(action="get", block_name="project_context", random_extra_field="ignored")
+    assert action_obj.label == "project_context"
+
+
+def test_manage_memories_flat_parameters():
+    """manage_memories folds flat parameters like category, scope, tags into store_options and updates."""
+    from foresight.server import manage_memories
+
+    res = manage_memories(
+        action="store",
+        content="Testing flat memory storage",
+        category="fact",
+        scope="session",
+        tags=["test", "flat"],
+    )
+    assert "Stored memory" in res or "Duplicate detected" in res
+
+
+def test_manage_memory_versions_flat_parameters():
+    """manage_memory_versions handles flat action and memory_id parameters."""
+    from foresight.server import manage_memory_versions, VersionAction
+
+    # Test with flat arguments for a non-existent ID
+    res = manage_memory_versions(action="diff", memory_id="nonexistent_id", version1=1, version2=2)
+    assert "nonexistent_id" in res
+
+    # Test VersionAction extra fields
+    v_action = VersionAction(action="list", memory_id="dummy", extra_arg="ignored")
+    assert v_action.memory_id == "dummy"
+
+
+def test_analyze_memories_flat_parameters():
+    """analyze_memories handles flat action and period parameters."""
+    from foresight.server import analyze_memories, AnalysisAction
+
+    # Test flat arguments
+    res = analyze_memories(action="reflect", period="weekly")
+    assert res is not None
+
+    # Test AnalysisAction extra fields
+    a_action = AnalysisAction(action="reflect", period="weekly", extra_junk="ignored")
+    assert a_action.period == "weekly"
+

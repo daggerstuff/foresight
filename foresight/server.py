@@ -30,7 +30,7 @@ from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
 from mcp.types import TextContent
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -179,6 +179,8 @@ def get_narrative_cache() -> NarrativeCache:
 
 # Tool argument grouping models
 class MemoryOptions(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     category: str = Field(default="fact", description="Category label")
     scope: str = Field(default="session", description="Memory scope: session, arc, trait, or fact")
     retention: str = Field(
@@ -208,6 +210,8 @@ class MemoryOptions(BaseModel):
 
 
 class MemoryUpdateOptions(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     content: str | None = Field(default=None, description="New memory content")
     category: str | None = Field(default=None, description="New category label")
     scope: str | None = Field(default=None, description="New memory scope")
@@ -251,9 +255,22 @@ class SearchOptions(BaseModel):
 
 
 class ContextBlockAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     action: Literal["list", "get", "update", "reset", "clear"] = Field(description="Action to perform")
-    label: str | None = Field(default=None, description="Block label (e.g. guidance, preferences)")
+    label: str | None = Field(default=None, description="Block label (e.g. guidance, preferences, project_context, pending_items)")
     content: str | None = Field(default=None, description="New content for update action")
+
+    @model_validator(mode="before")
+    @classmethod
+    def handle_label_aliases(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            if not values.get("label"):
+                for alias in ("block_name", "name", "block", "block_id", "key"):
+                    if values.get(alias):
+                        values["label"] = values[alias]
+                        break
+        return values
 
 
 class SubconsciousAction(ContextBlockAction):
@@ -261,6 +278,8 @@ class SubconsciousAction(ContextBlockAction):
 
 
 class CurationRunAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     action: Literal["create", "get", "list", "cancel", "archive"] = Field(description="Action to perform")
     run_id: str | None = Field(default=None, description="Curation run ID for get/cancel/archive")
     source_bank_id: str | None = Field(default=None, description="Source bank to curate from")
@@ -289,6 +308,8 @@ class CurationRunAction(BaseModel):
 
 
 class EntityQueryType(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(description="Type of entity query")
     entity_type: str | None = Field(
         default=None, description="Entity type for 'by_type' (person/place/concept/event/emotion/object)"
@@ -300,6 +321,8 @@ class EntityQueryType(BaseModel):
 
 
 class TemporalWindow(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     window: Literal["today", "week", "month", "year"] = Field(default="week", description="Time window for retrieval")
     trend: str | None = Field(default=None, description="Filter by trend (stable/strengthening/weakening/stale)")
     category: str | None = Field(default=None, description="Category filter")
@@ -307,6 +330,8 @@ class TemporalWindow(BaseModel):
 
 
 class SystemStatusOptions(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     include_trends: bool = Field(default=False, description="Whether to include temporal trend analysis")
     timeframe: str = Field(default="30 days", description="Timeframe for trend analysis")
     include_cache_metrics: bool = Field(default=False, description="Whether to include cache and budget metrics")
@@ -316,6 +341,8 @@ class SystemStatusOptions(BaseModel):
 
 
 class EntityAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     action: Literal["extract", "link"] = Field(..., description="Action to perform")
     content: str | None = Field(default=None, description="Text content for extraction")
     memory_id: str | None = Field(default=None, description="Memory ID for linking")
@@ -323,6 +350,8 @@ class EntityAction(BaseModel):
 
 
 class EntityQuery(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(..., description="Type of query")
     entity_type: str | None = Field(default=None, description="Entity type filter")
     name: str | None = Field(default=None, description="Name for partial match")
@@ -333,6 +362,8 @@ class EntityQuery(BaseModel):
 
 
 class MemoryAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     action: Literal["store", "update", "delete", "archive"] = Field(..., description="Action to perform")
     memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
     content: str | None = Field(default=None, description="Content for store/update")
@@ -341,6 +372,8 @@ class MemoryAction(BaseModel):
 
 
 class VersionAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     action: Literal["list", "diff", "rollback"] = Field(..., description="Versioning action")
     memory_id: str = Field(..., description="Memory ID")
     version1: int | None = Field(default=None, description="First version for diff")
@@ -349,6 +382,8 @@ class VersionAction(BaseModel):
 
 
 class AnalysisAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     action: Literal["synthesize", "reflect"] = Field(..., description="Analysis action")
     period: str = Field(default="weekly", description="Period for reflection")
     limit: int = Field(default=50, description="Limit for synthesis")
@@ -1965,6 +2000,16 @@ def manage_memories(
     content: str | None = None,
     store_options: MemoryOptions | None = None,
     updates: MemoryUpdateOptions | None = None,
+    category: str | None = None,
+    scope: str | None = None,
+    retention: str | None = None,
+    importance: float | None = None,
+    tags: list[str] | None = None,
+    is_sensitive: bool | None = None,
+    relation_type: str | None = None,
+    related_memory_id: str | None = None,
+    emotional_context: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
 ) -> str:
     """
     Manage memory lifecycle: store, update, delete, or archive.
@@ -1977,7 +2022,75 @@ def manage_memories(
         content: Flat parameter for content (optional, fallback if options not provided)
         store_options: Flat parameter for store options (optional, fallback if options not provided)
         updates: Flat parameter for updates (optional, fallback if options not provided)
+        category: Flat parameter for category label
+        scope: Flat parameter for memory scope (session, arc, trait, fact)
+        retention: Flat parameter for retention policy (ephemeral, short_term, long_term, permanent)
+        importance: Flat parameter for importance score (0.0 to 1.0)
+        tags: Flat parameter for tags list
+        is_sensitive: Flat parameter for sensitivity override
+        relation_type: Flat parameter for relationship type
+        related_memory_id: Flat parameter for related memory ID
+        emotional_context: Flat parameter for emotional metadata
+        metrics: Flat parameter for empathy metrics
     """
+    flat_store_kwargs: dict[str, Any] = {}
+    if category is not None:
+        flat_store_kwargs["category"] = category
+    if scope is not None:
+        flat_store_kwargs["scope"] = scope
+    if retention is not None:
+        flat_store_kwargs["retention"] = retention
+    if importance is not None:
+        flat_store_kwargs["importance"] = importance
+    if emotional_context is not None:
+        flat_store_kwargs["emotional_context"] = emotional_context
+    if metrics is not None:
+        flat_store_kwargs["metrics"] = metrics
+    if relation_type is not None:
+        flat_store_kwargs["relation_type"] = relation_type
+    if related_memory_id is not None:
+        flat_store_kwargs["related_memory_id"] = related_memory_id
+    if is_sensitive is not None:
+        flat_store_kwargs["is_sensitive"] = is_sensitive
+
+    flat_update_kwargs: dict[str, Any] = {}
+    if category is not None:
+        flat_update_kwargs["category"] = category
+    if scope is not None:
+        flat_update_kwargs["scope"] = scope
+    if retention is not None:
+        flat_update_kwargs["retention"] = retention
+    if tags is not None:
+        flat_update_kwargs["tags"] = tags
+    if is_sensitive is not None:
+        flat_update_kwargs["is_sensitive"] = is_sensitive
+    if relation_type is not None:
+        flat_update_kwargs["relation_type"] = relation_type
+    if related_memory_id is not None:
+        flat_update_kwargs["related_memory_id"] = related_memory_id
+    if content is not None:
+        flat_update_kwargs["content"] = content
+
+    if store_options is None and flat_store_kwargs:
+        try:
+            store_options = MemoryOptions(**flat_store_kwargs)
+        except Exception:
+            pass
+    elif store_options is not None and flat_store_kwargs:
+        for k, v in flat_store_kwargs.items():
+            if getattr(store_options, k, None) is None or k in ("category", "scope", "retention"):
+                setattr(store_options, k, v)
+
+    if updates is None and flat_update_kwargs:
+        try:
+            updates = MemoryUpdateOptions(**flat_update_kwargs)
+        except Exception:
+            pass
+    elif updates is not None and flat_update_kwargs:
+        for k, v in flat_update_kwargs.items():
+            if getattr(updates, k, None) is None:
+                setattr(updates, k, v)
+
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided."
@@ -1988,6 +2101,11 @@ def manage_memories(
             options=store_options,
             updates=updates,
         )
+    else:
+        if options.options is None and store_options is not None:
+            options.options = store_options
+        if options.updates is None and updates is not None:
+            options.updates = updates
 
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
@@ -2394,14 +2512,38 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
 
 
 @mcp.tool(output_schema=None)
-def manage_memory_versions(options: VersionAction, user_id: str | None = None) -> str:
+def manage_memory_versions(
+    options: VersionAction | None = None,
+    user_id: str | None = None,
+    action: Literal["list", "diff", "rollback"] | None = None,
+    memory_id: str | None = None,
+    version1: int | None = None,
+    version2: int | None = None,
+    to_version: int | None = None,
+) -> str:
     """
     Manage memory versioning: diff or rollback.
 
     Args:
         options: Action and parameters
         user_id: Optional user ID override
+        action: Flat parameter for action (optional, fallback if options not provided)
+        memory_id: Flat parameter for memory ID (optional, fallback if options not provided)
+        version1: Flat parameter for first version for diff
+        version2: Flat parameter for second version for diff
+        to_version: Flat parameter for target version for rollback
     """
+    if options is None:
+        if action is None or memory_id is None:
+            return "Error: either 'options' or ('action' and 'memory_id') must be provided."
+        options = VersionAction(
+            action=action,
+            memory_id=memory_id,
+            version1=version1,
+            version2=version2,
+            to_version=to_version,
+        )
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
@@ -2465,6 +2607,11 @@ def manage_context_blocks(
     user_id: str | None = None,
     action: Literal["list", "get", "update", "reset", "clear"] | None = None,
     label: str | None = None,
+    block_name: str | None = None,
+    name: str | None = None,
+    block: str | None = None,
+    block_id: str | None = None,
+    key: str | None = None,
     content: str | None = None,
 ) -> str:
     """
@@ -2475,12 +2622,20 @@ def manage_context_blocks(
         user_id: Optional user ID override
         action: Flat parameter for action (optional, fallback if options not provided)
         label: Flat parameter for block label (optional, fallback if options not provided)
+        block_name: Alias for label (optional)
+        name: Alias for label (optional)
+        block: Alias for label (optional)
+        block_id: Alias for label (optional)
+        key: Alias for label (optional)
         content: Flat parameter for block content (optional, fallback if options not provided)
     """
+    resolved_label = label or block_name or name or block or block_id or key
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided."
-        options = ContextBlockAction(action=action, label=label, content=content)
+        options = ContextBlockAction(action=action, label=resolved_label, content=content)
+    elif not options.label and resolved_label:
+        options.label = resolved_label
 
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
@@ -6191,14 +6346,34 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
 
 
 @mcp.tool(output_schema=None)
-def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str:
+def analyze_memories(
+    options: AnalysisAction | None = None,
+    user_id: str | None = None,
+    action: Literal["synthesize", "reflect"] | None = None,
+    period: str | None = None,
+    limit: int | None = None,
+    enhanced: bool | None = None,
+) -> str:
     """
     Perform analysis on memories: synthesis or reflection.
 
     Args:
         options: Action and parameters
         user_id: Optional user ID override
+        action: Flat parameter for action (optional, fallback if options not provided)
+        period: Flat parameter for period (optional)
+        limit: Flat parameter for limit (optional)
+        enhanced: Flat parameter for enhanced synthesis (optional)
     """
+    if options is None:
+        if action is None:
+            return "Error: either 'options' or 'action' must be provided."
+        options = AnalysisAction(
+            action=action,
+            period=period or "weekly",
+            limit=limit if limit is not None else 50,
+            enhanced=enhanced if enhanced is not None else False,
+        )
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
