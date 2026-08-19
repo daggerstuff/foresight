@@ -103,5 +103,5 @@ def load_dotenv_walkup() -> None:
     _project_root = Path(__file__).resolve().parent.parent.parent
     for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
         if _candidate.exists():
-            load_dotenv(_candidate)
+            load_dotenv(_candidate, override=True)
             break

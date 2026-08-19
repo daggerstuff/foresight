@@ -21,10 +21,11 @@ try:
 
     for _candidate in [
         Path(__file__).resolve().parent.parent / ".env",
+        Path(__file__).resolve().parent.parent.parent / ".env",
         Path.home() / ".env",
     ]:
         if _candidate.exists():
-            load_dotenv(_candidate, override=False)
+            load_dotenv(_candidate, override=True)
             break
 except ImportError:
     pass  # python-dotenv not installed; rely on env being set externally
