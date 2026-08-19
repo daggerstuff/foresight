@@ -34,7 +34,7 @@ export function registerContextBlocks(cmd: Command): void {
               ORDER BY label`,
             [cfg.account, cfg.userId],
           );
-          return res.rows as ContextBlockRow[];
+          return (res.rows as ContextBlockRow[]).length > 0 ? res.rows as ContextBlockRow[] : undefined;
         });
         s.stop();
         if (rows.length === 0) {
