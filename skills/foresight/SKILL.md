@@ -448,7 +448,28 @@ get_system_status(include_trends=True, timeframe="30 days")
 ```
 
 Returns memory count by scope, last capture time, maintenance stats, cache
-metrics. Use to diagnose issues or confirm the server is healthy.
+metrics, and AES-256-GCM encryption status. Use to diagnose issues or confirm
+the server is healthy.
+
+---
+
+### `manage_encryption` — AES-256-GCM encryption controls
+
+Manage optional field-level Authenticated Encryption at Rest (AEAD) with multi-tenant
+key derivation.
+
+```python
+manage_encryption(action="status")                        # check encryption mode & algorithm
+manage_encryption(action="encrypt_all")                    # retroactively encrypt all plaintext memories
+manage_encryption(action="rotate_key", old_key="...", new_key="...")  # rotate master encryption key
+```
+
+CLI commands:
+```bash
+foresight security status        # view active security mode and encryption state
+foresight security encrypt-all   # encrypt all stored memories
+foresight security rotate-key    # zero-loss key rotation
+```
 
 ---
 
