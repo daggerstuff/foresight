@@ -1541,8 +1541,24 @@ class InputValidationMiddleware(_Middleware):
         return await call_next(context)
 
 
+FORESIGHT_SERVER_INSTRUCTIONS = """Foresight provides persistent memory, continuity context blocks, and background curation for AI agents.
+
+### Guidelines for AI Agents:
+1. Context Continuity: At session start or when switching topics, call `inject_context` or `manage_context_blocks` to load active guidance, user preferences, and relevant memory items into context.
+2. Memory Scopes & Retention:
+   - `session`: Ephemeral working memory for the immediate task/session.
+   - `arc`: Medium-term project milestone or ongoing objective.
+   - `fact`: Durable facts and verified project knowledge.
+   - `trait`: Enduring user habits, communication preferences, and core principles.
+3. Proactive Capture: Store key user preferences, architectural decisions, and explicit user feedback using `manage_memories(action="store", ...)`.
+4. Curation: Use `manage_curation_runs` to inspect and review memory consolidation or archiving proposals without loss of durable context."""
+
 mcp = FastMCP(
-    "Foresight", middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()]
+    "Foresight",
+    instructions=FORESIGHT_SERVER_INSTRUCTIONS,
+    website_url="https://foresight.vectorize.io",
+    version="0.19.0",
+    middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
 )
 
 logger = logging.getLogger("foresight_server")
@@ -4927,6 +4943,19 @@ def _run_scheduled_maintenance_gc() -> None:
                     stats.insights_generated,
                     stats.maintenance_duration_seconds,
                 )
+                try:
+                    from .context_blocks import auto_distill_context_blocks
+
+                    distill_res = auto_distill_context_blocks(uid, tid)
+                    if distill_res.get("distilled_blocks"):
+                        logger.info(
+                            "Auto-distilled context blocks for user=%s tenant=%s: %s",
+                            uid,
+                            tid,
+                            distill_res["distilled_blocks"],
+                        )
+                except Exception:
+                    logger.debug("Auto-distill context blocks failed (non-fatal)", exc_info=True)
             except Exception:
                 logger.exception("Maintenance failed for user=%s tenant=%s bank=%s", uid, tid, bid)
 
@@ -6660,6 +6689,564 @@ def run_maintenance(
         },
         indent=2,
     )
+
+
+# ============================================================================
+# FastMCP 4.0 Native Prompt Templates
+# ============================================================================
+
+
+@mcp.prompt("session_catchup")
+def session_catchup_prompt(query: str = "", user_id: str | None = None) -> str:
+    """Prepare a comprehensive continuity and memory injection prompt for starting a session."""
+    uid = user_id or USER_ID
+    snapshot = get_context_snapshot(user_id=uid)
+    msg = query if query else "current session context and user goals"
+    injected = inject_context(user_message=msg, user_id=uid)
+
+    return f"""# Foresight Continuity & Context Catch-Up
+
+## Active Context Blocks:
+{snapshot if snapshot else '(No active context blocks registered)'}
+
+## Retrieved Memories & Directives:
+{injected if injected else '(No relevant memories found)'}
+
+## Continuity Instructions:
+1. Review the active guidance and relevant facts above before responding to the user.
+2. Adhere to all established user preferences and active constraints.
+3. Update context blocks or store new memories as significant decisions occur.
+"""
+
+
+@mcp.prompt("curate_review")
+def curate_review_prompt(run_id: str | None = None, user_id: str | None = None) -> str:
+    """Generate a structured curation review prompt to evaluate pending memory consolidation proposals."""
+    uid = user_id or USER_ID
+    if run_id:
+        run_res = manage_curation_runs(CurationRunAction(action="get", run_id=run_id), user_id=uid)
+    else:
+        run_res = manage_curation_runs(CurationRunAction(action="list", status="staged"), user_id=uid)
+
+    return f"""# Foresight Curation Review
+
+Evaluate the following proposed memory maintenance and consolidation operations:
+
+```json
+{run_res}
+```
+
+### Review Objectives:
+- Ensure no durable or permanent facts are accidentally degraded or lost.
+- Verify that merged memories retain all essential entity tags and attributes.
+- Approve or cancel the curation run using `manage_curation_runs`.
+"""
+
+
+@mcp.prompt("user_profile")
+def user_profile_prompt(user_id: str | None = None) -> str:
+    """Generate a synthesized user profile and behavioral preferences prompt."""
+    uid = user_id or USER_ID
+    guidance = get_context_whisper(user_id=uid)
+    search_res = search_memories(
+        options=SearchOptions(query_type="keyword", query="preference habit style communication rule", limit=20),
+        user_id=uid,
+    )
+
+    return f"""# User Profile & Working Style
+
+## Active Guidance:
+{guidance if guidance else '(Standard working mode)'}
+
+## Documented User Preferences & Traits:
+{search_res if search_res else '(No specific traits registered)'}
+"""
+
+
+# ============================================================================
+# FastMCP 4.0 Resources
+# ============================================================================
+
+
+@mcp.resource("foresight://context-blocks")
+def resource_context_blocks() -> str:
+    """Live resource stream of all active context blocks."""
+    return manage_context_blocks(action="list")
+
+
+@mcp.resource("foresight://system-status")
+def resource_system_status() -> str:
+    """Live resource stream of Foresight memory and database health metrics."""
+    return get_system_status()
+
+
+@mcp.resource("foresight://curation-runs")
+def resource_curation_runs() -> str:
+    """Live resource stream of memory curation runs."""
+    return manage_curation_runs(CurationRunAction(action="list"))
+
+
+# ============================================================================
+# FastMCP 4.0 Custom UI Routes & Interactive Dashboard
+# ============================================================================
+
+_FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Foresight — AI Memory & Continuity</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #1a1f2e;
+      --panel-hover: #23293d;
+      --border: #2d3748;
+      --primary: #6c9fff;
+      --accent: #5eead4;
+      --secondary: #c084fc;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --error: #f87171;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand h1 {
+      font-size: 24px;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .badge-live {
+      background: rgba(74, 222, 128, 0.15);
+      color: var(--success);
+      border: 1px solid var(--success);
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .stat-label {
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stat-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text);
+      margin-top: 6px;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 10px 18px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .search-bar {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .search-bar input {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+    .search-bar input:focus {
+      border-color: var(--primary);
+    }
+    .btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .item-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .item-card:hover {
+      border-color: var(--primary);
+      background: var(--panel-hover);
+    }
+    .item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .tag-fact { background: rgba(108, 159, 255, 0.2); color: var(--primary); }
+    .tag-preference { background: rgba(192, 132, 252, 0.2); color: var(--secondary); }
+    .tag-insight { background: rgba(94, 234, 212, 0.2); color: var(--accent); }
+    .tag-decision { background: rgba(74, 222, 128, 0.2); color: var(--success); }
+    .tag-guidance { background: rgba(251, 191, 36, 0.2); color: var(--warning); }
+    pre {
+      background: #11141d;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      overflow-x: auto;
+      color: #94a3b8;
+      border: 1px solid #23293d;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <h1>Foresight</h1>
+      <span class="badge-live">FastMCP 4.0</span>
+    </div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn" style="background:#2d3748;" onclick="triggerMaintenance()">Distill Context & Optimize</button>
+      <button class="btn" onclick="refreshAll()">Refresh Data</button>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Active Memories</div>
+      <div class="stat-value" id="stat-memories">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Database Backend</div>
+      <div class="stat-value" id="stat-db" style="font-size: 20px;">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Server Uptime</div>
+      <div class="stat-value" id="stat-uptime" style="font-size: 20px;">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Tenant</div>
+      <div class="stat-value" id="stat-tenant" style="font-size: 20px;">default</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('memories', this)">Memories Explorer</button>
+    <button class="tab-btn" onclick="switchTab('blocks', this)">Context Blocks</button>
+    <button class="tab-btn" onclick="switchTab('simulator', this)">Context Simulator</button>
+    <button class="tab-btn" onclick="switchTab('raw', this)">System JSON</button>
+  </div>
+
+  <div id="tab-memories" class="tab-content active">
+    <div class="search-bar">
+      <input type="text" id="memory-search" placeholder="Search memories by keyword, entity, or tag..." onkeydown="if(event.key==='Enter') searchMemories()">
+      <button class="btn" onclick="searchMemories()">Search</button>
+    </div>
+    <div id="memories-list" class="card-list">Loading memories...</div>
+  </div>
+
+  <div id="tab-blocks" class="tab-content">
+    <div id="blocks-list" class="card-list">Loading context blocks...</div>
+  </div>
+
+  <div id="tab-simulator" class="tab-content">
+    <div class="search-bar">
+      <input type="text" id="sim-prompt" placeholder="Simulate user message (e.g. 'What is our tech stack and formatting preferences?')" onkeydown="if(event.key==='Enter') simulateInject()">
+      <button class="btn" onclick="simulateInject()">Simulate Auto-Inject</button>
+    </div>
+    <div id="sim-result">
+      <pre style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;border-radius:8px;border:1px solid var(--border);">Type a simulated message above to preview the exact context injected into the LLM system prompt.</pre>
+    </div>
+  </div>
+
+  <div id="tab-raw" class="tab-content">
+    <pre id="raw-status">Loading raw system status...</pre>
+  </div>
+
+  <script>
+    function switchTab(name, btn) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById('tab-' + name).classList.add('active');
+      btn.classList.add('active');
+    }
+
+    async function refreshAll() {
+      await Promise.all([loadStatus(), searchMemories(), loadBlocks()]);
+    }
+
+    async function triggerMaintenance() {
+      const btn = event.target;
+      const orig = btn.innerText;
+      btn.innerText = 'Optimizing...';
+      try {
+        const res = await fetch('/ui/api/maintenance', { method: 'POST' });
+        const data = await res.json();
+        alert('Optimization & context distillation complete! Distilled: ' + (data.distillation?.distilled_blocks?.join(', ') || 'none needed'));
+        await refreshAll();
+      } catch (e) {
+        alert('Optimization error: ' + e);
+      } finally {
+        btn.innerText = orig;
+      }
+    }
+
+    async function simulateInject() {
+      const text = document.getElementById('sim-prompt').value;
+      const resContainer = document.getElementById('sim-result');
+      resContainer.innerHTML = '<pre style="padding:16px;border-radius:8px;">Running hybrid retrieval & lane budgeting...</pre>';
+      try {
+        const res = await fetch('/ui/api/inject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        const data = await res.json();
+        resContainer.innerHTML = `<pre style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;border-radius:8px;border:1px solid var(--border);">${data.formatted || '(No context triggered)'}</pre>`;
+      } catch (e) {
+        resContainer.innerHTML = '<pre style="color:var(--error);padding:16px;">Failed to simulate injection: ' + e + '</pre>';
+      }
+    }
+
+    async function loadStatus() {
+      try {
+        const res = await fetch('/ui/api/status');
+        const data = await res.json();
+        document.getElementById('stat-memories').innerText = data.memory_count ?? '0';
+        document.getElementById('stat-db').innerText = data.database ? 'PostgreSQL' : 'Active';
+        document.getElementById('stat-uptime').innerText = data.uptime_seconds ? Math.round(data.uptime_seconds) + 's' : 'Online';
+        document.getElementById('stat-tenant').innerText = data.tenant_id ?? 'default';
+        document.getElementById('raw-status').innerText = JSON.stringify(data, null, 2);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function searchMemories() {
+      const q = document.getElementById('memory-search').value;
+      const list = document.getElementById('memories-list');
+      list.innerHTML = 'Searching...';
+      try {
+        const res = await fetch('/ui/api/memories?q=' + encodeURIComponent(q));
+        const data = await res.json();
+        const items = data.items || [];
+        if (items.length === 0) {
+          list.innerHTML = '<div class="item-card">No memories found.</div>';
+          return;
+        }
+        list.innerHTML = items.map(m => {
+          const cat = m.category || 'fact';
+          const content = m.content || '';
+          const id = m.id || m.memory_id || '';
+          const scope = m.scope || 'session';
+          return `
+            <div class="item-card">
+              <div class="item-header">
+                <div><span class="tag tag-${cat}">${cat}</span> <span style="color:var(--text-muted);margin-left:8px;">${id.slice(0, 16)}</span></div>
+                <span style="color:var(--text-muted);font-size:12px;">scope: ${scope}</span>
+              </div>
+              <div style="font-size:14px;color:var(--text);">${content}</div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<div class="item-card" style="color:var(--error);">Failed to load memories: ' + e + '</div>';
+      }
+    }
+
+    async function loadBlocks() {
+      const list = document.getElementById('blocks-list');
+      list.innerHTML = 'Loading blocks...';
+      try {
+        const res = await fetch('/ui/api/context-blocks');
+        const data = await res.json();
+        const blocks = data.blocks || [];
+        if (blocks.length === 0) {
+          list.innerHTML = '<div class="item-card">No context blocks found.</div>';
+          return;
+        }
+        list.innerHTML = blocks.map(b => `
+          <div class="item-card">
+            <div class="item-header">
+              <span class="tag tag-guidance">${b.label || 'block'}</span>
+              <span style="color:var(--text-muted);font-size:12px;">${b.updated_at || ''}</span>
+            </div>
+            <pre style="white-space:pre-wrap;font-family:inherit;background:transparent;border:none;padding:0;color:var(--text);font-size:14px;">${b.content || '(empty)'}</pre>
+          </div>
+        `).join('');
+      } catch (e) {
+        list.innerHTML = '<div class="item-card" style="color:var(--error);">Failed to load blocks: ' + e + '</div>';
+      }
+    }
+
+    window.onload = refreshAll;
+  </script>
+</body>
+</html>
+"""
+
+
+@mcp.custom_route("/ui/dashboard", methods=["GET"])
+async def ui_dashboard_endpoint(request: Any) -> Any:
+    """Serve the modern interactive Foresight MCP UI Dashboard."""
+    from starlette.responses import HTMLResponse
+
+    return HTMLResponse(_FORESIGHT_DASHBOARD_HTML)
+
+
+@mcp.custom_route("/ui/api/status", methods=["GET"])
+async def ui_api_status(request: Any) -> Any:
+    """API endpoint for UI dashboard stats."""
+    from starlette.responses import JSONResponse
+
+    status_raw = get_system_status()
+    try:
+        data = json.loads(status_raw) if isinstance(status_raw, str) else status_raw
+    except Exception:
+        data = {"status": "ok", "raw": str(status_raw)}
+    return JSONResponse(data)
+
+
+@mcp.custom_route("/ui/api/memories", methods=["GET"])
+async def ui_api_memories(request: Any) -> Any:
+    """API endpoint for UI memory search."""
+    from starlette.responses import JSONResponse
+
+    q = getattr(request, "query_params", {}).get("q", "")
+    limit_val = getattr(request, "query_params", {}).get("limit", "50")
+    try:
+        limit = int(limit_val)
+    except Exception:
+        limit = 50
+
+    if q:
+        res = search_memories(options=SearchOptions(query_type="keyword", query=q, limit=limit))
+    else:
+        res = search_memories(options=SearchOptions(query_type="list", limit=limit))
+
+    items = json.loads(res) if isinstance(res, str) else (res or [])
+    return JSONResponse({"items": items if isinstance(items, list) else []})
+
+
+@mcp.custom_route("/ui/api/context-blocks", methods=["GET"])
+async def ui_api_context_blocks(request: Any) -> Any:
+    """API endpoint for UI context blocks."""
+    from starlette.responses import JSONResponse
+
+    res = manage_context_blocks(action="list")
+    try:
+        data = json.loads(res) if isinstance(res, str) else res
+    except Exception:
+        data = {"blocks": []}
+    return JSONResponse(data if isinstance(data, dict) else {"blocks": []})
+
+
+@mcp.custom_route("/ui/api/inject", methods=["POST"])
+async def ui_api_inject(request: Any) -> Any:
+    """API endpoint for testing context injection live in UI."""
+    from starlette.responses import JSONResponse
+
+    try:
+        body = await request.json()
+        text = body.get("text", "")
+    except Exception:
+        text = ""
+
+    res = inject_context(conversation_text=text, include_details=True)
+    try:
+        data = json.loads(res) if isinstance(res, str) else res
+    except Exception:
+        data = {"formatted": str(res)}
+    return JSONResponse(data if isinstance(data, dict) else {"formatted": str(res)})
+
+
+@mcp.custom_route("/ui/api/maintenance", methods=["POST"])
+async def ui_api_maintenance(request: Any) -> Any:
+    """API endpoint for triggering background maintenance and auto-distillation."""
+    from starlette.responses import JSONResponse
+    from .context_blocks import auto_distill_context_blocks
+
+    uid = USER_ID
+    tid = get_current_account_id()
+    config = MaintenanceConfig(tenant_id=tid, user_id=uid)
+    job = MemoryMaintenanceJob()
+    stats = job.run(config)
+    distill = auto_distill_context_blocks(uid, tid)
+    return JSONResponse({"ok": True, "maintenance": stats.to_dict(), "distillation": distill})
 
 
 if __name__ == "__main__":

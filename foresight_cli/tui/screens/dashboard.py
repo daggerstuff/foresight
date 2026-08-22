@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from textual import work
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.screen import Screen
@@ -54,8 +55,9 @@ class DashboardScreen(Screen):
     def on_mount(self) -> None:
         self.refresh_data()
 
+    @work(exclusive=True, thread=True)
     def refresh_data(self) -> None:
-        """Refresh dashboard data."""
+        """Refresh dashboard data in a background thread."""
         try:
             init_db()
             result = get_system_status()
@@ -69,6 +71,13 @@ class DashboardScreen(Screen):
             elif isinstance(result, dict):
                 details = result
 
+            self.app.call_from_thread(self._render_stats, details)
+        except Exception as e:
+            self.app.call_from_thread(self._render_error, str(e))
+
+    def _render_stats(self, details: dict) -> None:
+        """Update dashboard widgets on UI thread."""
+        try:
             mem_count = details.get("memory_count", details.get("count", "?"))
             crisis = details.get("crisis_signals", 0)
             db_url = details.get("database", details.get("db_url", "?"))
@@ -90,7 +99,13 @@ class DashboardScreen(Screen):
                 f"[dim]Bank:[/dim] {details.get('bank_id', 'default')}\n"
                 f"[dim]Scopes:[/dim] {json.dumps(details.get('by_scope', {}))}\n"
             )
+        except Exception:
+            pass
 
-        except Exception as e:
+    def _render_error(self, error_msg: str) -> None:
+        """Render error on UI thread."""
+        try:
             detail_widget = self.query_one("#status-detail", Static)
-            detail_widget.update(f"[red]Error loading status: {e}[/red]")
+            detail_widget.update(f"[red]Error loading status: {error_msg}[/red]")
+        except Exception:
+            pass

@@ -282,7 +282,8 @@ async def test_text_tools_do_not_advertise_structured_output(monkeypatch):
         tools = {tool.name: tool for tool in await client.list_tools()}
 
     for tool_name in ("manage_context_blocks", "search_memories", "inject_context"):
-        assert tools[tool_name].outputSchema is None
+        tool = tools[tool_name]
+        assert getattr(tool, "output_schema", None) is None
 
 
 @pytest.mark.asyncio

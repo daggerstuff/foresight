@@ -35,6 +35,30 @@ from .connection_pool import get_pool
 from .event_bus import Event, EventType, get_event_bus
 from .tenant_context import get_current_account_id
 
+_shared_http_client: httpx.AsyncClient | None = None
+_client_lock = threading.Lock()
+
+
+def get_shared_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
+    """Get or create the shared connection-pooled HTTPX client."""
+    global _shared_http_client
+    if _shared_http_client is None or _shared_http_client.is_closed:
+        with _client_lock:
+            if _shared_http_client is None or _shared_http_client.is_closed:
+                _shared_http_client = httpx.AsyncClient(
+                    limits=httpx.Limits(max_keepalive_connections=25, max_connections=100, keepalive_expiry=30.0),
+                    timeout=httpx.Timeout(timeout, connect=10.0),
+                )
+    return _shared_http_client
+
+
+async def close_shared_http_client() -> None:
+    """Close the shared HTTP client pool gracefully."""
+    global _shared_http_client
+    if _shared_http_client is not None and not _shared_http_client.is_closed:
+        await _shared_http_client.aclose()
+        _shared_http_client = None
+
 
 @dataclass
 class HttpHookOptions:
@@ -506,14 +530,14 @@ class HookExecutor:
         if self._http_circuit_breaker.state == CircuitState.OPEN:
             logger.warning(f"Circuit breaker open, skipping HTTP hook {hook.name}")
             return
+        client = get_shared_http_client(timeout=float(hook.timeout))
         for attempt in range(hook.retry_count):
             try:
-                async with httpx.AsyncClient(timeout=hook.timeout) as client:
-                    response = await client.post(url, json=payload)
-                    response.raise_for_status()
-                    # Success - record in circuit breaker
-                    self._http_circuit_breaker._on_success()
-                    return
+                response = await client.post(url, json=payload, timeout=float(hook.timeout))
+                response.raise_for_status()
+                # Success - record in circuit breaker
+                self._http_circuit_breaker._on_success()
+                return
             except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
                 last_error = e
                 # Record failure in circuit breaker

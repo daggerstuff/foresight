@@ -1,148 +1,166 @@
 // foresight-autoinject — opencode plugin
 //
-// Hands-off context injection from Foresight into the system prompt.
-// Replaces the manual `foresight_inject_context` MCP tool call that agents
-// were supposed to fire at conversation start but never did.
-//
-// Flow:
-//   1. chat.message hook captures the latest user message text
-//   2. experimental.chat.system.transform hook (fires before every LLM
-//      request) calls Foresight inject_context via MCP HTTP transport,
-//      appends the result to the system prompt
-//
-// This makes the "subconscious" context-block system truly hands-off:
-// context blocks, relevant memories, and auto-captured triggers all
-// surface automatically without the agent remembering to call a tool.
-//
-// Requirements:
-//   - Foresight MCP server running on http://127.0.0.1:8764/mcp
-//   - opencode.json mcp.foresight config (already present)
-//
-// Non-fatal: if Foresight is down or returns an error, the plugin skips
-// silently — it never blocks the LLM request.
-//
-// Hook mapping (same pattern as caveman/plugin.js):
-//   - chat.message: capture user message text
-//   - experimental.chat.system.transform: inject context into system prompt
-
-// --- MCP HTTP client (minimal, no deps) -------------------------------
-//
-// The Foresight MCP server uses Streamable HTTP transport (SSE responses).
-// Protocol:
-//   1. POST initialize → get session ID from mcp-session-id header
-//   2. POST notifications/initialized → notify
-//   3. POST tools/call → get tool result
-//
-// SSE response format: lines of `event: message\ndata: {json}` — we extract
-// the JSON from the `data:` line.
+// Truly hands-off persistent memory and continuity context injection.
+// - Fast single-roundtrip stateless MCP 2.0 (2026-07-28) calls with fallback.
+// - Auto-injects relevant memories and active guidance into system prompt.
+// - Background auto-capture: extracts key facts, decisions, and preferences
+//   from completed turns without requiring manual user commands.
 
 const MCP_URL = process.env.FORESIGHT_MCP_URL ?? 'http://127.0.0.1:8764/mcp'
 const MCP_HEADERS = {
   'Content-Type': 'application/json',
   'Accept': 'application/json, text/event-stream',
 }
-const REQUEST_TIMEOUT_MS = 8000 // 8s — Foresight may do DB queries
+const REQUEST_TIMEOUT_MS = 6000 // 6s timeout
 
-// Parse SSE response body to extract the JSON-RPC result.
-// Format: `event: message\ndata: {"jsonrpc":"2.0",...}`
-function parseSSE(body) {
+// Parse SSE or JSON response body to extract JSON-RPC result
+function parseSSEResult(body) {
+  if (!body) return null
   try {
-    return JSON.parse(body)
+    const parsed = JSON.parse(body)
+    if (parsed) return parsed
   } catch (_) {
-    // not plain JSON — fall through to SSE parsing
+    // Fall through to SSE line parsing
   }
   const lines = body.split('\n')
   for (const line of lines) {
     if (line.startsWith('data: ')) {
       try {
         return JSON.parse(line.slice(6))
-      } catch (_) {
-        // ignore parse errors on non-data lines
-      }
+      } catch (_) {}
     }
   }
   return null
 }
 
-async function mcpCall(method, params, sessionId) {
-  const headers = { ...MCP_HEADERS }
-  if (sessionId) headers['Mcp-Session-Id'] = sessionId
-
-  const body = JSON.stringify({
-    jsonrpc: '2.0',
-    id: Math.floor(Math.random() * 100000),
-    method,
-    ...(params ? { params } : {}),
-  })
-
+async function mcpStatelessCall(toolName, args) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
   try {
     const resp = await fetch(MCP_URL, {
       method: 'POST',
-      headers,
-      body,
+      headers: {
+        ...MCP_HEADERS,
+        'MCP-Protocol-Version': '2026-07-28',
+        'Mcp-Method': 'tools/call',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Math.floor(Math.random() * 100000),
+        method: 'tools/call',
+        params: {
+          name: toolName,
+          arguments: args,
+        },
+      }),
       signal: controller.signal,
     })
+
+    if (!resp.ok) return null
     const text = await resp.text()
-    return { ok: resp.ok, sessionId: resp.headers.get('mcp-session-id'), text }
+    const parsed = parseSSEResult(text)
+    if (!parsed || parsed.error || !parsed.result) return null
+
+    if (Array.isArray(parsed.result.content)) {
+      return parsed.result.content
+        .filter((c) => c.type === 'text' && c.text)
+        .map((c) => c.text)
+        .join('\n')
+    }
+    return typeof parsed.result === 'string' ? parsed.result : null
+  } catch (_) {
+    return null
   } finally {
     clearTimeout(timer)
   }
 }
 
-// Full MCP tool call: initialize → notify → tools/call
-// Returns the tool result text, or null on any failure.
-async function callInjectContext(conversationText) {
-  let sessionId
+// Fallback legacy 3-step handshake for older server versions
+async function mcpLegacyCall(toolName, args) {
+  try {
+    const initResp = await fetch(MCP_URL, {
+      method: 'POST',
+      headers: MCP_HEADERS,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'foresight-autoinject', version: '2.0' },
+        },
+      }),
+    })
+    if (!initResp.ok) return null
+    const sessionId = initResp.headers.get('mcp-session-id')
+    if (!sessionId) return null
 
-  // 1. Initialize
-  const init = await mcpCall('initialize', {
-    protocolVersion: '2024-11-05',
-    capabilities: {},
-    clientInfo: { name: 'foresight-autoinject', version: '1.0' },
-  })
-  if (!init || !init.ok) return null
-  sessionId = init.sessionId
-  if (!sessionId) return null
+    // Notify initialized
+    await fetch(MCP_URL, {
+      method: 'POST',
+      headers: { ...MCP_HEADERS, 'Mcp-Session-Id': sessionId },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    }).catch(() => {})
 
-  const initResult = parseSSE(init.text)
-  if (!initResult || initResult.error) return null
+    // Call tool
+    const toolResp = await fetch(MCP_URL, {
+      method: 'POST',
+      headers: { ...MCP_HEADERS, 'Mcp-Session-Id': sessionId },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: toolName, arguments: args },
+      }),
+    })
+    if (!toolResp.ok) return null
+    const text = await toolResp.text()
+    const parsed = parseSSEResult(text)
+    if (!parsed || parsed.error || !parsed.result) return null
 
-  // 2. Notify initialized (no response expected)
-  await mcpCall('notifications/initialized', null, sessionId)
-
-  // 3. Call inject_context
-  const toolResp = await mcpCall(
-    'tools/call',
-    {
-      name: 'inject_context',
-      arguments: {
-        conversation_text: conversationText,
-        max_memories: 5,
-        min_relevance: 0.15,
-        max_chars: 4000, // bounded: enables lane-based budget (STATIC>DYNAMIC>MEMORIES>BLOCKS>SAFETY)
-      },
-    },
-    sessionId,
-  )
-  if (!toolResp || !toolResp.ok) return null
-
-  const result = parseSSE(toolResp.text)
-  if (!result || result.error || !result.result) return null
-
-  // Extract text from content array
-  if (result.result.content && Array.isArray(result.result.content)) {
-    return result.result.content
-      .filter((c) => c.type === 'text' && c.text)
-      .map((c) => c.text)
-      .join('\n')
+    if (Array.isArray(parsed.result.content)) {
+      return parsed.result.content
+        .filter((c) => c.type === 'text' && c.text)
+        .map((c) => c.text)
+        .join('\n')
+    }
+    return typeof parsed.result === 'string' ? parsed.result : null
+  } catch (_) {
+    return null
   }
-  return null
 }
 
-// --- Plugin hooks -----------------------------------------------------
+async function callInjectContext(conversationText) {
+  const args = {
+    conversation_text: conversationText,
+    max_memories: 5,
+    min_relevance: 0.01,
+    max_chars: 4000,
+  }
+  // Try modern stateless single-roundtrip first
+  const fastResult = await mcpStatelessCall('inject_context', args)
+  if (fastResult) return fastResult
+  // Fallback to legacy
+  return await mcpLegacyCall('inject_context', args)
+}
+
+async function callAutoCapture(sessionId, userText, assistantText) {
+  if (!userText || userText.length < 5) return
+  const messages = [{ role: 'user', content: userText }]
+  if (assistantText) {
+    messages.push({ role: 'assistant', content: assistantText.slice(0, 1000) })
+  }
+  const args = {
+    session_id: sessionId,
+    messages,
+  }
+  // Fire and forget (stateless)
+  mcpStatelessCall('process_session_transcript', args).catch(() => {})
+}
+
+// --- Plugin State & Hooks ---------------------------------------------
 
 const sessionState = new Map()
 const FAILURE_COOLDOWN_MS = 30000
@@ -151,6 +169,7 @@ function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
     sessionState.set(sessionId, {
       lastUserMessage: '',
+      lastAssistantMessage: '',
       lastInjectedFor: '',
       lastFailureAt: 0,
     })
@@ -172,9 +191,19 @@ export const ForesightAutoInject = async (_ctx) => {
       if (!output?.parts) return
       const sessionId = extractSessionId(_input, _ctx)
       const state = getSessionState(sessionId)
+
       for (const part of output.parts) {
         if (part?.type === 'text' && part.text) {
-          state.lastUserMessage = part.text
+          const text = part.text
+          // If this is an assistant response, trigger background auto-capture of the completed turn
+          if (output.role === 'assistant' || output.sender === 'assistant') {
+            state.lastAssistantMessage = text
+            if (state.lastUserMessage) {
+              callAutoCapture(sessionId, state.lastUserMessage, text)
+            }
+          } else {
+            state.lastUserMessage = text
+          }
           break
         }
       }
@@ -189,7 +218,6 @@ export const ForesightAutoInject = async (_ctx) => {
       if (!msg) return
 
       if (msg === state.lastInjectedFor) return
-
       if (Date.now() - state.lastFailureAt < FAILURE_COOLDOWN_MS) return
 
       let contextText
@@ -206,7 +234,6 @@ export const ForesightAutoInject = async (_ctx) => {
       }
 
       state.lastInjectedFor = msg
-
       output.system.push(
         '[FORESIGHT CONTEXT]\n' + contextText + '\n[/FORESIGHT CONTEXT]',
       )

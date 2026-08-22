@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
@@ -71,42 +72,50 @@ class BlocksScreen(Screen):
     def on_mount(self) -> None:
         self.refresh_data()
 
+    @work(exclusive=True, thread=True)
     def refresh_data(self) -> None:
-        """Load blocks from Foresight."""
+        """Load blocks from Foresight in background thread."""
         try:
             init_db()
-            list_view = self.query_one("#block-list", ListView)
-            list_view.clear()
-
-            # Try to get actual blocks
-            try:
-                result = manage_context_blocks(options=ContextBlockAction(action="list"))
-                if isinstance(result, str):
+            result = manage_context_blocks(options=ContextBlockAction(action="list"))
+            blocks = []
+            if isinstance(result, str):
+                try:
                     payload = json.loads(result)
                     blocks = payload.get("blocks", []) if isinstance(payload, dict) else []
-                elif isinstance(result, dict):
-                    blocks = result.get("blocks", [])
-                else:
+                except Exception:
                     blocks = []
+            elif isinstance(result, dict):
+                blocks = result.get("blocks", [])
 
-                if blocks:
-                    for b in blocks:
-                        label = b.get("label", "?")
-                        content = b.get("content", "")
-                        list_view.append(BlockItem(label, content))
-                else:
-                    # Show default block labels
-                    for label in BLOCK_LABELS:
-                        list_view.append(BlockItem(label))
-            except Exception:
-                # Show default labels
-                for label in BLOCK_LABELS:
-                    list_view.append(BlockItem(label))
-
+            self.app.call_from_thread(self._render_blocks, blocks)
         except Exception as e:
+            self.app.call_from_thread(self._render_error, str(e))
+
+    def _render_blocks(self, blocks: list) -> None:
+        """Render context block list on UI thread."""
+        try:
             list_view = self.query_one("#block-list", ListView)
             list_view.clear()
-            list_view.append(ListItem(Static(f"[red]Error: {e}[/red]")))
+            if blocks:
+                for b in blocks:
+                    label = b.get("label", "?")
+                    content = b.get("content", "")
+                    list_view.append(BlockItem(label, content))
+            else:
+                for label in BLOCK_LABELS:
+                    list_view.append(BlockItem(label))
+        except Exception:
+            pass
+
+    def _render_error(self, message: str) -> None:
+        """Render error on UI thread."""
+        try:
+            list_view = self.query_one("#block-list", ListView)
+            list_view.clear()
+            list_view.append(ListItem(Static(f"[red]Error: {message}[/red]")))
+        except Exception:
+            pass
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Show block details on selection."""

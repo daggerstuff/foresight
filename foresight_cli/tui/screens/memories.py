@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
@@ -69,25 +70,47 @@ class MemoriesScreen(Screen):
     def on_mount(self) -> None:
         self.refresh_data()
 
+    @work(exclusive=True, thread=True)
     def refresh_data(self) -> None:
-        """Load and display memories."""
+        """Load and display memories asynchronously."""
         try:
             init_db()
             result = search_memories(options=SearchOptions(query_type="list", limit=50, offset=0))
+            self.app.call_from_thread(self._render_memory_list, result)
+        except Exception as e:
+            self.app.call_from_thread(self._render_error, str(e))
 
+    def _render_memory_list(self, result: Any) -> None:
+        """Update memory list on UI thread."""
+        try:
             list_view = self.query_one("#memory-list", ListView)
             list_view.clear()
-
-            if isinstance(result, list):
+            if isinstance(result, list) and result:
                 for mem in result:
                     list_view.append(MemoryItem(mem))
             else:
-                list_view.append(ListItem(Static("No memories found or error loading.")))
+                list_view.append(ListItem(Static("No memories found.")))
+        except Exception:
+            pass
 
-        except Exception as e:
+    def _render_error(self, message: str) -> None:
+        """Render error message on UI thread."""
+        try:
             list_view = self.query_one("#memory-list", ListView)
             list_view.clear()
-            list_view.append(ListItem(Static(f"[red]Error: {e}[/red]")))
+            list_view.append(ListItem(Static(f"[red]Error: {message}[/red]")))
+        except Exception:
+            pass
+
+    @work(exclusive=True, thread=True)
+    def perform_search(self, query: str) -> None:
+        """Search memories in background thread."""
+        try:
+            init_db()
+            result = search_memories(options=SearchOptions(query_type="keyword", query=query, limit=30))
+            self.app.call_from_thread(self._render_memory_list, result)
+        except Exception as e:
+            self.app.call_from_thread(self._render_error, str(e))
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Show memory details when selected."""
@@ -112,20 +135,9 @@ class MemoriesScreen(Screen):
             search_input = self.query_one("#memory-search", Input)
             query = search_input.value.strip()
             if query:
-                try:
-                    init_db()
-                    result = search_memories(options=SearchOptions(query_type="keyword", query=query, limit=30))
-                    list_view = self.query_one("#memory-list", ListView)
-                    list_view.clear()
-                    if isinstance(result, list):
-                        for mem in result:
-                            list_view.append(MemoryItem(mem))
-                    else:
-                        list_view.append(ListItem(Static("No results.")))
-                except Exception as e:
-                    list_view = self.query_one("#memory-list", ListView)
-                    list_view.clear()
-                    list_view.append(ListItem(Static(f"[red]Error: {e}[/red]")))
+                self.perform_search(query)
+            else:
+                self.refresh_data()
 
         elif event.button.id == "btn-refresh":
             self.refresh_data()
