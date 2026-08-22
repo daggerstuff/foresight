@@ -2060,6 +2060,12 @@ def test_manage_context_blocks_flat_aliases_and_extra_fields():
     assert data2["ok"] is True
     assert data2["content"] == "Test context content"
 
+    # Test flat block_type parameter
+    res3 = manage_context_blocks(action="get", block_type="project_context")
+    data3 = json.loads(res3)
+    assert data3["ok"] is True
+    assert data3["content"] == "Test context content"
+
     # Test ContextBlockAction model alias with extra fields
     action_obj = ContextBlockAction(action="get", block_name="project_context", random_extra_field="ignored")
     assert action_obj.label == "project_context"

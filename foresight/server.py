@@ -266,7 +266,7 @@ class ContextBlockAction(BaseModel):
     def handle_label_aliases(cls, values: Any) -> Any:
         if isinstance(values, dict):
             if not values.get("label"):
-                for alias in ("block_name", "name", "block", "block_id", "key"):
+                for alias in ("block_name", "block_type", "name", "block", "block_id", "key"):
                     if values.get(alias):
                         values["label"] = values[alias]
                         break
@@ -2645,6 +2645,7 @@ def manage_context_blocks(
     action: Literal["list", "get", "update", "reset", "clear"] | None = None,
     label: str | None = None,
     block_name: str | None = None,
+    block_type: str | None = None,
     name: str | None = None,
     block: str | None = None,
     block_id: str | None = None,
@@ -2660,13 +2661,14 @@ def manage_context_blocks(
         action: Flat parameter for action (optional, fallback if options not provided)
         label: Flat parameter for block label (optional, fallback if options not provided)
         block_name: Alias for label (optional)
+        block_type: Alias for label (optional)
         name: Alias for label (optional)
         block: Alias for label (optional)
         block_id: Alias for label (optional)
         key: Alias for label (optional)
         content: Flat parameter for block content (optional, fallback if options not provided)
     """
-    resolved_label = label or block_name or name or block or block_id or key
+    resolved_label = label or block_name or block_type or name or block or block_id or key
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided."
