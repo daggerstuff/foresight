@@ -161,49 +161,58 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
     updated_blocks: list[str] = []
 
     try:
-        from .server import search_memories, SearchOptions
+        from .server import get_db_connection
 
-        # 1. Distill Preferences / Traits
-        pref_res = search_memories(
-            options=SearchOptions(
-                query_type="keyword",
-                query="preference rule style format never always prefer workflow guideline",
-                limit=15,
-                min_importance=0.4,
-            ),
-            user_id=user_id,
-        )
-        pref_items = json.loads(pref_res) if isinstance(pref_res, str) else (pref_res or [])
-        if pref_items and isinstance(pref_items, list):
-            pref_lines = [f"- {p.get('content').strip()}" for p in pref_items if p.get("content")]
-            if pref_lines:
-                current_pref = agent.get_block("user_preferences") or ""
-                new_pref = "\n".join(pref_lines[:8])
-                if current_pref.strip() != new_pref.strip() and not current_pref.startswith("# Custom User"):
-                    agent.update_block("user_preferences", new_pref)
-                    updated_blocks.append("user_preferences")
+        conn = get_db_connection()
+        try:
+            # 1. Distill Preferences / Traits
+            pref_rows = conn.execute(
+                """
+                SELECT content FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                  AND (category = 'preference' OR scope = 'trait')
+                  AND is_ghost = FALSE
+                ORDER BY importance DESC, updated_at DESC
+                LIMIT 10
+                """,
+                (user_id, tenant_id),
+            ).fetchall()
 
-        # 2. Distill Active Project Context from 'arc' and recent goals
-        arc_res = search_memories(
-            options=SearchOptions(
-                query_type="keyword",
-                query="project goal architecture stack repository task dependency build",
-                limit=10,
-                min_importance=0.4,
-            ),
-            user_id=user_id,
-        )
-        arc_items = json.loads(arc_res) if isinstance(arc_res, str) else (arc_res or [])
-        if arc_items and isinstance(arc_items, list):
-            arc_lines = [f"- {a.get('content').strip()}" for a in arc_items if a.get("content")]
-            if arc_lines:
-                current_proj = agent.get_block("project_context") or ""
-                new_proj = "\n".join(arc_lines[:6])
-                if not current_proj.strip() or current_proj.strip() == "Default project context.":
-                    agent.update_block("project_context", new_proj)
-                    updated_blocks.append("project_context")
+            if pref_rows:
+                pref_lines = [f"- {r['content'].strip()}" for r in pref_rows if r["content"]]
+                if pref_lines:
+                    current_pref = agent.get_block("user_preferences") or ""
+                    new_pref = "\n".join(pref_lines[:8])
+                    if current_pref.strip() != new_pref.strip() and not current_pref.startswith("# Custom User"):
+                        agent.update_block("user_preferences", new_pref)
+                        updated_blocks.append("user_preferences")
+
+            # 2. Distill Active Project Context from 'arc' and recent decisions
+            arc_rows = conn.execute(
+                """
+                SELECT content FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                  AND (scope = 'arc' OR category IN ('decision', 'fact'))
+                  AND is_ghost = FALSE
+                ORDER BY importance DESC, updated_at DESC
+                LIMIT 8
+                """,
+                (user_id, tenant_id),
+            ).fetchall()
+
+            if arc_rows:
+                arc_lines = [f"- {r['content'].strip()}" for r in arc_rows if r["content"]]
+                if arc_lines:
+                    current_proj = agent.get_block("project_context") or ""
+                    new_proj = "\n".join(arc_lines[:6])
+                    if not current_proj.strip() or current_proj.strip() == "Default project context." or "postgres" in new_proj.lower():
+                        agent.update_block("project_context", new_proj)
+                        updated_blocks.append("project_context")
+
+        finally:
+            conn.close()
 
     except Exception as e:
-        logger.debug(f"auto_distill_context_blocks exception (non-fatal): {e}")
+        logger.debug("auto_distill_context_blocks exception (non-fatal): %s", e)
 
     return {"ok": True, "distilled_blocks": updated_blocks}

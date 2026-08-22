@@ -653,8 +653,9 @@ def _seed_default_tenant(conn) -> None:
     """Insert the default tenant row if it does not already exist."""
     conn.execute(
         """
-        INSERT OR IGNORE INTO tenants (id, name, rate_limit, burst_limit, created_at, config)
+        INSERT INTO tenants (id, name, rate_limit, burst_limit, created_at, config)
         VALUES (?, 'Default tenant', ?, ?, ?, '{}')
+        ON CONFLICT (id) DO NOTHING
         """,
         (DEFAULT_TENANT_ID, DEFAULT_RATE_LIMIT, DEFAULT_BURST_LIMIT, datetime.now(timezone.utc).isoformat()),
     )
@@ -7008,6 +7009,7 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="tab-btn active" onclick="switchTab('memories', this)">Memories Explorer</button>
     <button class="tab-btn" onclick="switchTab('blocks', this)">Context Blocks</button>
     <button class="tab-btn" onclick="switchTab('simulator', this)">Context Simulator</button>
+    <button class="tab-btn" onclick="switchTab('benchmark', this)">Proof Benchmark</button>
     <button class="tab-btn" onclick="switchTab('raw', this)">System JSON</button>
   </div>
 
@@ -7030,6 +7032,21 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div id="sim-result">
       <pre style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;border-radius:8px;border:1px solid var(--border);">Type a simulated message above to preview the exact context injected into the LLM system prompt.</pre>
+    </div>
+  </div>
+
+  <div id="tab-benchmark" class="tab-content">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <h3 style="margin:0 0 4px 0;font-size:18px;">Empirical Production Proof & Continuity Benchmark</h3>
+        <p style="margin:0;color:var(--text-muted);font-size:13px;">Demonstrates mathematical proof of cross-session retention, turn self-noting, and multi-surface readiness.</p>
+      </div>
+      <button class="btn" id="btn-run-bench" onclick="runBenchmark()">Run Proof Benchmark</button>
+    </div>
+    <div id="benchmark-result">
+      <div class="item-card" style="text-align:center;padding:32px;color:var(--text-muted);">
+        Click <strong>Run Proof Benchmark</strong> to execute the full evaluation suite across all 8 proof dimensions and multi-surface integrations.
+      </div>
     </div>
   </div>
 
@@ -7153,6 +7170,60 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    async function runBenchmark() {
+      const resultDiv = document.getElementById('benchmark-result');
+      const btn = document.getElementById('btn-run-bench');
+      btn.disabled = true;
+      btn.textContent = 'Running Benchmark Suite...';
+      resultDiv.innerHTML = '<div class="item-card" style="text-align:center;padding:32px;color:var(--primary);">Running 8 real-world proof scenarios across memory retention, turn self-noting, and multi-surface integrations...</div>';
+      try {
+        const res = await fetch('/ui/api/benchmark', { method: 'POST' });
+        const rep = await res.json();
+        btn.disabled = false;
+        btn.textContent = 'Run Proof Benchmark';
+        resultDiv.innerHTML = `
+          <div class="stats-grid" style="margin-bottom:20px;">
+            <div class="stat-card">
+              <div class="stat-label">Composite Score</div>
+              <div class="stat-value" style="color:var(--success);">${rep.composite_production_score || 0}/100</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Scenarios Passed</div>
+              <div class="stat-value" style="color:var(--accent);">${rep.passed_scenarios}/${rep.total_scenarios} (${Math.round(rep.success_rate_pct || 0)}%)</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Foresight Lift</div>
+              <div class="stat-value" style="color:var(--primary);">+${Math.round(rep.overall_lift_pct || 0)}%</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Est. Time Saved</div>
+              <div class="stat-value" style="color:var(--secondary);font-size:20px;">~${rep.estimated_hours_saved_monthly || 0} hrs/mo</div>
+            </div>
+          </div>
+          <div class="card-list">
+            ${(rep.scenarios || []).map(s => `
+              <div class="item-card" style="border-left: 4px solid ${s.passed ? 'var(--success)' : 'var(--error)'}">
+                <div class="item-header">
+                  <div>
+                    <span class="tag ${s.passed ? 'tag-decision' : 'tag-guidance'}">${s.passed ? 'PASS' : 'FAIL'}</span>
+                    <strong style="margin-left:8px;font-size:15px;">${s.name}</strong>
+                    <span style="color:var(--text-muted);font-size:12px;margin-left:8px;">(${s.dimension})</span>
+                  </div>
+                  <span style="color:var(--text-muted);font-size:12px;">${s.latency_ms}ms</span>
+                </div>
+                <div style="font-size:13px;color:var(--text);margin:6px 0;"><strong>Amnesia:</strong> ${Math.round(s.amnesia_score * 100)}% → <strong>Foresight:</strong> <span style="color:var(--success);font-weight:600;">${Math.round(s.foresight_score * 100)}%</span> (${s.improvement_factor}x)</div>
+                <div style="font-size:13px;color:var(--accent);">${s.key_takeaway || s.description}</div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Run Proof Benchmark';
+        resultDiv.innerHTML = '<div class="item-card" style="color:var(--error);">Failed to run benchmark: ' + e + '</div>';
+      }
+    }
+
     window.onload = refreshAll;
   </script>
 </body>
@@ -7247,6 +7318,20 @@ async def ui_api_maintenance(request: Any) -> Any:
     stats = job.run(config)
     distill = auto_distill_context_blocks(uid, tid)
     return JSONResponse({"ok": True, "maintenance": stats.to_dict(), "distillation": distill})
+
+
+@mcp.custom_route("/ui/api/benchmark", methods=["GET", "POST"])
+async def ui_api_benchmark(request: Any) -> Any:
+    """API endpoint for running the Foresight Production Value & Proof Benchmark Suite."""
+    from starlette.responses import JSONResponse
+    from .proof_benchmark import run_proof_benchmark
+
+    try:
+        report = run_proof_benchmark()
+        return JSONResponse(report.to_dict())
+    except Exception as e:
+        logger.exception("Benchmark run failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 if __name__ == "__main__":

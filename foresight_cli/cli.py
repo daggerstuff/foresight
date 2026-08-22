@@ -18,6 +18,7 @@ from foresight.config import load_dotenv_walkup
 
 from .commands import (
     analysis,
+    benchmark,
     blocks,
     curate,
     decay,
@@ -54,6 +55,7 @@ app.add_typer(memory.app, name="memory", help="Store, retrieve, search memories.
 app.add_typer(analysis.app, name="analysis", help="Synthesize, reflect, profile, diff, rollback.")
 app.add_typer(blocks.app, name="blocks", help="Manage context blocks.")
 app.add_typer(curate.app, name="curate", help="Manage curation runs.")
+app.add_typer(benchmark.app, name="benchmark", help="Run Production Value & Proof Benchmark Suite.")
 app.add_typer(eval_cmd.app, name="eval", help="Run evaluation harness (PIX-3953).")
 app.add_typer(system.app, name="system", help="System status, init, doctor, config, stats, history, maintenance, tenant.")
 app.add_typer(rrf.app, name="rrf", help="View and tune RRF retrieval weights.")
@@ -79,6 +81,7 @@ app.command(name="config", rich_help_panel="Quick Commands")(system.config)
 app.command(name="synthesize", rich_help_panel="Quick Commands")(analysis.synthesize)
 app.command(name="reflect", rich_help_panel="Quick Commands")(analysis.reflect)
 app.command(name="profile", rich_help_panel="Quick Commands")(analysis.profile)
+app.command(name="prove", rich_help_panel="Quick Commands")(benchmark.run)
 
 
 @app.callback()

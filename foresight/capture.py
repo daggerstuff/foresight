@@ -470,11 +470,12 @@ class CapturePipeline:
                     mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
 
                     conn.execute(
-                        """INSERT OR IGNORE INTO memories
+                        """INSERT INTO memories
                            (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                             created_at, updated_at, tags, emotional_context, metrics,
                             is_ghost, synthesized_from, importance)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
+                           ON CONFLICT (id) DO NOTHING""",
                         (
                             mid,
                             content,
@@ -497,10 +498,11 @@ class CapturePipeline:
                     if dedupe.status == "NEAR_DUPLICATE" and dedupe.existing_id and dedupe.existing_id != mid:
                         rel_id = hashlib.sha256(f"{mid}-derives-{dedupe.existing_id}".encode()).hexdigest()[:16]
                         conn.execute(
-                            """INSERT OR IGNORE INTO memory_relationships
+                            """INSERT INTO memory_relationships
                                (id, tenant_id, user_id, source_memory_id, target_memory_id,
                                 relationship_type, confidence, metadata, created_at)
-                               VALUES (?, ?, ?, ?, ?, 'derives', 1.0, '{}', ?)""",
+                               VALUES (?, ?, ?, ?, ?, 'derives', 1.0, '{}', ?)
+                               ON CONFLICT (id) DO NOTHING""",
                             (rel_id, tid, user_id, mid, dedupe.existing_id, now),
                         )
                         conn.commit()
