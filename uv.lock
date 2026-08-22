@@ -664,6 +664,7 @@ name = "foresight"
 version = "0.19.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -713,6 +714,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "cryptography", specifier = ">=42.0" },
     { name = "fastmcp", specifier = ">=4.0.0b3" },
     { name = "foresight", extras = ["cli", "tui", "redis"], marker = "extra == 'all'" },
     { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.0" },

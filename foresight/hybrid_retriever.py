@@ -1217,9 +1217,14 @@ class HybridRetriever:
             category = mem.get("category")
             temporal_category = self._classify_temporal_category(hours_old, category, strength_trend)
 
+            from .encryption import decrypt_if_encrypted
+
+            raw_content = mem.get("content", "")
+            decrypted_content = decrypt_if_encrypted(raw_content, tenant_id=mem.get("tenant_id", "default"), user_id=mem.get("user_id", "default"))
+
             result = HybridResult(
                 memory_id=memory_id,
-                content=mem["content"],
+                content=decrypted_content,
                 category=category,
                 importance=importance,
                 strength_trend=strength_trend,

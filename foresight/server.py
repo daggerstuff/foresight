@@ -1753,6 +1753,13 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     # Re-evaluate sensitivity at INSERT-time — content may have been
     # mutated by a PRE_STORE hook above.
     is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
+    from .encryption import encrypt_if_enabled
+    stored_content = encrypt_if_enabled(
+        content,
+        is_sensitive=bool(is_sensitive_bit),
+        tenant_id=tenant_id,
+        user_id=uid,
+    )
     # Store
     insert_sql = (
         "INSERT INTO memories (id, user_id, tenant_id, bank_id, category, scope, retention, "
@@ -1768,7 +1775,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         opts.category,
         memory.scope,
         memory.retention,
-        content,
+        stored_content,
         content_h,
         json.dumps(opts.emotional_context) if opts.emotional_context else None,
         json.dumps(opts.metrics) if opts.metrics else None,
@@ -1852,11 +1859,18 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
                 "tenant_id": row["tenant_id"],
             },
         )
-        updates_list.extend(["content = ?", "version = ?"])
-        values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
+        from .encryption import encrypt_if_enabled
         is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(
             options.updates.is_sensitive, options.updates.content.strip()
         )
+        stored_content = encrypt_if_enabled(
+            options.updates.content.strip(),
+            is_sensitive=bool(is_sensitive_bit),
+            tenant_id=tenant_id,
+            user_id=uid,
+        )
+        updates_list.extend(["content = ?", "version = ?"])
+        values.extend([stored_content, (row["version"] or 1) + 1])
         updates_list.extend(["is_sensitive = ?", "sensitivity_reason = ?"])
         values.extend([1 if is_sensitive_bit else 0, sensitivity_reason])
     if options.updates.category:
@@ -2337,9 +2351,11 @@ def search_memories(
         event_bus = get_event_bus_with_stream()
         event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
 
+        from .encryption import decrypt_if_encrypted
         tags = json.loads(row["tags"])
+        decrypted = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
         result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
-        result += f"Content: {row['content']}\n"
+        result += f"Content: {decrypted}\n"
         result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
         if row["is_ghost"]:
             result += "[GHOST NODE - Content archived]"
@@ -2408,7 +2424,11 @@ def search_memories(
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return "No memories found."
 
-    results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
+    from .encryption import decrypt_if_encrypted
+    results = [
+        f"- [{r['id']}] ({r['scope']}/{r['retention']}) {decrypt_if_encrypted(r['content'], tenant_id=tenant_id, user_id=uid)[:80]}..."
+        for r in rows
+    ]
     # Reinforce surfaced memories (closes decay loop).
     _auto_reinforce_batch([r["id"] for r in rows], uid, tenant_id)
     # ── POST_RETRIEVE hook (fallback) ─────────────────────────────────
@@ -5465,7 +5485,70 @@ def get_system_status(
             }
         except Exception:
             result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
+    from .encryption import get_encryption_engine
+    result["encryption"] = get_encryption_engine().get_status().to_dict()
     return json.dumps(result, indent=2)
+
+
+@mcp.tool(output_schema=None)
+def manage_encryption(
+    action: Literal["status", "rotate_key", "encrypt_all"] = "status",
+    old_key: str | None = None,
+    new_key: str | None = None,
+    user_id: str | None = None,
+) -> str:
+    """Manage the optional AES-256-GCM encryption layer for stored memories.
+
+    Actions:
+    - 'status': Check if encryption is enabled, active algorithm, and mode.
+    - 'rotate_key': Re-encrypt all existing memories under a new master key.
+    - 'encrypt_all': Retroactively encrypt all plaintext memories in storage.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+    engine = get_encryption_engine()
+
+    if action == "status":
+        return json.dumps(engine.get_status().to_dict(), indent=2)
+
+    if action == "encrypt_all":
+        if not engine.enabled:
+            return "Error: No encryption key configured. Set FORESIGHT_ENCRYPTION_KEY first."
+        conn = get_db_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ?",
+                (uid, tenant_id),
+            ).fetchall()
+            count = 0
+            for r in rows:
+                content = r["content"] or ""
+                if not engine.is_encrypted(content):
+                    enc = engine.encrypt(content, tenant_id=tenant_id, user_id=uid, force=True)
+                    conn.execute("UPDATE memories SET content = ? WHERE id = ?", (enc, r["id"]))
+                    count += 1
+            conn.commit()
+            return f"Encrypted {count} memories with AES-256-GCM."
+        finally:
+            conn.close()
+
+    if action == "rotate_key":
+        if not old_key or not new_key:
+            return "Error: old_key and new_key are both required for rotate_key action."
+        conn = get_db_connection()
+        try:
+            res = engine.rotate_key(
+                old_master_key=old_key,
+                new_master_key=new_key,
+                conn=conn,
+                tenant_id=tenant_id,
+                user_id=uid,
+            )
+            return json.dumps(res, indent=2)
+        finally:
+            conn.close()
+
+    return f"Unknown action: {action}"
 
 
 # ─── Auto-injection: behavioral instruction prompt ────────────────────────────

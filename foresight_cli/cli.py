@@ -27,6 +27,7 @@ from .commands import (
     graph,
     memory,
     rrf,
+    security,
     system,
 )
 from .utils import config as cfg, output as out
@@ -56,6 +57,7 @@ app.add_typer(analysis.app, name="analysis", help="Synthesize, reflect, profile,
 app.add_typer(blocks.app, name="blocks", help="Manage context blocks.")
 app.add_typer(curate.app, name="curate", help="Manage curation runs.")
 app.add_typer(benchmark.app, name="benchmark", help="Run Production Value & Proof Benchmark Suite.")
+app.add_typer(security.app, name="security", help="Manage security, sensitivity policies, and AES-256-GCM encryption.")
 app.add_typer(eval_cmd.app, name="eval", help="Run evaluation harness (PIX-3953).")
 app.add_typer(system.app, name="system", help="System status, init, doctor, config, stats, history, maintenance, tenant.")
 app.add_typer(rrf.app, name="rrf", help="View and tune RRF retrieval weights.")
