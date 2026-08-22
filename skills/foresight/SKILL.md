@@ -169,9 +169,56 @@ Replace `uvx` / `args: ["foresight-server"]` with:
 "args": ["run", "foresight-server"]
 ```
 
+### Claude Code Hook Integration (Hands-Off)
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' prompt", "timeout": 5 }
+        ]
+      }
+    ],
+    "SessionStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' stop", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ---
 
-## 5. Auto-injection and proactive storage
+## 5. FastMCP 4.0 Prompts & Resources
+
+Foresight exposes native MCP prompts and streaming resources for zero-friction workflows:
+
+### MCP Prompts (`@mcp.prompt`)
+- **`session_catchup`**: Synthesizes active context blocks and relevant memories into a structured session startup prompt.
+- **`curate_review`**: Formats staged memory consolidation and deduplication proposals for review.
+- **`user_profile`**: Aggregates persistent user preferences, style guides, and trait memories into a system prompt snippet.
+
+### MCP Resources (`@mcp.resource`)
+- `foresight://context-blocks` — Real-time stream of all active context blocks (`guidance`, `project_context`, `user_preferences`).
+- `foresight://system-status` — Real-time database and memory health metrics.
+- `foresight://curation-runs` — Active and staged memory curation runs.
+
+### Interactive Webview Dashboard
+Access the dark-mode memory visualizer and context simulator directly at:
+**`http://127.0.0.1:8764/ui/dashboard`**
+
+---
+
+## 6. Auto-injection and proactive storage
 
 The server registers an MCP prompt called **`foresight_autocontext`**. When a
 client includes it in the system message, you automatically retrieve context
