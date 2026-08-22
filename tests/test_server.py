@@ -2094,10 +2094,26 @@ def test_manage_memory_versions_flat_parameters():
 def test_analyze_memories_flat_parameters():
     """analyze_memories handles flat action and period parameters."""
     from foresight.server import analyze_memories, AnalysisAction
+    from foresight.reflection_engine import ReflectionReport
 
     # Test flat arguments
-    res = analyze_memories(action="reflect", period="weekly")
-    assert res is not None
+    with patch("foresight.server.get_reflection_engine") as mock_get_engine:
+        mock_report = ReflectionReport(
+            report_id="test_report",
+            user_id="test_user",
+            period="weekly",
+            start_date="2026-08-15T00:00:00Z",
+            end_date="2026-08-22T00:00:00Z",
+            memories_analyzed=0,
+            insights=[],
+            trend_summary={},
+            entity_summary={},
+            generated_at="2026-08-22T00:00:00Z",
+        )
+        mock_get_engine.return_value.reflect.return_value = mock_report
+
+        res = analyze_memories(action="reflect", period="weekly")
+        assert res is not None
 
     # Test AnalysisAction extra fields
     a_action = AnalysisAction(action="reflect", period="weekly", extra_junk="ignored")
