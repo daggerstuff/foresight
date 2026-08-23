@@ -3,6 +3,7 @@
 // Truly hands-off persistent memory and continuity context injection.
 // - Fast single-roundtrip stateless MCP 2.0 (2026-07-28) calls with fallback.
 // - Auto-injects relevant memories and active guidance into system prompt.
+// - Injects behavioral directives so models proactively call memory tools.
 // - Background auto-capture: extracts key facts, decisions, and preferences
 //   from completed turns without requiring manual user commands.
 
@@ -134,7 +135,7 @@ async function mcpLegacyCall(toolName, args) {
 
 async function callInjectContext(conversationText) {
   const args = {
-    conversation_text: conversationText,
+    conversation_text: conversationText || '',
     max_memories: 5,
     min_relevance: 0.01,
     max_chars: 4000,
@@ -163,7 +164,7 @@ async function callAutoCapture(sessionId, userText, assistantText) {
 // --- Plugin State & Hooks ---------------------------------------------
 
 const sessionState = new Map()
-const FAILURE_COOLDOWN_MS = 30000
+const FAILURE_COOLDOWN_MS = 15000
 
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
@@ -185,26 +186,56 @@ function extractSessionId(_input, _ctx) {
   return 'default'
 }
 
+function extractUserQuery(_input, state) {
+  if (_input?.prompt && typeof _input.prompt === 'string') {
+    return _input.prompt
+  }
+  if (_input?.message && typeof _input.message === 'string') {
+    return _input.message
+  }
+  if (_input?.messages && Array.isArray(_input.messages)) {
+    const userMsgs = _input.messages.filter((m) => m && (m.role === 'user' || m.sender === 'user'))
+    if (userMsgs.length > 0) {
+      const last = userMsgs[userMsgs.length - 1]
+      if (typeof last.content === 'string') return last.content
+      if (Array.isArray(last.parts)) {
+        return last.parts.filter((p) => p?.type === 'text' && p.text).map((p) => p.text).join(' ')
+      }
+    }
+  }
+  return state.lastUserMessage || ''
+}
+
+const AUTOCONTEXT_INSTRUCTIONS = `
+## Foresight Persistent Memory Directives
+You have access to the Foresight persistent memory system.
+1. Apply the injected [FORESIGHT CONTEXT] memories and standing preferences naturally.
+2. At the start of new tasks, on topic shifts, or before non-trivial planning/coding, proactively call \`inject_context\` with the current subject.
+3. When the user expresses conventions, technical decisions, or preferences ('I prefer X', 'always use Y'), call \`manage_context_blocks(action='update', label='user_preferences', content='...')\` or \`manage_memories(action='store', ...)\` to persist them silently.
+`
+
 export const ForesightAutoInject = async (_ctx) => {
   return {
     'chat.message': async (_input, output) => {
-      if (!output?.parts) return
+      if (!output) return
       const sessionId = extractSessionId(_input, _ctx)
       const state = getSessionState(sessionId)
 
-      for (const part of output.parts) {
-        if (part?.type === 'text' && part.text) {
-          const text = part.text
-          // If this is an assistant response, trigger background auto-capture of the completed turn
-          if (output.role === 'assistant' || output.sender === 'assistant') {
-            state.lastAssistantMessage = text
-            if (state.lastUserMessage) {
-              callAutoCapture(sessionId, state.lastUserMessage, text)
-            }
-          } else {
-            state.lastUserMessage = text
+      let text = ''
+      if (typeof output.content === 'string') {
+        text = output.content
+      } else if (Array.isArray(output.parts)) {
+        text = output.parts.filter((p) => p?.type === 'text' && p.text).map((p) => p.text).join(' ')
+      }
+
+      if (text) {
+        if (output.role === 'assistant' || output.sender === 'assistant') {
+          state.lastAssistantMessage = text
+          if (state.lastUserMessage) {
+            callAutoCapture(sessionId, state.lastUserMessage, text)
           }
-          break
+        } else {
+          state.lastUserMessage = text
         }
       }
     },
@@ -214,15 +245,20 @@ export const ForesightAutoInject = async (_ctx) => {
 
       const sessionId = extractSessionId(_input, _ctx)
       const state = getSessionState(sessionId)
-      const msg = state.lastUserMessage.trim()
-      if (!msg) return
+      const query = extractUserQuery(_input, state).trim()
 
-      if (msg === state.lastInjectedFor) return
+      // Always ensure behavioral instructions are present
+      const hasDirectives = output.system.some((s) => typeof s === 'string' && s.includes('Foresight Persistent Memory Directives'))
+      if (!hasDirectives) {
+        output.system.push(AUTOCONTEXT_INSTRUCTIONS)
+      }
+
       if (Date.now() - state.lastFailureAt < FAILURE_COOLDOWN_MS) return
+      if (query && query === state.lastInjectedFor) return
 
       let contextText
       try {
-        contextText = await callInjectContext(msg)
+        contextText = await callInjectContext(query)
       } catch (_) {
         state.lastFailureAt = Date.now()
         return
@@ -233,7 +269,7 @@ export const ForesightAutoInject = async (_ctx) => {
         return
       }
 
-      state.lastInjectedFor = msg
+      state.lastInjectedFor = query || 'standing'
       output.system.push(
         '[FORESIGHT CONTEXT]\n' + contextText + '\n[/FORESIGHT CONTEXT]',
       )

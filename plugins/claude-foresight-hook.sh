@@ -33,26 +33,35 @@ if os.path.exists(input_path):
 event_name = str(hook_input.get("hook_event_name") or action)
 
 if "prompt" in event_name.lower() or action == "prompt":
-    prompt_text = str(hook_input.get("prompt") or hook_input.get("text") or "")
-    if prompt_text.strip():
-        try:
-            req = urllib.request.Request(
-                f"{foresight_url}/ui/api/inject",
-                data=json.dumps({"text": prompt_text}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    formatted = data.get("formatted", "")
-                    if formatted:
-                        # Output for Claude Code system context
-                        print(f"\n[FORESIGHT CONTINUITY CONTEXT]\n{formatted}\n[/FORESIGHT CONTINUITY CONTEXT]\n")
-        except Exception:
-            pass
+    prompt_text = str(hook_input.get("prompt") or hook_input.get("text") or hook_input.get("message") or "")
+    try:
+        req = urllib.request.Request(
+            f"{foresight_url}/ui/api/inject",
+            data=json.dumps({"text": prompt_text}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                formatted = data.get("formatted", "")
+                if formatted:
+                    output_block = f"""
+[FORESIGHT CONTINUITY CONTEXT]
+{formatted}
 
-elif "stop" in event_name.lower() or action == "stop":
+## Standing Memory Directives
+You have access to the Foresight persistent memory MCP server.
+- Apply the memories and context blocks above naturally.
+- At start of tasks or topic shifts, call `inject_context`.
+- When user states preferences or makes architecture decisions, call `manage_context_blocks` or `manage_memories` to persist them.
+[/FORESIGHT CONTINUITY CONTEXT]
+"""
+                    print(output_block.strip())
+    except Exception:
+        pass
+
+elif "stop" in event_name.lower() or "end" in event_name.lower() or action in ("stop", "idle"):
     session_id = str(hook_input.get("session_id") or "claude-session")
     messages = hook_input.get("messages") or []
     if messages:
