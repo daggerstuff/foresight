@@ -29,7 +29,6 @@ memory.db
 .coverage
 .coverage/
 *.egg-info/
-AGENTS.md
 CLAUDE.md
 node_modules/
 pyrightconfig.json
