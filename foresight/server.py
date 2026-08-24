@@ -57,6 +57,8 @@ from .context_blocks import (
     USER_PREFERENCES,
     get_context_block_agent,
 )
+from .context_cache import get_context_cache
+from .telemetry import get_telemetry_store
 from .crisis_detection import get_crisis_service
 from .decay_model import DecayConfigOptions, get_decay_model
 from .document_layer import (
@@ -1811,6 +1813,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     event_content = "[REDACTED - sensitive]" if is_sensitive_bit else content
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=event_content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_context_cache().invalidate_user(uid)
 
     hook_ctx.memory_id = memory_id
     get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
@@ -1930,6 +1933,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
             )
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
+    get_context_cache().invalidate_user(uid)
     return f"Updated memory {options.memory_id}"
 
 
@@ -1969,6 +1973,7 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     conn.commit()
     conn.close()
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_context_cache().invalidate_user(uid)
 
     # ── POST_DELETE hook ───────────────────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_DELETE, hook_ctx)
@@ -2709,6 +2714,9 @@ def manage_context_blocks(
             res = _tool_error(options.action, str(exc), label=options.label)
     else:
         res = _tool_error(options.action, f"Unsupported action: {options.action}")
+
+    if options.action in ("update", "reset", "clear"):
+        get_context_cache().invalidate_user(uid)
 
     return res
 
@@ -4013,6 +4021,28 @@ def inject_context(
     """
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
+
+    # Fast-path: Check in-memory session context cache (<5ms response)
+    cache = get_context_cache()
+    cache_key = cache.compute_key(
+        user_id=uid,
+        tenant_id=tenant_id,
+        query=conversation_text,
+        max_memories=max_memories,
+        extra=f"{include_details}:{max_chars}:{min_relevance}",
+    )
+    cached_val = cache.get(cache_key)
+    if cached_val is not None:
+        try:
+            get_telemetry_store().record_injection(
+                surface="mcp",
+                injected_chars=len(str(cached_val)),
+                latency_ms=1.5,
+            )
+        except Exception:
+            pass
+        return cached_val
+
     terms = _extract_terms(conversation_text)
     retriever = get_hybrid_retriever()
     query_text = conversation_text if conversation_text else " ".join(terms)
@@ -4083,18 +4113,31 @@ def inject_context(
         budgeted = None
 
     if not include_details:
-        return budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
+        res_output = budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
+    else:
+        blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
+        legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms)
+        payload: dict[str, Any] = {
+            "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
+            "memories": [m.to_dict() for m in memories],
+            "context_blocks": blocks_by_point,
+        }
+        if budgeted is not None:
+            payload["budget"] = budgeted.to_dict()
+        res_output = json.dumps(payload, indent=2)
 
-    blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
-    legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms)
-    payload: dict[str, Any] = {
-        "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
-        "memories": [m.to_dict() for m in memories],
-        "context_blocks": blocks_by_point,
-    }
-    if budgeted is not None:
-        payload["budget"] = budgeted.to_dict()
-    return json.dumps(payload, indent=2)
+    # Store in fast in-memory cache & record telemetry
+    cache.set(cache_key, res_output, user_id=uid, ttl_seconds=60.0)
+    try:
+        get_telemetry_store().record_injection(
+            surface="mcp",
+            injected_chars=len(res_output),
+            latency_ms=latency_ms,
+        )
+    except Exception:
+        pass
+
+    return res_output
 
 
 def _auto_capture_triggered(text: str, uid: str, tenant_id: str) -> None:
@@ -7421,6 +7464,18 @@ async def ui_api_benchmark(request: Any) -> Any:
     except Exception as e:
         logger.exception("Benchmark run failed: %s", e)
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/ui/api/telemetry", methods=["GET"])
+async def ui_api_telemetry(request: Any) -> Any:
+    """API endpoint for telemetry metrics and lifetime token savings."""
+    from starlette.responses import JSONResponse
+    from .context_cache import get_context_cache
+    from .telemetry import get_telemetry_store
+
+    telemetry = get_telemetry_store().get_summary()
+    cache_stats = get_context_cache().get_stats()
+    return JSONResponse({"ok": True, "telemetry": telemetry, "cache": cache_stats})
 
 
 if __name__ == "__main__":

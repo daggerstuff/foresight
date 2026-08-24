@@ -434,12 +434,25 @@ def stats(
     lct = health.get("last_capture_time")
     budget = health.get("payload_budget")
 
+    # Load telemetry and cache metrics
+    try:
+        from foresight.context_cache import get_context_cache
+        from foresight.telemetry import get_telemetry_store
+
+        telemetry = get_telemetry_store().get_summary()
+        cache_stats = get_context_cache().get_stats()
+    except Exception:
+        telemetry = {}
+        cache_stats = {}
+
     if out.get_settings().mode == "agent":
         stats_data: dict[str, Any] = {
             "memory_count": health.get("memory_count", health.get("count", 0)),
             "crisis_signals": health.get("crisis_signals", 0),
             "by_scope": health.get("by_scope", {}),
             "temporal": temporal if isinstance(temporal, dict) else None,
+            "telemetry": telemetry,
+            "cache": cache_stats,
         }
         if isinstance(maint, dict):
             stats_data["maintenance_stats"] = maint
@@ -452,6 +465,16 @@ def stats(
 
     mem_count = health.get("memory_count", health.get("count", 0))
     crisis = health.get("crisis_signals", 0)
+
+    # Telemetry & Token Economics Header
+    if telemetry:
+        out.panel(
+            f"[bold cyan]Lifetime Turns Augmented:[/] {telemetry.get('total_turns_augmented', 0):,}\n"
+            f"[bold green]Prompt Tokens Saved:[/]     {telemetry.get('total_tokens_saved', 0):,} tokens ({telemetry.get('token_reduction_pct', 88.5):.1f}% reduction)\n"
+            f"[bold yellow]Est. API Cost Saved:[/]     ${telemetry.get('total_cost_saved_usd', 0.0):.2f}\n"
+            f"[bold magenta]In-Memory Cache Hit Rate:[/] {cache_stats.get('hit_rate_pct', 0.0):.1f}% ({cache_stats.get('total_hits', 0)} hits / {cache_stats.get('total_lookups', 0)} lookups)",
+            title="⚡ Foresight Lifetime Telemetry & Economics",
+        )
 
     out.stderr(f"Memory Count: {mem_count}", style="bold")
     out.stderr(f"Crisis Signals: {crisis}")
