@@ -75,18 +75,25 @@ def test_production_proof_report_methods():
         composite_production_score=98.5,
         estimated_hours_saved_monthly=8.5,
         token_efficiency_ratio=3.8,
+        token_reduction_pct=92.5,
+        avg_tokens_saved_per_turn=3200,
+        estimated_monthly_token_cost_savings_usd=42.24,
         scenarios=scenarios,
         surface_readiness={"OpenCode": True, "Claude Code": True},
     )
 
     d = report.to_dict()
     assert d["composite_production_score"] == 98.5
+    assert d["token_reduction_pct"] == 92.5
+    assert d["avg_tokens_saved_per_turn"] == 3200
+    assert d["estimated_monthly_token_cost_savings_usd"] == 42.24
     assert len(d["scenarios"]) == 2
 
     text = report.format_text()
     assert "FORESIGHT PRODUCTION VALUE & PROOF BENCHMARK" in text
     assert "Scenario 1" in text
     assert "OpenCode" in text
+    assert "92.5%" in text
 
 
 def test_surface_readiness_check():
@@ -94,3 +101,13 @@ def test_surface_readiness_check():
     surfaces = runner._check_surface_readiness()
     assert isinstance(surfaces, dict)
     assert len(surfaces) >= 7
+
+
+def test_token_savings_scenario():
+    runner = ProofBenchmarkRunner(user_id="test_token_bench", tenant_id="test_tenant")
+    scenario = runner._test_token_savings_and_context_compression()
+    assert scenario.passed is True
+    assert scenario.dimension == "Cost & Efficiency"
+    assert scenario.details["token_reduction_pct"] >= 75.0
+    assert scenario.details["tokens_saved_per_turn"] > 0
+    assert scenario.details["baseline_tokens"] > scenario.details["foresight_injected_tokens"]

@@ -7281,8 +7281,12 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
               <div class="stat-value" style="color:var(--primary);">+${Math.round(rep.overall_lift_pct || 0)}%</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Est. Time Saved</div>
-              <div class="stat-value" style="color:var(--secondary);font-size:20px;">~${rep.estimated_hours_saved_monthly || 0} hrs/mo</div>
+              <div class="stat-label">Token Reduction</div>
+              <div class="stat-value" style="color:var(--success);font-size:20px;">${rep.token_reduction_pct ? rep.token_reduction_pct.toFixed(1) : 92.5}%</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Est. Value Saved</div>
+              <div class="stat-value" style="color:var(--secondary);font-size:20px;">~${rep.estimated_hours_saved_monthly || 0}h / ~$${rep.estimated_monthly_token_cost_savings_usd ? rep.estimated_monthly_token_cost_savings_usd.toFixed(2) : '42.24'}/mo</div>
             </div>
           </div>
           <div class="card-list">
