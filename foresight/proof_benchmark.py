@@ -983,6 +983,7 @@ class ProofBenchmarkRunner:
         """Verify integration presence across developer tool surfaces."""
         home = os.path.expanduser("~")
         return {
+            "MastraCode Native Memory Plugin": os.path.exists(f"{home}/.mastracode/plugins/plugins.json"),
             "OpenCode Autoinject Plugin": os.path.exists(f"{home}/.config/opencode/plugins/foresight-autoinject.js"),
             "Claude Code Hook (UserPromptSubmit)": os.path.exists(f"{home}/.claude/hooks/foresight-hook.sh"),
             "Claude Code Global MCP Config": os.path.exists(f"{home}/.claude.json"),
