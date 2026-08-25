@@ -39,7 +39,7 @@ jobs:
         env:
           FORESIGHT_DB_URL: ${{ secrets.FORESIGHT_DB_URL }}
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           import os, urllib.parse
           url = os.environ['FORESIGHT_DB_URL']
           parsed = urllib.parse.urlparse(url)
