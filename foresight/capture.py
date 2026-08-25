@@ -95,6 +95,10 @@ _DECISION_PATTERNS = [
     re.compile(r"\bchose\b", re.IGNORECASE),
     re.compile(r"\bswitch\s+to\b", re.IGNORECASE),
     re.compile(r"\b(?:we|i)\s+(?:will\s+)?use\b", re.IGNORECASE),
+    re.compile(r"\bmigrate\b", re.IGNORECASE),
+    re.compile(r"\bmake\s+sure\b", re.IGNORECASE),
+    re.compile(r"\bensure\b", re.IGNORECASE),
+    re.compile(r"\bimplement(?:ed)?\b", re.IGNORECASE),
 ]
 
 # preference: user likes/dislikes that inform future interactions

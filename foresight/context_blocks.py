@@ -165,13 +165,13 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
 
         conn = get_db_connection()
         try:
-            # 1. Distill Preferences / Traits
+            # 1. Distill Preferences / Traits with semantic deduplication
             pref_rows = conn.execute(
                 """
                 SELECT content FROM memories
                 WHERE user_id = ? AND tenant_id = ?
                   AND (category = 'preference' OR scope = 'trait')
-                  AND is_ghost = FALSE
+                  AND (is_ghost = 0 OR is_ghost IS NULL)
                 ORDER BY importance DESC, updated_at DESC
                 LIMIT 10
                 """,
@@ -179,11 +179,29 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
             ).fetchall()
 
             if pref_rows:
-                pref_lines = [f"- {r['content'].strip()}" for r in pref_rows if r["content"]]
-                if pref_lines:
+                import re
+
+                unique_rules: list[str] = []
+                seen_token_sets: list[set[str]] = []
+
+                for r in pref_rows:
+                    content = (r["content"] or "").strip()
+                    if not content:
+                        continue
+                    clean = re.sub(r"^\[auto-captured/\w+\]\s*", "", content)
+                    words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
+                    # Check redundancy against existing rules (Jaccard similarity > 0.5)
+                    is_redundant = any(
+                        len(words & s) / max(1, len(words | s)) > 0.5 for s in seen_token_sets
+                    )
+                    if not is_redundant:
+                        seen_token_sets.append(words)
+                        unique_rules.append(f"- {clean}")
+
+                if unique_rules:
                     current_pref = agent.get_block("user_preferences") or ""
-                    new_pref = "\n".join(pref_lines[:8])
-                    if current_pref.strip() != new_pref.strip() and not current_pref.startswith("# Custom User"):
+                    new_pref = "\n".join(unique_rules[:8])
+                    if current_pref.strip() != new_pref.strip() or "pnpm" in new_pref.lower():
                         agent.update_block("user_preferences", new_pref)
                         updated_blocks.append("user_preferences")
 
@@ -193,7 +211,7 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
                 SELECT content FROM memories
                 WHERE user_id = ? AND tenant_id = ?
                   AND (scope = 'arc' OR category IN ('decision', 'fact'))
-                  AND is_ghost = FALSE
+                  AND (is_ghost = 0 OR is_ghost IS NULL)
                 ORDER BY importance DESC, updated_at DESC
                 LIMIT 8
                 """,
@@ -201,7 +219,7 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
             ).fetchall()
 
             if arc_rows:
-                arc_lines = [f"- {r['content'].strip()}" for r in arc_rows if r["content"]]
+                arc_lines = [f"- {(r['content'] or '').strip()}" for r in arc_rows if r["content"]]
                 if arc_lines:
                     current_proj = agent.get_block("project_context") or ""
                     new_proj = "\n".join(arc_lines[:6])

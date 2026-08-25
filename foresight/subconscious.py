@@ -358,7 +358,11 @@ class ContextBlockAgent:
         self._gate = SocraticGate(self._tagger)
 
     def _connect(self):
-        return get_pool(DB_PATH).acquire()
+        try:
+            from .server import get_db_connection
+            return get_db_connection()
+        except Exception:
+            return get_pool(DB_PATH).acquire()
 
     def _ensure_storage(self) -> None:
         conn = self._connect()
