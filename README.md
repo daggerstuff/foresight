@@ -15,11 +15,16 @@
 
 ---
 
-Every conversation ends. The context window closes. What was learned, decided, felt — gone.
+Every conversation ends. The context window closes. What was learned, decided,
+felt — gone.
 
-Foresight gives agents a place to put it. Not a log file. Not a prompt trick. A memory system with semantic search, temporal decay, emotional context, and relationship graphs. Memories that know how they relate to each other. Context that surfaces when it matters and fades when it doesn't.
+Foresight gives agents a place to put it. Not a log file. Not a prompt trick. A
+memory system with semantic search, temporal decay, emotional context, and
+relationship graphs. Memories that know how they relate to each other. Context
+that surfaces when it matters and fades when it doesn't.
 
-It runs as an MCP server, a CLI, a TUI, or a Python SDK. Postgres holds the truth. Vectors handle the recall. The agent decides what's worth remembering.
+It runs as an MCP server, a CLI, a TUI, or a Python SDK. Postgres holds the
+truth. Vectors handle the recall. The agent decides what's worth remembering.
 
 <div align="center">
 

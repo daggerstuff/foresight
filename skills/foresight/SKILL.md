@@ -180,7 +180,11 @@ Add to `~/.claude/settings.json`:
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' prompt", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' prompt",
+            "timeout": 5
+          }
         ]
       }
     ],
@@ -188,7 +192,11 @@ Add to `~/.claude/settings.json`:
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' stop", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' stop",
+            "timeout": 10
+          }
         ]
       }
     ]
@@ -200,19 +208,27 @@ Add to `~/.claude/settings.json`:
 
 ## 5. FastMCP 4.0 Prompts & Resources
 
-Foresight exposes native MCP prompts and streaming resources for zero-friction workflows:
+Foresight exposes native MCP prompts and streaming resources for zero-friction
+workflows:
 
 ### MCP Prompts (`@mcp.prompt`)
-- **`session_catchup`**: Synthesizes active context blocks and relevant memories into a structured session startup prompt.
-- **`curate_review`**: Formats staged memory consolidation and deduplication proposals for review.
-- **`user_profile`**: Aggregates persistent user preferences, style guides, and trait memories into a system prompt snippet.
+
+- **`session_catchup`**: Synthesizes active context blocks and relevant memories
+  into a structured session startup prompt.
+- **`curate_review`**: Formats staged memory consolidation and deduplication
+  proposals for review.
+- **`user_profile`**: Aggregates persistent user preferences, style guides, and
+  trait memories into a system prompt snippet.
 
 ### MCP Resources (`@mcp.resource`)
-- `foresight://context-blocks` — Real-time stream of all active context blocks (`guidance`, `project_context`, `user_preferences`).
+
+- `foresight://context-blocks` — Real-time stream of all active context blocks
+  (`guidance`, `project_context`, `user_preferences`).
 - `foresight://system-status` — Real-time database and memory health metrics.
 - `foresight://curation-runs` — Active and staged memory curation runs.
 
 ### Interactive Webview Dashboard
+
 Access the dark-mode memory visualizer and context simulator directly at:
 **`http://127.0.0.1:8764/ui/dashboard`**
 
@@ -455,8 +471,8 @@ the server is healthy.
 
 ### `manage_encryption` — AES-256-GCM encryption controls
 
-Manage optional field-level Authenticated Encryption at Rest (AEAD) with multi-tenant
-key derivation.
+Manage optional field-level Authenticated Encryption at Rest (AEAD) with
+multi-tenant key derivation.
 
 ```python
 manage_encryption(action="status")                        # check encryption mode & algorithm
@@ -465,6 +481,7 @@ manage_encryption(action="rotate_key", old_key="...", new_key="...")  # rotate m
 ```
 
 CLI commands:
+
 ```bash
 foresight security status        # view active security mode and encryption state
 foresight security encrypt-all   # encrypt all stored memories

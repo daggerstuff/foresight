@@ -149,8 +149,8 @@ chmod 700 ~/.foresight
 
 ### Database Connection Errors
 
-Foresight requires a Postgres database. Ensure `FORESIGHT_DB_URL` is set and
-the database is reachable:
+Foresight requires a Postgres database. Ensure `FORESIGHT_DB_URL` is set and the
+database is reachable:
 
 ```bash
 # Verify the connection string is set

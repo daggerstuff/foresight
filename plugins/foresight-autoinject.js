@@ -102,7 +102,10 @@ async function mcpLegacyCall(toolName, args) {
     await fetch(MCP_URL, {
       method: 'POST',
       headers: { ...MCP_HEADERS, 'Mcp-Session-Id': sessionId },
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'notifications/initialized',
+      }),
     }).catch(() => {})
 
     // Call tool
@@ -194,12 +197,17 @@ function extractUserQuery(_input, state) {
     return _input.message
   }
   if (_input?.messages && Array.isArray(_input.messages)) {
-    const userMsgs = _input.messages.filter((m) => m && (m.role === 'user' || m.sender === 'user'))
+    const userMsgs = _input.messages.filter(
+      (m) => m && (m.role === 'user' || m.sender === 'user'),
+    )
     if (userMsgs.length > 0) {
       const last = userMsgs[userMsgs.length - 1]
       if (typeof last.content === 'string') return last.content
       if (Array.isArray(last.parts)) {
-        return last.parts.filter((p) => p?.type === 'text' && p.text).map((p) => p.text).join(' ')
+        return last.parts
+          .filter((p) => p?.type === 'text' && p.text)
+          .map((p) => p.text)
+          .join(' ')
       }
     }
   }
@@ -225,7 +233,10 @@ export const ForesightAutoInject = async (_ctx) => {
       if (typeof output.content === 'string') {
         text = output.content
       } else if (Array.isArray(output.parts)) {
-        text = output.parts.filter((p) => p?.type === 'text' && p.text).map((p) => p.text).join(' ')
+        text = output.parts
+          .filter((p) => p?.type === 'text' && p.text)
+          .map((p) => p.text)
+          .join(' ')
       }
 
       if (text) {
@@ -248,7 +259,11 @@ export const ForesightAutoInject = async (_ctx) => {
       const query = extractUserQuery(_input, state).trim()
 
       // Always ensure behavioral instructions are present
-      const hasDirectives = output.system.some((s) => typeof s === 'string' && s.includes('Foresight Persistent Memory Directives'))
+      const hasDirectives = output.system.some(
+        (s) =>
+          typeof s === 'string' &&
+          s.includes('Foresight Persistent Memory Directives'),
+      )
       if (!hasDirectives) {
         output.system.push(AUTOCONTEXT_INSTRUCTIONS)
       }

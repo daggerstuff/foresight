@@ -3,15 +3,15 @@
   "version": "1.0.0",
   "description": "Foresight persistent memory, zero-touch continuity context injection, and background turn distillation for Mastra Code.",
   "type": "module",
-  "exports": "./src/index.ts",
   "main": "./src/index.ts",
-  "peerDependencies": {
-    "mastracode": "*"
+  "exports": "./src/index.ts",
+  "scripts": {
+    "check": "tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
   },
-  "scripts": {
-    "check": "tsc --noEmit"
+  "peerDependencies": {
+    "mastracode": "*"
   }
 }
