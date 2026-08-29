@@ -146,6 +146,31 @@ def _reset_in_memory_singletons() -> None:
     except Exception:
         pass
 
+    # Re-wire the Postgres-backed singletons. Tests that exercise SQLite
+    # fallback paths call reset_hybrid_retriever()/reset_graph_store() without
+    # restoring the backend, leaving a backend-less singleton that silently
+    # routes later tests into raw SQLite ("no such table: memories").
+    try:
+        from foresight import server as server_module
+        from foresight.graph_store import reset_graph_store
+        from foresight.hybrid_retriever import reset_hybrid_retriever
+        from foresight.server import (
+            get_graph_store,
+            get_hybrid_retriever,
+            get_temporal_query_builder,
+        )
+        from foresight.temporal_queries import reset_temporal_query_builder
+
+        if server_module._global_backend is not None:
+            reset_graph_store()
+            reset_hybrid_retriever()
+            reset_temporal_query_builder()
+            get_hybrid_retriever(backend=server_module._global_backend)
+            get_graph_store(backend=server_module._global_backend)
+            get_temporal_query_builder(backend=server_module._global_backend)
+    except Exception:
+        pass
+
 
 @pytest.fixture(autouse=True)
 def reset_test_tables():
