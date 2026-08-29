@@ -36,28 +36,28 @@ classifiers = [
 
 dependencies = [
   "fastmcp>=4.0.0b3",
-  "psycopg[binary,pool]>=3.2",
-  "redis>=5.0,<6.0",
+  "psycopg[binary,pool]>=3.3.4",
+  "redis>=8.1.0,<9.0",
   "psycopg-pool>=3.3.1",
-  "httpx>=0.28.0,<1.0.0",
-  "cryptography>=42.0",
+  "httpx>=0.28.1,<1.0.0",
+  "cryptography>=50.0.1",
 ]
 
 [project.optional-dependencies]
-cli = ["typer>=0.9.0", "rich>=13.0"]
-tui = ["textual>=1.0.0"]
-redis = ["redis>=5.0"]
+cli = ["typer>=0.27.1", "rich>=15.0.0"]
+tui = ["textual>=8.2.8"]
+redis = ["redis>=8.1.0"]
 all = ["foresight[cli,tui,redis]"]
 dev = [
-  "pytest>=8.0",
-  "pytest-asyncio>=0.23",
-  "pytest-cov>=4.0",
-  "typer>=0.9.0",
-  "rich>=13.0",
-  "textual>=1.0.0",
-  "hatchling>=1.0",
-  "build>=1.0",
-  "twine>=5.0",
+  "pytest>=9.1.1",
+  "pytest-asyncio>=1.4.0",
+  "pytest-cov>=7.1.0",
+  "typer>=0.27.1",
+  "rich>=15.0.0",
+  "textual>=8.2.8",
+  "hatchling>=1.32.0",
+  "build>=1.5.0",
+  "twine>=7.0.0",
 ]
 
 [project.urls]
@@ -78,14 +78,14 @@ eval-baseline = "foresight.eval_harness:run_eval"
 
 [dependency-groups]
 dev = [
-  "pytest>=8.0",
-  "pytest-asyncio>=0.23",
-  "pytest-cov>=4.0",
-  "typer>=0.9.0",
-  "rich>=13.0",
-  "textual>=1.0.0",
-  "ruff>=0.14",
-  "bandit>=1.8",
+  "pytest>=9.1.1",
+  "pytest-asyncio>=1.4.0",
+  "pytest-cov>=7.1.0",
+  "typer>=0.27.1",
+  "rich>=15.0.0",
+  "textual>=8.2.8",
+  "ruff>=0.16.4",
+  "bandit>=1.9.4",
 ]
 
 [tool.ruff]
