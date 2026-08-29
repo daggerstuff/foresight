@@ -62,31 +62,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      - name: Ensure test database exists
-        env:
-          FORESIGHT_DB_URL: ${{ secrets.FORESIGHT_DB_URL }}
-        run: |
-          uv run python - <<'PY'
-          import os, urllib.parse
-          url = os.environ['FORESIGHT_DB_URL']
-          parsed = urllib.parse.urlparse(url)
-          # replace database name with postgres to connect to default db
-          base = parsed._replace(path='/postgres', query=parsed.query).geturl()
-          import psycopg
-          try:
-              with psycopg.connect(base) as conn:
-                  conn.autocommit = True
-                  with conn.cursor() as cur:
-                      cur.execute('SELECT 1 FROM pg_database WHERE datname=%s', ('foresight_test',))
-                      if not cur.fetchone():
-                          cur.execute('CREATE DATABASE foresight_test')
-          except Exception as e:
-              print(f'Warning: could not ensure test db: {e}')
-          PY
-
+      # Tests run on SQLite by design (AD4: the suite stays on SQLite for speed
+      # and determinism). Do NOT export FORESIGHT_DB_URL here — it flips the
+      # backend to Postgres and breaks the SQLite-fixture-based tests.
       - name: Run unit tests
-        env:
-          FORESIGHT_DB_URL: ${{ secrets.FORESIGHT_DB_URL }}
         run: |
           uv run pytest tests/ --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 
