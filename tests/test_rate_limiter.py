@@ -1,6 +1,7 @@
 """Tests for rate limiter and middleware integration."""
 
 import pytest
+
 from foresight.rate_limiter import (
     RateLimiter,
     RateLimitExceededError,

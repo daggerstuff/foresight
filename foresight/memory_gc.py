@@ -185,9 +185,7 @@ class MemoryGC:
                 conn.commit()
             except sqlite3.OperationalError as e:
                 if "no such table" in str(e):
-                    logging.getLogger(__name__).warning(
-                        "memory_merge_history table not found, skipping prune: %s", e
-                    )
+                    logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
                 else:
                     raise
 
@@ -251,7 +249,8 @@ class _MemoryGCSingleton:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH or DB_URL
-                assert db_path is not None
+                if db_path is None:
+                    raise RuntimeError("db_path or DB_PATH/DB_URL must be configured")
                 cls._instance = MemoryGC(db_path)
             return cls._instance
 

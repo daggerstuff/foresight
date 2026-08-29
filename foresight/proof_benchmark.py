@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
-import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -39,22 +37,17 @@ for env_candidate in [
     if env_candidate.exists():
         load_dotenv(env_candidate, override=False)
 
-from .config import DB_PATH
-from .connection_pool import get_pool
 from .context_blocks import (
     auto_distill_context_blocks,
     get_context_block_agent,
-    get_context_snapshot,
 )
 from .context_cache import get_context_cache
 from .hybrid_retriever import HybridSearchOptions, get_hybrid_retriever
-from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
 from .server import (
-    SearchOptions,
     _initialize_backend,
     get_current_account_id,
-    inject_context,
     init_db,
+    inject_context,
     manage_context_blocks,
     manage_memories,
     process_session_transcript,
@@ -129,7 +122,9 @@ class ProductionProofReport:
         for s in self.scenarios:
             status = "✓ PASS" if s.passed else "✗ FAIL"
             lines.append(f"[{status}] {s.name} ({s.dimension})")
-            lines.append(f"       Amnesia: {s.amnesia_score*100:.1f}%  →  Foresight: {s.foresight_score*100:.1f}% ({s.improvement_factor:.1f}x) [{s.latency_ms:.1f}ms]")
+            lines.append(
+                f"       Amnesia: {s.amnesia_score * 100:.1f}%  →  Foresight: {s.foresight_score * 100:.1f}% ({s.improvement_factor:.1f}x) [{s.latency_ms:.1f}ms]"
+            )
             if s.key_takeaway:
                 lines.append(f"       Proof: {s.key_takeaway}")
             lines.append("")
@@ -156,7 +151,11 @@ class ProductionProofReport:
         # Header Title
         c.print(
             Panel(
-                Text("🧠 FORESIGHT CONTINUITY & PRODUCTION VALUE PROOF BENCHMARK", justify="center", style="bold white on blue"),
+                Text(
+                    "🧠 FORESIGHT CONTINUITY & PRODUCTION VALUE PROOF BENCHMARK",
+                    justify="center",
+                    style="bold white on blue",
+                ),
                 border_style="bright_blue",
             )
         )
@@ -184,7 +183,12 @@ class ProductionProofReport:
         c.print()
 
         # Detailed Scenarios Table
-        scenarios_table = Table(title="📊 Continuity & Information Retrieval Dimensions", show_header=True, header_style="bold cyan", expand=True)
+        scenarios_table = Table(
+            title="📊 Continuity & Information Retrieval Dimensions",
+            show_header=True,
+            header_style="bold cyan",
+            expand=True,
+        )
         scenarios_table.add_column("Status", justify="center", width=8)
         scenarios_table.add_column("Dimension", style="dim", width=18)
         scenarios_table.add_column("Scenario & Metric", width=34)
@@ -194,7 +198,7 @@ class ProductionProofReport:
 
         for s in self.scenarios:
             status_text = "[bold green]✓ PASS[/]" if s.passed else "[bold red]✗ FAIL[/]"
-            comp_text = f"[red]{s.amnesia_score*100:.1f}%[/] → [bold green]{s.foresight_score*100:.1f}%[/] ([cyan]{s.improvement_factor:.1f}x[/])"
+            comp_text = f"[red]{s.amnesia_score * 100:.1f}%[/] → [bold green]{s.foresight_score * 100:.1f}%[/] ([cyan]{s.improvement_factor:.1f}x[/])"
             scenarios_table.add_row(
                 status_text,
                 s.dimension,
@@ -208,7 +212,9 @@ class ProductionProofReport:
         c.print()
 
         # Surface Readiness
-        surface_table = Table(title="🔌 Multi-Surface Integration Status", show_header=True, header_style="bold green", expand=True)
+        surface_table = Table(
+            title="🔌 Multi-Surface Integration Status", show_header=True, header_style="bold green", expand=True
+        )
         surface_table.add_column("Status", justify="center", width=10)
         surface_table.add_column("Developer Surface / Client Tool", width=40)
         surface_table.add_column("Mode", width=30)
@@ -287,7 +293,9 @@ class ProofBenchmarkRunner:
         token_scenario = next((s for s in scenarios if s.scenario_id == "proof_09_token_savings_and_compression"), None)
         token_reduc_pct = float(token_scenario.details.get("token_reduction_pct", 88.4)) if token_scenario else 88.4
         tokens_saved_turn = int(token_scenario.details.get("tokens_saved_per_turn", 3150)) if token_scenario else 3150
-        monthly_cost_saved = float(token_scenario.details.get("monthly_cost_saved_usd", 8.32)) if token_scenario else 8.32
+        monthly_cost_saved = (
+            float(token_scenario.details.get("monthly_cost_saved_usd", 8.32)) if token_scenario else 8.32
+        )
 
         token_eff = round(1.0 + (foresight_avg * 2.8), 2)
         surfaces = self._check_surface_readiness()
@@ -321,16 +329,40 @@ class ProofBenchmarkRunner:
         t0 = time.perf_counter()
 
         test_cases = [
-            ("pnpm", "User strictly requires pnpm over npm or yarn for all javascript packages.", "How do I install dependencies in this project?"),
-            ("no_suppress", "Never add @ts-ignore, @ts-nocheck, or # noqa suppressions to fix linter errors.", "How should I resolve this typescript lint error?"),
-            ("uv_python", "Always run python scripts using uv run instead of python3 directly.", "How should I execute the data migration script?"),
-            ("vitest_config", "Unit tests must run through vitest with config/vitest.config.ts.", "What command runs the unit test suite?"),
-            ("hipaa_privacy", "Client clinical health records must remain strictly isolated with zero PHI in test fixtures.", "Can I generate synthetic test records with patient names?"),
-            ("tailwind_v4", "Use Tailwind CSS v4 utility classes and avoid inline styling.", "What styling system do we use for new frontend components?"),
+            (
+                "pnpm",
+                "User strictly requires pnpm over npm or yarn for all javascript packages.",
+                "How do I install dependencies in this project?",
+            ),
+            (
+                "no_suppress",
+                "Never add @ts-ignore, @ts-nocheck, or # noqa suppressions to fix linter errors.",
+                "How should I resolve this typescript lint error?",
+            ),
+            (
+                "uv_python",
+                "Always run python scripts using uv run instead of python3 directly.",
+                "How should I execute the data migration script?",
+            ),
+            (
+                "vitest_config",
+                "Unit tests must run through vitest with config/vitest.config.ts.",
+                "What command runs the unit test suite?",
+            ),
+            (
+                "hipaa_privacy",
+                "Client clinical health records must remain strictly isolated with zero PHI in test fixtures.",
+                "Can I generate synthetic test records with patient names?",
+            ),
+            (
+                "tailwind_v4",
+                "Use Tailwind CSS v4 utility classes and avoid inline styling.",
+                "What styling system do we use for new frontend components?",
+            ),
         ]
 
         # Ingest constraints
-        for key, text, _ in test_cases:
+        for _key, text, _ in test_cases:
             manage_memories(
                 action="store",
                 content=text,
@@ -344,12 +376,21 @@ class ProofBenchmarkRunner:
         # Evaluate recall across test queries
         hits = 0
         total_queries = len(test_cases)
-        for key, text, query in test_cases:
+        for key, _text, query in test_cases:
             injected = inject_context(conversation_text=query, user_id=self.user_id, max_memories=8)
             # Verification keywords per test case
             keywords = {
                 "pnpm": ["pnpm"],
-                "no_suppress": ["suppress", "@ts-ignore", "noqa", "nocheck", "linter", "fix root", "typescript", "error"],
+                "no_suppress": [
+                    "suppress",
+                    "@ts-ignore",
+                    "noqa",
+                    "nocheck",
+                    "linter",
+                    "fix root",
+                    "typescript",
+                    "error",
+                ],
                 "uv_python": ["uv run", "uv", "python"],
                 "vitest_config": ["vitest", "vitest.config.ts", "unit test"],
                 "hipaa_privacy": ["phi", "hipaa", "isolated", "privacy", "clinical"],
@@ -377,7 +418,7 @@ class ProofBenchmarkRunner:
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"test_cases": total_queries, "recalled_hits": hits, "recall_rate": f_score},
-            key_takeaway=f"Recalled {hits}/{total_queries} distinct project constraints ({f_score*100:.1f}%) across disjoint sessions without user re-explanation.",
+            key_takeaway=f"Recalled {hits}/{total_queries} distinct project constraints ({f_score * 100:.1f}%) across disjoint sessions without user re-explanation.",
         )
 
     def _test_architecture_decision_continuity(self) -> ScenarioProofResult:
@@ -385,11 +426,31 @@ class ProofBenchmarkRunner:
         t0 = time.perf_counter()
 
         arch_facts = [
-            ("postgres_pgvector", "Primary database engine is PostgreSQL 17 with vector extension pgvector on port 5432.", "What database engine and vector extension pgvector are configured?"),
-            ("redis_cache", "Redis is hosted on port 6379 DB index 0 for session caching and rate limits.", "Where is Redis configured and which DB index is used?"),
-            ("auth_jwt", "Authentication uses JWT bearer tokens with HS256 and 1 hour access token expiration.", "What is our API authentication mechanism?"),
-            ("astro_ssr", "Frontend is built on Astro 6 with React 19 SSR on port 5173.", "What framework and rendering mode does the frontend use?"),
-            ("hybrid_retriever", "Memory retriever uses Reciprocal Rank Fusion combining BM25 keyword search and cosine vector search.", "How does our hybrid search retriever work?"),
+            (
+                "postgres_pgvector",
+                "Primary database engine is PostgreSQL 17 with vector extension pgvector on port 5432.",
+                "What database engine and vector extension pgvector are configured?",
+            ),
+            (
+                "redis_cache",
+                "Redis is hosted on port 6379 DB index 0 for session caching and rate limits.",
+                "Where is Redis configured and which DB index is used?",
+            ),
+            (
+                "auth_jwt",
+                "Authentication uses JWT bearer tokens with HS256 and 1 hour access token expiration.",
+                "What is our API authentication mechanism?",
+            ),
+            (
+                "astro_ssr",
+                "Frontend is built on Astro 6 with React 19 SSR on port 5173.",
+                "What framework and rendering mode does the frontend use?",
+            ),
+            (
+                "hybrid_retriever",
+                "Memory retriever uses Reciprocal Rank Fusion combining BM25 keyword search and cosine vector search.",
+                "How does our hybrid search retriever work?",
+            ),
         ]
 
         for _, fact, _ in arch_facts:
@@ -406,7 +467,7 @@ class ProofBenchmarkRunner:
         mrr_sum = 0.0
         recalled_count = 0
 
-        for key, fact, query in arch_facts:
+        for key, _fact, query in arch_facts:
             retriever = get_hybrid_retriever()
             search_results = retriever.search(
                 query=query,
@@ -419,9 +480,15 @@ class ProofBenchmarkRunner:
                 target_check = {
                     "postgres_pgvector": "pgvector" in content or "postgresql" in content or "postgres" in content,
                     "redis_cache": "6379" in content or "redis" in content or "cache" in content,
-                    "auth_jwt": "jwt" in content or "bearer" in content or "hs256" in content or "authentication" in content,
+                    "auth_jwt": "jwt" in content
+                    or "bearer" in content
+                    or "hs256" in content
+                    or "authentication" in content,
                     "astro_ssr": "astro" in content or "5173" in content or "ssr" in content or "react 19" in content,
-                    "hybrid_retriever": "reciprocal" in content or "hybrid" in content or "bm25" in content or "retriever" in content,
+                    "hybrid_retriever": "reciprocal" in content
+                    or "hybrid" in content
+                    or "bm25" in content
+                    or "retriever" in content,
                 }[key]
                 if target_check:
                     matched_rank = rank_idx
@@ -451,7 +518,7 @@ class ProofBenchmarkRunner:
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"mrr": mrr, "recall_at_5": recall_at_5, "evaluated_queries": len(arch_facts)},
-            key_takeaway=f"Achieved MRR of {mrr:.2f} and {recall_at_5*100:.1f}% Recall@5 across core infrastructure and database decisions.",
+            key_takeaway=f"Achieved MRR of {mrr:.2f} and {recall_at_5 * 100:.1f}% Recall@5 across core infrastructure and database decisions.",
         )
 
     def _test_technical_fact_recall(self) -> ScenarioProofResult:
@@ -459,10 +526,26 @@ class ProofBenchmarkRunner:
         t0 = time.perf_counter()
 
         pins = [
-            ("otel_pin", "Pin opentelemetry-api to 1.43.0 and opentelemetry-instrumentation to 0.64b0 to prevent incompatibility with data-designer.", "What versions of opentelemetry must be pinned?"),
-            ("koffi_pin", "koffi 3.1.5 requires prebuild flag cnoke.cjs -P . -D src/koffi --prebuild on Linux ARM64.", "How do we build koffi native bindings on ARM64?"),
-            ("astro_vercel_nft", "Apply patch to @astrojs/vercel nft.js to exclude ai/.venv and ai/docs from serverless deployment bundle scan.", "How do we prevent Astro Vercel NFT scanner from including virtualenvs?"),
-            ("psycopg_pool", "Set psycopg pool min_size=2 and max_size=10 with open_timeout=5.0 for Neon serverless connection stability.", "What connection pool parameters are recommended for Neon Postgres?"),
+            (
+                "otel_pin",
+                "Pin opentelemetry-api to 1.43.0 and opentelemetry-instrumentation to 0.64b0 to prevent incompatibility with data-designer.",
+                "What versions of opentelemetry must be pinned?",
+            ),
+            (
+                "koffi_pin",
+                "koffi 3.1.5 requires prebuild flag cnoke.cjs -P . -D src/koffi --prebuild on Linux ARM64.",
+                "How do we build koffi native bindings on ARM64?",
+            ),
+            (
+                "astro_vercel_nft",
+                "Apply patch to @astrojs/vercel nft.js to exclude ai/.venv and ai/docs from serverless deployment bundle scan.",
+                "How do we prevent Astro Vercel NFT scanner from including virtualenvs?",
+            ),
+            (
+                "psycopg_pool",
+                "Set psycopg pool min_size=2 and max_size=10 with open_timeout=5.0 for Neon serverless connection stability.",
+                "What connection pool parameters are recommended for Neon Postgres?",
+            ),
         ]
 
         for _, fact, _ in pins:
@@ -477,13 +560,22 @@ class ProofBenchmarkRunner:
             )
 
         hits = 0
-        for key, fact, query in pins:
+        for key, _fact, query in pins:
             injected = inject_context(conversation_text=query, user_id=self.user_id, max_memories=5)
             matched = {
                 "otel_pin": "1.43.0" in injected or "0.64b0" in injected or "opentelemetry" in injected.lower(),
-                "koffi_pin": "koffi" in injected.lower() or "prebuild" in injected.lower() or "cnoke" in injected.lower() or "arm64" in injected.lower(),
-                "astro_vercel_nft": "nft" in injected.lower() or "vercel" in injected.lower() or "astro" in injected.lower() or "virtualenv" in injected.lower(),
-                "psycopg_pool": "neon" in injected.lower() or "pool" in injected.lower() or "timeout" in injected.lower() or "psycopg" in injected.lower(),
+                "koffi_pin": "koffi" in injected.lower()
+                or "prebuild" in injected.lower()
+                or "cnoke" in injected.lower()
+                or "arm64" in injected.lower(),
+                "astro_vercel_nft": "nft" in injected.lower()
+                or "vercel" in injected.lower()
+                or "astro" in injected.lower()
+                or "virtualenv" in injected.lower(),
+                "psycopg_pool": "neon" in injected.lower()
+                or "pool" in injected.lower()
+                or "timeout" in injected.lower()
+                or "psycopg" in injected.lower(),
             }[key]
             if matched:
                 hits += 1
@@ -504,7 +596,7 @@ class ProofBenchmarkRunner:
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"total_pins": len(pins), "correctly_retrieved": hits, "accuracy": f_score},
-            key_takeaway=f"Correctly surfaced {hits}/{len(pins)} ({f_score*100:.1f}%) specialized technical workarounds, preventing recurring debugging cycles.",
+            key_takeaway=f"Correctly surfaced {hits}/{len(pins)} ({f_score * 100:.1f}%) specialized technical workarounds, preventing recurring debugging cycles.",
         )
 
     def _test_zero_touch_transcript_capture(self) -> ScenarioProofResult:
@@ -515,15 +607,27 @@ class ProofBenchmarkRunner:
         messages = [
             {"role": "user", "content": "Good morning! How are you doing today?"},  # Noise
             {"role": "assistant", "content": "Hello! I am ready to help you with your development tasks."},  # Noise
-            {"role": "user", "content": "Let's migrate our API authentication from session cookies to JWT bearer tokens with HS256 algorithm."},  # Signal 1
-            {"role": "assistant", "content": "Agreed. I will implement JWT bearer token middleware with HS256 algorithm and 1 hour expiration."},  # Signal 1 confirmation
+            {
+                "role": "user",
+                "content": "Let's migrate our API authentication from session cookies to JWT bearer tokens with HS256 algorithm.",
+            },  # Signal 1
+            {
+                "role": "assistant",
+                "content": "Agreed. I will implement JWT bearer token middleware with HS256 algorithm and 1 hour expiration.",
+            },  # Signal 1 confirmation
             {"role": "user", "content": "Thanks, that sounds great. What's the weather like in Seattle?"},  # Noise
             {"role": "assistant", "content": "Seattle is currently overcast with intermittent rain."},  # Noise
-            {"role": "user", "content": "Make sure all refresh tokens are rotated on each use to prevent replay attacks."},  # Signal 2
-            {"role": "assistant", "content": "Implemented token rotation. Tested and committed to auth module."},  # Signal 2 confirmation
+            {
+                "role": "user",
+                "content": "Make sure all refresh tokens are rotated on each use to prevent replay attacks.",
+            },  # Signal 2
+            {
+                "role": "assistant",
+                "content": "Implemented token rotation. Tested and committed to auth module.",
+            },  # Signal 2 confirmation
         ]
 
-        result_msg = process_session_transcript(
+        process_session_transcript(
             session_id=session_id,
             messages=messages,
             user_id=self.user_id,
@@ -531,7 +635,9 @@ class ProofBenchmarkRunner:
         latency = (time.perf_counter() - t0) * 1000
 
         # Query extracted facts
-        search_res = search_memories(query="JWT bearer token HS256 refresh token rotation", limit=5, user_id=self.user_id)
+        search_res = search_memories(
+            query="JWT bearer token HS256 refresh token rotation", limit=5, user_id=self.user_id
+        )
         extracted_text = str(search_res).lower()
 
         # Signal validation
@@ -541,7 +647,6 @@ class ProofBenchmarkRunner:
         rejected_noise = "weather" not in extracted_text and "seattle" not in extracted_text
 
         signal_score = (1.0 if extracted_jwt else 0.0) + (1.0 if extracted_rotation else 0.0)
-        noise_score = 1.0 if rejected_noise else 0.0
 
         # Precision & Recall
         recall = signal_score / 2.0
@@ -563,7 +668,7 @@ class ProofBenchmarkRunner:
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"precision": precision, "recall": recall, "f1_score": f1, "noise_rejected": rejected_noise},
-            key_takeaway=f"Achieved F1 of {f1:.2f} (Precision: {precision*100:.0f}%, Recall: {recall*100:.0f}%) while cleanly rejecting irrelevant chitchat noise.",
+            key_takeaway=f"Achieved F1 of {f1:.2f} (Precision: {precision * 100:.0f}%, Recall: {recall * 100:.0f}%) while cleanly rejecting irrelevant chitchat noise.",
         )
 
     def _test_phrase_trigger_capture(self) -> ScenarioProofResult:
@@ -577,9 +682,6 @@ class ProofBenchmarkRunner:
             ("Let's look at the database logs to see why the query timed out.", False, None),  # Negative control
             ("Can you help me refactor this react component?", False, None),  # Negative control
         ]
-
-        agent = get_context_block_agent(self.user_id, self.tenant_id)
-        initial_pref = agent.get_block("user_preferences") or ""
 
         # Test trigger capture via process_session_transcript
         captured_triggers = 0
@@ -617,7 +719,7 @@ class ProofBenchmarkRunner:
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"sensitivity": sensitivity, "specificity": specificity, "captured_triggers": captured_triggers},
-            key_takeaway=f"Demonstrated {sensitivity*100:.1f}% trigger sensitivity and {specificity*100:.0f}% specificity without requiring explicit tool invocations.",
+            key_takeaway=f"Demonstrated {sensitivity * 100:.1f}% trigger sensitivity and {specificity * 100:.0f}% specificity without requiring explicit tool invocations.",
         )
 
     def _test_git_commit_capture(self) -> ScenarioProofResult:
@@ -706,7 +808,13 @@ class ProofBenchmarkRunner:
             foresight_score=f_score,
             improvement_factor=10.0,
             latency_ms=round(avg_lat, 2),
-            details={"p50_ms": round(p50, 2), "p90_ms": round(p90, 2), "p99_ms": round(p99, 2), "avg_ms": round(avg_lat, 2), "samples": len(times)},
+            details={
+                "p50_ms": round(p50, 2),
+                "p90_ms": round(p90, 2),
+                "p99_ms": round(p99, 2),
+                "avg_ms": round(avg_lat, 2),
+                "samples": len(times),
+            },
             key_takeaway=f"High-speed stateless retrieval: p50={p50:.1f}ms, p90={p90:.1f}ms across remote TLS connection pooling and vector indexing.",
         )
 
@@ -770,14 +878,29 @@ class ProofBenchmarkRunner:
         # Multi-turn development history simulating 15 realistic turns with code, error traces, and specs
         turns = [
             ("user", "We are setting up the caching layer for our clinical session analysis."),
-            ("assistant", "I recommend using Redis for session caching and token bucket rate limiting. We can connect to redis://localhost:6379/0 using the standard redis-py or ioredis client."),
+            (
+                "assistant",
+                "I recommend using Redis for session caching and token bucket rate limiting. We can connect to redis://localhost:6379/0 using the standard redis-py or ioredis client.",
+            ),
             ("user", "Okay, let's lock in Redis on port 6379 with DB index 0. What about PostgreSQL database?"),
-            ("assistant", "For primary persistence, we are running PostgreSQL 17 with the pgvector extension on port 5432, with the database named 'foresight_production'."),
+            (
+                "assistant",
+                "For primary persistence, we are running PostgreSQL 17 with the pgvector extension on port 5432, with the database named 'foresight_production'.",
+            ),
             ("user", "Great, remember to always use pnpm instead of npm or yarn, and uv for python scripts."),
-            ("assistant", "Noted. I will exclusively use pnpm for frontend/Node dependencies and uv run for all Python commands."),
-            ("user", "Also, for test suites, vitest is used for unit tests with config/vitest.config.ts and pytest for python."),
+            (
+                "assistant",
+                "Noted. I will exclusively use pnpm for frontend/Node dependencies and uv run for all Python commands.",
+            ),
+            (
+                "user",
+                "Also, for test suites, vitest is used for unit tests with config/vitest.config.ts and pytest for python.",
+            ),
             ("assistant", "Understood. Vitest for TypeScript unit tests and pytest via uv for Python tests."),
-            ("user", "Here is a sample log from the pipeline run showing 500 lines of trace: [TRACE 2026-08-20: Memory maintenance triggered, 142 rows processed, embedding model initialized with 1536 dims, index scan completed in 1.4ms, Redis TTL set to 86400s, PostgreSQL connection pool healthy]."),
+            (
+                "user",
+                "Here is a sample log from the pipeline run showing 500 lines of trace: [TRACE 2026-08-20: Memory maintenance triggered, 142 rows processed, embedding model initialized with 1536 dims, index scan completed in 1.4ms, Redis TTL set to 86400s, PostgreSQL connection pool healthy].",
+            ),
             ("assistant", "Thanks for the log. Everything looks aligned with our Redis and PostgreSQL configuration."),
         ]
 
@@ -947,7 +1070,9 @@ class ProofBenchmarkRunner:
         retriever = get_hybrid_retriever()
         for q in distractor_queries:
             # Query with high relevance cutoff (evaluating spurious retrieval resistance)
-            res = retriever.search(query=q, user_id=self.user_id, options=HybridSearchOptions(limit=5, min_importance=0.5))
+            res = retriever.search(
+                query=q, user_id=self.user_id, options=HybridSearchOptions(limit=5, min_importance=0.5)
+            )
             # Strict relevance check: do any high-confidence false positive memories match?
             false_positives = [m for m in res.results if m.combined_score > 0.08]
             if len(false_positives) == 0:
@@ -957,7 +1082,9 @@ class ProofBenchmarkRunner:
 
         rejection_rate = clean_rejections / total_queries
         f_score = round(rejection_rate, 3)
-        a_score = 0.40  # Amnesia / ungrounded models routinely hallucinate plausible answers to out-of-domain tech queries
+        a_score = (
+            0.40  # Amnesia / ungrounded models routinely hallucinate plausible answers to out-of-domain tech queries
+        )
 
         improvement = round(f_score / max(a_score, 0.01), 1)
 

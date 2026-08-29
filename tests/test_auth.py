@@ -2,8 +2,9 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import foresight.auth as auth_module
 import pytest
+
+import foresight.auth as auth_module
 from foresight.auth import AuthManager, AuthMiddleware, Role
 
 

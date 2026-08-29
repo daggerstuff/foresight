@@ -8,6 +8,7 @@ exercise the pure-Python transformation functions.
 from __future__ import annotations
 
 import pytest
+
 from foresight.backend.postgres_backend import (
     PostgresBackend,
     _translate_sql,

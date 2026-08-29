@@ -5,6 +5,7 @@ from foresight.config import DEFAULT_USER_ID
 import asyncio
 
 import pytest
+
 from foresight.tenant_context import (
     MemoryScope,
     get_current_account_id,

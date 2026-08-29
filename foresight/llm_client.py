@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import random
+import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -164,7 +164,7 @@ def _retry_with_backoff(
         except LLMProviderError as exc:
             last_exc = exc
             if attempt < max_retries:
-                sleep_s = (2**attempt) + random.random()
+                sleep_s = (2**attempt) + secrets.SystemRandom().random()
                 logger.warning(
                     "LLM call failed (attempt %d/%d), retrying in %.2fs: %s", attempt + 1, max_retries + 1, sleep_s, exc
                 )

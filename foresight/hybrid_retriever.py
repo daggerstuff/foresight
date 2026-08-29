@@ -30,8 +30,6 @@ import logging
 import math
 import threading
 from collections import OrderedDict
-
-from .rrf_tuning import get_rrf_config
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -40,6 +38,7 @@ from typing import Any, ClassVar
 
 from .backend.base import DatabaseBackend
 from .connection_pool import get_pool
+from .rrf_tuning import get_rrf_config
 
 logger = logging.getLogger("foresight_hybrid_retriever")
 
@@ -613,7 +612,7 @@ class HybridRetriever:
             AND ({like_clauses})
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
-        """,
+        """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             [*params, limit],
         )
 
@@ -813,7 +812,7 @@ class HybridRetriever:
                 FROM memory_entities e
                 WHERE e.user_id = ? AND e.tenant_id = ?
                   AND ({like_clauses})
-            """
+            """  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             params: list[Any] = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
         else:
             sql = f"""
@@ -822,7 +821,7 @@ class HybridRetriever:
                 FROM memory_entities e
                 WHERE e.user_id = ?
                   AND ({like_clauses})
-            """
+            """  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             params = [user_id] + [f"%{t}%" for t in escaped_terms]
 
         entity_rows = self._fetch_rows(sql, params)
@@ -868,7 +867,7 @@ class HybridRetriever:
                 entity_hits DESC,
                 avg_edge_quality DESC
             LIMIT ?
-        """,
+        """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             [tenant_id, user_id, user_id, user_id, *entity_ids, user_id, limit],
         )
 
@@ -1097,7 +1096,7 @@ class HybridRetriever:
             FROM memories
             WHERE id IN ({placeholders})
             AND user_id = ? AND tenant_id = ?
-        """,
+        """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             [*memory_ids, user_id, tenant_id],
         )
 
@@ -1151,7 +1150,7 @@ class HybridRetriever:
                 user_id,
                 options=SemanticSearchOptions(tenant_id=tenant_id, limit=limit, min_score=0.0),
             )
-        except Exception as exc:  # noqa: BLE001 - signal must never break fusion
+        except Exception as exc:
             logger.debug("vector signal unavailable: %s", exc)
             return {}
 
@@ -1176,7 +1175,7 @@ class HybridRetriever:
             from .semantic_search import SemanticSearch
 
             store = SemanticSearch(self.db_path)
-        except Exception as exc:  # noqa: BLE001 - signal must never break fusion
+        except Exception as exc:
             logger.debug("vector store unavailable: %s", exc)
             self._vector_store_failed = True
             return None
@@ -1220,7 +1219,9 @@ class HybridRetriever:
             from .encryption import decrypt_if_encrypted
 
             raw_content = mem.get("content", "")
-            decrypted_content = decrypt_if_encrypted(raw_content, tenant_id=mem.get("tenant_id", "default"), user_id=mem.get("user_id", "default"))
+            decrypted_content = decrypt_if_encrypted(
+                raw_content, tenant_id=mem.get("tenant_id", "default"), user_id=mem.get("user_id", "default")
+            )
 
             result = HybridResult(
                 memory_id=memory_id,
@@ -1348,8 +1349,8 @@ def get_hybrid_retriever(
         try:
             rrf_config = get_rrf_config()
             weights = rrf_config.to_dict()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load global RRF weights configuration: %s", exc)
     return _HybridRetrieverSingleton.get_instance(db_path, weights, backend)
 
 

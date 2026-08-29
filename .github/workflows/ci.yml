@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -32,8 +32,35 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: |
-          uv sync --frozen
+        run: uv sync --frozen --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format verification
+        run: uv run ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
 
       - name: Ensure test database exists
         env:
@@ -61,9 +88,45 @@ jobs:
         env:
           FORESIGHT_DB_URL: ${{ secrets.FORESIGHT_DB_URL }}
         run: |
-          uv run pytest tests/ -v --cov=foresight --cov-report=lcov
+          uv run pytest tests/ --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 
-      - name: Prepare coverage report
-        run: |
-          mkdir -p coverage
-          mv coverage.lcov coverage/lcov.info
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage.lcov
+          retention-days: 7
+
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Bandit security scan
+        run: uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
+
+      - name: Trivy vulnerability and secret scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true

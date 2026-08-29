@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import var
@@ -210,7 +212,7 @@ class ForesightTUI(App):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "quit", "Quit", show=True),
         Binding("d", "toggle_theme", "Toggle theme", show=True),
         Binding("r", "refresh", "Refresh", show=True),

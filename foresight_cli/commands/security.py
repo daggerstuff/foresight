@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from foresight.encryption import ForesightEncryptionEngine, get_encryption_engine
+from foresight.encryption import get_encryption_engine
 from foresight.server import _initialize_backend, get_db_connection, init_db
 from foresight_cli.utils import config as cfg, output as out
 
@@ -40,14 +37,20 @@ def status():
     table.add_row("Security Mode", st.mode.upper())
     table.add_row("Algorithm", st.algorithm)
     table.add_row("Key Configured", "✅ Yes (FORESIGHT_ENCRYPTION_KEY)" if st.key_configured else "❌ None")
-    table.add_row("Cryptography Library", "✅ Available (AES-256-GCM / PBKDF2)" if st.library_available else "❌ Missing")
+    table.add_row(
+        "Cryptography Library", "✅ Available (AES-256-GCM / PBKDF2)" if st.library_available else "❌ Missing"
+    )
     table.add_row("Sensitivity Filter (PIX-3956)", "🟢 Active (PII/PHI Auto-Gating)")
 
     console.print(table)
     if not st.enabled:
-        console.print("\n[dim]To enable encryption, set [bold]FORESIGHT_ENCRYPTION_KEY='your-secret-passphrase'[/bold] in your .env file.[/dim]")
+        console.print(
+            "\n[dim]To enable encryption, set [bold]FORESIGHT_ENCRYPTION_KEY='your-secret-passphrase'[/bold] in your .env file.[/dim]"
+        )
     elif st.mode == "sensitive_only":
-        console.print("\n[dim]Currently encrypting sensitive memories only. To encrypt the entire store, set [bold]FORESIGHT_ENCRYPT_ALL=true[/bold].[/dim]")
+        console.print(
+            "\n[dim]Currently encrypting sensitive memories only. To encrypt the entire store, set [bold]FORESIGHT_ENCRYPT_ALL=true[/bold].[/dim]"
+        )
 
 
 @app.command(name="encrypt-all")
@@ -87,7 +90,9 @@ def encrypt_all(
                 encrypted_count += 1
 
         conn.commit()
-        out.success(f"Encrypted {encrypted_count} memories at rest (AES-256-GCM). Already encrypted: {already_encrypted}.")
+        out.success(
+            f"Encrypted {encrypted_count} memories at rest (AES-256-GCM). Already encrypted: {already_encrypted}."
+        )
     finally:
         conn.close()
 
@@ -95,7 +100,9 @@ def encrypt_all(
 @app.command(name="rotate-key")
 def rotate_key(
     old_key: str = typer.Option(..., "--old-key", prompt=True, hide_input=True, help="Existing master encryption key"),
-    new_key: str = typer.Option(..., "--new-key", prompt=True, hide_input=True, help="New master encryption key to migrate to"),
+    new_key: str = typer.Option(
+        ..., "--new-key", prompt=True, hide_input=True, help="New master encryption key to migrate to"
+    ),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
     tenant_id: str | None = typer.Option("default", "--tenant", "-t", help="Tenant ID"),
 ):

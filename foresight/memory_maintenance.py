@@ -36,7 +36,7 @@ from .config import DB_PATH
 from .connection_pool import get_pool
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .event_bus import EventType
-from .memory_types import MemoryObject, EmotionalMetadata
+from .memory_types import EmotionalMetadata, MemoryObject
 from .sensitivity import resolve_is_sensitive
 
 logger = logging.getLogger("foresight_maintenance")
@@ -251,7 +251,7 @@ class MemoryMaintenanceJob:
             WHERE {where}
             ORDER BY created_at DESC
             LIMIT ?
-            """,
+            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             [*params, config.batch_size],
         )
         rows = cursor.fetchall()
@@ -433,7 +433,7 @@ class MemoryMaintenanceJob:
         if other_ids:
             placeholders = ",".join("?" for _ in other_ids)
             rows = conn.execute(
-                f"SELECT id, content FROM memories WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",
+                f"SELECT id, content FROM memories WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
                 (*other_ids, config.tenant_id, config.user_id),
             ).fetchall()
 
@@ -571,7 +571,7 @@ class MemoryMaintenanceJob:
             params = where_params + params
 
             conn.execute(
-                f"UPDATE memories SET {set_clause} WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",
+                f"UPDATE memories SET {set_clause} WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
                 params,
             )
 
@@ -616,8 +616,8 @@ class MemoryMaintenanceJob:
                 ),
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to emit duplicate event: %s", exc)
 
     def _run_contradict(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         # PIX-3956: contradict must scan sensitive memories too. They are
@@ -772,8 +772,8 @@ class MemoryMaintenanceJob:
                 ),
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to emit contradict event: %s", exc)
 
     def _run_archive_stale(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         # Guard against accidental PHI ghosting when sensitive_only is True
@@ -811,7 +811,7 @@ class MemoryMaintenanceJob:
             AND (importance <= ? OR strength_trend = 'stale')
             ORDER BY importance ASC, created_at ASC
             LIMIT ?
-            """,
+            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             (
                 config.user_id,
                 config.tenant_id,
@@ -872,7 +872,7 @@ class MemoryMaintenanceJob:
             AND retention NOT IN ('permanent')
             ORDER BY importance ASC, activation_count ASC, created_at ASC
             LIMIT ?
-            """,
+            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             (
                 config.user_id,
                 config.tenant_id,
@@ -976,8 +976,8 @@ class MemoryMaintenanceJob:
                 ),
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to emit insight event: %s", exc)
 
     def _run_enhanced_synthesize(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         """Run EnhancedSynthesizer for deep contradiction/trend/insight analysis.
@@ -1091,6 +1091,5 @@ class MemoryMaintenanceJob:
                 ),
             )
             conn.commit()
-        except Exception:
-            pass
-
+        except Exception as exc:
+            logger.debug("Failed to emit enhanced maintenance event: %s", exc)

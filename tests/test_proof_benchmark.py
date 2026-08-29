@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import patch
-
-import pytest
-
 from foresight.proof_benchmark import (
     ProductionProofReport,
     ProofBenchmarkRunner,
     ScenarioProofResult,
-    run_proof_benchmark,
 )
 
 
@@ -104,6 +98,9 @@ def test_surface_readiness_check():
 
 
 def test_token_savings_scenario():
+    from foresight.server import init_db
+
+    init_db()
     runner = ProofBenchmarkRunner(user_id="test_token_bench", tenant_id="test_tenant")
     scenario = runner._test_token_savings_and_context_compression()
     assert scenario.passed is True

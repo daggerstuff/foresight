@@ -412,8 +412,7 @@ Output (raw JSON only, no markdown):
 
             if self.provider == "openai":
                 return await self._extract_openai_compat(prompt, content)
-            else:
-                return await self._extract_anthropic(prompt, content)
+            return await self._extract_anthropic(prompt, content)
 
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code

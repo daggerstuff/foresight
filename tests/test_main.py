@@ -4,11 +4,12 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+from rich.console import Console
+from typer.testing import CliRunner
+
 from foresight_cli.cli import app
 from foresight_cli.commands import system as system_commands
 from foresight_cli.utils import output as out
-from rich.console import Console
-from typer.testing import CliRunner
 
 
 def test_main_health_prints_status(capsys):

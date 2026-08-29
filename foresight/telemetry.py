@@ -20,7 +20,9 @@ from typing import Any
 
 logger = logging.getLogger("foresight_telemetry")
 
-DEFAULT_TELEMETRY_PATH = Path(os.environ.get("FORESIGHT_TELEMETRY_PATH", Path.home() / ".config" / "foresight" / "telemetry.json"))
+DEFAULT_TELEMETRY_PATH = Path(
+    os.environ.get("FORESIGHT_TELEMETRY_PATH", Path.home() / ".config" / "foresight" / "telemetry.json")
+)
 
 
 @dataclass
@@ -61,7 +63,7 @@ class TelemetryStore:
         """Load from disk or initialize fresh."""
         try:
             if self.file_path.exists():
-                with open(self.file_path, "r", encoding="utf-8") as f:
+                with open(self.file_path, encoding="utf-8") as f:
                     raw = json.load(f)
                     return TelemetryData(
                         version=raw.get("version", 1),

@@ -192,8 +192,7 @@ class MemoryDecayService:
 
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        return conn
+        return pool.acquire()
 
     def _ensure_tables(self) -> None:
         conn = self._connect()
@@ -725,7 +724,8 @@ class _DecayModelSingleton:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH or DB_URL
-                assert db_path is not None, "db_path or DB_PATH required"
+                if db_path is None:
+                    raise RuntimeError("db_path or DB_PATH required")
                 cls._instance = MemoryDecayService(db_path)
             return cls._instance
 

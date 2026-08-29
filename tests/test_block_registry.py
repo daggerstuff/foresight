@@ -1,5 +1,7 @@
 """Tests for the BlockRegistry singleton and MemoryBlockSchema lifecycle."""
+
 import pytest
+
 from foresight.block_registry import (
     DEFAULT_BLOCK_SCHEMAS,
     BlockRegistry,

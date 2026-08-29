@@ -47,6 +47,7 @@ def agent(monkeypatch):
 # Preference extraction
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "phrase",
     [
@@ -84,14 +85,11 @@ def test_non_preference_not_captured(agent):
 # Pending item extraction — selectivity
 # ---------------------------------------------------------------------------
 
+
 def test_pending_extracts_only_relevant_sentence(agent):
     """Only the sentence containing the trigger should be stored, not the
     entire message."""
-    long_msg = (
-        "The login page looks great. "
-        "We should add OAuth support next. "
-        "Also the styling needs some tweaks."
-    )
+    long_msg = "The login page looks great. We should add OAuth support next. Also the styling needs some tweaks."
     agent._process_user_message(long_msg, SESSION_ID)
     block = agent.state.get_block(PENDING_ITEMS)
     assert not block.is_empty()
@@ -136,12 +134,12 @@ def test_pending_follow_up_trigger(agent):
 # Assistant message processing
 # ---------------------------------------------------------------------------
 
+
 def test_assistant_message_extracts_project_context(agent):
     """Assistant messages with architectural decisions should populate
     project_context."""
     assistant_msg = (
-        "I've refactored the API module in src/api/users.py to use a "
-        "queue-based pipeline for better throughput."
+        "I've refactored the API module in src/api/users.py to use a queue-based pipeline for better throughput."
     )
     agent._process_assistant_message(assistant_msg, SESSION_ID)
     block = agent.state.get_block(PROJECT_CONTEXT)
@@ -171,11 +169,15 @@ def test_assistant_message_extracts_pending(agent):
 # process_transcript — full integration
 # ---------------------------------------------------------------------------
 
+
 async def test_process_transcript_handles_both_roles(agent):
     """process_transcript should process both user and assistant messages."""
     messages = [
         {"role": "user", "content": "I prefer using pnpm over npm for this project."},
-        {"role": "assistant", "content": "Got it. I've updated the config in src/config.ts to use the new middleware layer."},
+        {
+            "role": "assistant",
+            "content": "Got it. I've updated the config in src/config.ts to use the new middleware layer.",
+        },
         {"role": "user", "content": "We should add tests for the new module next."},
     ]
     await agent.process_transcript(SESSION_ID, messages)
@@ -199,6 +201,7 @@ async def test_process_transcript_empty_messages(agent):
 # ---------------------------------------------------------------------------
 # Session patterns extraction
 # ---------------------------------------------------------------------------
+
 
 async def test_session_patterns_hot_files(agent):
     """Files mentioned 2+ times should appear in session_patterns."""
@@ -276,6 +279,7 @@ async def test_session_patterns_reset_per_transcript(agent):
 # Enhanced project context detection
 # ---------------------------------------------------------------------------
 
+
 def test_project_context_named_component(agent):
     """'the X module/service/component' pattern should trigger project context."""
     agent._process_assistant_message(
@@ -330,6 +334,7 @@ def test_project_context_bare_service_excluded(agent):
 # Assistant preference extraction (self-corrections)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "phrase",
     [
@@ -363,6 +368,7 @@ def test_assistant_preference_no_false_positive(agent):
 # ---------------------------------------------------------------------------
 # Capture-pipeline ↔ context-block bridge
 # ---------------------------------------------------------------------------
+
 
 def test_capture_stats_stored_items():
     """CaptureStats should track stored_items as (category, content) tuples."""
@@ -417,7 +423,5 @@ def test_bridge_capture_ignores_unknown_category(agent):
     """Unknown categories (e.g. tool_recipe) should be silently skipped."""
     from foresight.server import _bridge_capture_memories_to_blocks
 
-    count = _bridge_capture_memories_to_blocks(
-        agent, [("tool_recipe", "npm install --save-dev vitest")]
-    )
+    count = _bridge_capture_memories_to_blocks(agent, [("tool_recipe", "npm install --save-dev vitest")])
     assert count == 0

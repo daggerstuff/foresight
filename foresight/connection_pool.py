@@ -118,7 +118,8 @@ class ConnectionPool:
     def _new_connection(self) -> Any:
         import sqlite3
 
-        assert self.db_path is not None, "db_path required for SQLite connection"
+        if self.db_path is None:
+            raise ValueError("db_path required for SQLite connection")
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = CustomRow
 

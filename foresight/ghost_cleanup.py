@@ -246,7 +246,8 @@ class _GhostCleanupSingleton:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH or DB_URL
-                assert db_path is not None
+                if db_path is None:
+                    raise RuntimeError("db_path or DB_PATH/DB_URL required")
                 cls._instance = GhostMemoryCleanup(db_path, ghost_ttl_days)
             return cls._instance
 

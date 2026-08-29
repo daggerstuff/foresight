@@ -13,12 +13,7 @@ Common patterns for using Foresight.
 from foresight import store_memory, query_memories, list_memories
 
 # Store a memory
-result = store_memory(
-    content="User prefers TypeScript",
-    scope="trait",
-    retention="permanent",
-    category="preference"
-)
+result = store_memory(content="User prefers TypeScript", scope="trait", retention="permanent", category="preference")
 print(f"Stored: {result}")
 
 # Query
@@ -37,12 +32,7 @@ from foresight import store_memory
 
 result = store_memory(
     content="User frustrated with deployment",
-    emotional_context={
-        "valence": -0.5,
-        "arousal": 0.7,
-        "primary_emotion": "frustration",
-        "intensity": 0.6
-    }
+    emotional_context={"valence": -0.5, "arousal": 0.7, "primary_emotion": "frustration", "intensity": 0.6},
 )
 ```
 

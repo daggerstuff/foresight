@@ -10,9 +10,9 @@ from foresight.server import (
     AnalysisAction,
     VersionAction,
     analyze_memories,
+    init_db,
     manage_memory_versions,
     synthesize_profile,
-    init_db,
 )
 from foresight_cli.utils import config as cfg, output as out
 

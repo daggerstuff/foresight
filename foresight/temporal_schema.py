@@ -9,8 +9,6 @@ Adds temporal fields to existing memories table for:
 
 from __future__ import annotations
 
-from typing import Any
-
 from .connection_pool import get_pool
 
 TEMPORAL_SCHEMA_SQL = """
@@ -116,5 +114,6 @@ def initialize_decay_config(db_path: str, user_id: str) -> None:
 if __name__ == "__main__":
     from .config import DB_PATH
 
-    assert DB_PATH is not None, "DB_PATH required"
+    if DB_PATH is None:
+        raise ValueError("DB_PATH required")
     run_temporal_migrations(DB_PATH)

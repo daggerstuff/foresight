@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+
 from foresight.tenant_context import (
     DEFAULT_TENANT_ID,
     get_current_account_id,
@@ -102,8 +103,10 @@ async def test_invalid_string_identity_is_rejected():
     message.meta = meta
     ctx.message = message
     mw = TenantMiddleware()
+
     async def call_next(c):
         return "ok"
+
     await mw.on_call_tool(ctx, call_next)
     assert get_current_account_id() == DEFAULT_TENANT_ID
     reset_tenant_context()

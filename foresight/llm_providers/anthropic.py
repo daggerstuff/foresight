@@ -47,6 +47,8 @@ class AnthropicClient:
             "max_tokens": int(max_tokens),
             "messages": [{"role": "user", "content": prompt}],
         }
+        if not API_URL.startswith(("https://", "http://")):
+            raise ValueError("Only http/https schemes are permitted")
         data = json.dumps(body).encode("utf-8")
         request = urllib.request.Request(
             API_URL,
@@ -59,7 +61,7 @@ class AnthropicClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310 - fixed https:// API endpoint with explicit scheme guard
                 payload = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

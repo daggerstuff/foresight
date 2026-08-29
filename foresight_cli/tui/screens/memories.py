@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from textual import work
@@ -10,9 +11,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-# NOTE: ListItem requires a child widget (Label/Static), not markup via update()
+logger = logging.getLogger(__name__)
 
-from foresight.server import SearchOptions, search_memories, store_memory, init_db
+# NOTE: ListItem requires a child widget (Label/Static), not markup via update()
+from foresight.server import SearchOptions, init_db, search_memories, store_memory
 
 MEMORY_CATEGORIES = ["fact", "preference", "insight", "observation", "decision", "goal"]
 
@@ -90,8 +92,8 @@ class MemoriesScreen(Screen):
                     list_view.append(MemoryItem(mem))
             else:
                 list_view.append(ListItem(Static("No memories found.")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to render memory list in TUI: %s", exc)
 
     def _render_error(self, message: str) -> None:
         """Render error message on UI thread."""
@@ -99,8 +101,8 @@ class MemoriesScreen(Screen):
             list_view = self.query_one("#memory-list", ListView)
             list_view.clear()
             list_view.append(ListItem(Static(f"[red]Error: {message}[/red]")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to render error message in TUI: %s", exc)
 
     @work(exclusive=True, thread=True)
     def perform_search(self, query: str) -> None:

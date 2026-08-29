@@ -27,7 +27,7 @@ hook = register_hook(
     url="https://audit.example.com/log",
     retry_count=3,
     timeout=30,
-    metadata={"source": "production"}
+    metadata={"source": "production"},
 )
 print(f"Registered: {hook.id}")
 ```
@@ -83,7 +83,7 @@ register_hook(
     name="slack-crisis",
     event_type=EventType.ANOMALY_DETECTED,
     url="https://hooks.slack.com/services/XXX/YYY/ZZZ",
-    retry_count=5
+    retry_count=5,
 )
 ```
 
@@ -91,9 +91,7 @@ register_hook(
 
 ```python
 register_hook(
-    name="zapier-sync",
-    event_type=EventType.MEMORY_STORED,
-    url="https://hooks.zapier.com/hooks/catch/123456/abcdef"
+    name="zapier-sync", event_type=EventType.MEMORY_STORED, url="https://hooks.zapier.com/hooks/catch/123456/abcdef"
 )
 ```
 

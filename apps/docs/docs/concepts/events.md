@@ -61,8 +61,10 @@ from foresight.event_bus import get_event_bus, EventType
 
 event_bus = get_event_bus()
 
+
 def on_memory_stored(event):
     print(f"Memory stored: {event.entity_id}")
+
 
 event_bus.subscribe(EventType.MEMORY_STORED, on_memory_stored)
 ```
@@ -107,6 +109,7 @@ events = store.get_by_type(EventType.MEMORY_STORED)
 
 # Get events by time range
 from datetime import datetime, timedelta
+
 start = datetime.now() - timedelta(hours=1)
 events = store.get_by_time_range(start, datetime.now())
 ```

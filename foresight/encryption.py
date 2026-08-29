@@ -29,9 +29,9 @@ logger = logging.getLogger("foresight_encryption")
 
 # Check cryptography library availability
 try:
+    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.primitives import hashes
 
     HAS_CRYPTOGRAPHY = True
 except ImportError:
@@ -106,7 +106,7 @@ class ForesightEncryptionEngine:
         if not self._master_key:
             raise ValueError("No master encryption key configured in FORESIGHT_ENCRYPTION_KEY")
 
-        tenant_context = f"{tenant_id}:{user_id}".encode("utf-8")
+        tenant_context = f"{tenant_id}:{user_id}".encode()
         combined_salt = hashlib.sha256(salt + tenant_context).digest()
 
         if HAS_CRYPTOGRAPHY:
@@ -157,7 +157,7 @@ class ForesightEncryptionEngine:
 
         aesgcm = AESGCM(key)
         # Associated Authenticated Data binds ciphertext to tenant & user
-        aad = f"{tenant_id}:{user_id}".encode("utf-8")
+        aad = f"{tenant_id}:{user_id}".encode()
         ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), aad)
 
         envelope = salt + nonce + ciphertext
@@ -187,7 +187,7 @@ class ForesightEncryptionEngine:
             raise RuntimeError("cryptography library required for AES-256-GCM decryption")
 
         try:
-            raw_b64 = payload[len(ENC_PREFIX_V1):]
+            raw_b64 = payload[len(ENC_PREFIX_V1) :]
             envelope = base64.b64decode(raw_b64)
 
             salt = envelope[:SALT_SIZE]
@@ -196,7 +196,7 @@ class ForesightEncryptionEngine:
 
             key = self._derive_key(salt, tenant_id=tenant_id, user_id=user_id)
             aesgcm = AESGCM(key)
-            aad = f"{tenant_id}:{user_id}".encode("utf-8")
+            aad = f"{tenant_id}:{user_id}".encode()
             decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, aad)
             return decrypted_bytes.decode("utf-8")
         except Exception as exc:
@@ -207,7 +207,7 @@ class ForesightEncryptionEngine:
         """Generate deterministic HMAC-SHA256 token for encrypted blind search."""
         if not self._master_key:
             return ""
-        key = hashlib.sha256(self._master_key + f":blind:{tenant_id}".encode("utf-8")).digest()
+        key = hashlib.sha256(self._master_key + f":blind:{tenant_id}".encode()).digest()
         token = hmac.new(key, term.strip().lower().encode("utf-8"), hashlib.sha256).hexdigest()
         return f"btoken:{token[:16]}"
 

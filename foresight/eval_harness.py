@@ -271,7 +271,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Retrieval finds coding-style preference memory",
         query="What coding style does the user prefer for TypeScript?",
         expected_memory_ids={"pref_concise_typescript", "pref_2space_indent"},
-        pass_condition="Top-3 results include at least one preference memory",
+        pass_condition="Top-3 results include at least one preference memory",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=1,
     ),
     EvalScenario(
@@ -279,7 +279,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Retrieval finds pending project items",
         query="What's the current project status and what needs to be done?",
         expected_memory_ids={"pending_dashboard", "pending_auth", "pending_refactor"},
-        pass_condition="At least 2 of 3 pending items appear in results",
+        pass_condition="At least 2 of 3 pending items appear in results",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=2,
     ),
     EvalScenario(
@@ -287,7 +287,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Current facts rank higher than stale facts for same topic",
         query="How does authentication work in this project?",
         expected_memory_ids={"current_auth_approach", "stale_auth_approach"},
-        pass_condition="current_auth_approach ranks higher than stale_auth_approach",
+        pass_condition="current_auth_approach ranks higher than stale_auth_approach",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=2,
     ),
     EvalScenario(
@@ -295,7 +295,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Entity/file reference retrieval by description",
         query="Where is the database configuration file located?",
         expected_memory_ids={"entity_db_config"},
-        pass_condition="entity_db_config appears in results",
+        pass_condition="entity_db_config appears in results",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=1,
     ),
     EvalScenario(
@@ -303,7 +303,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Session memory retrieval from recent discussions",
         query="What did we discuss about deployment in the last standup?",
         expected_memory_ids={"session_deploy"},
-        pass_condition="session_deploy appears in results",
+        pass_condition="session_deploy appears in results",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=1,
     ),
     EvalScenario(
@@ -311,7 +311,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Entity-rich memories rank higher than entity-sparse ones",
         query="What configuration and deployment topics were discussed recently?",
         expected_memory_ids={"entity_rich_session", "entity_sparse_note"},
-        pass_condition="entity_rich_session ranks higher than entity_sparse_note",
+        pass_condition="entity_rich_session ranks higher than entity_sparse_note",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=2,
     ),
     EvalScenario(
@@ -319,7 +319,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Strengthening priority memories outrank stale ones",
         query="What's the security incident response procedure?",
         expected_memory_ids={"decay_priority_high", "decay_priority_low"},
-        pass_condition="decay_priority_high ranks higher than decay_priority_low",
+        pass_condition="decay_priority_high ranks higher than decay_priority_low",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=2,
     ),
 ]
@@ -542,7 +542,6 @@ class EvalHarness:
         import foresight.connection_pool as conn_pool_module
         from foresight.connection_pool import reset_pool
         from foresight.hybrid_retriever import reset_hybrid_retriever
-        from foresight.server import init_db
         from foresight.tenant_context import set_current_account_id, set_current_user_id
 
         # Reset singletons
@@ -552,7 +551,7 @@ class EvalHarness:
         # Patch config DB_PATH in each module that holds a local binding
         for mod in (config_module, conn_pool_module):
             orig = mod.DB_PATH
-            setattr(mod, "DB_PATH", self.db_path)
+            mod.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Set tenant context
@@ -573,6 +572,7 @@ class EvalHarness:
                         conn.execute(stmt)
                     except Exception:
                         import logging
+
                         logging.getLogger(__name__).warning(
                             "Schema migration statement already applied, non-critical",
                             exc_info=True,
@@ -654,6 +654,7 @@ class EvalHarness:
                 count += 1
             except Exception:
                 import logging
+
                 logging.getLogger(__name__).warning(
                     "Fixture seeding failed, non-critical",
                     exc_info=True,
@@ -1105,7 +1106,7 @@ def _print_diff(diff: dict[str, Any], json_output: bool) -> None:
         f"  PII change: {diff.get('pii_change', 0):+d}",
     ]
     for sd in diff.get("scenario_diffs", []):
-        icon = {"new_pass": "✓", "new_fail": "✗", "unchanged": "="}.get(sd.get("status_change", ""), "?")
+        icon = {"new_pass": "✓", "new_fail": "✗", "unchanged": "="}.get(sd.get("status_change", ""), "?")  # nosec B105 - status label contains 'pass'; not a credential
         lines.append(
             f"  [{icon}] {sd['scenario_id']}: payload {sd.get('payload_change', 0):+d} chars, "
             f"latency {sd.get('latency_change', 0):+.2f}ms"

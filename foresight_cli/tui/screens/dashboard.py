@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.screen import Screen
 from textual.widgets import Label, Static
+
+logger = logging.getLogger(__name__)
 
 from foresight.server import get_system_status, init_db
 
@@ -99,13 +102,13 @@ class DashboardScreen(Screen):
                 f"[dim]Bank:[/dim] {details.get('bank_id', 'default')}\n"
                 f"[dim]Scopes:[/dim] {json.dumps(details.get('by_scope', {}))}\n"
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to render status details in TUI: %s", exc)
 
     def _render_error(self, error_msg: str) -> None:
         """Render error on UI thread."""
         try:
             detail_widget = self.query_one("#status-detail", Static)
             detail_widget.update(f"[red]Error loading status: {error_msg}[/red]")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to render error status in TUI: %s", exc)

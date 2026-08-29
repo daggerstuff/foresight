@@ -1,5 +1,4 @@
 """One-off script to add tenant_id filters to all remaining query gaps."""
-import re
 
 FILES = {}
 
@@ -13,38 +12,38 @@ s = s.replace(
     'def _get_decay_config(self, user_id: str, category: str = "general", tenant_id: str = "default") -> DecayConfig:',
 )
 s = s.replace(
-    "WHERE user_id = ? AND category = ?\n            \"\"\", (user_id, category))",
-    "WHERE user_id = ? AND tenant_id = ? AND category = ?\n            \"\"\", (user_id, tenant_id, category))",
+    'WHERE user_id = ? AND category = ?\n            """, (user_id, category))',
+    'WHERE user_id = ? AND tenant_id = ? AND category = ?\n            """, (user_id, tenant_id, category))',
 )
 
 # on_memory_retrieved: add tenant_id param + SELECT/UPDATE filters
 s = s.replace(
     "def on_memory_retrieved(\n        self,\n        memory_id: str,\n        user_id: str,\n        importance: float = 1.0,\n        activation_boost: float | None = None\n    ) -> tuple[float, FreshnessTrend]:",
-    "def on_memory_retrieved(\n        self,\n        memory_id: str,\n        user_id: str,\n        importance: float = 1.0,\n        activation_boost: float | None = None,\n        tenant_id: str = \"default\"\n    ) -> tuple[float, FreshnessTrend]:",
+    'def on_memory_retrieved(\n        self,\n        memory_id: str,\n        user_id: str,\n        importance: float = 1.0,\n        activation_boost: float | None = None,\n        tenant_id: str = "default"\n    ) -> tuple[float, FreshnessTrend]:',
 )
 s = s.replace(
-    "FROM memories WHERE id = ? AND user_id = ?\n                \"\"\", (memory_id, user_id))",
-    "FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?\n                \"\"\", (memory_id, user_id, tenant_id))",
+    'FROM memories WHERE id = ? AND user_id = ?\n                """, (memory_id, user_id))',
+    'FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?\n                """, (memory_id, user_id, tenant_id))',
 )
 s = s.replace(
-    "WHERE id = ? AND user_id = ? AND tenant_id = ?\n                \"\"\", (\n                datetime.now(timezone.utc).isoformat(),\n                new_activation_count,\n                new_importance,\n                config.min_importance,\n                trend,\n                datetime.now(timezone.utc).isoformat(),\n                memory_id,\n                user_id,\n                tenant_id\n            ))",
-    "WHERE id = ? AND user_id = ? AND tenant_id = ?\n                \"\"\", (\n                datetime.now(timezone.utc).isoformat(),\n                new_activation_count,\n                new_importance,\n                config.min_importance,\n                trend,\n                datetime.now(timezone.utc).isoformat(),\n                memory_id,\n                user_id,\n                tenant_id\n            ))",
+    'WHERE id = ? AND user_id = ? AND tenant_id = ?\n                """, (\n                datetime.now(timezone.utc).isoformat(),\n                new_activation_count,\n                new_importance,\n                config.min_importance,\n                trend,\n                datetime.now(timezone.utc).isoformat(),\n                memory_id,\n                user_id,\n                tenant_id\n            ))',
+    'WHERE id = ? AND user_id = ? AND tenant_id = ?\n                """, (\n                datetime.now(timezone.utc).isoformat(),\n                new_activation_count,\n                new_importance,\n                config.min_importance,\n                trend,\n                datetime.now(timezone.utc).isoformat(),\n                memory_id,\n                user_id,\n                tenant_id\n            ))',
 )
 
 # batch_update_decay: add tenant_id to SELECT and UPDATE
 s = s.replace(
-    "FROM memories\n                WHERE user_id = ?\n                \"\"\", (user_id,))",
-    "FROM memories\n                WHERE user_id = ? AND tenant_id = ?\n                \"\"\", (user_id, tenant_id))",
+    'FROM memories\n                WHERE user_id = ?\n                """, (user_id,))',
+    'FROM memories\n                WHERE user_id = ? AND tenant_id = ?\n                """, (user_id, tenant_id))',
 )
 s = s.replace(
-    "WHERE id = ? AND user_id = ?\n                \"\"\", (\n                    new_importance,\n                    trend,\n                    datetime.now(timezone.utc).isoformat(),\n                    memory_id,\n                    user_id\n                ))",
-    "WHERE id = ? AND user_id = ? AND tenant_id = ?\n                \"\"\", (\n                    new_importance,\n                    trend,\n                    datetime.now(timezone.utc).isoformat(),\n                    memory_id,\n                    user_id,\n                    tenant_id\n                ))",
+    'WHERE id = ? AND user_id = ?\n                """, (\n                    new_importance,\n                    trend,\n                    datetime.now(timezone.utc).isoformat(),\n                    memory_id,\n                    user_id\n                ))',
+    'WHERE id = ? AND user_id = ? AND tenant_id = ?\n                """, (\n                    new_importance,\n                    trend,\n                    datetime.now(timezone.utc).isoformat(),\n                    memory_id,\n                    user_id,\n                    tenant_id\n                ))',
 )
 
 # get_memory_stats: add tenant_id
 s = s.replace(
-    "FROM memories\n                WHERE user_id = ?\n                \"\"\", (user_id,))",
-    "FROM memories\n                WHERE user_id = ? AND tenant_id = ?\n                \"\"\", (user_id, tenant_id))",
+    'FROM memories\n                WHERE user_id = ?\n                """, (user_id,))',
+    'FROM memories\n                WHERE user_id = ? AND tenant_id = ?\n                """, (user_id, tenant_id))',
 )
 
 FILES["foresight/temporal_service.py"] = s
@@ -54,8 +53,8 @@ with open("foresight/hybrid_retriever.py") as f:
     s = f.read()
 
 s = s.replace(
-    "params = [user_id] + [f\"%{t}%\" for t in escaped_terms]",
-    "params = [user_id, tenant_id] + [f\"%{t}%\" for t in escaped_terms]",
+    'params = [user_id] + [f"%{t}%" for t in escaped_terms]',
+    'params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]',
 )
 s = s.replace(
     "WHERE e.user_id = ?\n            AND ({like_clauses})",
@@ -71,7 +70,7 @@ with open("foresight/reflection_engine.py") as f:
 # Add tenant_id param
 s = s.replace(
     "def _build_entity_summary(self, user_id: str",
-    "def _build_entity_summary(self, user_id: str, tenant_id: str = \"default\"",
+    'def _build_entity_summary(self, user_id: str, tenant_id: str = "default"',
 )
 # Add tenant_id filter to entity query
 s = s.replace(
@@ -85,12 +84,12 @@ s = s.replace(
 )
 # Fix params for both queries (need to find the execute calls)
 s = s.replace(
-    "\"\"\", (user_id, limit))\n\n    # Get relationships",
-    "\"\"\", (user_id, tenant_id, limit))\n\n    # Get relationships",
+    '""", (user_id, limit))\n\n    # Get relationships',
+    '""", (user_id, tenant_id, limit))\n\n    # Get relationships',
 )
 s = s.replace(
-    "\"\"\", (user_id, rel_limit))\n\n    return {",
-    "\"\"\", (user_id, tenant_id, rel_limit))\n\n    return {",
+    '""", (user_id, rel_limit))\n\n    return {',
+    '""", (user_id, tenant_id, rel_limit))\n\n    return {',
 )
 
 FILES["foresight/reflection_engine.py"] = s
@@ -102,7 +101,7 @@ with open("foresight/subconscious.py") as f:
 # Change get_subconscious_agent to accept and use tenant_id
 s = s.replace(
     "def get_subconscious_agent(user_id: str",
-    "def get_subconscious_agent(user_id: str, tenant_id: str = \"default\"",
+    'def get_subconscious_agent(user_id: str, tenant_id: str = "default"',
 )
 # Key the cache on (tenant_id, user_id) instead of just user_id
 s = s.replace(
@@ -130,10 +129,14 @@ with open("foresight/server.py") as f:
 
 # Ensure get_current_tenant_id is imported
 if "from .tenant_context import get_current_tenant_id" not in s:
-    s = s.replace(
-        "from .tenant_context import",
-        "from .tenant_context import get_current_tenant_id,",
-    ) if "from .tenant_context import" in s else None
+    s = (
+        s.replace(
+            "from .tenant_context import",
+            "from .tenant_context import get_current_tenant_id,",
+        )
+        if "from .tenant_context import" in s
+        else None
+    )
     if "from .tenant_context import" not in s:
         # Add import near other tenant imports
         s = s.replace(
@@ -194,8 +197,8 @@ s = s.replace(
 
 # rollback_to_version: add tenant_id to UPDATE WHERE
 s = s.replace(
-    "WHERE id = ? AND user_id = ?\n                \"\"\", (\n                    version_row",
-    "WHERE id = ? AND user_id = ? AND tenant_id = ?\n                \"\"\", (\n                    version_row",
+    'WHERE id = ? AND user_id = ?\n                """, (\n                    version_row',
+    'WHERE id = ? AND user_id = ? AND tenant_id = ?\n                """, (\n                    version_row',
 )
 
 # Find the rollback version update params and add tenant_id
@@ -212,8 +215,8 @@ s = "\n".join(lines)
 
 # update_memory: add tenant_id to dynamic UPDATE WHERE
 s = s.replace(
-    "WHERE id = ? AND user_id = ?\"",
-    "WHERE id = ? AND user_id = ? AND tenant_id = ?\"",
+    'WHERE id = ? AND user_id = ?"',
+    'WHERE id = ? AND user_id = ? AND tenant_id = ?"',
 )
 s = s.replace(
     "values.extend([memory_id, uid])",
@@ -222,8 +225,8 @@ s = s.replace(
 
 # archive_memory: add tenant_id to UPDATE WHERE
 s = s.replace(
-    "WHERE id = ? AND user_id = ?\n                \"\"\", (ghost.content, ghost.gist, memory_id, uid))",
-    "WHERE id = ? AND user_id = ? AND tenant_id = ?\n                \"\"\", (ghost.content, ghost.gist, memory_id, uid, get_current_tenant_id()))",
+    'WHERE id = ? AND user_id = ?\n                """, (ghost.content, ghost.gist, memory_id, uid))',
+    'WHERE id = ? AND user_id = ? AND tenant_id = ?\n                """, (ghost.content, ghost.gist, memory_id, uid, get_current_tenant_id()))',
 )
 
 FILES["foresight/server.py"] = s

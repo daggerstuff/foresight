@@ -140,7 +140,7 @@ def with_circuit_breaker(config: CircuitBreakerConfig | None = None):
         def wrapper(*args, **kwargs):
             return breaker.call(func, *args, **kwargs)
 
-        setattr(wrapper, "circuit_breaker", breaker)
+        wrapper.circuit_breaker = breaker
         return wrapper
 
     return decorator

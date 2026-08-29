@@ -14,6 +14,7 @@ import contextlib
 from enum import StrEnum
 
 import typer
+
 from foresight.config import load_dotenv_walkup
 
 from .commands import (
@@ -59,7 +60,9 @@ app.add_typer(curate.app, name="curate", help="Manage curation runs.")
 app.add_typer(benchmark.app, name="benchmark", help="Run Production Value & Proof Benchmark Suite.")
 app.add_typer(security.app, name="security", help="Manage security, sensitivity policies, and AES-256-GCM encryption.")
 app.add_typer(eval_cmd.app, name="eval", help="Run evaluation harness (PIX-3953).")
-app.add_typer(system.app, name="system", help="System status, init, doctor, config, stats, history, maintenance, tenant.")
+app.add_typer(
+    system.app, name="system", help="System status, init, doctor, config, stats, history, maintenance, tenant."
+)
 app.add_typer(rrf.app, name="rrf", help="View and tune RRF retrieval weights.")
 app.add_typer(documents.app, name="documents", help="Manage source documents and chunks.")
 app.add_typer(graph.app, name="graph", help="Graph, entity, and clustering operations.")
@@ -87,9 +90,9 @@ app.command(name="prove", rich_help_panel="Quick Commands")(benchmark.run)
 
 
 @app.callback()
-def callback(  # noqa: PLR0913
+def callback(
     ctx: typer.Context,
-    output: OutputMode | None = typer.Option(  # noqa: B008
+    output: OutputMode | None = typer.Option(
         None,
         "--output",
         "-o",

@@ -31,7 +31,7 @@ result = store_memory(
     content="User prefers TypeScript over Python for new projects",
     scope="fact",
     retention="long_term",
-    category="preference"
+    category="preference",
 )
 print(result)
 # Stored memory abc123: User prefers TypeScript...

@@ -13,6 +13,7 @@ import os
 import tempfile
 
 import pytest
+
 from foresight.backend import SCHEMA_MIGRATIONS
 from foresight.backend.backend_migrations import (
     current_version,

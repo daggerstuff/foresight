@@ -10,6 +10,7 @@ regression where the block silently stays empty.
 import asyncio
 
 import pytest
+
 from foresight.subconscious import PROJECT_CONTEXT, ContextBlockAgent
 
 # ====== Fixtures ======
@@ -22,12 +23,11 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
     import foresight.config as config_module
-    import foresight.subconscious as subconscious_module
-    from tests._sqlite_backend import SqliteBackend
-    from foresight.server import init_db
-
     import foresight.connection_pool as conn_pool_module
+    import foresight.subconscious as subconscious_module
     from foresight.connection_pool import reset_pool
+    from foresight.server import init_db
+    from tests._sqlite_backend import SqliteBackend
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
@@ -234,8 +234,7 @@ def test_non_technical_decision_does_not_pollute_project_context():
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     assert _project_context_is_empty(agent), (
-        f"non-technical decision wrongly wrote project_context: "
-        f"{_project_context_content(agent)!r}"
+        f"non-technical decision wrongly wrote project_context: {_project_context_content(agent)!r}"
     )
 
 
@@ -300,8 +299,7 @@ def test_gerund_without_technical_object_still_rejected():
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     assert _project_context_is_empty(agent), (
-        f"non-technical gerund wrongly wrote project_context: "
-        f"{_project_context_content(agent)!r}"
+        f"non-technical gerund wrongly wrote project_context: {_project_context_content(agent)!r}"
     )
 
 
@@ -321,8 +319,7 @@ def test_generic_verb_with_ordinary_service_noun_rejected():
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     assert _project_context_is_empty(agent), (
-        f"ordinary 'service appointment' message wrongly wrote project_context: "
-        f"{_project_context_content(agent)!r}"
+        f"ordinary 'service appointment' message wrongly wrote project_context: {_project_context_content(agent)!r}"
     )
 
 
@@ -423,8 +420,7 @@ def test_word_before_dot_path_does_not_false_positive():
     _process(agent, "sess-1", [{"role": "user", "content": msg}])
 
     assert _project_context_is_empty(agent), (
-        f"word-before-dot falsely wrote project_context: "
-        f"{_project_context_content(agent)!r}"
+        f"word-before-dot falsely wrote project_context: {_project_context_content(agent)!r}"
     )
 
 
@@ -435,9 +431,7 @@ def test_session_id_attribution_in_block_entry():
     _process(agent, "sess-trace-42", [{"role": "user", "content": msg}])
 
     content = _project_context_content(agent)
-    assert "(session: sess-trace-42)" in content, (
-        f"session attribution missing in block entry: {content!r}"
-    )
+    assert "(session: sess-trace-42)" in content, f"session attribution missing in block entry: {content!r}"
 
 
 def test_distinct_sessions_produce_distinct_session_tags():

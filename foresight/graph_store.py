@@ -284,8 +284,10 @@ class GraphStore:
                 columns = [row["name"] for row in cursor.fetchall()]
             except Exception:
                 import logging
+
                 logging.getLogger(__name__).warning(
-                    "Table %s info check failed, skipping", table,
+                    "Table %s info check failed, skipping",
+                    table,
                     exc_info=True,
                 )
                 continue
@@ -609,7 +611,7 @@ class GraphStore:
         FROM graph_traversal
         WHERE depth > 0
         LIMIT ?
-        """
+        """  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
         node_rows = self._fetch_rows(
             query,
             [
@@ -661,7 +663,7 @@ class GraphStore:
                 OR target_entity_id IN ({placeholders}))
                 AND tenant_id = ?
                 AND user_id = ?
-                """,
+                """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
                     batch + batch + [tid, user_id],
                 )
                 edge_rows.extend(batch_edge_rows)

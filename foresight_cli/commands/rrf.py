@@ -79,8 +79,8 @@ def show(
         out.info(f"Config path: {resolved}")
 
 
-@app.command()
-def set(
+@app.command(name="set")
+def set_weight(
     key: str = typer.Argument(..., help="Weight key (e.g. keyword, tfidf_cosine, graph, temporal, rrf_k)"),
     value: float = typer.Argument(..., help="Weight value"),
     config_path: str | None = typer.Option(None, "--config", "-c", help="Config file path"),

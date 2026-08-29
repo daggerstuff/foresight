@@ -12,11 +12,7 @@ Complete guide to storing memories with Foresight.
 ```python
 from foresight import store_memory
 
-result = store_memory(
-    content="User prefers dark mode",
-    scope="fact",
-    retention="long_term"
-)
+result = store_memory(content="User prefers dark mode", scope="fact", retention="long_term")
 print(result)
 ```
 
@@ -25,12 +21,7 @@ print(result)
 ```python
 result = store_memory(
     content="User frustrated with deployment pipeline",
-    emotional_context={
-        "valence": -0.5,
-        "arousal": 0.7,
-        "primary_emotion": "frustration",
-        "intensity": 0.6
-    }
+    emotional_context={"valence": -0.5, "arousal": 0.7, "primary_emotion": "frustration", "intensity": 0.6},
 )
 ```
 
@@ -105,10 +96,7 @@ store_memory("Database schema", retention="long_term")
 
 ```python
 # Track user sentiment
-store_memory(
-    "User excited about new feature",
-    emotional_context={"primary_emotion": "excitement", "intensity": 0.8}
-)
+store_memory("User excited about new feature", emotional_context={"primary_emotion": "excitement", "intensity": 0.8})
 ```
 
 ## Related

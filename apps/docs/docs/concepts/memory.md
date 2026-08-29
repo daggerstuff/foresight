@@ -54,12 +54,12 @@ Memories can carry emotional metadata:
 store_memory(
     content="User frustrated with deployment issues",
     emotional_context={
-        "valence": -0.6,      # Negative to positive
-        "arousal": 0.8,       # Calm to excited
-        "dominance": 0.3,     # Controlled to dominant
+        "valence": -0.6,  # Negative to positive
+        "arousal": 0.8,  # Calm to excited
+        "dominance": 0.3,  # Controlled to dominant
         "primary_emotion": "frustration",
-        "intensity": 0.7
-    }
+        "intensity": 0.7,
+    },
 )
 ```
 
@@ -74,7 +74,7 @@ result = store_memory(
     scope="trait",
     retention="permanent",
     category="preference",
-    emotional_context={"valence": 0.5}
+    emotional_context={"valence": 0.5},
 )
 
 # Retrieve

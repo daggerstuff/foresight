@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from foresight import document_layer as doc_mod
 from foresight.document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET,
     VALID_DOCUMENT_SOURCES,
@@ -26,8 +28,6 @@ from foresight.document_layer import (
     reset_document_store,
 )
 from foresight.llm_errors import LLMError
-
-from foresight import document_layer as doc_mod
 
 # ---------------------------------------------------------------------------
 # Helpers

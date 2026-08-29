@@ -7,16 +7,16 @@ from typing import Literal
 import typer
 
 from foresight.server import (
+    EntityAction,
     EntityQuery,
     get_memory_relationships,
+    init_db,
     link_memories,
     manage_entities,
     query_clusters,
     query_entities,
     run_clustering,
     traverse_memory_graph,
-    EntityAction,
-    init_db,
 )
 from foresight_cli.utils import config as cfg, output as out
 
@@ -36,7 +36,9 @@ def _init_and_user(user_id_override: str | None = None):
 def link(
     source: str = typer.Argument(..., help="Source memory ID"),
     target: str = typer.Argument(..., help="Target memory ID"),
-    relationship_type: str = typer.Option("related", "--type", "-t", help="Relationship type (updates/extends/derives/contradicts/supports/related)"),
+    relationship_type: str = typer.Option(
+        "related", "--type", "-t", help="Relationship type (updates/extends/derives/contradicts/supports/related)"
+    ),
     confidence: float = typer.Option(1.0, "--confidence", "-c", help="Confidence score (0.0-1.0)"),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
@@ -116,7 +118,9 @@ def extract(
 
 @app.command("entities")
 def query_entities_cmd(
-    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = typer.Option("by_type", "--type", "-t", help="Query type"),
+    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = typer.Option(
+        "by_type", "--type", "-t", help="Query type"
+    ),
     entity_type: str | None = typer.Option(None, "--entity-type", help="Entity type filter"),
     name: str | None = typer.Option(None, "--name", help="Name for partial match"),
     entity_id: str | None = typer.Option(None, "--entity-id", help="Entity ID for relationships/traverse"),

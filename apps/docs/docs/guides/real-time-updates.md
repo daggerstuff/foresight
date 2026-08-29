@@ -90,11 +90,7 @@ const state = client.getState()
 from foresight import ws_subscribe, ws_unsubscribe, ws_status
 
 # Subscribe
-ws_subscribe(
-    subscription_id="my-sub",
-    event_types=["memory.stored", "memory.updated"],
-    entity_filter="memory:*"
-)
+ws_subscribe(subscription_id="my-sub", event_types=["memory.stored", "memory.updated"], entity_filter="memory:*")
 
 # Status
 status = ws_status()

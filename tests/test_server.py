@@ -12,12 +12,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastmcp import Client
+
 from foresight.block_registry import MemoryBlockSchema
 from foresight.context_blocks import register_context_block_schema
 from foresight.hybrid_retriever import HybridResult, HybridSearchResult
-from foresight_cli.cli import _decode_tool_result
-
-from foresight.server import memory_status, store_memory
 from foresight.server import (
     ContextBlockAction,
     CurationRunAction,
@@ -29,7 +27,10 @@ from foresight.server import (
     manage_context_blocks,
     manage_curation_runs,
     mcp,
+    memory_status,
+    store_memory,
 )
+from foresight_cli.cli import _decode_tool_result
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +50,7 @@ def setup_test_db(monkeypatch):
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import _global_backend, PostgresPooledConnection
+            from foresight.server import PostgresPooledConnection, _global_backend
 
             pool = _global_backend._pool
             return PostgresPooledConnection(pool.getconn(), pool)
@@ -341,9 +342,8 @@ def _patched_context_block_storage(db_path: str) -> Iterator[None]:
 
 def test_bridge_context_blocks_to_memories():
     """_bridge_context_blocks_to_memories stores extracted blocks as memories."""
-    from foresight.subconscious import ContextBlockAgent
-
     from foresight.server import _bridge_context_blocks_to_memories
+    from foresight.subconscious import ContextBlockAgent
 
     agent = ContextBlockAgent(user_id="bridge_test_user")
     # Populate some blocks via the agent's normal extraction
@@ -376,9 +376,8 @@ def test_bridge_context_blocks_to_memories():
 
 def test_bridge_context_blocks_dedup():
     """Bridging the same agent state twice should bump, not duplicate."""
-    from foresight.subconscious import ContextBlockAgent
-
     from foresight.server import _bridge_context_blocks_to_memories
+    from foresight.subconscious import ContextBlockAgent
 
     agent = ContextBlockAgent(user_id="dedup_bridge_user")
     agent._extract_preference("I prefer explicit returns")
@@ -408,7 +407,6 @@ def test_bridge_transcript_entities():
     """_bridge_transcript_entities runs extraction and stores entities."""
     from foresight.entity_extractor import reset_entity_extractor
     from foresight.graph_store import GraphStore, reset_graph_store
-
     from foresight.server import _bridge_transcript_entities
 
     reset_entity_extractor()
@@ -1754,8 +1752,9 @@ def _make_dict_conn(db_path: str, **kwargs):
 
 def test_handle_version_rollback_respects_tenant_scope():
     """_handle_version_rollback UPDATE must include tenant_id in WHERE clause."""
-    from foresight.server import VersionAction, _handle_version_rollback
     from unittest.mock import MagicMock, patch
+
+    from foresight.server import VersionAction, _handle_version_rollback
 
     mock_conn = MagicMock()
     mock_row = {
@@ -1788,8 +1787,9 @@ def test_handle_version_rollback_respects_tenant_scope():
 
 
 def test_standalone_rollback_to_version_respects_tenant_scope():
-    from foresight.server import rollback_to_version
     from unittest.mock import MagicMock, patch
+
+    from foresight.server import rollback_to_version
 
     mock_conn = MagicMock()
     mock_row = {
@@ -1861,9 +1861,8 @@ def test_memory_hard_cap_enforcement():
         import foresight.connection_pool as conn_pool_module
 
         conn_pool_module.DB_PATH = db_path
-        from foresight.hybrid_retriever import reset_hybrid_retriever
-
         from foresight.connection_pool import reset_pool
+        from foresight.hybrid_retriever import reset_hybrid_retriever
 
         reset_pool()
         reset_hybrid_retriever()
@@ -2046,7 +2045,7 @@ class TestSystemStatusHealth:
 
 def test_manage_context_blocks_flat_aliases_and_extra_fields():
     """manage_context_blocks handles block_name, name, block, key aliases and extra fields."""
-    from foresight.server import manage_context_blocks, ContextBlockAction
+    from foresight.server import ContextBlockAction, manage_context_blocks
 
     # Test flat block_name parameter
     res = manage_context_blocks(action="update", block_name="project_context", content="Test context content")
@@ -2087,7 +2086,7 @@ def test_manage_memories_flat_parameters():
 
 def test_manage_memory_versions_flat_parameters():
     """manage_memory_versions handles flat action and memory_id parameters."""
-    from foresight.server import manage_memory_versions, VersionAction
+    from foresight.server import VersionAction, manage_memory_versions
 
     # Test with flat arguments for a non-existent ID
     res = manage_memory_versions(action="diff", memory_id="nonexistent_id", version1=1, version2=2)
@@ -2100,8 +2099,8 @@ def test_manage_memory_versions_flat_parameters():
 
 def test_analyze_memories_flat_parameters():
     """analyze_memories handles flat action and period parameters."""
-    from foresight.server import analyze_memories, AnalysisAction
     from foresight.reflection_engine import ReflectionReport
+    from foresight.server import AnalysisAction, analyze_memories
 
     # Test flat arguments
     with patch("foresight.server.get_reflection_engine") as mock_get_engine:
@@ -2125,4 +2124,3 @@ def test_analyze_memories_flat_parameters():
     # Test AnalysisAction extra fields
     a_action = AnalysisAction(action="reflect", period="weekly", extra_junk="ignored")
     assert a_action.period == "weekly"
-

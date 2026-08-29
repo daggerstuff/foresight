@@ -5,6 +5,7 @@ import contextlib
 from unittest.mock import patch
 
 import pytest
+
 from foresight.event_bus import EventType
 from foresight.websocket.server import (
     ConnectionState,

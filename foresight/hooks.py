@@ -724,12 +724,12 @@ class MemoryHookContext:
 #   - Coroutine resolving to any of the above → async handler
 MemoryHookHandler = Callable[
     [MemoryHookContext],
-    HookResult | None | Coroutine[Any, Any, HookResult | None],
+    HookResult | Coroutine[Any, Any, HookResult | None] | None,
 ]
 
 
 def _resolve_hook_result(
-    result: HookResult | None | Coroutine[Any, Any, HookResult | None],
+    result: HookResult | Coroutine[Any, Any, HookResult | None] | None,
 ) -> HookResult | None:
     """If the handler returned a coroutine, run it synchronously.
 
@@ -835,7 +835,8 @@ class MemoryHookRegistry:
 
         Returns the list of all ``HookResult`` instances (non-None).
         """
-        assert hook_type.value.startswith("pre_"), f"Expected pre_ hook, got {hook_type}"
+        if not hook_type.value.startswith("pre_"):
+            raise ValueError(f"Expected pre_ hook, got {hook_type}")
         results: list[HookResult] = []
         with self._lock:
             handlers = list(self._pre_handlers.get(hook_type, []))
@@ -862,7 +863,8 @@ class MemoryHookRegistry:
         Post-hooks are fire-and-forget.  Their return values are ignored
         and exceptions never propagate.
         """
-        assert hook_type.value.startswith("post_"), f"Expected post_ hook, got {hook_type}"
+        if not hook_type.value.startswith("post_"):
+            raise ValueError(f"Expected post_ hook, got {hook_type}")
         with self._lock:
             handlers = list(self._post_handlers.get(hook_type, []))
         for name, handler in handlers:

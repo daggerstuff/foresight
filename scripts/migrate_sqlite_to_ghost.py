@@ -3,9 +3,10 @@
 Idempotent: uses INSERT ... ON CONFLICT DO NOTHING for all tables.
 """
 
-import sqlite3
-import psycopg2
 import os
+import sqlite3
+
+import psycopg2
 
 SQLITE_PATH = os.path.expanduser("~/.foresight/memory.db")
 GHOST_DB_URL = os.environ.get("FORESIGHT_DB_URL")
@@ -27,7 +28,7 @@ TABLES = [
 
 
 def get_columns(cursor, table):
-    cursor.execute(f"SELECT c.name FROM pragma_table_info('{table}') c")
+    cursor.execute(f"SELECT c.name FROM pragma_table_info('{table}') c")  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
     return [row[0] for row in cursor.fetchall()]
 
 
@@ -41,7 +42,7 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
         print(f"  [SKIP] {table}: no columns found")
         return
 
-    cur_sqlite.execute(f"SELECT * FROM {table}")
+    cur_sqlite.execute(f"SELECT * FROM {table}")  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
     rows = cur_sqlite.fetchall()
     if not rows:
         print(f"  [SKIP] {table}: 0 rows")
@@ -64,7 +65,7 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
     col_names = ", ".join(cols)
     conflict_target = ", ".join(conflict_cols) if conflict_cols else col_names
 
-    sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders}) ON CONFLICT ({conflict_target}) DO NOTHING"
+    sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders}) ON CONFLICT ({conflict_target}) DO NOTHING"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
 
     inserted = 0
     skipped = 0
@@ -84,7 +85,7 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
 
 def main():
     print(f"SQLite: {SQLITE_PATH}")
-    print(f"Postgres: (Ghost)")
+    print("Postgres: (Ghost)")
 
     conn_sqlite = sqlite3.connect(SQLITE_PATH)
     cur_sqlite = conn_sqlite.cursor()
@@ -94,7 +95,7 @@ def main():
     cur_pg = conn_pg.cursor()
 
     # Conflict columns per table
-    CONFLICT_COLS = {
+    conflict_cols = {
         "memories": ["id"],
         "tenants": ["id"],
         "memory_versions": ["id"],
@@ -114,7 +115,7 @@ def main():
 
     for table in TABLES:
         print(f"\n--- {table} ---")
-        migrate_table(cur_sqlite, cur_pg, table, CONFLICT_COLS.get(table))
+        migrate_table(cur_sqlite, cur_pg, table, conflict_cols.get(table))
 
     conn_sqlite.close()
     conn_pg.close()

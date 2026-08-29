@@ -7,6 +7,7 @@ preservation under pressure.
 """
 
 import pytest
+
 from foresight.injection_budget import (
     InjectionBudget,
     Lane,

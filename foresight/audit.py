@@ -200,7 +200,7 @@ class AuditLog:
 
         params.append(limit)
         sql = (
-            "SELECT tenant_id, user_id, event_type, resource_id, metadata_json, created_at "
+            "SELECT tenant_id, user_id, event_type, resource_id, metadata_json, created_at "  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             "FROM audit_events "
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY created_at DESC, id DESC "
@@ -230,7 +230,7 @@ class AuditLog:
         if event_type is not None:
             clauses.append("event_type = ?")
             params.append(event_type)
-        sql = f"SELECT COUNT(*) AS n FROM audit_events WHERE {' AND '.join(clauses)}"
+        sql = f"SELECT COUNT(*) AS n FROM audit_events WHERE {' AND '.join(clauses)}"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
         conn = self._get_conn()
         return int(conn.execute(sql, params).fetchone()["n"])
 

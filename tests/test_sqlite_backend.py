@@ -1,6 +1,7 @@
 """Tests for SqliteBackend connection pooling and query execution."""
 
 import pytest
+
 from tests._sqlite_backend import SqliteBackend
 
 

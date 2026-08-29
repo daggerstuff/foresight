@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from textual import work
 from textual.app import ComposeResult
@@ -10,7 +11,9 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from foresight.server import ContextBlockAction, manage_context_blocks, init_db
+logger = logging.getLogger(__name__)
+
+from foresight.server import ContextBlockAction, init_db, manage_context_blocks
 
 BLOCK_LABELS = [
     "guidance",
@@ -105,8 +108,8 @@ class BlocksScreen(Screen):
             else:
                 for label in BLOCK_LABELS:
                     list_view.append(BlockItem(label))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to render block list in TUI: %s", exc)
 
     def _render_error(self, message: str) -> None:
         """Render error on UI thread."""
@@ -114,8 +117,8 @@ class BlocksScreen(Screen):
             list_view = self.query_one("#block-list", ListView)
             list_view.clear()
             list_view.append(ListItem(Static(f"[red]Error: {message}[/red]")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to render error in TUI: %s", exc)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Show block details on selection."""

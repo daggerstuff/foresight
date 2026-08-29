@@ -233,8 +233,7 @@ class SemanticSearch:
 
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        return conn
+        return pool.acquire()
 
     def _ensure_table(self) -> None:
         conn = self._connect()

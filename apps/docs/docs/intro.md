@@ -32,11 +32,7 @@ from foresight import ForesightClient
 client = ForesightClient()
 
 # Store a memory
-result = client.store_memory(
-    "User prefers TypeScript for backend development",
-    scope="fact",
-    retention="long_term"
-)
+result = client.store_memory("User prefers TypeScript for backend development", scope="fact", retention="long_term")
 print(f"Stored: {result.id}")
 
 # Query memories

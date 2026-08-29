@@ -322,21 +322,21 @@ normal and safe to ignore.
 ```python
 # Store
 manage_memories(
-  action  = "store",
-  content = "User prefers TypeScript and wants tests for every function.",
-  store_options = {
-    "category":   "preference",  # fact | preference | event | observation | pending | pattern
-    "scope":      "trait",       # session | arc | trait | fact
-    "retention":  "long_term",   # ephemeral | short_term | long_term | permanent
-    "importance": 0.8,           # 0.0–1.0
-  }
+    action="store",
+    content="User prefers TypeScript and wants tests for every function.",
+    store_options={
+        "category": "preference",  # fact | preference | event | observation | pending | pattern
+        "scope": "trait",  # session | arc | trait | fact
+        "retention": "long_term",  # ephemeral | short_term | long_term | permanent
+        "importance": 0.8,  # 0.0–1.0
+    },
 )
 
 # Update
 manage_memories(action="update", memory_id="<id>", updates={"content": "..."})
 
 # Delete or archive
-manage_memories(action="delete",  memory_id="<id>")
+manage_memories(action="delete", memory_id="<id>")
 manage_memories(action="archive", memory_id="<id>")
 ```
 
@@ -389,12 +389,15 @@ Three built-in blocks are always injected alongside memories during retrieval:
 | `session_patterns` | Recurring patterns observed across sessions |
 
 ```python
-manage_context_blocks(action="list")                              # show all blocks
-manage_context_blocks(action="get",    label="user_preferences")  # read one
-manage_context_blocks(action="update", label="user_preferences",  # write
-                      content="Prefers concise answers. TypeScript only.")
-manage_context_blocks(action="clear",  label="pending_items")     # empty it
-manage_context_blocks(action="reset",  label="session_patterns")  # restore default
+manage_context_blocks(action="list")  # show all blocks
+manage_context_blocks(action="get", label="user_preferences")  # read one
+manage_context_blocks(
+    action="update",
+    label="user_preferences",  # write
+    content="Prefers concise answers. TypeScript only.",
+)
+manage_context_blocks(action="clear", label="pending_items")  # empty it
+manage_context_blocks(action="reset", label="session_patterns")  # restore default
 ```
 
 **When to update:**
@@ -412,12 +415,12 @@ context blocks into memories, and extracts entities into the graph.
 
 ```python
 process_session_transcript(
-  session_id   = "2026-07-23-alice",       # stable, human-readable ID
-  messages     = [
-    {"role": "user",      "content": "..."},
-    {"role": "assistant", "content": "..."},
-  ],
-  project_path = "/path/to/project",        # optional; improves extraction
+    session_id="2026-07-23-alice",  # stable, human-readable ID
+    messages=[
+        {"role": "user", "content": "..."},
+        {"role": "assistant", "content": "..."},
+    ],
+    project_path="/path/to/project",  # optional; improves extraction
 )
 ```
 
@@ -429,9 +432,9 @@ deduplicates.
 ### `query_memories_temporal` — fetch by time window or trend
 
 ```python
-query_memories_temporal(window="week",  limit=20)              # this week
-query_memories_temporal(window="today", category="preference") # today, filtered
-query_memories_temporal(trend="rising", limit=10)              # gaining activation
+query_memories_temporal(window="week", limit=20)  # this week
+query_memories_temporal(window="today", category="preference")  # today, filtered
+query_memories_temporal(trend="rising", limit=10)  # gaining activation
 ```
 
 ---
@@ -445,9 +448,9 @@ High-impact changes are staged for review, never auto-applied.
 # Start (use 'observe' first — safest)
 manage_curation_runs(action="create", policy_mode="preserve", tool_access="observe")
 
-manage_curation_runs(action="get",    run_id="<id>")   # check status
-manage_curation_runs(action="list")                    # recent runs
-manage_curation_runs(action="cancel", run_id="<id>")   # cancel
+manage_curation_runs(action="get", run_id="<id>")  # check status
+manage_curation_runs(action="list")  # recent runs
+manage_curation_runs(action="cancel", run_id="<id>")  # cancel
 ```
 
 Run occasionally, not every session. `preserve` + `observe` is always safe. Use
@@ -475,8 +478,8 @@ Manage optional field-level Authenticated Encryption at Rest (AEAD) with
 multi-tenant key derivation.
 
 ```python
-manage_encryption(action="status")                        # check encryption mode & algorithm
-manage_encryption(action="encrypt_all")                    # retroactively encrypt all plaintext memories
+manage_encryption(action="status")  # check encryption mode & algorithm
+manage_encryption(action="encrypt_all")  # retroactively encrypt all plaintext memories
 manage_encryption(action="rotate_key", old_key="...", new_key="...")  # rotate master encryption key
 ```
 

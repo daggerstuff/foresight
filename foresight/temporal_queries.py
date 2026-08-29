@@ -142,24 +142,34 @@ class TemporalQueryBuilder:
         window_hours = self._get_window_hours(window)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
 
-        category_clause = "AND category = ?" if category else ""
-        base_params: list = [user_id, tenant_id, cutoff.isoformat(), min_importance]
         if category:
-            base_params.append(category)
-        base_params.append(limit)
+            sql = """
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at >= ?
+                AND importance >= ?
+                AND category = ?
+                ORDER BY importance DESC, created_at DESC
+                LIMIT ?
+            """
+            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, category, limit]
+        else:
+            sql = """
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at >= ?
+                AND importance >= ?
+                ORDER BY importance DESC, created_at DESC
+                LIMIT ?
+            """
+            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, limit]
 
-        sql = f"""
-            SELECT
-                id, content, importance, strength_trend,
-                activation_count, created_at, accessed_at, category
-            FROM memories
-            WHERE user_id = ? AND tenant_id = ?
-            AND created_at >= ?
-            AND importance >= ?
-            {category_clause}
-            ORDER BY importance DESC, created_at DESC
-            LIMIT ?
-        """
         try:
             rows = self._fetch_rows(sql, base_params)
         except Exception as e:
@@ -167,22 +177,33 @@ class TemporalQueryBuilder:
                 raise
             if not _is_missing_tenant_column_error(e):
                 raise
-            params: list = [user_id, cutoff.isoformat(), min_importance]
             if category:
-                params.append(category)
-            params.append(limit)
-            sql_no_tenant = f"""
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ?
-                AND created_at >= ?
-                AND importance >= ?
-                {category_clause}
-                ORDER BY importance DESC, created_at DESC
-                LIMIT ?
-            """
+                sql_no_tenant = """
+                    SELECT
+                        id, content, importance, strength_trend,
+                        activation_count, created_at, accessed_at, category
+                    FROM memories
+                    WHERE user_id = ?
+                    AND created_at >= ?
+                    AND importance >= ?
+                    AND category = ?
+                    ORDER BY importance DESC, created_at DESC
+                    LIMIT ?
+                """
+                params = [user_id, cutoff.isoformat(), min_importance, category, limit]
+            else:
+                sql_no_tenant = """
+                    SELECT
+                        id, content, importance, strength_trend,
+                        activation_count, created_at, accessed_at, category
+                    FROM memories
+                    WHERE user_id = ?
+                    AND created_at >= ?
+                    AND importance >= ?
+                    ORDER BY importance DESC, created_at DESC
+                    LIMIT ?
+                """
+                params = [user_id, cutoff.isoformat(), min_importance, limit]
             rows = self._fetch_rows(sql_no_tenant, params)
 
         return [
@@ -204,22 +225,32 @@ class TemporalQueryBuilder:
     ) -> list[TemporalQueryResult]:
         """Get memories as of a specific time."""
         tenant_id = get_current_account_id()
-        category_clause = "AND category = ?" if category else ""
-        base_params: list = [user_id, tenant_id, target_date.isoformat(), min_importance]
         if category:
-            base_params = [user_id, tenant_id, category, target_date.isoformat(), min_importance]
+            sql = """
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at <= ?
+                AND importance > ?
+                AND category = ?
+                ORDER BY created_at DESC
+            """
+            base_params = [user_id, tenant_id, target_date.isoformat(), min_importance, category]
+        else:
+            sql = """
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at <= ?
+                AND importance > ?
+                ORDER BY created_at DESC
+            """
+            base_params = [user_id, tenant_id, target_date.isoformat(), min_importance]
 
-        sql = f"""
-            SELECT
-                id, content, importance, strength_trend,
-                activation_count, created_at, accessed_at, category
-            FROM memories
-            WHERE user_id = ? AND tenant_id = ?
-            AND created_at <= ?
-            AND importance > ?
-            {category_clause}
-            ORDER BY created_at DESC
-        """
         try:
             rows = self._fetch_rows(sql, base_params)
         except Exception as e:
@@ -227,20 +258,31 @@ class TemporalQueryBuilder:
                 raise
             if not _is_missing_tenant_column_error(e):
                 raise
-            params: list = [user_id, target_date.isoformat(), min_importance]
             if category:
-                params = [user_id, category, target_date.isoformat(), min_importance]
-            sql_no_tenant = f"""
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ?
-                AND created_at <= ?
-                AND importance > ?
-                {category_clause}
-                ORDER BY created_at DESC
-            """
+                sql_no_tenant = """
+                    SELECT
+                        id, content, importance, strength_trend,
+                        activation_count, created_at, accessed_at, category
+                    FROM memories
+                    WHERE user_id = ?
+                    AND created_at <= ?
+                    AND importance > ?
+                    AND category = ?
+                    ORDER BY created_at DESC
+                """
+                params = [user_id, target_date.isoformat(), min_importance, category]
+            else:
+                sql_no_tenant = """
+                    SELECT
+                        id, content, importance, strength_trend,
+                        activation_count, created_at, accessed_at, category
+                    FROM memories
+                    WHERE user_id = ?
+                    AND created_at <= ?
+                    AND importance > ?
+                    ORDER BY created_at DESC
+                """
+                params = [user_id, target_date.isoformat(), min_importance]
             rows = self._fetch_rows(sql_no_tenant, params)
 
         return [
@@ -262,22 +304,32 @@ class TemporalQueryBuilder:
     ) -> list[TemporalQueryResult]:
         """Get memories by trend."""
         tenant_id = get_current_account_id()
-        category_clause = "AND category = ?" if category else ""
-        base_params: list = [user_id, tenant_id, trend, limit]
         if category:
-            base_params = [user_id, tenant_id, category, trend, limit]
+            sql = """
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND strength_trend = ?
+                AND category = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            base_params = [user_id, tenant_id, trend, category, limit]
+        else:
+            sql = """
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND strength_trend = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            base_params = [user_id, tenant_id, trend, limit]
 
-        sql = f"""
-            SELECT
-                id, content, importance, strength_trend,
-                activation_count, created_at, accessed_at, category
-            FROM memories
-            WHERE user_id = ? AND tenant_id = ?
-            AND strength_trend = ?
-            {category_clause}
-            ORDER BY created_at DESC
-            LIMIT ?
-        """
         try:
             rows = self._fetch_rows(sql, base_params)
         except Exception as e:
@@ -285,20 +337,31 @@ class TemporalQueryBuilder:
                 raise
             if not _is_missing_tenant_column_error(e):
                 raise
-            params: list = [user_id, trend, limit]
             if category:
-                params = [user_id, category, trend, limit]
-            sql_no_tenant = f"""
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ?
-                AND strength_trend = ?
-                {category_clause}
-                ORDER BY created_at DESC
-                LIMIT ?
-            """
+                sql_no_tenant = """
+                    SELECT
+                        id, content, importance, strength_trend,
+                        activation_count, created_at, accessed_at, category
+                    FROM memories
+                    WHERE user_id = ?
+                    AND strength_trend = ?
+                    AND category = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """
+                params = [user_id, trend, category, limit]
+            else:
+                sql_no_tenant = """
+                    SELECT
+                        id, content, importance, strength_trend,
+                        activation_count, created_at, accessed_at, category
+                    FROM memories
+                    WHERE user_id = ?
+                    AND strength_trend = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """
+                params = [user_id, trend, limit]
             rows = self._fetch_rows(sql_no_tenant, params)
 
         return [
@@ -319,22 +382,38 @@ class TemporalQueryBuilder:
         """Analyze memory trends over time."""
         tenant_id = get_current_account_id()
         cutoff = self._timeframe_cutoff(timeframe)
-        date_bucket = self._date_bucket_expr()
+        is_postgres = self._is_postgres_backend()
 
         # Daily stats
-        daily_sql = f"""
-            SELECT
-                {date_bucket} as date,
-                COUNT(*) as count,
-                AVG(importance) as avg_importance,
-                SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
-                SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
-            FROM memories
-            WHERE user_id = ? AND tenant_id = ?
-            AND created_at >= ?
-            GROUP BY {date_bucket}
-            ORDER BY {date_bucket}
-        """
+        if is_postgres:
+            daily_sql = """
+                SELECT
+                    (created_at::timestamptz)::date as date,
+                    COUNT(*) as count,
+                    AVG(importance) as avg_importance,
+                    SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                    SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at >= ?
+                GROUP BY (created_at::timestamptz)::date
+                ORDER BY (created_at::timestamptz)::date
+            """
+        else:
+            daily_sql = """
+                SELECT
+                    strftime('%Y-%m-%d', created_at) as date,
+                    COUNT(*) as count,
+                    AVG(importance) as avg_importance,
+                    SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                    SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at >= ?
+                GROUP BY strftime('%Y-%m-%d', created_at)
+                ORDER BY strftime('%Y-%m-%d', created_at)
+            """
+
         try:
             daily_rows = self._fetch_rows(daily_sql, (user_id, tenant_id, cutoff))
         except Exception as e:
@@ -342,19 +421,34 @@ class TemporalQueryBuilder:
                 raise
             if not _is_missing_tenant_column_error(e):
                 raise
-            daily_no_tenant = f"""
-                SELECT
-                    {date_bucket} as date,
-                    COUNT(*) as count,
-                    AVG(importance) as avg_importance,
-                    SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
-                    SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
-                FROM memories
-                WHERE user_id = ?
-                AND created_at >= ?
-                GROUP BY {date_bucket}
-                ORDER BY {date_bucket}
-            """
+            if is_postgres:
+                daily_no_tenant = """
+                    SELECT
+                        (created_at::timestamptz)::date as date,
+                        COUNT(*) as count,
+                        AVG(importance) as avg_importance,
+                        SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                        SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+                    FROM memories
+                    WHERE user_id = ?
+                    AND created_at >= ?
+                    GROUP BY (created_at::timestamptz)::date
+                    ORDER BY (created_at::timestamptz)::date
+                """
+            else:
+                daily_no_tenant = """
+                    SELECT
+                        strftime('%Y-%m-%d', created_at) as date,
+                        COUNT(*) as count,
+                        AVG(importance) as avg_importance,
+                        SUM(CASE WHEN strength_trend = 'strengthening' THEN 1 ELSE 0 END) as strengthening,
+                        SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale
+                    FROM memories
+                    WHERE user_id = ?
+                    AND created_at >= ?
+                    GROUP BY strftime('%Y-%m-%d', created_at)
+                    ORDER BY strftime('%Y-%m-%d', created_at)
+                """
             daily_rows = self._fetch_rows(daily_no_tenant, (user_id, cutoff))
 
         daily_stats = [
@@ -450,7 +544,7 @@ class TemporalQueryBuilder:
                 SELECT id, created_at, activation_count
                 FROM memories
                 WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?
-            """,
+            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             [*memory_ids, user_id, tenant_id],
         )
 

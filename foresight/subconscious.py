@@ -360,6 +360,7 @@ class ContextBlockAgent:
     def _connect(self):
         try:
             from .server import get_db_connection
+
             return get_db_connection()
         except Exception:
             return get_pool(DB_PATH).acquire()
@@ -504,11 +505,27 @@ class ContextBlockAgent:
         # Extract preferences
         lowered = content.lower()
         preference_phrases = (
-            "i always", "i prefer", "i want", "i'd like", "i would like",
-            "i like", "i love", "i hate", "i usually", "i tend to",
-            "don't ever", "never do", "never use", "always use",
-            "please use", "make sure to", "from now on", "going forward",
-            "avoid using", "stop using", "i'd rather",
+            "i always",
+            "i prefer",
+            "i want",
+            "i'd like",
+            "i would like",
+            "i like",
+            "i love",
+            "i hate",
+            "i usually",
+            "i tend to",
+            "don't ever",
+            "never do",
+            "never use",
+            "always use",
+            "please use",
+            "make sure to",
+            "from now on",
+            "going forward",
+            "avoid using",
+            "stop using",
+            "i'd rather",
         )
         if any(phrase in lowered for phrase in preference_phrases):
             touched_labels.add(self._extract_preference(content))
@@ -550,10 +567,21 @@ class ContextBlockAgent:
         # Extract preferences from assistant self-corrections
         # These indicate the assistant's own working preferences
         assistant_preference_phrases = (
-            "actually, i'll", "actually i'll", "let me use", "i'll use",
-            "i'll go with", "i'm going to use", "i will use", "i'd use",
-            "i would use", "i prefer to", "i'd rather use", "i would rather",
-            "better to use", "should use", "prefer to use",
+            "actually, i'll",
+            "actually i'll",
+            "let me use",
+            "i'll use",
+            "i'll go with",
+            "i'm going to use",
+            "i will use",
+            "i'd use",
+            "i would use",
+            "i prefer to",
+            "i'd rather use",
+            "i would rather",
+            "better to use",
+            "should use",
+            "prefer to use",
         )
         if any(phrase in lowered for phrase in assistant_preference_phrases):
             # Extract the relevant sentence around the trigger
@@ -569,17 +597,34 @@ class ContextBlockAgent:
     # Phrases that signal a pending / follow-up task.  Searched case-insensitively
     # against the lowercased message.
     _PENDING_TRIGGERS = (
-        "todo", "to-do", "need to", "needs to", "we should",
-        "still need to", "follow up", "follow-up", "don't forget to",
-        "plan to", "going to", "next we", "still have to", "have to",
+        "todo",
+        "to-do",
+        "need to",
+        "needs to",
+        "we should",
+        "still need to",
+        "follow up",
+        "follow-up",
+        "don't forget to",
+        "plan to",
+        "going to",
+        "next we",
+        "still have to",
+        "have to",
     )
     # Bare "should" / "must" are noisy on their own ("this should work",
     # "that must be the issue"), so they are only matched as part of
     # compound phrases that clearly indicate a task.
     _PENDING_COMPOUND = (
-        "we should", "you should", "i should",
-        "we must", "you must", "i must",
-        "should also", "should next", "should then",
+        "we should",
+        "you should",
+        "i should",
+        "we must",
+        "you must",
+        "i must",
+        "should also",
+        "should next",
+        "should then",
     )
 
     # Tool name patterns for detecting tool usage in transcripts
@@ -604,7 +649,10 @@ class ContextBlockAgent:
     def _record_patterns_from_content(self, content: str) -> None:
         """Extract and record file paths, tool names, and errors from content."""
         # File paths: match typical path patterns
-        file_paths = re.findall(r'\b(?:[./]\w+(?:/\w+)*|\w+(?:/\w+)+\.(?:py|ts|tsx|js|jsx|mjs|astro|md|yaml|yml|json|toml|rb|rs|go|sql))\b', content)
+        file_paths = re.findall(
+            r"\b(?:[./]\w+(?:/\w+)*|\w+(?:/\w+)+\.(?:py|ts|tsx|js|jsx|mjs|astro|md|yaml|yml|json|toml|rb|rs|go|sql))\b",
+            content,
+        )
         for path in file_paths:
             self.state.record_file_mention(path)
 
@@ -670,40 +718,96 @@ class ContextBlockAgent:
     # used to populate project_context and silently stopped after the tightening.
     _PCX_STRONG_VERBS = (
         # decide
-        "decide", "decides", "decided", "deciding",
+        "decide",
+        "decides",
+        "decided",
+        "deciding",
         # choose / chose (irregular)
-        "choose", "chooses", "chose", "choosing", "chosen",
+        "choose",
+        "chooses",
+        "chose",
+        "choosing",
+        "chosen",
         # architect
-        "architect", "architects", "architected", "architecting",
+        "architect",
+        "architects",
+        "architected",
+        "architecting",
         # refactor
-        "refactor", "refactors", "refactored", "refactoring",
+        "refactor",
+        "refactors",
+        "refactored",
+        "refactoring",
         # migrate
-        "migrate", "migrates", "migrated", "migrating",
+        "migrate",
+        "migrates",
+        "migrated",
+        "migrating",
         # move
-        "move", "moves", "moved", "moving",
+        "move",
+        "moves",
+        "moved",
+        "moving",
         # split (irregular past: "split")
-        "split", "splits", "splitting",
+        "split",
+        "splits",
+        "splitting",
         # extract
-        "extract", "extracts", "extracted", "extracting",
+        "extract",
+        "extracts",
+        "extracted",
+        "extracting",
         # replace
-        "replace", "replaces", "replaced", "replacing",
+        "replace",
+        "replaces",
+        "replaced",
+        "replacing",
         # rename
-        "rename", "renames", "renamed", "renaming",
+        "rename",
+        "renames",
+        "renamed",
+        "renaming",
         # introduce
-        "introduce", "introduces", "introduced", "introducing",
+        "introduce",
+        "introduces",
+        "introduced",
+        "introducing",
         # Multi-word constructions keep their particle (to / from / into) verbatim
-        "we chose", "chose to", "moved to", "moved from",
-        "split into", "extracted into",
+        "we chose",
+        "chose to",
+        "moved to",
+        "moved from",
+        "split into",
+        "extracted into",
     )
     # Soft verbs/nouns: "we use", "uses", "architecture", "built on", "stack is".
     # Match ordinary English ("we use the red button"); require a technical-object
     # token (source path, file ext, or stack/layer noun) to qualify.
     _PCX_SOFT_PHRASES = (
-        "we use", "uses", "architecture", "architectural", "built on", "stack is",
-        "the api", "the endpoint", "the service", "the module", "the component",
-        "the client", "the server", "the database", "the orm", "the model",
-        "the controller", "the route", "the handler", "the middleware",
-        "depends on", "integrates with", "calls into", "wraps",
+        "we use",
+        "uses",
+        "architecture",
+        "architectural",
+        "built on",
+        "stack is",
+        "the api",
+        "the endpoint",
+        "the service",
+        "the module",
+        "the component",
+        "the client",
+        "the server",
+        "the database",
+        "the orm",
+        "the model",
+        "the controller",
+        "the route",
+        "the handler",
+        "the middleware",
+        "depends on",
+        "integrates with",
+        "calls into",
+        "wraps",
     )
     # Stack / layer nouns that mark a message as a codebase fact. This list is the
     # "object" half of the verb/object association that gates project_context, so a
@@ -723,16 +827,56 @@ class ContextBlockAgent:
     # must be re-added in a *context-aware* form (e.g. only when qualified by a
     # technical adjective) rather than as a context-free token.
     _PCX_STACK_NOUNS = (
-        "transport", "middleware", "pipeline", "schema", "backend", "frontend",
-        "gateway", "module", "daemon", "ingestion", "runtime",
-        "orchestrator", "registry", "store", "cache", "queue", "layer",
-        "contract", "handler", "entry point",
+        "transport",
+        "middleware",
+        "pipeline",
+        "schema",
+        "backend",
+        "frontend",
+        "gateway",
+        "module",
+        "daemon",
+        "ingestion",
+        "runtime",
+        "orchestrator",
+        "registry",
+        "store",
+        "cache",
+        "queue",
+        "layer",
+        "contract",
+        "handler",
+        "entry point",
         # Additional technical nouns for broader coverage
-        "api", "endpoint", "client", "server", "database", "orm", "model",
-        "controller", "route", "handler", "component", "worker",
-        "scheduler", "broker", "publisher", "subscriber", "consumer", "producer",
-        "repository", "factory", "builder", "adapter", "facade", "proxy",
-        "configuration", "settings", "environment", "deployment", "infrastructure",
+        "api",
+        "endpoint",
+        "client",
+        "server",
+        "database",
+        "orm",
+        "model",
+        "controller",
+        "route",
+        "handler",
+        "component",
+        "worker",
+        "scheduler",
+        "broker",
+        "publisher",
+        "subscriber",
+        "consumer",
+        "producer",
+        "repository",
+        "factory",
+        "builder",
+        "adapter",
+        "facade",
+        "proxy",
+        "configuration",
+        "settings",
+        "environment",
+        "deployment",
+        "infrastructure",
     )
 
     def _looks_like_project_context(self, content: str) -> bool:
@@ -759,16 +903,20 @@ class ContextBlockAgent:
         # occur before a dot, so ./foo and ../foo never matched when the path sat at
         # the start of the string or after a non-word char. (?<!\w) still blocks
         # false positives like "foo./bar" (word char directly before the dot).
-        has_dir_path = bool(re.search(
-            r"(?<!\w)(?:\./\w+(?:/\w+)*|\.\./\w+(?:/\w+)*|(?:src|lib|app|foresight|tests?|specs?|config|scripts|docs|pkg|internal|tools|backend|frontend)/\w+(?:/\w+)*)\b",
-            content,
-        ))
+        has_dir_path = bool(
+            re.search(
+                r"(?<!\w)(?:\./\w+(?:/\w+)*|\.\./\w+(?:/\w+)*|(?:src|lib|app|foresight|tests?|specs?|config|scripts|docs|pkg|internal|tools|backend|frontend)/\w+(?:/\w+)*)\b",
+                content,
+            )
+        )
         has_stack_noun = any(re.search(rf"\b{re.escape(n)}\b", lowered) for n in self._PCX_STACK_NOUNS)
         # Detect "the X module/service/component/..." patterns as technical objects
-        has_named_component = bool(re.search(
-            r"\bthe\s+(api|endpoint|service|module|component|client|server|database|orm|model|controller|route|handler|middleware|worker|scheduler|broker|repository|factory|adapter|facade|proxy)\b",
-            lowered,
-        ))
+        has_named_component = bool(
+            re.search(
+                r"\bthe\s+(api|endpoint|service|module|component|client|server|database|orm|model|controller|route|handler|middleware|worker|scheduler|broker|repository|factory|adapter|facade|proxy)\b",
+                lowered,
+            )
+        )
         has_technical_object = has_file_ext or has_dir_path or has_stack_noun or has_named_component
 
         # Strong decision verbs must co-occur with a code/architecture cue; otherwise
@@ -796,9 +944,7 @@ class ContextBlockAgent:
         """
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         snippet = content.strip().replace("\n", " ")[:200]
-        self.state.append_to_block(
-            PROJECT_CONTEXT, f"- [{timestamp}] (session: {session_id}) {snippet}"
-        )
+        self.state.append_to_block(PROJECT_CONTEXT, f"- [{timestamp}] (session: {session_id}) {snippet}")
         logger.info(f"Extracted project_context from session {session_id}: {content[:50]}...")
         return PROJECT_CONTEXT
 

@@ -130,8 +130,7 @@ class MemoryRelationshipStore:
 
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        return conn
+        return pool.acquire()
 
     def _ensure_table(self) -> None:
         conn = self._connect()
@@ -302,7 +301,7 @@ class MemoryRelationshipStore:
             params.append(relationship_type)
 
         sql = (
-            "SELECT id, tenant_id, user_id, source_memory_id, target_memory_id, "
+            "SELECT id, tenant_id, user_id, source_memory_id, target_memory_id, "  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             "relationship_type, confidence, metadata, created_at "
             "FROM memory_relationships WHERE " + " AND ".join(clauses) + " "
             "ORDER BY created_at DESC"
@@ -407,7 +406,7 @@ class MemoryRelationshipStore:
                     WHERE tenant_id = ? AND user_id = ?
                       AND (source_memory_id IN ({placeholders})
                            OR target_memory_id IN ({placeholders}))
-                    """,
+                    """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
                     [tid, user_id, *node_ids, *node_ids],
                 )
                 edges = [
@@ -448,7 +447,8 @@ class _MemoryRelationshipStoreSingleton:
     def get_instance(cls) -> MemoryRelationshipStore:
         """Return the process-singleton store, initializing lazily on first call."""
         if cls._instance is None:
-            assert DB_PATH is not None
+            if DB_PATH is None:
+                raise RuntimeError("DB_PATH is not configured")
             cls._instance = MemoryRelationshipStore(DB_PATH)
         return cls._instance
 

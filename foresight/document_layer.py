@@ -422,8 +422,7 @@ class DocumentStore:
 
     def _connect(self) -> Any:
         pool = get_pool(self.db_path)
-        conn = pool.acquire()
-        return conn
+        return pool.acquire()
 
     def _ensure_tables(self) -> None:
         conn = self._connect()
@@ -838,7 +837,8 @@ class _DocumentStoreSingleton:
         """Return the process-singleton DocumentStore, initializing lazily."""
         with cls._lock:
             if cls._instance is None:
-                assert DB_PATH is not None
+                if DB_PATH is None:
+                    raise RuntimeError("DB_PATH must be configured")
                 cls._instance = DocumentStore(DB_PATH)
             return cls._instance
 

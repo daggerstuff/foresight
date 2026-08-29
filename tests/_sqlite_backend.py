@@ -7,8 +7,6 @@ self-contained database without a running Postgres instance.
 
 from __future__ import annotations
 
-from typing import Any
-
 from foresight.backend.base import DatabaseBackend
 from foresight.config import DB_PATH
 from foresight.connection_pool import ConnectionPool, CustomRow

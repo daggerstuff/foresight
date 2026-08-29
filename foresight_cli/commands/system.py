@@ -10,7 +10,7 @@ from typing import Any
 
 import typer
 
-from foresight.server import get_system_status, _initialize_backend, init_db
+from foresight.server import _initialize_backend, get_system_status, init_db
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="System management, diagnostics, and configuration.")
@@ -366,7 +366,7 @@ def doctor(
     try:
         sock.connect(("127.0.0.1", mcp_port))
         check("MCP HTTP server", True, f"listening on :{mcp_port}")
-    except (socket.timeout, ConnectionRefusedError, OSError):
+    except (TimeoutError, ConnectionRefusedError, OSError):
         check("MCP HTTP server", False, f"not running on :{mcp_port} (start with: foresight-server)")
     finally:
         sock.close()
@@ -415,7 +415,7 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight.server import query_memories_temporal, TemporalWindow
+        from foresight.server import TemporalWindow, query_memories_temporal
 
         temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:

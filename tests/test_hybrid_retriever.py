@@ -20,7 +20,6 @@ from foresight.hybrid_retriever import (
     _validate_input,
     reset_hybrid_retriever,
 )
-
 from foresight.server import SearchTrace
 
 
@@ -1608,7 +1607,8 @@ class TestVectorSignal:
 
         assert "vector" in result.signal_counts
         vector_count = result.signal_counts["vector"]
-        assert isinstance(vector_count, int) and vector_count > 0, "vector signal returned no candidates"
+        assert isinstance(vector_count, int), "vector signal returned no candidates"
+        assert vector_count > 0, "vector signal returned no candidates"
         assert any("vector" in r.source_signals for r in result.results), (
             "no result was attributed to the vector signal"
         )
@@ -1636,7 +1636,8 @@ class TestVectorSignal:
         assert vector_ranked, "vector produced no ranked candidates"
         for r in result.results:
             if "vector" in r.source_signals and "tfidf_cosine" not in r.source_signals:
-                assert r.vector_score > 0 and r.tfidf_cosine_score == 0.0
+                assert r.vector_score > 0
+                assert r.tfidf_cosine_score == 0.0
         assert vector_ranked or tfidf_ranked
 
     def test_degrades_gracefully_without_embeddings(self, test_db):
@@ -1662,9 +1663,7 @@ class TestVectorSignal:
             store.index_memory(mid, content, "test_user", tenant_id="default")
 
         retriever = HybridRetriever(test_db)
-        result = retriever.search(
-            "anxiety stress", "test_user", options=HybridSearchOptions(limit=5, use_vector=False)
-        )
+        result = retriever.search("anxiety stress", "test_user", options=HybridSearchOptions(limit=5, use_vector=False))
         assert result.signal_counts["vector"] == 0
         assert all("vector" not in r.source_signals for r in result.results)
 

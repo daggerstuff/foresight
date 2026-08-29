@@ -158,6 +158,10 @@ except ImportError:
         raise ImportError("unregister_hook requires fastmcp. Install with: pip install fastmcp")
 
 
+# Server module requires fastmcp — make optional so core modules
+# (triggers, event_bus, etc.) remain importable without it.
+import contextlib
+
 from .hybrid_retriever import (
     HybridResult as HybridResult,
     HybridRetriever as HybridRetriever,
@@ -230,9 +234,7 @@ from .semantic_search import (
     serialize_vector as serialize_vector,
 )
 
-# Server module requires fastmcp — make optional so core modules
-# (triggers, event_bus, etc.) remain importable without it.
-try:
+with contextlib.suppress(ImportError):
     from .server import (
         AnalysisAction as AnalysisAction,
         ContextBlockAction as ContextBlockAction,
@@ -251,23 +253,23 @@ try:
         apply_memory_decay as apply_memory_decay,
         archive_memory as archive_memory,
         capture_triggered_memories as capture_triggered_memories,
+        compaction_lifecycle as compaction_lifecycle,
         create_document as create_document,
         delete_document as delete_document,
         delete_memory as delete_memory,
         delete_memory_embedding as delete_memory_embedding,
         generate_recovery_payload as generate_recovery_payload,
-        compaction_lifecycle as compaction_lifecycle,
         get_decay_config as get_decay_config,
         get_decay_events as get_decay_events,
         get_document as get_document,
         get_memory as get_memory,
+        get_memory_relationships as get_memory_relationships,
         get_memory_source as get_memory_source,
         get_memory_strength as get_memory_strength,
-        get_memory_relationships as get_memory_relationships,
         get_relevant_memories as get_relevant_memories,
         get_system_status as get_system_status,
-        inject_context as inject_context,
         index_memory_embedding as index_memory_embedding,
+        inject_context as inject_context,
         link_memories as link_memories,
         list_document_chunks as list_document_chunks,
         list_memories as list_memories,
@@ -295,26 +297,6 @@ try:
         traverse_memory_graph as traverse_memory_graph,
         update_memory as update_memory,
     )
-except ImportError:
-    pass
-from .temporal_queries import (
-    TemporalQueryBuilder as TemporalQueryBuilder,
-    TemporalQueryResult as TemporalQueryResult,
-    TimeWindow as TimeWindow,
-    get_temporal_query_builder as get_temporal_query_builder,
-    reset_temporal_query_builder as reset_temporal_query_builder,
-)
-from .temporal_schema import (
-    initialize_decay_config as initialize_decay_config,
-    run_temporal_migrations as run_temporal_migrations,
-)
-from .temporal_service import (
-    FreshnessTrend as FreshnessTrend,
-    TemporalService as TemporalService,
-    get_temporal_service as get_temporal_service,
-    reset_temporal_service as reset_temporal_service,
-)
-
 # CRDT and Sync exports
 from .crdt import (
     LWWMap as LWWMap,
@@ -331,6 +313,23 @@ from .sync import (
     SyncStatus as SyncStatus,
     get_sync_manager as get_sync_manager,
     reset_sync_manager as reset_sync_manager,
+)
+from .temporal_queries import (
+    TemporalQueryBuilder as TemporalQueryBuilder,
+    TemporalQueryResult as TemporalQueryResult,
+    TimeWindow as TimeWindow,
+    get_temporal_query_builder as get_temporal_query_builder,
+    reset_temporal_query_builder as reset_temporal_query_builder,
+)
+from .temporal_schema import (
+    initialize_decay_config as initialize_decay_config,
+    run_temporal_migrations as run_temporal_migrations,
+)
+from .temporal_service import (
+    FreshnessTrend as FreshnessTrend,
+    TemporalService as TemporalService,
+    get_temporal_service as get_temporal_service,
+    reset_temporal_service as reset_temporal_service,
 )
 from .websocket.server import (
     Connection as Connection,
@@ -472,10 +471,10 @@ __all__ = [
     "apply_memory_decay",
     "archive_memory",
     "capture_triggered_memories",
-    "compaction_lifecycle",
     "chunk_text",
     "clear_context_block",
     "clear_subconscious_block",
+    "compaction_lifecycle",
     "content_hash",
     "cosine_similarity",
     "create_document",
@@ -509,9 +508,9 @@ __all__ = [
     "get_memory_relationships",
     "get_memory_source",
     "get_memory_strength",
-    "get_relevant_memories",
     "get_reflection_engine",
     "get_registry",
+    "get_relevant_memories",
     "get_semantic_search",
     "index_memory_embedding",
     "initialize_decay_config",

@@ -12,8 +12,8 @@ from foresight.server import (
     get_memory_source,
     get_memory_strength,
     get_relevant_memories,
-    set_decay_config,
     init_db,
+    set_decay_config,
 )
 from foresight_cli.utils import config as cfg, output as out
 
@@ -63,7 +63,9 @@ def config_set(
     half_life_hours: float | None = typer.Option(None, "--half-life", help="New Ebbinghaus half-life in hours"),
     min_importance: float | None = typer.Option(None, "--min-importance", help="Floor for current_strength"),
     activation_boost: float | None = typer.Option(None, "--boost", help="Multiplier applied on each access"),
-    strengthening_threshold: int | None = typer.Option(None, "--strengthen", help="Activation count to mark 'strengthening'"),
+    strengthening_threshold: int | None = typer.Option(
+        None, "--strengthen", help="Activation count to mark 'strengthening'"
+    ),
     stale_threshold: float | None = typer.Option(None, "--stale", help="Below this strength, trend becomes 'stale'"),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):

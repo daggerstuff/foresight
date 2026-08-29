@@ -382,7 +382,7 @@ class WebSocketServer:
         self._ws_server = None
         self._stop_event: asyncio.Event | None = None
 
-    async def start(self, host: str = "0.0.0.0", port: int = 8765) -> None:
+    async def start(self, host: str = "127.0.0.1", port: int = 8765) -> None:
         """Start the WebSocket server."""
         self._running = True
         logger.info(f"Starting WebSocket server on {host}:{port}")

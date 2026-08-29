@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import DB_PATH, DB_URL
-from .connection_pool import PooledConnection, get_pool
+from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
 
@@ -765,8 +765,9 @@ class _ReflectionEngineSingleton:
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
-                    assert DB_PATH is not None
                     db_path = DB_PATH or DB_URL
+                if db_path is None:
+                    raise RuntimeError("DB_PATH or DB_URL must be configured")
                 cls._instance = ReflectionEngine(db_path)
             return cls._instance
 

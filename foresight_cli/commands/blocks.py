@@ -6,7 +6,7 @@ import json
 
 import typer
 
-from foresight.server import ContextBlockAction, manage_context_blocks, init_db
+from foresight.server import ContextBlockAction, init_db, manage_context_blocks
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage Foresight context blocks (guidance, preferences, state).")

@@ -18,7 +18,7 @@ register_hook(
     event_type=EventType.ANOMALY_DETECTED,
     url="https://hooks.slack.com/services/XXX/YYY/ZZZ",
     retry_count=5,
-    timeout=30
+    timeout=30,
 )
 ```
 
@@ -28,18 +28,9 @@ register_hook(
 from foresight.hooks import register_hook, EventType
 
 # Log all memory operations
-register_hook(
-    name="audit-log",
-    event_type=EventType.MEMORY_STORED,
-    url="https://audit.example.com/log",
-    retry_count=3
-)
+register_hook(name="audit-log", event_type=EventType.MEMORY_STORED, url="https://audit.example.com/log", retry_count=3)
 
-register_hook(
-    name="audit-log",
-    event_type=EventType.MEMORY_DELETED,
-    url="https://audit.example.com/log"
-)
+register_hook(name="audit-log", event_type=EventType.MEMORY_DELETED, url="https://audit.example.com/log")
 ```
 
 ## Zapier Integration
@@ -49,9 +40,7 @@ from foresight.hooks import register_hook, EventType
 
 # Trigger Zapier workflow
 register_hook(
-    name="zapier-sync",
-    event_type=EventType.MEMORY_STORED,
-    url="https://hooks.zapier.com/hooks/catch/123456/abcdef"
+    name="zapier-sync", event_type=EventType.MEMORY_STORED, url="https://hooks.zapier.com/hooks/catch/123456/abcdef"
 )
 ```
 
@@ -61,16 +50,14 @@ register_hook(
 import httpx
 from foresight.hooks import register_hook, EventType
 
+
 # Your custom endpoint
 async def handle_event(payload):
     async with httpx.AsyncClient() as client:
         await client.post("https://api.example.com/events", json=payload)
 
-register_hook(
-    name="custom-handler",
-    event_type=EventType.MEMORY_STORED,
-    url="https://api.example.com/events"
-)
+
+register_hook(name="custom-handler", event_type=EventType.MEMORY_STORED, url="https://api.example.com/events")
 ```
 
 ## CLI Registration

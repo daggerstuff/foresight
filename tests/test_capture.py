@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timezone
 
 import pytest
+
 from foresight.capture import (
     CapturedMemory,
     DedupeEngine,
@@ -25,7 +26,6 @@ def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
     import foresight.config as config_module
-
     import foresight.connection_pool as conn_pool_module
     from foresight.connection_pool import reset_pool
     from foresight.server import init_db
@@ -260,6 +260,7 @@ class TestDedupeEngine:
 
     def test_unique(self):
         from foresight.config import DB_PATH
+
         c = CapturedMemory(
             content="Let's use Redis for caching",
             category="decision",
@@ -273,6 +274,7 @@ class TestDedupeEngine:
 
     def test_duplicate_exact_match(self):
         from foresight.config import DB_PATH
+
         content = "Let's use PostgreSQL for persistence"
         self._seed_memory(content, category="decision")
         c = CapturedMemory(content=content, category="decision", scope="arc", retention="long_term", importance=0.7)
@@ -283,6 +285,7 @@ class TestDedupeEngine:
 
     def test_near_duplicate_high_overlap(self):
         from foresight.config import DB_PATH
+
         content = "Let's use PostgreSQL for persistence because it's reliable and performant"
         self._seed_memory(content, category="decision")
         similar = "Let's use PostgreSQL for persistence since it's reliable and performant for our use case"
@@ -294,6 +297,7 @@ class TestDedupeEngine:
 
     def test_near_duplicate_by_same_user(self):
         from foresight.config import DB_PATH
+
         content1 = "I prefer using FastAPI for building REST APIs and web services"
         self._seed_memory(content1, category="preference")
         content2 = "I always prefer FastAPI for building REST APIs and web services in Python"

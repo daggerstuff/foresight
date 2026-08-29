@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -21,8 +22,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
-
-import importlib.util
 
 # Optional dependency availability flags
 HAS_KAFKA = importlib.util.find_spec("kafka") is not None
@@ -144,8 +143,8 @@ class KafkaProducer(StreamProducer):
         if self._producer is None:
             try:
                 _kafka = importlib.import_module("kafka")
-                _KP = _kafka.KafkaProducer
-                self._producer = _KP(
+                kafka_producer_cls = _kafka.KafkaProducer
+                self._producer = kafka_producer_cls(
                     bootstrap_servers=self.bootstrap_servers.split(","),
                     value_serializer=_json_serializer,
                     key_serializer=_key_serializer,

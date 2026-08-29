@@ -52,6 +52,7 @@ def setup_postgres_backend():
     """Initialize the global Postgres backend once per test session."""
     os.environ["FORESIGHT_DB_URL"] = _TEST_DB_URL
 
+    from foresight import server as server_module
     from foresight.graph_store import reset_graph_store
     from foresight.hybrid_retriever import reset_hybrid_retriever
     from foresight.server import (
@@ -62,8 +63,6 @@ def setup_postgres_backend():
         init_db,
     )
     from foresight.temporal_queries import reset_temporal_query_builder
-
-    from foresight import server as server_module
 
     _initialize_backend()
     init_db()

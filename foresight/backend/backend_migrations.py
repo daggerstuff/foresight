@@ -145,7 +145,9 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
                     # ALTER COLUMN ... TYPE is Postgres-only; SQLite uses
                     # type affinity so the type change is a no-op there.
                     if backend.backend_type != "postgresql" and "ALTER COLUMN" in stmt.upper():
-                        logger.debug("Migration %s: skipping Postgres-only ALTER COLUMN on %s", version, backend.backend_type)
+                        logger.debug(
+                            "Migration %s: skipping Postgres-only ALTER COLUMN on %s", version, backend.backend_type
+                        )
                         continue
                     savepoint = f"mig_v{version}_s{idx}"
                     conn.execute(f"SAVEPOINT {savepoint}")

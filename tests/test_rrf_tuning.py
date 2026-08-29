@@ -9,6 +9,7 @@ def test_get_rrf_config_default(tmp_path):
     assert config.rrf_k == 60.0
     assert config.keyword_weight == 1.0
 
+
 def test_save_and_get_rrf_config(tmp_path):
     """Test saving a config to a specific path and loading it back."""
     config_path = tmp_path / "test_config.json"
@@ -23,6 +24,7 @@ def test_save_and_get_rrf_config(tmp_path):
     assert loaded_config.keyword_weight == 2.0
     assert loaded_config.tfidf_cosine_weight == 0.7  # Defaults maintained
 
+
 def test_get_rrf_config_corrupted_file(tmp_path):
     """Test that a corrupted JSON file falls back to defaults."""
     config_path = tmp_path / "corrupted.json"
@@ -30,6 +32,7 @@ def test_get_rrf_config_corrupted_file(tmp_path):
 
     config = get_rrf_config(str(config_path))
     assert config.rrf_k == 60.0  # Returns default on error
+
 
 def test_save_rrf_config_default_path(monkeypatch, tmp_path):
     """Test saving to the default path when no path is provided."""
@@ -40,6 +43,7 @@ def test_save_rrf_config_default_path(monkeypatch, tmp_path):
     # We need to patch DEFAULT_CONFIG_PATH since it is defined at the module level
     expected_path = home_dir / ".foresight" / "rrf_config.json"
     import foresight.rrf_tuning
+
     monkeypatch.setattr(foresight.rrf_tuning, "DEFAULT_CONFIG_PATH", expected_path)
 
     config = RRFConfig(rrf_k=42.0)

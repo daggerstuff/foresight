@@ -63,6 +63,66 @@ Out of scope:
   infrastructure.
 - Reports against forks of this repository.
 
+## Threat Model
+
+### Assets
+
+| Asset | Classification | Notes |
+| ----- | -------------- | ----- |
+| Memory contents | Sensitive | May include personal, clinical, or proprietary context volunteered by users |
+| Context blocks | Sensitive | Distilled user preferences, project state, patterns — cross-session by design |
+| Tenant / user identifiers | Internal | Every store and query is scoped by `tenant_id` + `user_id` |
+| `FORESIGHT_ENCRYPTION_KEY` | Secret | AES-256-GCM master key; optional at-rest encryption layer |
+| `FORESIGHT_DB_URL` | Secret | Database DSN (Postgres or SQLite path) |
+| LLM provider API keys | Secret | Outbound-only; used for extraction and semantic search backends |
+
+### Trust Boundaries
+
+```
+Agent / CLI client ──── MCP protocol (stdio | HTTP) ────▶ Foresight MCP server
+                                                            │
+                              ┌─────────────────────────────┼──────────────────────────┐
+                              ▼                             ▼                          ▼
+                    Postgres / SQLite                LLM provider APIs            Redis / Kafka
+                    (memory store)                   (outbound, extraction)       (companion streams)
+```
+
+1. **Client ↔ MCP server** — the server executes with the filesystem and network
+   rights of its host process. Untrusted input arrives exclusively through tool
+   arguments, which are schema-validated (pydantic) before use.
+2. **Server ↔ memory store** — all queries are tenant-scoped; connection
+   credentials come from the environment, never source.
+3. **Server ↔ LLM providers** — outbound HTTP with user memory content in
+   prompts. Providers are configured by the operator; content is sent only to
+   endpoints the operator chose.
+4. **Hooks** — pre/post memory hooks run operator-installed code with the
+   server's privileges. Only hooks the operator installs are executed.
+
+### STRIDE Summary
+
+| Threat | Boundary | Mitigation |
+| ------ | -------- | ---------- |
+| Spoofing | Client ↔ server | MCP session/auth handled by transport; operator binds the listener |
+| Tampering | Memory store | Optional AES-256-GCM encryption at rest; integrity via primary keys + versioning |
+| Repudiation | Memory mutations | `memory_versions` table retains per-change history |
+| Information disclosure | Cross-tenant | Every read/write scoped by `tenant_id` + `user_id`; regression tests assert scope isolation (`tests/test_memory_scope.py`) |
+| Information disclosure | At rest | `manage_encryption encrypt_all` + `FORESIGHT_ENCRYPTION_KEY`; key rotation supported |
+| Denial of service | Retrieval path | TF-IDF / hybrid caches with size caps; connection pooling with bounded pools |
+| Elevation of privilege | Hooks | No bundled remote code execution; hooks are local operator-installed files |
+
+### Secrets Handling
+
+- Secrets are supplied **only** through environment variables
+  (`FORESIGHT_DB_URL`, `FORESIGHT_ENCRYPTION_KEY`, provider keys). They are
+  never hardcoded, logged, or echoed into tool output.
+- CI runs **Trivy secret scanning** and **bandit** on every push and pull
+  request; findings fail the build.
+- Credential incidents follow the coordinated-disclosure process above,
+  including history rewrite and operator-side rotation before any further work.
+
+The full data-flow diagrams, STRIDE analysis, and risk register live in
+[THREAT_MODEL.md](THREAT_MODEL.md).
+
 ## Acknowledgments
 
 We thank the security research community — including Robin (Germany-based GitHub

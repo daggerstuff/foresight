@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -56,9 +57,10 @@ from .context_blocks import (
     SESSION_PATTERNS,
     USER_PREFERENCES,
     get_context_block_agent,
+    get_context_snapshot,
+    get_context_whisper,
 )
 from .context_cache import get_context_cache
-from .telemetry import get_telemetry_store
 from .crisis_detection import get_crisis_service
 from .decay_model import DecayConfigOptions, get_decay_model
 from .document_layer import (
@@ -68,6 +70,7 @@ from .document_layer import (
     content_hash as _content_hash,
     get_document_store,
 )
+from .encryption import get_encryption_engine
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .entity_extractor import Entity, get_entity_extractor
 from .event_bus import (
@@ -79,6 +82,8 @@ from .event_bus import (
     memory_updated,
     sync_progress,
 )
+from .ghost_cleanup import run_ghost_cleanup
+from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
 from .graph_store import get_graph_store
 from .hooks import (
     HookResult,
@@ -96,16 +101,16 @@ from .injection_budget import (
     LaneItem,
     format_budgeted_payload,
 )
+from .llm_client import TenantLLMClient
+from .llm_errors import LLMError, LLMNotConfiguredError
 from .memory_components import (
     MemoryCrisisTagger,
     MemoryLinker,
     MemorySynthesizer,
     SocraticGate,
 )
-from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
 from .memory_gc import run_memory_gc
-from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
-from .ghost_cleanup import run_ghost_cleanup
+from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -122,8 +127,6 @@ from .narrative_cache import NarrativeCache
 from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
 from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
-from .llm_client import TenantLLMClient
-from .llm_errors import LLMError, LLMNotConfiguredError
 from .reflection_engine import get_reflection_engine
 from .reflection_narrative import (
     ReflectionNarrativeError,
@@ -137,7 +140,8 @@ from .semantic_search import (
     get_semantic_search,
 )
 from .sensitivity import resolve_is_sensitive
-from .sync import Operation, OperationQueue, OperationType, get_sync_manager, SyncProgress
+from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sync_manager
+from .telemetry import get_telemetry_store
 from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
 from .tenant_context import get_current_account_id, get_current_user_id, set_current_tenant_id
@@ -260,18 +264,19 @@ class ContextBlockAction(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     action: Literal["list", "get", "update", "reset", "clear"] = Field(description="Action to perform")
-    label: str | None = Field(default=None, description="Block label (e.g. guidance, preferences, project_context, pending_items)")
+    label: str | None = Field(
+        default=None, description="Block label (e.g. guidance, preferences, project_context, pending_items)"
+    )
     content: str | None = Field(default=None, description="New content for update action")
 
     @model_validator(mode="before")
     @classmethod
     def handle_label_aliases(cls, values: Any) -> Any:
-        if isinstance(values, dict):
-            if not values.get("label"):
-                for alias in ("block_name", "block_type", "name", "block", "block_id", "key"):
-                    if values.get(alias):
-                        values["label"] = values[alias]
-                        break
+        if isinstance(values, dict) and not values.get("label"):
+            for alias in ("block_name", "block_type", "name", "block", "block_id", "key"):
+                if values.get(alias):
+                    values["label"] = values[alias]
+                    break
         return values
 
 
@@ -434,8 +439,8 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
         if row:
             rate_limit = row["rate_limit"] or DEFAULT_RATE_LIMIT
             burst_limit = row["burst_limit"] or DEFAULT_BURST_LIMIT
-    except Exception:
-        pass  # Fall back to defaults if DB unavailable
+    except Exception as exc:
+        logger.debug("Falling back to default tenant limits: %s", exc)
 
     limiter = get_rate_limiter()
     if not limiter.acquire(tid, rate_limit=rate_limit, burst_limit=burst_limit):
@@ -1149,8 +1154,8 @@ def init_db(backend=None):
                 for row in rows:
                     h = _content_hash(row["content"])
                     backend.execute("UPDATE memories SET content_hash = ? WHERE id = ?", (h, row["id"]))
-        except Exception:
-            pass  # Table doesn't exist yet; will be created by migrations
+        except Exception as exc:
+            logger.debug("Migration content_hash backfill skipped: %s", exc)
     finally:
         backend.close()
 
@@ -1194,7 +1199,7 @@ def _initialize_redis() -> None:
     connects.  The companion is stored as ``_redis_companion`` and
     gracefully degrades if Redis is unreachable.
     """
-    global _redis_companion  # noqa: PLW0603
+    global _redis_companion
     if not REDIS_URL:
         logger.debug("No REDIS_URL set; RedisCompanion disabled")
         return
@@ -1504,7 +1509,7 @@ def _validate_paths(arguments: dict) -> str | None:
         _SERVER_STATE["safe_path_prefixes"] = [
             str(Path.home()),
             os.getcwd(),
-            "/tmp",
+            tempfile.gettempdir(),
         ]
 
     for key in ("output_path", "path", "file_path"):
@@ -1756,6 +1761,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     # mutated by a PRE_STORE hook above.
     is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
     from .encryption import encrypt_if_enabled
+
     stored_content = encrypt_if_enabled(
         content,
         is_sensitive=bool(is_sensitive_bit),
@@ -1863,6 +1869,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
             },
         )
         from .encryption import encrypt_if_enabled
+
         is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(
             options.updates.is_sensitive, options.updates.content.strip()
         )
@@ -1894,7 +1901,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     updates_list.append("updated_at = ?")
     values.append(datetime.now(timezone.utc).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
-    update_sql = f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?"
+    update_sql = f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
     if _supports_execute_returning(conn):
         updated_row = conn.execute_returning(update_sql, values).fetchone()
     else:
@@ -2108,20 +2115,16 @@ def manage_memories(
         flat_update_kwargs["content"] = content
 
     if store_options is None and flat_store_kwargs:
-        try:
+        with contextlib.suppress(Exception):
             store_options = MemoryOptions(**flat_store_kwargs)
-        except Exception:
-            pass
     elif store_options is not None and flat_store_kwargs:
         for k, v in flat_store_kwargs.items():
             if getattr(store_options, k, None) is None or k in ("category", "scope", "retention"):
                 setattr(store_options, k, v)
 
     if updates is None and flat_update_kwargs:
-        try:
+        with contextlib.suppress(Exception):
             updates = MemoryUpdateOptions(**flat_update_kwargs)
-        except Exception:
-            pass
     elif updates is not None and flat_update_kwargs:
         for k, v in flat_update_kwargs.items():
             if getattr(updates, k, None) is None:
@@ -2330,9 +2333,7 @@ def search_memories(
         except _SemanticSearchError as exc:
             return f"Error: {exc}"
         # Reinforce surfaced memories (closes decay loop).
-        _auto_reinforce_batch(
-            [m.memory_id for m in result.matches], uid, tenant_id
-        )
+        _auto_reinforce_batch([m.memory_id for m in result.matches], uid, tenant_id)
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return json.dumps(result.to_dict(), indent=2)
 
@@ -2357,6 +2358,7 @@ def search_memories(
         event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
 
         from .encryption import decrypt_if_encrypted
+
         tags = json.loads(row["tags"])
         decrypted = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
         result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
@@ -2398,9 +2400,7 @@ def search_memories(
                         f"- [{r.memory_id}] {r.content[:100]}... (score={r.combined_score:.3f}, signals={signals})"
                     )
                 # Reinforce surfaced memories (closes decay loop).
-                _auto_reinforce_batch(
-                    [r.memory_id for r in hybrid_result.results], uid, tenant_id
-                )
+                _auto_reinforce_batch([r.memory_id for r in hybrid_result.results], uid, tenant_id)
                 # ── POST_RETRIEVE hook (hybrid search) ─────────────────
                 get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
@@ -2430,6 +2430,7 @@ def search_memories(
         return "No memories found."
 
     from .encryption import decrypt_if_encrypted
+
     results = [
         f"- [{r['id']}] ({r['scope']}/{r['retention']}) {decrypt_if_encrypted(r['content'], tenant_id=tenant_id, user_id=uid)[:80]}..."
         for r in rows
@@ -2821,11 +2822,11 @@ def _bridge_capture_memories_to_blocks(
     """
     appended = 0
     modified_labels: set[str] = set()
-    for category, content in stored_items:
+    for category, raw_content in stored_items:
         label = _CAPTURE_TO_BLOCK.get(category)
         if not label:
             continue
-        content = content.strip()
+        content = raw_content.strip()
         if not content:
             continue
         block = agent.state.get_block(label)
@@ -2871,19 +2872,25 @@ def _detect_git_root() -> str | None:
     Used by process_session_transcript to automatically fill project_path
     without the caller having to discover or pass it.
     """
-    import subprocess as _sp
+    import shutil  # nosec B404 - git lookup only, no shell invocation
+    import subprocess as _sp  # nosec B404 - bandit attributes the import to this line; argv-list git call only
+
+    git_bin = shutil.which("git")
+    if not git_bin:
+        return None
 
     try:
-        r = _sp.run(
-            ["git", "rev-parse", "--show-toplevel"],
+        r = _sp.run(  # nosec B603 - fixed argv list, git resolved via shutil.which, no shell, timeout set
+            [git_bin, "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
             timeout=2,
+            check=False,
         )
         if r.returncode == 0:
             return r.stdout.strip() or None
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to detect git root: %s", exc)
     return None
 
 
@@ -3099,7 +3106,7 @@ def _update_curation_run(
         return
     conn = get_db_connection()
     conn.execute(
-        f"UPDATE curation_runs SET {', '.join(updates)} WHERE id = ? AND tenant_id = ?",
+        f"UPDATE curation_runs SET {', '.join(updates)} WHERE id = ? AND tenant_id = ?",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
         (*values, run_id, tenant_id),
     )
     conn.commit()
@@ -3193,17 +3200,17 @@ def _promote_in_place_curation(
         if cancel_event and cancel_event.is_set():
             raise CurationError("Curation canceled before promotion committed")
         if source_rows:
-            placeholders = ",".join("?" for _ in source_rows)
-            conn.execute(
-                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
-                (archive_bank_id, now, uid, tenant_id, *(row["id"] for row in source_rows)),
-            )
+            for row in source_rows:
+                conn.execute(
+                    "UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id = ?",
+                    (archive_bank_id, now, uid, tenant_id, row["id"]),
+                )
         if staged_ids:
-            placeholders = ",".join("?" for _ in staged_ids)
-            conn.execute(
-                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
-                (source_bank_id, now, uid, tenant_id, *staged_ids),
-            )
+            for staged_id in staged_ids:
+                conn.execute(
+                    "UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id = ?",
+                    (source_bank_id, now, uid, tenant_id, staged_id),
+                )
         if cancel_event and cancel_event.is_set():
             raise CurationError("Curation canceled before promotion committed")
         if _is_run_canceled(uid, tenant_id, run_id):
@@ -3236,17 +3243,17 @@ def _restore_in_place_curation(
     try:
         conn.execute("BEGIN")
         if source_rows:
-            placeholders = ",".join("?" for _ in source_rows)
-            conn.execute(
-                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
-                (source_bank_id, now, uid, tenant_id, *(row["id"] for row in source_rows)),
-            )
+            for row in source_rows:
+                conn.execute(
+                    "UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id = ?",
+                    (source_bank_id, now, uid, tenant_id, row["id"]),
+                )
         if staged_ids:
-            placeholders = ",".join("?" for _ in staged_ids)
-            conn.execute(
-                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
-                (staging_bank_id, now, uid, tenant_id, *staged_ids),
-            )
+            for staged_id in staged_ids:
+                conn.execute(
+                    "UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id = ?",
+                    (staging_bank_id, now, uid, tenant_id, staged_id),
+                )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -4033,14 +4040,12 @@ def inject_context(
     )
     cached_val = cache.get(cache_key)
     if cached_val is not None:
-        try:
+        with contextlib.suppress(Exception):
             get_telemetry_store().record_injection(
                 surface="mcp",
                 injected_chars=len(str(cached_val)),
                 latency_ms=1.5,
             )
-        except Exception:
-            pass
         return cached_val
 
     terms = _extract_terms(conversation_text)
@@ -4113,7 +4118,9 @@ def inject_context(
         budgeted = None
 
     if not include_details:
-        res_output = budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
+        res_output = (
+            budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
+        )
     else:
         blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
         legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms)
@@ -4128,14 +4135,12 @@ def inject_context(
 
     # Store in fast in-memory cache & record telemetry
     cache.set(cache_key, res_output, user_id=uid, ttl_seconds=60.0)
-    try:
+    with contextlib.suppress(Exception):
         get_telemetry_store().record_injection(
             surface="mcp",
             injected_chars=len(res_output),
             latency_ms=latency_ms,
         )
-    except Exception:
-        pass
 
     return res_output
 
@@ -4633,14 +4638,12 @@ def compaction_lifecycle(
         )
 
     # 2. Recover: generate compact payload for re-injection
-    recovery_payload = generate_recovery_payload(
+    return generate_recovery_payload(
         session_id=session_id,
         user_id=uid,
         exclude_memory_ids=exclude_memory_ids,
         max_chars=max_chars,
     )
-
-    return recovery_payload
 
 
 def _resume_pending_curation_runs() -> None:
@@ -4948,34 +4951,32 @@ def _run_scheduled_maintenance_gc() -> None:
 
     pairs: list[tuple[str, str, str]] = []
     try:
-        with _global_backend.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT DISTINCT user_id, tenant_id, COALESCE(bank_id, 'default') AS bank_id "
-                    "FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL"
-                )
-                rows = cur.fetchall()
-                for row in rows:
-                    row_dict = dict(row) if not isinstance(row, dict) else row
-                    uid = row_dict.get("user_id", "")
-                    tid = row_dict.get("tenant_id", "default")
-                    bid = row_dict.get("bank_id", "default")
-                    if uid:
-                        pairs.append((uid, tid, bid))
+        with _global_backend.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT user_id, tenant_id, COALESCE(bank_id, 'default') AS bank_id "
+                "FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL"
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                row_dict = dict(row) if not isinstance(row, dict) else row
+                uid = row_dict.get("user_id", "")
+                tid = row_dict.get("tenant_id", "default")
+                bid = row_dict.get("bank_id", "default")
+                if uid:
+                    pairs.append((uid, tid, bid))
     except Exception:
         logger.exception("Failed to query user/tenant/bank triples for maintenance")
         return
 
     ghost_tenants: set[str] = set()
     try:
-        with _global_backend.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
-                for row in cur.fetchall():
-                    row_dict = dict(row) if not isinstance(row, dict) else row
-                    tid = row_dict.get("tenant_id", "default")
-                    if tid:
-                        ghost_tenants.add(tid)
+        with _global_backend.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
+            for row in cur.fetchall():
+                row_dict = dict(row) if not isinstance(row, dict) else row
+                tid = row_dict.get("tenant_id", "default")
+                if tid:
+                    ghost_tenants.add(tid)
     except Exception:
         logger.debug("ghost tenant query failed, falling back to maintenance pairs")
         ghost_tenants = {tid for _, tid, _ in pairs}
@@ -5154,12 +5155,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
         # Resolve tenant: use "default" if user has access to all tenants,
         # otherwise use the first allowed tenant
-        if not user.tenant_access:
-            tenant_id = "default"
-        elif "default" in user.tenant_access:
-            tenant_id = "default"
-        else:
-            tenant_id = user.tenant_access[0]
+        tenant_id = "default" if not user.tenant_access or "default" in user.tenant_access else user.tenant_access[0]
 
         if not auth_manager.validate_user_tenant_access(user, tenant_id):
             return None
@@ -5530,79 +5526,8 @@ def get_system_status(
             }
         except Exception:
             result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
-    from .encryption import get_encryption_engine
     result["encryption"] = get_encryption_engine().get_status().to_dict()
     return json.dumps(result, indent=2)
-
-
-@mcp.tool(output_schema=None)
-def manage_encryption(
-    action: Literal["status", "rotate_key", "encrypt_all"] = "status",
-    old_key: str | None = None,
-    new_key: str | None = None,
-    user_id: str | None = None,
-) -> str:
-    """Manage the optional AES-256-GCM encryption layer for stored memories.
-
-    Actions:
-    - 'status': Check if encryption is enabled, active algorithm, and mode.
-    - 'rotate_key': Re-encrypt all existing memories under a new master key.
-    - 'encrypt_all': Retroactively encrypt all plaintext memories in storage.
-    """
-    uid = user_id or USER_ID
-    tenant_id = get_current_account_id()
-    engine = get_encryption_engine()
-
-    if action == "status":
-        return json.dumps(engine.get_status().to_dict(), indent=2)
-
-    if action == "encrypt_all":
-        if not engine.enabled:
-            return "Error: No encryption key configured. Set FORESIGHT_ENCRYPTION_KEY first."
-        conn = get_db_connection()
-        try:
-            rows = conn.execute(
-                "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ?",
-                (uid, tenant_id),
-            ).fetchall()
-            count = 0
-            for r in rows:
-                content = r["content"] or ""
-                if not engine.is_encrypted(content):
-                    enc = engine.encrypt(content, tenant_id=tenant_id, user_id=uid, force=True)
-                    conn.execute("UPDATE memories SET content = ? WHERE id = ?", (enc, r["id"]))
-                    count += 1
-            conn.commit()
-            return f"Encrypted {count} memories with AES-256-GCM."
-        finally:
-            conn.close()
-
-    if action == "rotate_key":
-        if not old_key or not new_key:
-            return "Error: old_key and new_key are both required for rotate_key action."
-        conn = get_db_connection()
-        try:
-            res = engine.rotate_key(
-                old_master_key=old_key,
-                new_master_key=new_key,
-                conn=conn,
-                tenant_id=tenant_id,
-                user_id=uid,
-            )
-            return json.dumps(res, indent=2)
-        finally:
-            conn.close()
-
-    return f"Unknown action: {action}"
-
-
-# ─── Auto-injection: behavioral instruction prompt ────────────────────────────
-# This prompt tells the LLM *how* to use inject_context automatically — when
-# to call it, why, and what to do with the result.  Clients that include server
-# prompts in the system message (Claude Code, Cursor, Goose, etc.) will pick
-# this up and the LLM will start calling inject_context proactively without the
-# user ever having to ask.
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 @mcp.prompt(
@@ -6836,10 +6761,10 @@ def session_catchup_prompt(query: str = "", user_id: str | None = None) -> str:
     return f"""# Foresight Continuity & Context Catch-Up
 
 ## Active Context Blocks:
-{snapshot if snapshot else '(No active context blocks registered)'}
+{snapshot if snapshot else "(No active context blocks registered)"}
 
 ## Retrieved Memories & Directives:
-{injected if injected else '(No relevant memories found)'}
+{injected if injected else "(No relevant memories found)"}
 
 ## Continuity Instructions:
 1. Review the active guidance and relevant facts above before responding to the user.
@@ -6885,10 +6810,10 @@ def user_profile_prompt(user_id: str | None = None) -> str:
     return f"""# User Profile & Working Style
 
 ## Active Guidance:
-{guidance if guidance else '(Standard working mode)'}
+{guidance if guidance else "(Standard working mode)"}
 
 ## Documented User Preferences & Traits:
-{search_res if search_res else '(No specific traits registered)'}
+{search_res if search_res else "(No specific traits registered)"}
 """
 
 
@@ -7441,6 +7366,7 @@ async def ui_api_inject(request: Any) -> Any:
 async def ui_api_maintenance(request: Any) -> Any:
     """API endpoint for triggering background maintenance and auto-distillation."""
     from starlette.responses import JSONResponse
+
     from .context_blocks import auto_distill_context_blocks
 
     uid = USER_ID
@@ -7456,6 +7382,7 @@ async def ui_api_maintenance(request: Any) -> Any:
 async def ui_api_benchmark(request: Any) -> Any:
     """API endpoint for running the Foresight Production Value & Proof Benchmark Suite."""
     from starlette.responses import JSONResponse
+
     from .proof_benchmark import run_proof_benchmark
 
     try:
@@ -7470,6 +7397,7 @@ async def ui_api_benchmark(request: Any) -> Any:
 async def ui_api_telemetry(request: Any) -> Any:
     """API endpoint for telemetry metrics and lifetime token savings."""
     from starlette.responses import JSONResponse
+
     from .context_cache import get_context_cache
     from .telemetry import get_telemetry_store
 

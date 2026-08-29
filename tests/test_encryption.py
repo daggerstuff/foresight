@@ -5,14 +5,11 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-import pytest
-
 from foresight.encryption import (
     ENC_PREFIX_V1,
     ForesightEncryptionEngine,
     decrypt_if_encrypted,
     encrypt_if_enabled,
-    get_encryption_engine,
 )
 
 

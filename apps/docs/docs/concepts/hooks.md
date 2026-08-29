@@ -34,7 +34,7 @@ hook = register_hook(
     event_type=EventType.MEMORY_STORED,
     url="https://hooks.slack.com/services/xxx",
     retry_count=3,
-    timeout=30
+    timeout=30,
 )
 ```
 
@@ -98,31 +98,19 @@ unregister_hook(hook_id)
 ### Slack Notifications
 
 ```python
-register_hook(
-    name="slack-alerts",
-    event_type=EventType.ANOMALY_DETECTED,
-    url="https://hooks.slack.com/services/xxx"
-)
+register_hook(name="slack-alerts", event_type=EventType.ANOMALY_DETECTED, url="https://hooks.slack.com/services/xxx")
 ```
 
 ### Audit Logging
 
 ```python
-register_hook(
-    name="audit-log",
-    event_type=EventType.MEMORY_STORED,
-    url="https://audit.example.com/log"
-)
+register_hook(name="audit-log", event_type=EventType.MEMORY_STORED, url="https://audit.example.com/log")
 ```
 
 ### Cache Invalidation
 
 ```python
-register_hook(
-    name="cache-flush",
-    event_type=EventType.MEMORY_UPDATED,
-    url="https://cache.example.com/flush"
-)
+register_hook(name="cache-flush", event_type=EventType.MEMORY_UPDATED, url="https://cache.example.com/flush")
 ```
 
 ## Related

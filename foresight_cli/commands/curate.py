@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 
-from foresight.server import CurationRunAction, manage_curation_runs, init_db
+from foresight.server import CurationRunAction, init_db, manage_curation_runs
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage async Foresight curation runs.")

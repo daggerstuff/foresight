@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from foresight.context_cache import ContextCache, get_context_cache
+
+from foresight.context_cache import ContextCache
 
 
 def test_context_cache_set_and_get():

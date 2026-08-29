@@ -667,7 +667,9 @@ def system_error(error_type: str, message: str, actor: str = "system") -> Event:
     )
 
 
-def sync_progress(status: str, pending_count: int, synced_count: int, failed_count: int, actor: str = "system") -> Event:
+def sync_progress(
+    status: str, pending_count: int, synced_count: int, failed_count: int, actor: str = "system"
+) -> Event:
     """Emit sync progress event."""
     return _make_event(
         EventType.SYNC_PROGRESS,

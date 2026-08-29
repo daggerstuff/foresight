@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from foresight.server import create_document, delete_document, get_document, list_document_chunks, init_db
+from foresight.server import create_document, delete_document, get_document, init_db, list_document_chunks
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage source documents and their chunks.")
@@ -23,7 +23,9 @@ def _init_and_user(user_id_override: str | None = None):
 def create(
     title: str = typer.Argument(..., help="Document title"),
     content: str = typer.Argument(..., help="Document content (raw text)"),
-    source: str = typer.Option("note", "--source", "-s", help="Source type (transcript/article/journal/note/email/other)"),
+    source: str = typer.Option(
+        "note", "--source", "-s", help="Source type (transcript/article/journal/note/email/other)"
+    ),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
     """Create a new document with auto-chunking."""

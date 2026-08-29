@@ -139,7 +139,7 @@ def _query_memories_by_scope(
                    AND scope IN ({scope_placeholders})
                    {retention_clause}
                  ORDER BY {options.order_by}
-                 LIMIT ?""",
+                 LIMIT ?""",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
             (*params, options.limit),
         ).fetchall()
     finally:

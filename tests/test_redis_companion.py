@@ -8,6 +8,7 @@ Redis is unavailable and operates normally when backed by a
 from __future__ import annotations
 
 import pytest
+
 from foresight.backend.redis_companion import RedisCompanion
 
 

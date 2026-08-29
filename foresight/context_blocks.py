@@ -7,6 +7,8 @@ blocks while reusing the existing compatibility-backed implementation.
 
 from __future__ import annotations
 
+from typing import Any
+
 from .block_registry import MemoryBlockSchema, get_registry, initialize_default_blocks
 from .subconscious import (
     DEFAULT_MEMORY_BLOCKS,
@@ -152,8 +154,8 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
     Operates hands-off in the background to keep user preferences and
     project context continuously refined.
     """
-    import json
     import logging
+
     from .subconscious import get_context_block_agent
 
     logger = logging.getLogger("foresight_context_distill")
@@ -191,9 +193,7 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
                     clean = re.sub(r"^\[auto-captured/\w+\]\s*", "", content)
                     words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
                     # Check redundancy against existing rules (Jaccard similarity > 0.5)
-                    is_redundant = any(
-                        len(words & s) / max(1, len(words | s)) > 0.5 for s in seen_token_sets
-                    )
+                    is_redundant = any(len(words & s) / max(1, len(words | s)) > 0.5 for s in seen_token_sets)
                     if not is_redundant:
                         seen_token_sets.append(words)
                         unique_rules.append(f"- {clean}")
@@ -223,7 +223,11 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
                 if arc_lines:
                     current_proj = agent.get_block("project_context") or ""
                     new_proj = "\n".join(arc_lines[:6])
-                    if not current_proj.strip() or current_proj.strip() == "Default project context." or "postgres" in new_proj.lower():
+                    if (
+                        not current_proj.strip()
+                        or current_proj.strip() == "Default project context."
+                        or "postgres" in new_proj.lower()
+                    ):
                         agent.update_block("project_context", new_proj)
                         updated_blocks.append("project_context")
 

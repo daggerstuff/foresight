@@ -84,7 +84,80 @@ dev = [
   "typer>=0.9.0",
   "rich>=13.0",
   "textual>=1.0.0",
+  "ruff>=0.14",
+  "bandit>=1.8",
 ]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+exclude = [
+  "node_modules",
+  "venv",
+  ".venv",
+  "env",
+  "build",
+  "dist",
+  ".git",
+  "**/__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "W",
+  "I",
+  "N",
+  "UP",
+  "B",
+  "A",
+  "C4",
+  "DTZ",
+  "PIE",
+  "PT",
+  "Q",
+  "RET",
+  "SIM",
+  "T20",
+  "TID",
+  "ARG",
+  "PL",
+  "RUF",
+]
+# PLC0415: function-level imports are an intentional pattern here — the MCP
+# server lazily imports heavy subsystems to keep startup fast.
+# PLW0603: module-singleton accessors (get_pool, get_event_bus, …) are the
+# established state-management pattern across this codebase.
+ignore = ["E501", "UP017", "PLR2004", "PLC0415", "PLR0917", "PLW0603"]
+
+[tool.ruff.lint.pylint]
+max-args = 10
+
+[tool.ruff.lint.per-file-ignores]
+"foresight/server.py" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "ARG001"]
+"foresight/llm_client.py" = ["PLR0913"]
+"foresight/tenant_middleware.py" = ["PLR0912"]
+"foresight/memory_maintenance.py" = ["PLR0912", "PLR0915"]
+"foresight/memory_gc.py" = ["PLR0915"]
+"foresight/hybrid_retriever.py" = ["PLR0915"]
+"foresight/reflection_narrative.py" = ["PLR0912"]
+"foresight/narrative_cache.py" = ["ARG002"]
+"foresight/entity_extractor.py" = ["ARG002"]
+"foresight/subconscious.py" = ["PLR0912"]
+"foresight/stream_producer.py" = ["ARG002"]
+"foresight/proof_benchmark.py" = ["E402", "ARG001"]
+"foresight/consumer_group.py" = ["E402"]
+"foresight/__main__.py" = ["E402"]
+"foresight_cli/**" = ["PLR0912", "PLR0913", "E402", "B008", "ARG001"]
+"foresight_cli/commands/system.py" = ["PLR0915"]
+"tests/*" = ["PLC0415", "ARG001", "PLR0913", "SIM115", "ARG005", "PT019", "E402", "PT012"]
+"scripts/*" = ["T201", "E402", "N999"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["foresight", "foresight_cli"]
+combine-as-imports = true
+force-single-line = false
 
 [tool.pyright]
 venvPath = "."

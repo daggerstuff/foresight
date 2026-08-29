@@ -225,7 +225,7 @@ SCENARIOS: list[MaintenanceScenario] = [
         modes=["consolidate"],
         expected_metric="duplicates_found",
         expected_min=4,
-        pass_condition="duplicates_found >= 4 (two high-overlap + two marginal pairs)",
+        pass_condition="duplicates_found >= 4 (two high-overlap + two marginal pairs)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
     ),
     MaintenanceScenario(
         id="S2_contradict",
@@ -233,7 +233,7 @@ SCENARIOS: list[MaintenanceScenario] = [
         modes=["contradict"],
         expected_metric="contradictions_flagged_review",
         expected_min=1,
-        pass_condition="contradictions_flagged_review >= 1 (love/hate React)",
+        pass_condition="contradictions_flagged_review >= 1 (love/hate React)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
     ),
     MaintenanceScenario(
         id="S3_archive_stale",
@@ -241,7 +241,7 @@ SCENARIOS: list[MaintenanceScenario] = [
         modes=["archive_stale"],
         expected_metric="stale_archived",
         expected_min=2,
-        pass_condition="stale_archived >= 2 (two low-importance memories)",
+        pass_condition="stale_archived >= 2 (two low-importance memories)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
     ),
     MaintenanceScenario(
         id="S4_synthesize",
@@ -249,7 +249,7 @@ SCENARIOS: list[MaintenanceScenario] = [
         modes=["synthesize"],
         expected_metric="insights_generated",
         expected_min=1,
-        pass_condition="insights_generated >= 1 (quality/test topic across 3 memories)",
+        pass_condition="insights_generated >= 1 (quality/test topic across 3 memories)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
     ),
     MaintenanceScenario(
         id="S5_all_modes",
@@ -257,7 +257,7 @@ SCENARIOS: list[MaintenanceScenario] = [
         modes=["consolidate", "contradict", "archive_stale", "synthesize"],
         expected_metric="modes_run",
         expected_min=4,
-        pass_condition="All 4 modes run without errors and produce expected outputs",
+        pass_condition="All 4 modes run without errors and produce expected outputs",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
     ),
 ]
 
@@ -513,6 +513,7 @@ class MaintenanceEvalHarness:
                 count += 1
             except Exception:
                 import logging
+
                 logging.getLogger(__name__).warning(
                     "Fixture seeding failed, non-critical",
                     exc_info=True,
