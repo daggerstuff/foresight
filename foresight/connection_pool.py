@@ -22,7 +22,7 @@ from collections import deque
 from contextlib import suppress
 from typing import Any
 
-from .config import DB_PATH, DB_URL
+from .config import DB_PATH
 
 logger = logging.getLogger("foresight_connection_pool")
 
@@ -234,19 +234,11 @@ def get_pool(db_path: str | None = None) -> Any:
             "acquiring a pool."
         )
 
-    db_path = DB_PATH or DB_URL
-    if db_path is None:
-        raise RuntimeError(
-            "No Postgres backend active and no db_path provided. "
-            "Production: set FORESIGHT_DB_URL and ensure the server "
-            "initialized correctly. Tests: pass an explicit db_path."
-        )
-
-    with _pool_lock:
-        pool_path = os.path.abspath(db_path)
-        if pool_path not in _pools:
-            _pools[pool_path] = ConnectionPool(pool_path)
-        return _pools[pool_path]
+    raise RuntimeError(
+        "No Postgres backend active and no db_path provided. "
+        "Production: set FORESIGHT_DB_URL and ensure the server "
+        "initialized correctly. Tests: pass an explicit db_path."
+    )
 
 
 def reset_pool() -> None:

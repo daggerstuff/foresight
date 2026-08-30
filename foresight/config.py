@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 # Database
 # Neon / PostgreSQL is the only production backend. Set FORESIGHT_DB_URL in production.
-# Format: postgresql://user:password@host:port/dbname?sslmode=require
+# Format: postgresql://user:password@host:port/dbname?sslmode=verify-full&channel_binding=require
 DB_URL = os.environ.get("FORESIGHT_DB_URL", "")
 
 # SQLite path (tests only). Set FORESIGHT_DB_PATH to use a local SQLite database

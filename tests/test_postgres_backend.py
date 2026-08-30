@@ -80,14 +80,15 @@ class TestPostgresBackendHelpers:
     """Tests for PostgresBackend static/private helpers."""
 
     def test_ensure_sslmode_appends_when_missing(self):
-        """_ensure_sslmode appends sslmode=require when no sslmode present."""
+        """_ensure_sslmode appends the production TLS trio when no sslmode present."""
         dsn = PostgresBackend._ensure_sslmode("postgresql://user:pass@host/db")
-        assert "sslmode=require" in dsn
+        assert "sslmode=verify-full" in dsn
+        assert "channel_binding=require" in dsn
 
     def test_ensure_sslmode_uses_and_when_query_present(self):
         """_ensure_sslmode uses & separator when ? already present."""
         dsn = PostgresBackend._ensure_sslmode("postgresql://user:pass@host/db?connect_timeout=10")
-        assert "connect_timeout=10&sslmode=require" in dsn
+        assert "connect_timeout=10&sslmode=verify-full&channel_binding=require" in dsn
 
     def test_ensure_sslmode_preserves_existing(self):
         """_ensure_sslmode does not duplicate sslmode when already set."""

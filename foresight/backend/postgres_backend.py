@@ -8,7 +8,7 @@ Key dialect differences handled internally:
 - Parameter placeholders: ``?`` → ``%s``
 - ``INTEGER PRIMARY KEY AUTOINCREMENT`` → ``SERIAL``
 - ``BLOB`` → ``BYTEA``
-- Neon requires ``sslmode=require``
+- Production TLS: ``sslmode=verify-full&channel_binding=require`` appended when absent
 """
 
 from __future__ import annotations
@@ -78,8 +78,8 @@ class PostgresBackend(DatabaseBackend):
     ----------
     dsn :
         PostgreSQL connection string (e.g. ``postgresql://user:pass@host/db``).
-        Neon DSNs should include ``sslmode=require``; the backend appends it
-        automatically when absent.
+        Neon DSNs should include ``sslmode=verify-full&channel_binding=require``;
+        the backend appends the production trio automatically when absent.
     min_pool_size :
         Minimum connections kept open in the pool.
     max_pool_size :
@@ -235,7 +235,7 @@ class PostgresBackend(DatabaseBackend):
 
     @staticmethod
     def _ensure_sslmode(dsn: str) -> str:
-        """Append ``sslmode=require`` and TCP keepalive parameters when absent.
+        """Append production TLS parameters and TCP keepalives when absent.
 
         Neon (serverless Postgres) closes idle connections after a short
         timeout, causing ``psycopg.pool`` to log "discarding closed connection"
@@ -243,18 +243,16 @@ class PostgresBackend(DatabaseBackend):
         connection before Neon's idle reaper fires, keeping the socket alive
         and eliminating the noise.
 
-        ``sslmode=require`` is only forced for remote hosts — local servers
-        (localhost / loopback / unix sockets) typically run without TLS, and
-        forcing it there makes every pool connection fail.  Local DSNs fall
-        back to libpq's default ``prefer`` (TLS if offered, else plaintext).
+        DSNs lacking TLS parameters get the production trio —
+        ``sslmode=verify-full&channel_binding=require`` — matching the real
+        server configuration (``.env`` Neon DSNs).  ``verify-full`` validates
+        the certificate chain against the system CA bundle and checks the
+        hostname, so MITM'd connections fail closed.  Explicit ``sslmode=``
+        values in the DSN are preserved untouched.
         """
-        host = re.match(r"^[a-z]+://[^/@]+@([^/:?]+)", dsn, re.IGNORECASE)
-        host = host.group(1) if host else ""
-        is_local = host in {"localhost", "127.0.0.1", "::1", ""} or host.startswith("/")
-
-        if "sslmode=" not in dsn and not is_local:
+        if "sslmode=" not in dsn:
             separator = "&" if "?" in dsn else "?"
-            dsn = f"{dsn}{separator}sslmode=require"
+            dsn = f"{dsn}{separator}sslmode=verify-full&channel_binding=require"
 
         keepalive_params = {
             "keepalives": "1",
