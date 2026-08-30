@@ -3,3 +3,8 @@ allowBuilds:
 
 overrides:
   serialize-javascript: ^7.0.3
+  fast-uri: ^3.1.5
+  "brace-expansion@1": 1.1.18
+  "brace-expansion@2": 2.1.4
+  "js-yaml@3": 3.15.1
+  "js-yaml@4": 4.3.1
