@@ -242,8 +242,17 @@ class PostgresBackend(DatabaseBackend):
         warnings and incur reconnect overhead.  TCP keepalives probe the
         connection before Neon's idle reaper fires, keeping the socket alive
         and eliminating the noise.
+
+        ``sslmode=require`` is only forced for remote hosts — local servers
+        (localhost / loopback / unix sockets) typically run without TLS, and
+        forcing it there makes every pool connection fail.  Local DSNs fall
+        back to libpq's default ``prefer`` (TLS if offered, else plaintext).
         """
-        if "sslmode=" not in dsn:
+        host = re.match(r"^[a-z]+://[^/@]+@([^/:?]+)", dsn, re.IGNORECASE)
+        host = host.group(1) if host else ""
+        is_local = host in {"localhost", "127.0.0.1", "::1", ""} or host.startswith("/")
+
+        if "sslmode=" not in dsn and not is_local:
             separator = "&" if "?" in dsn else "?"
             dsn = f"{dsn}{separator}sslmode=require"
 
