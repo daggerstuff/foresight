@@ -4,10 +4,10 @@ import { ForesightClient, FetchLike, ForesightHttpError } from './client'
 import { MemoryScope, RetentionPolicy } from './types'
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
-  const headersObj: Record<string, string> =
-    init.headers instanceof Headers
-      ? Object.fromEntries(Array.from((init.headers as any).entries()))
-      : Array.isArray(init.headers)
+    const headersObj: Record<string, string> =
+      init.headers instanceof Headers
+        ? Object.fromEntries(init.headers.entries())
+        : Array.isArray(init.headers)
         ? Object.fromEntries(init.headers)
         : init.headers
           ? { ...init.headers }

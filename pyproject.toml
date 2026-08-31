@@ -86,6 +86,7 @@ dev = [
   "textual>=8.2.8",
   "ruff>=0.16.5",
   "bandit>=1.9.4",
+  "twine>=7.0.0",
 ]
 
 [tool.ruff]
@@ -194,5 +195,4 @@ exclude_dirs = ["tests"]
 [tool.radarlint]
 exclude_dirs = ["tests"]
 skip_rules = ["python:S1244"]
-
 

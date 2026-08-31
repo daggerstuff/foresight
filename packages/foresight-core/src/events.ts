@@ -16,14 +16,14 @@ export class EventStoreClient {
   /**
    * Get events by entity ID
    */
-  async getByEntity(entityId: string, limit: number = 100): Promise<Event[]> {
+  async getByEntity(_entityId: string, _limit: number = 100): Promise<Event[]> {
     throw new Error('Not implemented - requires MCP connection')
   }
 
   /**
    * Get events by type
    */
-  async getByType(eventType: EventType, limit: number = 100): Promise<Event[]> {
+  async getByType(_eventType: EventType, _limit: number = 100): Promise<Event[]> {
     throw new Error('Not implemented - requires MCP connection')
   }
 
@@ -33,7 +33,7 @@ export class EventStoreClient {
   async getByTimeRange(
     start: Date,
     end: Date,
-    limit: number = 100,
+    _limit: number = 100,
   ): Promise<Event[]> {
     throw new Error('Not implemented - requires MCP connection')
   }
@@ -41,7 +41,7 @@ export class EventStoreClient {
   /**
    * Get all events (paginated)
    */
-  async getAll(limit: number = 100, offset: number = 0): Promise<Event[]> {
+  async getAll(_limit: number = 100, _offset: number = 0): Promise<Event[]> {
     throw new Error('Not implemented - requires MCP connection')
   }
 
@@ -49,8 +49,8 @@ export class EventStoreClient {
    * Replay events for an entity
    */
   async replay(
-    entityId: string,
-    handler: (event: Event) => void,
+    _entityId: string,
+    _handler: (event: Event) => void,
   ): Promise<void> {
     throw new Error('Not implemented - requires MCP connection')
   }
