@@ -36,6 +36,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .auth import AuthMiddleware, get_auth_manager
+from .auth_oauth import ForesightOAuthProvider
 from .backend import RedisCompanion, create_backend
 from .backend.backend_migrations import ensure_schema_migrations_table
 from .block_registry import InjectionPoint, initialize_default_blocks
@@ -1561,13 +1562,30 @@ FORESIGHT_SERVER_INSTRUCTIONS = """Foresight provides persistent memory, continu
 3. Proactive Capture: Store key user preferences, architectural decisions, and explicit user feedback using `manage_memories(action="store", ...)`.
 4. Curation: Use `manage_curation_runs` to inspect and review memory consolidation or archiving proposals without loss of durable context."""
 
-mcp = FastMCP(
-    "Foresight",
-    instructions=FORESIGHT_SERVER_INSTRUCTIONS,
-    website_url="https://foresight.vectorize.io",
-    version="0.19.0",
-    middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
-)
+# Determine auth mode: OAuth provider when FORESIGHT_OAUTH_BASE_URL is set,
+# otherwise fall back to the legacy API-key AuthMiddleware.
+_oauth_base_url = os.environ.get("FORESIGHT_OAUTH_BASE_URL")
+if _oauth_base_url:
+    _oauth_provider = ForesightOAuthProvider(
+        base_url=_oauth_base_url,
+        service_documentation_url=os.environ.get("FORESIGHT_OAUTH_DOCS_URL"),
+    )
+    mcp = FastMCP(
+        "Foresight",
+        instructions=FORESIGHT_SERVER_INSTRUCTIONS,
+        website_url="https://foresight.vectorize.io",
+        version="0.19.0",
+        auth=_oauth_provider,
+        middleware=[TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+    )
+else:
+    mcp = FastMCP(
+        "Foresight",
+        instructions=FORESIGHT_SERVER_INSTRUCTIONS,
+        website_url="https://foresight.vectorize.io",
+        version="0.19.0",
+        middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+    )
 
 logger = logging.getLogger("foresight_server")
 if not logger.handlers:
@@ -1575,6 +1593,9 @@ if not logger.handlers:
     _h.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
     logger.addHandler(_h)
     logger.setLevel(logging.INFO)
+
+if _oauth_base_url:
+    logger.info("OAuth provider enabled (base_url=%s)", _oauth_base_url)
 
 RowLike = Mapping[str, Any]
 
