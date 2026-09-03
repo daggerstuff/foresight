@@ -27,10 +27,171 @@ on:
           - testpypi
           - check-only
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+  quality:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format verification
+        run: uv run ruff format --check .
+
+      - name: Bandit security scan
+        run: uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
+
+      - name: Build package
+        run: uv build
+
+      - name: Check built artifacts
+        run: uv run twine check dist/*
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ensure test database
+        env:
+          FORESIGHT_DB_URL: postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: |
+          PYTAG=$(echo "${{ matrix.python-version }}" | tr -d '.')
+          export FORESIGHT_TEST_DB_NAME="foresight_test_${PYTAG}"
+          uv run python - <<'PY'
+          import os
+          import urllib.parse
+          import psycopg
+
+          url = os.environ['FORESIGHT_DB_URL']
+          test_db = os.environ['FORESIGHT_TEST_DB_NAME']
+          parsed = urllib.parse.urlparse(url)
+          base = parsed._replace(path='/postgres', query=parsed.query).geturl()
+          test_url = parsed._replace(path=f'/{test_db}', query=parsed.query).geturl()
+
+          with psycopg.connect(base) as conn:
+              conn.autocommit = True
+              with conn.cursor() as cursor:
+                  cursor.execute(
+                      """
+                      SELECT pg_terminate_backend(pid)
+                      FROM pg_stat_activity
+                      WHERE datname = %s AND pid <> pg_backend_pid()
+                      """,
+                      (test_db,),
+                  )
+                  cursor.execute(f'DROP DATABASE IF EXISTS "{test_db}"')
+                  cursor.execute(f'CREATE DATABASE "{test_db}"')
+
+          with open(os.environ['GITHUB_ENV'], 'a') as env_file:
+              env_file.write(f'FORESIGHT_TEST_DB_URL={test_url}\n')
+          PY
+
+      - name: Run tests with coverage
+        run: |
+          uv run pytest tests/ --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-lcov-${{ matrix.python-version }}
+          path: coverage.lcov
+          retention-days: 7
+
+  sdk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: packages/foresight-core/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm --dir packages/foresight-core install --frozen-lockfile
+
+      - name: Audit SDK dependencies
+        run: pnpm --dir packages/foresight-core audit --audit-level moderate
+
+      - name: Lint SDK
+        run: pnpm --dir packages/foresight-core lint
+
+      - name: Test SDK
+        run: pnpm --dir packages/foresight-core test run
+
+      - name: Build SDK
+        run: pnpm --dir packages/foresight-core build
+
 jobs:
   build-and-publish:
     name: Build and publish to PyPI
     runs-on: ubuntu-latest
+    needs:
+      - quality
+      - test
+      - sdk
     permissions:
       contents: read
       id-token: write # Required for trusted publishing
@@ -39,19 +200,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           version: 'latest'
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --frozen --group dev
 
-      - name: Lint check
-        run:
-          uv run ruff check foresight_cli/ foresight/ --output-format=github
-          --quiet || true
+      - name: Verify Python target
+        run: python --version
 
       - name: Build package
         run: uv build

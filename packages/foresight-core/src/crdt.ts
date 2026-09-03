@@ -1,8 +1,6 @@
 /**
  * CRDT (Conflict-Free Replicated Data Type) Implementations
  */
-import { VectorClockType } from './types'
-
 // =============================================================================
 // Vector Clock
 // =============================================================================

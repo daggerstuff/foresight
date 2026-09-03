@@ -45,5 +45,5 @@ def create_backend(db_url: str | None = None) -> DatabaseBackend:
     raise RuntimeError(
         "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. "
         "Postgres is the sole backend.\n"
-        "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'"
+        "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=verify-full&channel_binding=require'"
     )

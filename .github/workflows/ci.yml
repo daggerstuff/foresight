@@ -145,3 +145,36 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: '1'
           ignore-unfixed: true
+
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: packages/foresight-core/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm --dir packages/foresight-core install --frozen-lockfile
+
+      - name: Audit SDK dependencies
+        run: pnpm --dir packages/foresight-core audit --audit-level moderate
+
+      - name: Lint SDK
+        run: pnpm --dir packages/foresight-core lint
+
+      - name: Test SDK
+        run: pnpm --dir packages/foresight-core test run
+
+      - name: Build SDK
+        run: pnpm --dir packages/foresight-core build

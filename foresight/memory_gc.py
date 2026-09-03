@@ -15,6 +15,8 @@ import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
+from psycopg import errors as psycopg_errors
+
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 
@@ -188,6 +190,8 @@ class MemoryGC:
                     logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
                 else:
                     raise
+            except psycopg_errors.UndefinedTable as e:
+                logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
 
             # ------------------------------------------------------------------
             # Phase 4: Clean orphaned data (no FK cascade protection)

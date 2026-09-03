@@ -1,7 +1,7 @@
 /**
  * WebSocket client for Foresight real-time subscriptions
  */
-import { EventType, Event } from './types'
+import { EventType } from './types'
 
 export interface WebSocketClientOptions {
   url: string

@@ -46,6 +46,8 @@ The SDK package is verified locally with pnpm before release preparation:
 
 ```bash
 cd packages/foresight-core
+pnpm lint
+pnpm test run
 pnpm build
 pnpm pack --pack-destination /tmp/foresight-core-pack
 ```

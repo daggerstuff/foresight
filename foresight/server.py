@@ -1177,7 +1177,7 @@ def _initialize_backend() -> None:
         raise RuntimeError(
             "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. "
             "SQLite-as-primary is no longer supported.\n"
-            "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'"
+            "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=verify-full&channel_binding=require'"
         )
     try:
         backend = create_backend()

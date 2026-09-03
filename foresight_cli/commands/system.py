@@ -18,6 +18,13 @@ app = typer.Typer(help="System management, diagnostics, and configuration.")
 
 def _init_backend() -> None:
     """Initialize DB schema and backend (ensures Postgres routing works in CLI)."""
+    config = cfg.ensure_config()
+    if not os.environ.get("FORESIGHT_DB_URL") and config.db_url:
+        os.environ["FORESIGHT_DB_URL"] = config.db_url
+    if not os.environ.get("FORESIGHT_USER_ID") and config.user_id:
+        os.environ["FORESIGHT_USER_ID"] = config.user_id
+    if not os.environ.get("FORESIGHT_BANK_ID") and config.bank_id:
+        os.environ["FORESIGHT_BANK_ID"] = config.bank_id
     init_db()
     _initialize_backend()
 
