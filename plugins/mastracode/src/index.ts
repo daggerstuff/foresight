@@ -15,7 +15,7 @@ import {
 
 const DEFAULT_FORESIGHT_URL =
   process.env.FORESIGHT_MCP_URL ?? 'http://127.0.0.1:8764'
-const DEFAULT_TIMEOUT_MS = 5000
+const DEFAULT_TIMEOUT_MS = 12000
 
 export interface ForesightClientConfig {
   baseUrl?: string
@@ -63,6 +63,7 @@ export async function mcpCall(
         'Accept': 'application/json, text/event-stream',
         'MCP-Protocol-Version': '2026-07-28',
         'Mcp-Method': 'tools/call',
+        'Mcp-Name': toolName,
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
@@ -71,6 +72,10 @@ export async function mcpCall(
         params: {
           name: toolName,
           arguments: args,
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientCapabilities': {},
+          },
         },
       }),
       signal: controller.signal,
@@ -329,7 +334,25 @@ export function createForesightProcessor(
  * ==============================================================================
  */
 
+function mapScope(scope?: string): string {
+  if (scope === 'project') return 'arc'
+  if (scope === 'global') return 'trait'
+  if (scope === 'session') return 'session'
+  return scope || 'arc'
+}
+
+function resolveUserId(config?: ForesightClientConfig): string {
+  return (
+    config?.userId ||
+    process.env.FORESIGHT_IDENTITY ||
+    process.env.FORESIGHT_USER_ID ||
+    'vivi'
+  )
+}
+
 export function createForesightTools(config?: ForesightClientConfig) {
+  const userId = resolveUserId(config)
+
   const injectContextTool = createTool({
     id: 'foresight_inject_context',
     description:
@@ -353,7 +376,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
         {
           conversation_text: query,
           max_memories,
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )
@@ -387,7 +410,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
       const content = input?.content ?? input?.context?.content ?? ''
       const category = input?.category ?? input?.context?.category ?? 'decision'
       const importance = input?.importance ?? input?.context?.importance ?? 0.9
-      const scope = input?.scope ?? input?.context?.scope ?? 'project'
+      const rawScope = input?.scope ?? input?.context?.scope ?? 'project'
       const retention =
         input?.retention ?? input?.context?.retention ?? 'permanent'
       const res = await mcpCall(
@@ -397,13 +420,16 @@ export function createForesightTools(config?: ForesightClientConfig) {
           content,
           category,
           importance,
-          scope,
+          scope: mapScope(rawScope),
           retention,
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )
-      return { result: res || 'Memory stored successfully.' }
+      if (!res) {
+        return { error: 'Failed to store memory: Foresight MCP server call failed or timed out.' }
+      }
+      return { result: res }
     },
   })
 
@@ -427,11 +453,11 @@ export function createForesightTools(config?: ForesightClientConfig) {
         {
           query,
           limit,
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )
-      return { results: res || 'No memories matched.' }
+      return { memories: res || 'No memories matched the search query.' }
     },
   })
 

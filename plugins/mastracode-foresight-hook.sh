@@ -41,7 +41,7 @@ if "prompt" in event_name.lower() or action == "prompt":
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
+        with urllib.request.urlopen(req, timeout=12.0) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
                 formatted = data.get("formatted", "")
@@ -76,6 +76,10 @@ elif "stop" in event_name.lower() or "end" in event_name.lower() or action in ("
                         "session_id": session_id,
                         "messages": messages[-10:],
                     },
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    },
                 },
             }
             req = urllib.request.Request(
@@ -85,10 +89,11 @@ elif "stop" in event_name.lower() or "end" in event_name.lower() or action in ("
                     "Content-Type": "application/json",
                     "MCP-Protocol-Version": "2026-07-28",
                     "Mcp-Method": "tools/call",
+                    "Mcp-Name": "process_session_transcript",
                 },
                 method="POST",
             )
-            urllib.request.urlopen(req, timeout=4.0)
+            urllib.request.urlopen(req, timeout=12.0)
         except Exception:
             pass
 PY

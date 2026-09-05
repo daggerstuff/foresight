@@ -5,7 +5,7 @@ import http from 'node:http'
 
 const FORESIGHT_URL = process.env.FORESIGHT_HTTP_URL || 'http://127.0.0.1:8764'
 
-function postJson(path: string, payload: any, timeoutMs = 3000): Promise<any> {
+function postJson(path: string, payload: any, timeoutMs = 12000, extraHeaders: Record<string, string> = {}): Promise<any> {
   return new Promise((resolve) => {
     try {
       const data = JSON.stringify(payload)
@@ -19,6 +19,7 @@ function postJson(path: string, payload: any, timeoutMs = 3000): Promise<any> {
             'Content-Length': Buffer.byteLength(data),
             'MCP-Protocol-Version': '2026-07-28',
             'Mcp-Method': 'tools/call',
+            ...extraHeaders,
           },
           timeout: timeoutMs,
         },
@@ -76,18 +77,27 @@ export default function foresightOmpPlugin(pi: any) {
       const sessionId = ctx?.sessionId || ctx?.session?.id || 'omp-session'
       const messages = ctx?.messages || event?.messages || []
       if (messages && messages.length > 0) {
-        void postJson('/mcp', {
-          jsonrpc: '2.0',
-          id: Date.now(),
-          method: 'tools/call',
-          params: {
-            name: 'process_session_transcript',
-            arguments: {
-              session_id: sessionId,
-              messages: messages.slice(-10),
+        void postJson(
+          '/mcp',
+          {
+            jsonrpc: '2.0',
+            id: Date.now(),
+            method: 'tools/call',
+            params: {
+              name: 'process_session_transcript',
+              arguments: {
+                session_id: sessionId,
+                messages: messages.slice(-10),
+              },
+              _meta: {
+                'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+                'io.modelcontextprotocol/clientCapabilities': {},
+              },
             },
           },
-        })
+          12000,
+          { 'Mcp-Name': 'process_session_transcript' }
+        )
       }
     } catch {
       // Non-blocking fire-and-forget

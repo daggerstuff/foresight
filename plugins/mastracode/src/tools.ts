@@ -2,7 +2,25 @@ import { createTool, z } from 'mastracode/plugin'
 
 import { mcpCall, type ForesightClientConfig } from './client.js'
 
+function mapScope(scope?: string): string {
+  if (scope === 'project') return 'arc'
+  if (scope === 'global') return 'trait'
+  if (scope === 'session') return 'session'
+  return scope || 'arc'
+}
+
+function resolveUserId(config?: ForesightClientConfig): string {
+  return (
+    config?.userId ||
+    process.env.FORESIGHT_IDENTITY ||
+    process.env.FORESIGHT_USER_ID ||
+    'vivi'
+  )
+}
+
 export function createForesightTools(config?: ForesightClientConfig) {
+  const userId = resolveUserId(config)
+
   const injectContextTool = createTool({
     id: 'foresight_inject_context',
     description:
@@ -23,7 +41,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
         {
           conversation_text: context.query,
           max_memories: context.max_memories ?? 6,
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )
@@ -61,13 +79,16 @@ export function createForesightTools(config?: ForesightClientConfig) {
           content: context.content,
           category: context.category ?? 'decision',
           importance: context.importance ?? 0.9,
-          scope: context.scope ?? 'project',
+          scope: mapScope(context.scope),
           retention: context.retention ?? 'permanent',
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )
-      return { result: res || 'Memory stored successfully.' }
+      if (!res) {
+        return { error: 'Failed to store memory: Foresight MCP server call failed or timed out.' }
+      }
+      return { result: res }
     },
   })
 
@@ -89,11 +110,11 @@ export function createForesightTools(config?: ForesightClientConfig) {
         {
           query: context.query,
           limit: context.limit ?? 10,
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )
-      return { results: res || 'No memories matched.' }
+      return { memories: res || 'No memories matched the search query.' }
     },
   })
 
@@ -115,7 +136,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
         {
           action: context.label ? 'get' : 'list',
           label: context.label,
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )
@@ -140,7 +161,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
           action: 'update',
           label: context.label,
           content: context.content,
-          user_id: config?.userId || 'default',
+          user_id: userId,
         },
         config,
       )

@@ -5,7 +5,7 @@
 
 const DEFAULT_FORESIGHT_URL =
   process.env.FORESIGHT_MCP_URL ?? 'http://127.0.0.1:8764'
-const DEFAULT_TIMEOUT_MS = 5000
+const DEFAULT_TIMEOUT_MS = 12000
 
 export interface ForesightClientConfig {
   baseUrl?: string
@@ -54,6 +54,7 @@ export async function mcpCall(
         'Accept': 'application/json, text/event-stream',
         'MCP-Protocol-Version': '2026-07-28',
         'Mcp-Method': 'tools/call',
+        'Mcp-Name': toolName,
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
@@ -62,6 +63,10 @@ export async function mcpCall(
         params: {
           name: toolName,
           arguments: args,
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientCapabilities': {},
+          },
         },
       }),
       signal: controller.signal,

@@ -12,7 +12,7 @@ const MCP_HEADERS = {
   'Content-Type': 'application/json',
   'Accept': 'application/json, text/event-stream',
 }
-const REQUEST_TIMEOUT_MS = 6000 // 6s timeout
+const REQUEST_TIMEOUT_MS = 12000 // 12s timeout
 
 // Parse SSE or JSON response body to extract JSON-RPC result
 function parseSSEResult(body) {
@@ -45,6 +45,7 @@ async function mcpStatelessCall(toolName, args) {
         ...MCP_HEADERS,
         'MCP-Protocol-Version': '2026-07-28',
         'Mcp-Method': 'tools/call',
+        'Mcp-Name': toolName,
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
@@ -53,6 +54,10 @@ async function mcpStatelessCall(toolName, args) {
         params: {
           name: toolName,
           arguments: args,
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientCapabilities': {},
+          },
         },
       }),
       signal: controller.signal,
