@@ -143,7 +143,7 @@ async function mcpLegacyCall(toolName, args) {
 
 async function callInjectContext(conversationText) {
   const args = {
-    conversation_text: conversationText || '',
+    conversation_text: conversationText ?? '',
     max_memories: 5,
     min_relevance: 0.01,
     max_chars: 4000,
@@ -216,7 +216,7 @@ function extractUserQuery(_input, state) {
       }
     }
   }
-  return state.lastUserMessage || ''
+  return state.lastUserMessage ?? ''
 }
 
 const AUTOCONTEXT_INSTRUCTIONS = `
@@ -248,7 +248,7 @@ export const ForesightAutoInject = async (_ctx) => {
         if (output.role === 'assistant' || output.sender === 'assistant') {
           state.lastAssistantMessage = text
           if (state.lastUserMessage) {
-            callAutoCapture(sessionId, state.lastUserMessage, text)
+            void callAutoCapture(sessionId, state.lastUserMessage, text)
           }
         } else {
           state.lastUserMessage = text
@@ -289,7 +289,7 @@ export const ForesightAutoInject = async (_ctx) => {
         return
       }
 
-      state.lastInjectedFor = query || 'standing'
+      state.lastInjectedFor = query.length > 0 ? query : 'standing'
       output.system.push(
         '[FORESIGHT CONTEXT]\n' + contextText + '\n[/FORESIGHT CONTEXT]',
       )

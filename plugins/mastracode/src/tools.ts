@@ -35,12 +35,12 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .default(6)
         .describe('Maximum number of memories to surface'),
     }),
-    execute: async ({ context }) => {
+    execute: async ({ query, max_memories }) => {
       const res = await mcpCall(
         'inject_context',
         {
-          conversation_text: context.query,
-          max_memories: context.max_memories ?? 6,
+          conversation_text: query,
+          max_memories: max_memories ?? 6,
           user_id: userId,
         },
         config,
@@ -71,16 +71,16 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .optional()
         .default('permanent'),
     }),
-    execute: async ({ context }) => {
+    execute: async ({ content, category, importance, scope, retention }) => {
       const res = await mcpCall(
         'manage_memories',
         {
           action: 'store',
-          content: context.content,
-          category: context.category ?? 'decision',
-          importance: context.importance ?? 0.9,
-          scope: mapScope(context.scope),
-          retention: context.retention ?? 'permanent',
+          content,
+          category: category ?? 'decision',
+          importance: importance ?? 0.9,
+          scope: mapScope(scope),
+          retention: retention ?? 'permanent',
           user_id: userId,
         },
         config,
@@ -104,12 +104,12 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .default(10)
         .describe('Maximum results to return'),
     }),
-    execute: async ({ context }) => {
+    execute: async ({ query, limit }) => {
       const res = await mcpCall(
         'search_memories',
         {
-          query: context.query,
-          limit: context.limit ?? 10,
+          query,
+          limit: limit ?? 10,
           user_id: userId,
         },
         config,
@@ -130,12 +130,12 @@ export function createForesightTools(config?: ForesightClientConfig) {
           'Specific context block label (e.g. user_preferences) or omit to list all',
         ),
     }),
-    execute: async ({ context }) => {
+    execute: async ({ label }) => {
       const res = await mcpCall(
         'manage_context_blocks',
         {
-          action: context.label ? 'get' : 'list',
-          label: context.label,
+          action: label ? 'get' : 'list',
+          label,
           user_id: userId,
         },
         config,
@@ -154,18 +154,18 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .describe('The context block label (e.g. user_preferences)'),
       content: z.string().describe('The content or rule to set or update'),
     }),
-    execute: async ({ context }) => {
+    execute: async ({ label, content }) => {
       const res = await mcpCall(
         'manage_context_blocks',
         {
           action: 'update',
-          label: context.label,
-          content: context.content,
+          label,
+          content,
           user_id: userId,
         },
         config,
       )
-      return { result: res || `Context block '${context.label}' updated.` }
+      return { result: res || `Context block '${label}' updated.` }
     },
   })
 

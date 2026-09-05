@@ -1,58 +1,71 @@
-// @ts-nocheck
-// Foresight ambient context and auto-capture extension for OMP (Oh My Pi / Pi agent)
-
-import http from 'node:http'
-
-const FORESIGHT_URL = process.env.FORESIGHT_HTTP_URL || 'http://127.0.0.1:8764'
-
-function postJson(path: string, payload: any, timeoutMs = 12000, extraHeaders: Record<string, string> = {}): Promise<any> {
-  return new Promise((resolve) => {
-    try {
-      const data = JSON.stringify(payload)
-      const url = new URL(path, FORESIGHT_URL)
-      const req = http.request(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(data),
-            'MCP-Protocol-Version': '2026-07-28',
-            'Mcp-Method': 'tools/call',
-            ...extraHeaders,
-          },
-          timeout: timeoutMs,
-        },
-        (res) => {
-          let body = ''
-          res.on('data', (chunk) => (body += chunk))
-          res.on('end', () => {
-            try {
-              resolve(JSON.parse(body))
-            } catch {
-              resolve(null)
-            }
-          })
-        },
-      )
-      req.on('error', () => resolve(null))
-      req.on('timeout', () => {
-        req.destroy()
-        resolve(null)
-      })
-      req.write(data)
-      req.end()
-    } catch {
-      resolve(null)
-    }
-  })
+declare const process: {
+  env: Record<string, string | undefined>
 }
 
-export default function foresightOmpPlugin(pi: any) {
+const FORESIGHT_URL: string =
+  process.env.FORESIGHT_HTTP_URL ?? 'http://127.0.0.1:8764'
+
+interface InjectResponse {
+  formatted?: string
+}
+
+interface OmpContext {
+  sessionId?: string
+  session?: { id?: string }
+  messages?: unknown[]
+  injectContext?: (text: string) => void
+  appendSystemPrompt?: (text: string) => void
+}
+
+interface OmpAgentEndEvent {
+  messages?: unknown[]
+}
+
+interface OmpPluginApi {
+  on(
+    event: 'agent_start',
+    handler: (_event: unknown, ctx: OmpContext) => Promise<void> | void,
+  ): void
+  on(
+    event: 'agent_end',
+    handler: (event: OmpAgentEndEvent, ctx: OmpContext) => Promise<void> | void,
+  ): void
+  on(event: string, handler: (...args: unknown[]) => Promise<void> | void): void
+}
+
+async function postJson<T = unknown>(
+  path: string,
+  payload: unknown,
+  timeoutMs = 12000,
+  extraHeaders: Record<string, string> = {},
+): Promise<T | null> {
+  try {
+    const url = new URL(path, FORESIGHT_URL)
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'MCP-Protocol-Version': '2026-07-28',
+        'Mcp-Method': 'tools/call',
+        ...extraHeaders,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!response.ok) {
+      return null
+    }
+    return (await response.json()) as T
+  } catch {
+    return null
+  }
+}
+
+export default function foresightOmpPlugin(pi: OmpPluginApi) {
   // 1. When agent starts, retrieve and inject relevant context
-  pi.on('agent_start', async (_event: any, ctx: any) => {
+  pi.on('agent_start', async (_event: unknown, ctx: OmpContext) => {
     try {
-      const res = await postJson('/ui/api/inject', {
+      const res = await postJson<InjectResponse>('/ui/api/inject', {
         text: 'active session goals and user preferences',
       })
       if (res?.formatted && ctx) {
@@ -72,11 +85,11 @@ export default function foresightOmpPlugin(pi: any) {
   })
 
   // 2. When agent finishes, asynchronously process transcript for memory capture
-  pi.on('agent_end', async (event: any, ctx: any) => {
+  pi.on('agent_end', async (event: OmpAgentEndEvent, ctx: OmpContext) => {
     try {
-      const sessionId = ctx?.sessionId || ctx?.session?.id || 'omp-session'
-      const messages = ctx?.messages || event?.messages || []
-      if (messages && messages.length > 0) {
+      const sessionId = ctx?.sessionId ?? ctx?.session?.id ?? 'omp-session'
+      const messages = ctx?.messages ?? event?.messages ?? []
+      if (messages.length > 0) {
         void postJson(
           '/mcp',
           {
@@ -96,7 +109,7 @@ export default function foresightOmpPlugin(pi: any) {
             },
           },
           12000,
-          { 'Mcp-Name': 'process_session_transcript' }
+          { 'Mcp-Name': 'process_session_transcript' },
         )
       }
     } catch {
