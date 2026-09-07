@@ -13,11 +13,28 @@ export interface ForesightClientConfig {
   timeoutMs?: number
 }
 
-export function parseSSEResult(body: string): any {
+interface McpContentItem {
+  type?: string
+  text?: string
+}
+
+interface McpResponse {
+  error?: unknown
+  result?:
+    | {
+        content?: unknown[]
+      }
+    | string
+    | Record<string, unknown>
+}
+
+export function parseSSEResult(body: string): Record<string, unknown> | null {
   if (!body) return null
   try {
-    const parsed = JSON.parse(body)
-    if (parsed) return parsed
+    const parsed: unknown = JSON.parse(body)
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>
+    }
   } catch (_) {
     // Fall through to line-by-line SSE parsing
   }
@@ -25,7 +42,10 @@ export function parseSSEResult(body: string): any {
   for (const line of lines) {
     if (line.startsWith('data: ')) {
       try {
-        return JSON.parse(line.slice(6))
+        const parsed: unknown = JSON.parse(line.slice(6))
+        if (parsed && typeof parsed === 'object') {
+          return parsed as Record<string, unknown>
+        }
       } catch (_) {}
     }
   }
@@ -37,8 +57,8 @@ export async function mcpCall(
   args: Record<string, unknown>,
   config?: ForesightClientConfig,
 ): Promise<string | null> {
-  const baseUrl = config?.baseUrl || DEFAULT_FORESIGHT_URL
-  const timeoutMs = config?.timeoutMs || DEFAULT_TIMEOUT_MS
+  const baseUrl = config?.baseUrl ?? DEFAULT_FORESIGHT_URL
+  const timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const mcpUrl = baseUrl.endsWith('/mcp')
     ? baseUrl
     : `${baseUrl.replace(/\/+$/, '')}/mcp`
@@ -74,13 +94,27 @@ export async function mcpCall(
 
     if (!resp.ok) return null
     const text = await resp.text()
-    const parsed = parseSSEResult(text)
+    const parsed = parseSSEResult(text) as McpResponse | null
     if (!parsed || parsed.error || !parsed.result) return null
 
-    if (Array.isArray(parsed.result.content)) {
-      return parsed.result.content
-        .filter((c: any) => c.type === 'text' && c.text)
-        .map((c: any) => c.text)
+    if (
+      typeof parsed.result === 'object' &&
+      parsed.result !== null &&
+      'content' in parsed.result &&
+      Array.isArray((parsed.result as { content?: unknown }).content)
+    ) {
+      const contentList = (parsed.result as { content: unknown[] }).content
+      return contentList
+        .filter(
+          (c): c is McpContentItem & { text: string } =>
+            typeof c === 'object' &&
+            c !== null &&
+            'type' in c &&
+            (c as McpContentItem).type === 'text' &&
+            'text' in c &&
+            typeof (c as McpContentItem).text === 'string',
+        )
+        .map((c) => c.text)
         .join('\n')
     }
     return typeof parsed.result === 'string'
@@ -97,8 +131,8 @@ export async function fetchInjectContext(
   query: string,
   config?: ForesightClientConfig,
 ): Promise<string | null> {
-  const baseUrl = config?.baseUrl || DEFAULT_FORESIGHT_URL
-  const timeoutMs = config?.timeoutMs || DEFAULT_TIMEOUT_MS
+  const baseUrl = config?.baseUrl ?? DEFAULT_FORESIGHT_URL
+  const timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   // 1. Try native REST inject endpoint first (ultra-fast single roundtrip)
   try {
@@ -115,9 +149,17 @@ export async function fetchInjectContext(
     clearTimeout(timer)
 
     if (resp.ok) {
-      const data = await resp.json()
-      if (data && typeof data.formatted === 'string' && data.formatted.trim()) {
-        return data.formatted.trim()
+      const data: unknown = await resp.json()
+      if (
+        data &&
+        typeof data === 'object' &&
+        'formatted' in data &&
+        typeof (data as { formatted?: unknown }).formatted === 'string'
+      ) {
+        const formatted = (data as { formatted: string }).formatted.trim()
+        if (formatted) {
+          return formatted
+        }
       }
     }
   } catch (_) {}
@@ -129,7 +171,7 @@ export async function fetchInjectContext(
       conversation_text: query,
       max_memories: 6,
       min_relevance: 0.01,
-      user_id: config?.userId || 'default',
+      user_id: config?.userId ?? 'default',
     },
     config,
   )
@@ -154,12 +196,12 @@ export async function autoCaptureTurn(
   }
 
   // Fire-and-forget background capture
-  mcpCall(
+  void mcpCall(
     'process_session_transcript',
     {
       session_id: sessionId || 'mastracode-session',
       messages,
-      user_id: config?.userId || 'default',
+      user_id: config?.userId ?? 'default',
     },
     config,
   ).catch(() => {})

@@ -25,18 +25,15 @@ for arg in "$@"; do
   esac
 done
 
-# name:host:user:repo -- repo is each host's checkout root (per-user, NOT a
-# shared absolute path). Adjust the billy/gnasty paths to match their actual
-# checkouts; a single hardcoded /home/vivi/... path cannot reach per-user
-# directories on the remote hosts.
+# name:host:user
 HOSTS=(
-  "local:localhost:$(whoami):/home/vivi/pixelated/foresight"
-  "billy:40.160.6.46:billy:/home/billy/pixelated/foresight"
-  "gnasty:167.233.25.111:gnasty:/home/gnasty/pixelated/foresight"
+  "local:localhost:$(whoami)"
+  "billy:40.160.6.46:billy"
+  "gnasty:167.233.25.111:gnasty"
 )
 
 for entry in "${HOSTS[@]}"; do
-  IFS=':' read -r name host user repo <<< "$entry"
+  IFS=':' read -r name host user <<< "$entry"
   echo "==> [$name] ${user}@${host}"
 
   if [ "$APPLY" -eq 0 ]; then

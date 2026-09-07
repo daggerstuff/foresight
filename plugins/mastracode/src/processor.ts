@@ -33,12 +33,44 @@ function getSessionState(sessionId: string): SessionMemoryState {
   return sessionStates.get(sessionId)!
 }
 
-function extractTextFromParts(parts: any[]): string {
+interface TextPart {
+  type?: string
+  text?: string
+}
+
+function extractTextFromParts(parts: unknown[]): string {
   if (!Array.isArray(parts)) return ''
   return parts
-    .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
+    .filter(
+      (p): p is TextPart & { text: string } =>
+        typeof p === 'object' &&
+        p !== null &&
+        'type' in p &&
+        (p as TextPart).type === 'text' &&
+        'text' in p &&
+        typeof (p as TextPart).text === 'string',
+    )
     .map((p) => p.text)
     .join(' ')
+}
+
+type MastraProcessInputArgs = Parameters<
+  NonNullable<InputProcessor['processInput']>
+>[0]
+type MastraProcessOutputResultArgs = Parameters<
+  NonNullable<OutputProcessor['processOutputResult']>
+>[0]
+
+function resolveThreadId(args: Record<string, unknown>): string {
+  const reqCtx = args.requestContext as
+    | { threadId?: string; sessionId?: string }
+    | undefined
+  return (
+    reqCtx?.threadId ??
+    reqCtx?.sessionId ??
+    (typeof args.threadId === 'string' ? args.threadId : undefined) ??
+    'mastracode-session'
+  )
 }
 
 export function createForesightProcessor(
@@ -50,25 +82,39 @@ export function createForesightProcessor(
     description:
       'Zero-touch continuity context injection and background turn capture.',
 
-    async processInput(args: any) {
-      const { messages, systemMessages, messageList, requestContext } = args
-      const threadId =
-        requestContext?.threadId ||
-        requestContext?.sessionId ||
-        'mastracode-session'
+    async processInput(args: MastraProcessInputArgs) {
+      const { messages, systemMessages } = args
+      const threadId = resolveThreadId(args as unknown as Record<string, unknown>)
       const state = getSessionState(threadId)
 
       // Extract user text
       let userQuery = ''
       if (Array.isArray(messages) && messages.length > 0) {
         for (let i = messages.length - 1; i >= 0; i--) {
-          const msg = messages[i]
+          const msg = messages[i] as unknown as {
+            role?: string
+            sender?: string
+            content?:
+              | string
+              | {
+                  content?: string
+                  parts?: unknown[]
+                }
+          }
           if (msg && (msg.role === 'user' || msg.sender === 'user')) {
-            if (msg.content?.parts) {
+            if (
+              typeof msg.content === 'object' &&
+              msg.content !== null &&
+              Array.isArray(msg.content.parts)
+            ) {
               userQuery = extractTextFromParts(msg.content.parts)
             } else if (typeof msg.content === 'string') {
               userQuery = msg.content
-            } else if (typeof msg.content?.content === 'string') {
+            } else if (
+              typeof msg.content === 'object' &&
+              msg.content !== null &&
+              typeof msg.content.content === 'string'
+            ) {
               userQuery = msg.content.content
             }
             if (userQuery) break
@@ -79,33 +125,40 @@ export function createForesightProcessor(
       state.lastUserQuery = userQuery
 
       // Ensure directives are present in systemMessages
-      const sysList: any[] = Array.isArray(systemMessages) ? systemMessages : []
-      const hasDirectives = sysList.some(
-        (m) =>
-          (typeof m === 'string' &&
-            m.includes('Foresight Persistent Memory Directives')) ||
-          (typeof m?.content === 'string' &&
-            m.content.includes('Foresight Persistent Memory Directives')),
-      )
+      const sysList = Array.isArray(systemMessages) ? [...systemMessages] : []
+      const hasDirectives = sysList.some((m) => {
+        const item = m as unknown
+        if (typeof item === 'string') {
+          return item.includes('Foresight Persistent Memory Directives')
+        }
+        if (typeof item === 'object' && item !== null && 'content' in item) {
+          const content = item.content
+          return (
+            typeof content === 'string' &&
+            content.includes('Foresight Persistent Memory Directives')
+          )
+        }
+        return false
+      })
 
       if (!hasDirectives) {
         sysList.push({
           role: 'system',
           content: FORESIGHT_DIRECTIVES,
-        })
+        } as unknown as (typeof sysList)[number])
       }
 
       // If query is new, fetch context
       if (userQuery && userQuery !== state.lastInjectedQuery) {
         try {
           const contextText = await fetchInjectContext(userQuery, config)
-          if (contextText && contextText.trim()) {
+          if (contextText?.trim()) {
             state.lastInjectedQuery = userQuery
             state.lastInjectedAt = Date.now()
             sysList.push({
               role: 'system',
               content: `[FORESIGHT CONTINUITY CONTEXT]\n${contextText.trim()}\n[/FORESIGHT CONTINUITY CONTEXT]`,
-            })
+            } as unknown as (typeof sysList)[number])
           }
         } catch (_) {}
       }
@@ -116,12 +169,10 @@ export function createForesightProcessor(
       }
     },
 
-    async processOutputResult(args: any) {
-      const { result, messages, requestContext } = args
-      const threadId =
-        requestContext?.threadId ||
-        requestContext?.sessionId ||
-        'mastracode-session'
+    async processOutputResult(args: MastraProcessOutputResultArgs) {
+      const { messages } = args
+      const result = (args as unknown as { result?: { text?: string } }).result
+      const threadId = resolveThreadId(args as unknown as Record<string, unknown>)
       const state = getSessionState(threadId)
 
       const userText = state.lastUserQuery
@@ -130,26 +181,43 @@ export function createForesightProcessor(
       if (result && typeof result.text === 'string' && result.text.trim()) {
         assistantText = result.text.trim()
       } else if (Array.isArray(messages) && messages.length > 0) {
-        const last = messages[messages.length - 1]
+        const last = messages[messages.length - 1] as unknown as {
+          role?: string
+          sender?: string
+          content?:
+            | string
+            | {
+                content?: string
+                parts?: unknown[]
+              }
+        }
         if (
           last &&
           (last.role === 'assistant' || last.sender === 'assistant')
         ) {
-          if (last.content?.parts) {
+          if (
+            typeof last.content === 'object' &&
+            last.content !== null &&
+            Array.isArray(last.content.parts)
+          ) {
             assistantText = extractTextFromParts(last.content.parts)
           } else if (typeof last.content === 'string') {
             assistantText = last.content
-          } else if (typeof last.content?.content === 'string') {
+          } else if (
+            typeof last.content === 'object' &&
+            last.content !== null &&
+            typeof last.content.content === 'string'
+          ) {
             assistantText = last.content.content
           }
         }
       }
 
       if (userText && assistantText) {
-        autoCaptureTurn(threadId, userText, assistantText, config)
+        void autoCaptureTurn(threadId, userText, assistantText, config)
       }
 
-      return []
+      return messages ?? []
     },
   }
 }

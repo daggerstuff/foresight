@@ -6,14 +6,14 @@ function mapScope(scope?: string): string {
   if (scope === 'project') return 'arc'
   if (scope === 'global') return 'trait'
   if (scope === 'session') return 'session'
-  return scope || 'arc'
+  return scope ?? 'arc'
 }
 
 function resolveUserId(config?: ForesightClientConfig): string {
   return (
-    config?.userId ||
-    process.env.FORESIGHT_IDENTITY ||
-    process.env.FORESIGHT_USER_ID ||
+    config?.userId ??
+    process.env.FORESIGHT_IDENTITY ??
+    process.env.FORESIGHT_USER_ID ??
     'vivi'
   )
 }
@@ -45,7 +45,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
         },
         config,
       )
-      return { context: res || 'No specific memories found for query.' }
+      return { context: res ?? 'No specific memories found for query.' }
     },
   })
 
@@ -114,7 +114,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
         },
         config,
       )
-      return { memories: res || 'No memories matched the search query.' }
+      return { memories: res ?? 'No memories matched the search query.' }
     },
   })
 
@@ -140,7 +140,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
         },
         config,
       )
-      return { blocks: res || 'No context blocks found.' }
+      return { blocks: res ?? 'No context blocks found.' }
     },
   })
 
@@ -165,7 +165,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
         },
         config,
       )
-      return { result: res || `Context block '${label}' updated.` }
+      return { result: res ?? `Context block '${label}' updated.` }
     },
   })
 
@@ -176,7 +176,7 @@ export function createForesightTools(config?: ForesightClientConfig) {
     inputSchema: z.object({}),
     execute: async () => {
       const res = await mcpCall('get_system_status', {}, config)
-      return { status: res || 'Foresight server online.' }
+      return { status: res ?? 'Foresight server online.' }
     },
   })
 

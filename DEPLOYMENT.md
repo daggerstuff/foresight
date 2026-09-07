@@ -1,70 +1,113 @@
-# Foresight MCP — Deployment Guide
+# Foresight MCP — Production Deployment Guide
 
-Companion to `INSTALL.md` and `README.md`. This document records the
-**deploy-time** concerns of a Foresight MCP deployment: environment variables,
-backend selection, Neon specifics, surgical patches, and known caveats
-discovered while closing PIX-3996 (Multi-Agent Deployment Verification, Phase
-7).
-
-> **Audience**: operators bringing a Foresight MCP instance online against Neon
-> Postgres.
+Companion to `INSTALL.md` and `README.md`. This guide documents operational and
+deploy-time concerns for Foresight: environment architecture, database backend
+topology (Neon PostgreSQL), Redis caching, systemd daemonization, multi-agent fleet
+rollout, containerization, and troubleshooting.
 
 ---
 
 ## 1. Quick Start
 
 ```bash
-# 1. Fetch the source
-git submodule update --init foresight
-
-# 2. Install runtime + Postgres + Redis deps in the submodule's own .venv
+# 1. Fetch source or submodule
+git submodule update --init --recursive foresight
 cd foresight
-uv sync --extra postgres              # pulls psycopg, psycopg-binary, psycopg-pool
-uv add redis                          # optional: sibling-infrastructure compat
 
-# 3. Export identity + DB URL (NEVER commit these)
-export FORESIGHT_DB_URL="postgresql://neondb_owner:<REDACTED>@ep-falling-dew-a8eovkvn-pooler.eastus2.azure.neon.tech/foresight?sslmode=require"
-export FORESIGHT_IDENTITY=foresight-prod
-export FORESIGHT_BANK_ID=pixelated
+# 2. Force virtual environment isolation and install runtime dependencies
+unset VIRTUAL_ENV
+unset VIRTUAL_ENV_DIR
+uv sync --extra all
 
-# 4. Smoke the backend factory
-cd ..
-set -a; source .env.local; set +a
-( cd foresight && uv run python -c "from foresight.backend import create_backend; b=create_backend(); print(type(b).__name__)" )
-# expect: PostgresBackend
+# 3. Export required environment variables (never commit secrets)
+export FORESIGHT_DB_URL="postgresql://user:pass@ep-host.region.neon.tech/foresight?sslmode=require"
+export FORESIGHT_IDENTITY="user@account"
+export FORESIGHT_BANK_ID="default"
+
+# 4. Smoke test the backend factory
+uv run python -c "from foresight.backend import create_backend; b=create_backend(); print(f'Backend: {type(b).__name__}')"
+# Expected output: Backend: PostgresBackend
+
+# 5. Run 11-point diagnostics
+uv run foresight doctor
 ```
 
-If `FORESIGHT_DB_URL` is unset, the factory raises `RuntimeError` — Postgres is
-required.
+> **Note**: Postgres is strictly required in production. If `FORESIGHT_DB_URL` is unset
+> or invalid, the backend factory raises `RuntimeError`.
 
 ---
 
-## 2. Required Environment Variables
+## 2. Environment Variables Specification
 
-| Variable             | Required?   | Purpose                                                                                                                                            | Default                         |
-| -------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `FORESIGHT_DB_URL`   | **Yes**     | Postgres DSN. Required — no SQLite fallback in production.                                                                                         | _(none — must set)_             |
-| `FORESIGHT_DB_PATH`  | No          | Override SQLite file path (tests only).                                                                                                            | `~/.foresight/memory.db`        |
-| `FORESIGHT_IDENTITY` | **Yes**     | Logical agent identity propagated to MCP.                                                                                                          | _(none — must set)_             |
-| `FORESIGHT_BANK_ID`  | Recommended | Tenant/bank namespace for cross-tenant isolation.                                                                                                  | _(empty → single-tenant)_       |
-| `FORESIGHT_USER_ID`  | Recommended | Stable internal user identifier.                                                                                                                   | _(empty → process pid)_         |
-| `FORESIGHT_API_URL`  | Recommended | Upstream MCP API base.                                                                                                                             | `http://127.0.0.1:54321`        |
-| `REDIS_URL`          | _Optional_  | **Canonical** Redis companion cache URL loaded by `RedisCache` (see §7). `redis://[:pw]@host:port[/db]` (or `rediss://` for TLS).                  | _empty → in-process dict cache_ |
-| `REDIS_URL_LOCAL`    | _Optional_  | Local Docker convention (`redis://[:pw]@127.0.0.1:6379`). **Diagnostic-only**; not consumed by Foresight at runtime — useful for local-dev smokes. | _none_                          |
-| `REDIS_URL_REMOTE`   | _Optional_  | Upstash / hosted broker URL (`rediss://default:[pw]@host:6379`). **Diagnostic-only**; cross-process smoke target.                                  | _none_                          |
+| Variable | Required? | Purpose | Default |
+| :--- | :--- | :--- | :--- |
+| `FORESIGHT_DB_URL` | **Yes** | PostgreSQL connection DSN (`postgresql://` or `postgres://` with `sslmode=require`). | _(none — must set)_ |
+| `FORESIGHT_IDENTITY` | **Yes** | Primary logical agent identity (`user` or `user@account`). Propagated to memories. | `$USER@default` |
+| `FORESIGHT_BANK_ID` | Recommended | Tenant/bank namespace for cross-tenant isolation and memory domains. | `default` |
+| `FORESIGHT_ENCRYPTION_KEY` | Recommended | 32-byte symmetric master key (hex or base64) for AES-256-GCM envelope encryption. | _(none — optional plaintext)_ |
+| `FORESIGHT_REDIS_URL` | _Optional_ | Canonical Redis companion cache URL (`redis://[:pw]@host:port[/db]`). | `""` (in-process cache) |
+| `REDIS_URL` | _Optional_ | Fallback Redis connection URL for infrastructure compatibility. | `""` |
+| `FORESIGHT_HOST` | _Optional_ | FastMCP streamable HTTP server bind host. | `127.0.0.1` |
+| `FORESIGHT_PORT` | _Optional_ | FastMCP streamable HTTP server listen port. | `8764` |
+| `FASTMCP_STATELESS_HTTP` | _Optional_ | Set `1` for stateless HTTP to avoid 404 "Session expired" on server restarts. | `1` (in systemd/scripts) |
+| `FORESIGHT_ALLOW_UNAUTHENTICATED`| _Optional_ | Set `1` for local agent tooling without per-request bearer tokens. | `0` (enforce auth if set) |
+| `FORESIGHT_LLM_PROVIDER` | _Optional_ | LLM provider for synthesis/reflection (`openai`, `anthropic`, `gemini`, `ollama`, `vllm`). | `none` |
+| `FORESIGHT_LLM_API_KEY` | _Optional_ | API key for the chosen LLM provider. | _(none)_ |
+| `FORESIGHT_LLM_MODEL` | _Optional_ | Model identifier override (e.g. `claude-3-5-sonnet-latest`, `gpt-4o`). | Provider default |
+| `FORESIGHT_LLM_BASE_URL` | _Optional_ | Custom base URL for OpenAI-compatible inference endpoints. | Provider default |
+| `FORESIGHT_DECAY_INTERVAL_HOURS` | _Optional_ | Background daemon memory decay recalculation interval. | `6` |
+| `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | _Optional_ | Background daemon memory consolidation, archive, and GC sweep interval. | `24` |
+| `FORESIGHT_DB_PATH` | _Test Only_ | Local SQLite file path override for isolated test fixtures. | `None` (forces Postgres) |
 
-> **Security**: keep `FORESIGHT_DB_URL` and any Upstash credentials out of git.
-> They belong in `~/.env` for shared team deployment of Foresight→Neon, with
-> optional per-developer override in `~/.env.local` (last-source-wins via
-> `foresight-server.sh`), or in the deployment platform's secret manager. Both
-> files are gitignored via the `~/.gitignore` rule `/.env*`.
+> **Security Guardrail**: Credentials, connection strings, and encryption keys must
+> remain strictly in `.env` or system secret managers. `.env` files must always be
+> `chmod 600` and gitignored.
 
 ---
 
-## 3. Backend Selection
+## 3. Database Architecture & Neon PostgreSQL Topology
 
-Selection is purely string-prefix based, executed in
-`foresight/backend/__init__.py:create_backend()`:
+Foresight relies on PostgreSQL 17 with `pgvector` for semantic embeddings, hybrid
+retrieval (BM25 + pgvector Reciprocal Rank Fusion), temporal decay curves, and
+relational entity tracking.
+
+### Neon Connection Pooling
+
+Neon provides two connection hostnames:
+1. **Connection Pooler (`*-pooler.*.neon.tech`)**: Operates via pgBouncer in
+   transaction-pooling mode. Ideal for multiple agents and short-lived CLI calls.
+2. **Direct Compute (`*.*.neon.tech`)**: Direct TCP connection to the PostgreSQL
+   compute node. Required for migrations, long-lived locks, and maintenance sweeps.
+
+```
+AI Agents (Claude / OpenCode / Antigravity)
+       │
+       ▼
+Foresight FastMCP Server (:8764)
+       │ (psycopg_pool ConnectionPool)
+       ▼
+Neon Transaction Pooler (:5432)
+       │ (pgBouncer)
+       ▼
+PostgreSQL 17 Compute Node (23 Tables + pgvector HNSW Indexes)
+```
+
+### Critical Neon Rules
+
+- **`sslmode=require` is mandatory**: Neon drops unencrypted handshakes.
+- **Connection Idle Kill**: Neon automatically terminates connections idle for > 5 min.
+  `psycopg_pool` handles this transparently by reconnecting on checkout.
+- **Test vs. Production Isolation**: Production uses the `foresight` database; test
+  suites auto-route to `foresight_test` to guarantee zero state contamination.
+- **23 Public Schema Tables**: All tables (`memories`, `context_blocks`, `entity_nodes`,
+  `entity_edges`, `curation_runs`, `reflections`, `temporal_anchors`, etc.) are
+  versioned and verified by `foresight doctor`.
+
+---
+
+## 4. Backend Selection Mechanics
+
+Backend selection occurs in `foresight/backend/__init__.py:create_backend()`:
 
 ```python
 def create_backend() -> DatabaseBackend:
@@ -74,246 +117,257 @@ def create_backend() -> DatabaseBackend:
     raise RuntimeError("FORESIGHT_DB_URL is required (Postgres-only)")
 ```
 
-There is no autodetection beyond the URL prefix. **Use `postgresql://` (the
-canonical libpq scheme that `psycopg` understands).** `postgresql+psycopg://` or
-`pgbouncer://` will not match the prefix check.
+- **Prefix Matching**: Schemes must be `postgresql://` or `postgres://`.
+- **Driver**: The runtime uses `psycopg` 3.3+ and `psycopg_pool` for high-throughput
+  connection pooling with lowercase `dict_row` row factory functions.
 
 ---
 
-## 4. Neon Postgres Specifics
+## 5. Redis Companion Cache & Multi-Process Concurrency
 
-Neon's transaction-pooler endpoint wraps pgBouncer in front of the writer. The
-Flow:
+Cross-process shared narrative caching is handled by
+`foresight/redis_cache.py:RedisCache` and `RedisCompanion`:
 
-```
-your process ──► ep-…-pooler.eastus2.azure.neon.tech:5432 (pgBouncer) ──► writer Neon compute
-```
+- **Key Schema**: `{prefix}:narrative:{tenant_id}:{user_id}:{sha256_hash}`
+- **Auxiliary Shard LRU**: `{prefix}:zset:{tenant_id}:{user_id}` scored by epoch timestamp.
+- **TTL**: 7 days (`604,800` seconds) natively enforced via `SETEX`.
+- **LRU Eviction**: Caps storage at 10,000 entries per user shard. Oldest entries are
+  deleted via pipelined `ZREMRANGEBYRANK`.
+- **Credential Masking**: Connection URLs and logs mask auth tokens
+  (`rediss://default:***@host:6379`).
 
-Important properties verified during PIX-3996:
-
-- **`sslmode=require` is mandatory.** Neon refuses non-TLS connections. The
-  factory passes the URL verbatim to `psycopg_pool.ConnectionPool`, so the query
-  string must carry the SSL directive.
-- **Two endpoints exist — pick one and stick with it.**
-  `-pooler.eastus2.azure.neon.tech` is the connection-pooler (pgBouncer-mode).
-  Drop the `-pooler` segment to talk directly to the writer (long-lived
-  sessions, e.g. for migrations). Mixing them in one process can yield
-  inconsistent snapshot states.
-- **Connection lifetime: ≤ 5 min recommended.** Neon idle-kills pooled
-  connections. Configure your process to reconnect rather than hold sessions
-  open. With `psycopg_pool`, this is automatic — the pool reopens dropped
-  connections transparently.
-- **Write/read separation**: not generally required. For high write throughput,
-  prefer the direct writer endpoint.
+If `FORESIGHT_REDIS_URL` or `REDIS_URL` is unset, Foresight falls back to its
+in-process thread-safe dictionary cache.
 
 ---
 
-## 5. The Four Surgical Corrections in `postgres_backend.py`
+## 6. Deployment Topologies
 
-Recorded on `chad/sentry-fixes-round5 @ b445754`. These are corrections that the
-lineage of the file picked up against psycopg 3.3.x; before this commit they
-prevented `PostgresBackend` from starting at all.
+### Topology A: Persistent Systemd User Daemon (Standard Linux / Fleet Host)
 
-| Where                  | Before                                                                         | After                                                                           | Why                                                                                                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| L4-5 (docstring)       | `psycopg.pool.ConnectionPool`, `psycopg.rows.DictRow`                          | `psycopg_pool.ConnectionPool`, `psycopg.rows.dict_row`                          | Cosmetic — references the correct packages by their current names.                                                                                                                              |
-| L90 (type hint)        | `psycopg.pool.ConnectionPool \| None`                                          | `psycopg_pool.ConnectionPool \| None`                                           | Cosmetic — same reason.                                                                                                                                                                         |
-| L92-93 (imports)       | `from psycopg.rows import DictRow` / `from psycopg.pool import ConnectionPool` | `from psycopg.rows import dict_row` / `from psycopg_pool import ConnectionPool` | **Critical**. `DictRow` is a type, not a callable, on psycopg 3.3.x — `pool_kwargs={"row_factory": DictRow}` makes `pool.open()` fail at runtime. `dict_row` is the lowercase factory function. |
-| L113-114 (row factory) | `kwargs={"row_factory": DictRow}`                                              | `kwargs={"row_factory": dict_row}`                                              | Carries the import change into the pool's open configuration.                                                                                                                                   |
-| L118 (close)           | `self._pool.close()`                                                           | `self._pool.close(timeout=10.0)`                                                | Cosmetic — silences the cosmetic "couldn't stop thread" warning by waiting up to 10s for pool workers to flush. Functionally identical (workers are daemon threads).                            |
+This is the standard topology for developer workstations and remote fleet nodes.
+The daemon runs on `127.0.0.1:8764` with FastMCP Streamable HTTP.
 
-If you upgrade `psycopg-pool` past 3.3.x in the future, re-verify these names —
-they may shift again.
+#### 1. Service Definition (`~/.config/systemd/user/foresight.service`)
 
----
+```ini
+[Unit]
+Description=Foresight MCP Streamable HTTP Server
+Documentation=https://github.com/daggerstuff/foresight
+After=network-online.target
+Wants=network-online.target
 
-## 6. SQLite Backend — Historical (Tests Only)
+[Service]
+Type=simple
+WorkingDirectory=/home/vivi/pixelated/foresight
+EnvironmentFile=/home/vivi/pixelated/foresight/.env
+Environment="PATH=/home/vivi/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment=FASTMCP_STATELESS_HTTP=1
+Environment=FORESIGHT_HOST=127.0.0.1
+Environment=FORESIGHT_PORT=8764
+Environment=FORESIGHT_ALLOW_UNAUTHENTICATED=1
 
-> SQLite is no longer used in production. The `SqliteBackend` class remains in
-> `foresight/backend/sqlite_backend.py` for tests and local dev. The
-> `backend_factory.py` factory is Postgres-only — it raises `RuntimeError` if no
-> Postgres DSN is provided. The following notes are preserved for historical
-> reference.
+ExecStart=/home/vivi/.local/bin/uv run --project /home/vivi/pixelated/foresight --no-active python -m foresight --host 127.0.0.1 --port 8764
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=foresight
 
-Substep C of PIX-3996 originally failed because of a **pre-existing bug** in
-`foresight/backend/sqlite_backend.py`. The fix was applied in
-`chad/sentry-fixes-round5 @ b445754`.
-
-**The fix** — two-line surgical patch at `sqlite_backend.py:44-45`:
-
-```diff
-    self._pool = ConnectionPool(
-        db_path=path,
--      max_size=max_size,
--      max_idle_seconds=max_idle_seconds,
-+      max_size=self._max_size,
-+      max_idle_seconds=self._max_idle_seconds,
-    )
+[Install]
+WantedBy=default.target
 ```
 
-The `__init__` parameters `max_size` and `max_idle_seconds` go out of scope when
-`connect()` runs. They were stored as `self._max_size` /
-`self._max_idle_seconds` (L110-111), so `connect()` now reads the cached values.
-The constructor signature is unchanged.
-
-**Fix 2.** `sqlite_backend.py:58-68` `connection()` contextmanager landed with
-three pre-existing pyright errors that guaranteed `NameError` for any
-`with self.connection():` caller. Body rewritten to
-`with self._pool.acquire() as conn: yield conn`. Pyright post-fix:
-`No diagnostics found`.
-
-> These fixes only matter if you run tests that use `SqliteBackend` directly. In
-> production, the factory routes to `PostgresBackend`.
-
----
-
-## 7. Redis Companion Cache — Implemented
-
-Substeps B → F of PIX-3996 respond to the constraint that Foresight can't drop
-cross-process shared caching on a Redis-free broker. The class is
-`foresight/redis_cache.RedisCache`, instantiated by
-`reflection_narrative.generate_insight_narrative(...)` when the caller provides
-it via the `cache=` argument.
-
-**Class surface** — mirrors `NarrativeCache` exactly:
-
-| Method  | Args                                                                                   |
-| ------- | -------------------------------------------------------------------------------------- |
-| `get`   | `report_id`, `tenant_id=`, `user_id=`, `model_version=`, `insights_hash=`              |
-| `put`   | `report_id`, `narrative`, `tenant_id=`, `user_id=`, `model_version=`, `insights_hash=` |
-| `clear` | `tenant_id=None`                                                                       |
-| `stats` | (no args)                                                                              |
-| `close` | (no args)                                                                              |
-
-**Key derivation** — identical SHA-256 hashes across NarrativeCache and
-RedisCache:
-
-```
-NarrativeCache._cache_key(...) → sha256 of (report_id, tenant_id, user_id, model_version, insights_hash)
-RedisCache._key(...)            → "{prefix}:narrative:{tenant_id}:{user_id}:{cache_key}"
-```
-
-A `put` on one implementation guarantees a `get` hit on the other for the same
-logical row.
-
-**Storage layout** (Redis):
-
-- Value keys: `{prefix}:narrative:{tenant_id}:{user_id}:{cache_key}`
-- Per-shard LRU sorted sets: `{prefix}:zset:{tenant_id}:{user_id}`
-
-**TTL** — `DEFAULT_TTL_SECONDS = 604_800` (=7d). Native via `SETEX`. The smoke
-verifies `c._client.ttl(entry_key) == 604800` for live entries.
-
-**LRU eviction** — `DEFAULT_MAX_ENTRIES = 10_000`. Per-tenant, per-user shard
-sorted set scored by epoch timestamp; when `ZCARD > max_entries`, the oldest
-`overflow` entries are pipelined-DEL'd along with their narrative keys
-(`ZRANGE 0 overflow-1 WITHSCORES`, then `ZREM`). `Eviction count` propagates
-through `stats()`.
-
-**HIPAA-grade log safety** — `_sanitize_url(url)` re-substitutes passwords via
-`re.sub(r":[^:@]*@", ":***@", url)`. Verified live: `stats()["url"]` returns
-`rediss://default:***@witty-buffalo-119990.upstash.io:6379` — credentials never
-leave the process boundary in plain text.
-
-**Multi-process shared caching** — verified (substep F smoke, Upstash broker):
-
-```
-Writer PID 101011: put("rpid", "from-process-AAA-50718", tenant_id="t-remote", ...) → close(), prefix to /tmp/.pix3996_remote_prefix.txt
-Reader PID 101373: get("rpid", tenant_id="t-remote", ...) → "from-process-AAA-50718"  ✓
-Cross-process value matches. CROSS_PROCESS_UPSTASH_VERIFIED.
-```
-
-Plus local Docker smoke: `c.put(...)` → `c.get(...)` produces a HIT with
-TTL=604800 intact.
-
-**Configuration** — see §2 (`REDIS_URL`). If `REDIS_URL` is empty, callers that
-explicitly construct `RedisCache(url, ...)` consume it on demand; Foresight's
-default cache is still the in-process dict in `reflection_narrative.py`. If you
-want Foresight to construct the cache automatically, see
-`foresight/reflection_narrative._get_default_cache()`.
-
----
-
-## 8. The `--active` Flag Trap — Historical (retired) Context
-
-> **Status: historical.** The launcher `scripts/memory/foresight-server.sh` was
-> hardened against ambient `VIRTUAL_ENV` in commit
-> `e970f760c fix: harden foresight launcher against ambient VIRTUAL_ENV` (landed
-> on `origin/staging`, June 2026). Production launches flow through the hardened
-> launcher (`set -a; source .env; source .env.local; set +a; exec uv run ...`)
-> and are no longer subject to the trap described below. The pattern documented
-> here is preserved as the developer-machine / smoke-test idiom.
-
-`uv run` defaults to the closest `.venv`. The host repo (`pixelated/`) ships an
-outer `.venv` that **lacks** `psycopg`, `psycopg-pool`, and `redis`. If you
-accidentally run with `--active` from anywhere outside `foresight/`, you'll end
-up using the outer venv and getting `ModuleNotFoundError`.
-
-```
-VIRTUAL_ENV=/home/vivi/pixelated/.venv does not match ... ignore
-```
-
-That warning is log noise, not failure — but **only when you are already inside
-`foresight/`**. If you see it while `cwd` is somewhere else (e.g.
-`/home/vivi/pixelated/`), the launch silently falls back to the outer venv and
-will fail to `import psycopg` later.
-
-Pattern that always works:
+#### 2. Service Management Commands
 
 ```bash
-( cd foresight && uv run python -c "from foresight.backend import create_backend; print(type(create_backend()).__name__)" )
+# Enable user lingering so daemon persists after SSH disconnect
+loginctl enable-linger "$USER"
+
+# Reload, enable, and start
+systemctl --user daemon-reload
+systemctl --user enable foresight
+systemctl --user restart foresight
+
+# Inspect status and live logs
+systemctl --user status foresight
+journalctl --user -u foresight -f
 ```
 
-The parentheses matter — `cd` is scoped to the subshell. Don't
-`cd foresight && uv run ...` in the parent shell because the cd persists and
-contaminates subsequent commands.
+---
+
+### Topology B: Multi-Agent Fleet Rollout (`scripts/rollout_fleet.sh`)
+
+In distributed environments with multiple agent nodes, `scripts/rollout_fleet.sh`
+orchestrates automated updates and health verification:
+
+```bash
+# Preview status across all nodes
+bash scripts/rollout_fleet.sh
+
+# Apply updates across the entire fleet
+bash scripts/rollout_fleet.sh --apply
+```
+
+#### Fleet Node Matrix
+
+- **`local`**: `localhost` (Development workstation)
+- **`billy`**: `40.160.6.46` (Dedicated inference & task execution host)
+- **`gnasty`**: `167.233.25.111` (Secondary agent execution & staging node)
+
+The fleet rollout script ensures:
+1. Git checkouts are cleanly fetched and submodules synced.
+2. Dependencies are synchronized with `uv sync --extra all`.
+3. Database migrations and schema checks are executed.
+4. Systemd services (`foresight.service`) are reloaded and verified healthy
+   with `foresight doctor`.
 
 ---
 
-## 9. Substep Verification Log (PIX-3996, Phase 7)
+### Topology C: Containerized Docker Deployment
 
-> Scope pivot (m0244): "If we can't find any Redis implementation, then we need
-> to add it, along with the postgresql." Substeps F + G were added in-flight per
-> user direction (m0246).
+For container runtimes, use the standardized container pattern:
 
-| Substep                                                                | Status                  | Evidence                                                                                                                                                                                                                    |
-| ---------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A — Multi-agent memory sharing E2E cross-process                       | ✅ PASS                 | Writer PID 83615 + Reader PID 83619; row visible across Postgres pooler; table `pix3996_multi_agent_ping` created and dropped.                                                                                              |
-| B — Redis companion shared caching (original)                          | ✅ NO-OP → covered by F | Original B concluded no Redis path inside Foresight; superseded by F implementation (in-place per user m0246).                                                                                                              |
-| C — SQLite fallback smoke                                              | ✅ PASS (historical)    | SQLite backend fixes preserved for test use; factory is Postgres-only. Historical reference in §6.                                                                                                                          |
-| D — Deployment doc                                                     | ✅ PASS                 | This file.                                                                                                                                                                                                                  |
-| E — Substep E placeholder                                              | ⏳ Re-routed to J       | Original E (Linear close) became J after F + G rolled in.                                                                                                                                                                   |
-| F — RedisCache implementation + dual smokes                            | ✅ PASS                 | Local Docker (TTL=604800 SETEX, LRU ZSET verified); Upstash cross-process (writer 101011 → reader 101373 matched value across OS processes). See §7.                                                                        |
-| G — SQLite backend NameError fix                                       | ✅ PASS (historical)    | 2-line surgical fix at `sqlite_backend.py:44-45`. Preserved for test suite. Factory is Postgres-only.                                                                                                                       |
-| H — DEPLOYMENT.md update                                               | ✅ PASS                 | §2 (env vars) + §6 (SQLite fallback) + §7 (Redis companion) + §9 + §10 updated.                                                                                                                                             |
-| I — Substep ledger                                                     | ✅ Re-routed to J       | (no separate code; tracked via E→J reroute)                                                                                                                                                                                 |
-| J — Linear close                                                       | ✅ PASS                 | PIX-3996 transitioned In Progress → Done with substep verification comment.                                                                                                                                                 |
-| K — `connection()` contextmanager fix (post-close per m0274 directive) | ✅ PASS (historical)    | Body changed from `try: conn.execute(sql, params); conn.commit(); finally: self._pool.release(conn)` to `with self._pool.acquire() as conn: yield conn`. Pyright post-fix `No diagnostics found`. Preserved for test suite. |
+#### `Dockerfile`
 
-All edits scoped to `chad/sentry-fixes-round5 @ b445754` (foresight submodule).
-**All five files are uncommitted at the time of writing.** Per AGENTS.md "Never
-commit without explicit request", the commit + push is held back pending user
-authorization.
+```dockerfile
+FROM python:3.12-slim-bookworm
 
-**Files touched in this PR:**
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy
 
-| File                                    | Status   | Edits                                                                                                                                             |
-| --------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `foresight/backend/postgres_backend.py` | Modified | 5 surgical namespace corrections (see §5).                                                                                                        |
-| `foresight/redis_cache.py`              | **NEW**  | `RedisCache` class, ~225 lines. Mirrors `NarrativeCache` API. Pyright-clean.                                                                      |
-| `foresight/backend/sqlite_backend.py`   | Modified | 2-line `self._` prefix fix at L44-45 (G substep) + `connection()` contextmanager body rewrite at L58-68 (Fix 2 / K substep, per m0274 directive). |
-| `foresight/reflection_narrative.py`     | Modified | 4 surgical edits: import + typing + isinstance guard + dict-first dispatch reorder (L67, L271, L323, L329-340, L398-409).                         |
-| `foresight/config.py`                   | Modified | `REDIS_URL` canonical env var documented (collapsed to upstream `config.REDIS_URL`).                                                              |
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+RUN uv sync --extra all --no-dev --frozen
+
+COPY foresight/ ./foresight/
+COPY foresight_cli/ ./foresight_cli/
+
+EXPOSE 8764
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -f http://127.0.0.1:8764/mcp || exit 1
+
+ENTRYPOINT ["uv", "run", "--no-dev", "python", "-m", "foresight"]
+CMD ["--host", "0.0.0.0", "--port", "8764"]
+```
+
+#### `docker-compose.yml`
+
+```yaml
+version: "3.8"
+
+services:
+  foresight:
+    build: .
+    ports:
+      - "8764:8764"
+    environment:
+      - FORESIGHT_DB_URL=postgresql://foresight:secret@postgres:5432/foresight?sslmode=disable
+      - FORESIGHT_REDIS_URL=redis://redis:6379/0
+      - FORESIGHT_IDENTITY=agent-cluster
+      - FASTMCP_STATELESS_HTTP=1
+      - FORESIGHT_ALLOW_UNAUTHENTICATED=1
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: foresight
+      POSTGRES_USER: foresight
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
+```
 
 ---
 
-## 10. Troubleshooting
+## 7. Transport Architecture: Streamable HTTP vs. Stdio
 
-| Symptom                                                           | Likely Cause                                                  | Fix                                                          |
-| ----------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------ |
-| `factory returned SqliteBackend despite setting FORESIGHT_DB_URL` | URL prefix mismatch (`postgresql+psycopg://`, `pgbouncer://`) | Use bare `postgresql://`.                                    |
-| `RuntimeError: FORESIGHT_DB_URL is required`                      | `FORESIGHT_DB_URL` not set                                    | Set it to your Neon DSN.                                     |
-| `ModuleNotFoundError: No module named 'psycopg'`                  | Outer `.venv` shadowed the submodule venv                     | Drop `--active`. `cd foresight && uv sync --extra postgres`. |
-| `attribute 'row_factory' requires dict_row, not DictRow`          | Stale import in `postgres_backend.py`                         | Apply the surgical correction from §5 (L92-93 + L113-114).   |
-| Neon SSL handshake fails                                          | Missing `sslmode=require`                                     | Append `?sslmode=require` to your DSN.                       |
-| Cross-process row invisibility                                    | Hitting writer endpoint for read, pooler for write            | Pick one endpoint per process and stick with it.             |
+Foresight supports two FastMCP transport models:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                   AI Agent Ecosystem                     │
+│  (Claude Code / OpenCode / Antigravity / Cursor / Mastra)│
+└───────────────┬──────────────────────────┬───────────────┘
+                │                          │
+        Streamable HTTP                 Stdio
+        (port 8764)                (subprocess spawn)
+                │                          │
+                ▼                          ▼
+    ┌─────────────────────────┐   ┌────────────────────────┐
+    │  Shared systemd Daemon  │   │ Dedicated Subprocess   │
+    │  (FASTMCP_STATELESS=1)  │   │ (Isolated per session) │
+    └───────────┬─────────────┘   └────────────┬───────────┘
+                │                              │
+                └──────────────┬───────────────┘
+                               ▼
+              PostgreSQL 17 (Neon) + Redis
+```
+
+### Why Streamable HTTP is Preferred for Multi-Agent Work
+
+1. **Zero Cold-Start Latency**: The connection pool and pgvector indexes stay warm
+   in memory; tool calls execute in < 25ms.
+2. **Stateless Reconnect Safety**: With `FASTMCP_STATELESS_HTTP=1`, clients that cache
+   session IDs survive server restarts without 404s.
+3. **Cross-Agent Resource Sharing**: Multiple agent tools (Claude Code, OpenCode,
+   Antigravity) multiplex over one shared endpoint without connection contention.
+
+---
+
+## 8. Operational Verification & Telemetry
+
+Verify deployment health using the built-in verification suite:
+
+```bash
+# 1. 11-point health check
+foresight doctor
+
+# 2. System and maintenance telemetry
+foresight status
+
+# 3. 9-point proof benchmark suite
+foresight prove
+
+# 4. Security & envelope encryption status
+foresight security status
+```
+
+---
+
+## 9. Troubleshooting & Operational Runbook
+
+| Symptom | Probable Cause | Corrective Action |
+| :--- | :--- | :--- |
+| `RuntimeError: FORESIGHT_DB_URL is required` | Environment variable missing or not sourced | Export `FORESIGHT_DB_URL` in `.env` or run `install.sh`. |
+| `SSL connection closed unexpectedly` | Neon idle-timeout or missing SSL parameters | Append `?sslmode=require` to your DSN. Connection pool auto-reconnects. |
+| `warning: VIRTUAL_ENV does not match project` | Outer virtualenv shadowed the runtime | Run `unset VIRTUAL_ENV VIRTUAL_ENV_DIR` or use `--project <dir> --no-active`. |
+| `HTTP 404: Session expired` on MCP tool call | Stateful session lost on server restart | Set `FASTMCP_STATELESS_HTTP=1` in the systemd service or wrapper. |
+| `Systemd service inactive after SSH logout` | Systemd user session lingering disabled | Run `loginctl enable-linger $USER`. |
+| `Port 8764 already in use` | Zombie foresight process running | Check with `fuser 8764/tcp` or `ss -tulpn \| grep 8764` and restart service. |
+| `AttributeError: dict_row` | Stale or incompatible `psycopg` install | Run `uv sync --extra all` to install `psycopg>=3.3.4` and `psycopg-pool>=3.3.1`. |

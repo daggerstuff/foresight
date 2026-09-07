@@ -27,7 +27,7 @@ echo "=== foresight PyPI Publisher ==="
 echo ""
 
 # Clean previous builds
-rm -rf dist/ build/ *.egg-info
+rm -rf dist/ build/ ./*.egg-info
 
 # Build
 echo "→ Building sdist + wheel..."

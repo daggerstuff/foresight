@@ -22,8 +22,7 @@ from __future__ import annotations
 import logging
 import secrets
 import time
-from datetime import timedelta
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
 from fastmcp.server.auth import OAuthProvider
 from fastmcp.server.auth.auth import (
@@ -33,8 +32,11 @@ from fastmcp.server.auth.auth import (
     RefreshToken,
     RevocationOptions,
 )
-from mcp.server.auth.provider import AuthorizationParams
-from mcp.server.auth.provider import AuthorizeError, RegistrationError, TokenError
+from mcp.server.auth.provider import (
+    AuthorizationParams,
+    AuthorizeError,
+    TokenError,
+)
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 logger = logging.getLogger(__name__)
