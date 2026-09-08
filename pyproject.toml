@@ -35,8 +35,8 @@ classifiers = [
 ]
 
 dependencies = [
-  "fastmcp>=4.0.0b4",
-  "psycopg[binary,pool]>=3.3.4",
+  "fastmcp>=4.0.3",
+  "psycopg[binary,pool]>=3.3.5",
   "redis>=8.1.0,<9.0",
   "psycopg-pool>=3.3.1",
   "httpx>=0.28.1,<1.0.0",
@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cli = ["typer>=0.27.1", "rich>=15.0.0"]
+cli = ["typer>=0.27.2", "rich>=15.0.0"]
 tui = ["textual>=8.2.8"]
 redis = ["redis>=8.1.0"]
 all = ["foresight[cli,tui,redis]"]
@@ -52,11 +52,11 @@ dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
   "pytest-cov>=7.1.0",
-  "typer>=0.27.1",
+  "typer>=0.27.2",
   "rich>=15.0.0",
   "textual>=8.2.8",
   "hatchling>=1.32.0",
-  "build>=1.5.0",
+  "build>=1.6.0",
   "twine>=7.0.0",
 ]
 
@@ -81,10 +81,10 @@ dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
   "pytest-cov>=7.1.0",
-  "typer>=0.27.1",
+  "typer>=0.27.2",
   "rich>=15.0.0",
   "textual>=8.2.8",
-  "ruff>=0.16.5",
+  "ruff>=0.16.6",
   "bandit>=1.9.4",
   "twine>=7.0.0",
 ]
