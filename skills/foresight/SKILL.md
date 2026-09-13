@@ -182,7 +182,7 @@ Add to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' prompt",
+            "command": "bash '$HOME/.claude/hooks/foresight-hook.sh' prompt",
             "timeout": 5
           }
         ]
@@ -194,7 +194,7 @@ Add to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash '/home/vivi/.claude/hooks/foresight-hook.sh' stop",
+            "command": "bash '$HOME/.claude/hooks/foresight-hook.sh' stop",
             "timeout": 10
           }
         ]

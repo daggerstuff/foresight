@@ -159,15 +159,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/vivi/pixelated/foresight
-EnvironmentFile=/home/vivi/pixelated/foresight/.env
-Environment="PATH=/home/vivi/.local/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=%h/pixelated/foresight
+EnvironmentFile=%h/pixelated/foresight/.env
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment=FASTMCP_STATELESS_HTTP=1
 Environment=FORESIGHT_HOST=127.0.0.1
 Environment=FORESIGHT_PORT=8764
 Environment=FORESIGHT_ALLOW_UNAUTHENTICATED=1
 
-ExecStart=/home/vivi/.local/bin/uv run --project /home/vivi/pixelated/foresight --no-active python -m foresight --host 127.0.0.1 --port 8764
+ExecStart=%h/.local/bin/uv run --project %h/pixelated/foresight --no-active python -m foresight --host 127.0.0.1 --port 8764
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

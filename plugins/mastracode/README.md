@@ -38,7 +38,7 @@ Open Mastra Code, type:
 Choose **Install new plugin** → **Local path** → Enter:
 
 ```text
-/home/vivi/pixelated/foresight/plugins/mastracode
+~/pixelated/foresight/plugins/mastracode
 ```
 
 ### Method 2: Global Configuration (`~/.mastracode/plugins/plugins.json`)
@@ -51,8 +51,8 @@ Add to `~/.mastracode/plugins/plugins.json`:
     "foresight": {
       "enabled": true,
       "source": "local",
-      "specifier": "/home/vivi/pixelated/foresight/plugins/mastracode",
-      "path": "/home/vivi/pixelated/foresight/plugins/mastracode",
+      "specifier": "~/pixelated/foresight/plugins/mastracode",
+      "path": "~/pixelated/foresight/plugins/mastracode",
       "entry": "src/index.ts",
       "version": "1.0.0"
     }
