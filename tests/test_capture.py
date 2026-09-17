@@ -527,3 +527,21 @@ class TestServerIntegration:
         reset_capture_pipeline()
         p2 = get_capture_pipeline()
         assert p1 is not p2
+
+    def test_capture_in_flight_single_turn(self):
+        """capture_in_flight should extract and store memories from a single message without requiring 3+ messages."""
+        pipeline = get_capture_pipeline()
+        text = "Fixed 9router crash by replacing obFinalSent with b.obFinalSent in chunk 8499.js."
+        stored = pipeline.capture_in_flight(text, user_id="_test_user_")
+        assert len(stored) >= 1
+        assert stored[0][0] == "decision"
+        assert "obFinalSent" in stored[0][1]
+
+    def test_capture_in_flight_dedup(self):
+        """Repeated capture_in_flight calls with identical text should deduplicate."""
+        pipeline = get_capture_pipeline()
+        text = "Fixed bug by updating config.yaml in production."
+        first = pipeline.capture_in_flight(text, user_id="_test_user_")
+        assert len(first) >= 1
+        second = pipeline.capture_in_flight(text, user_id="_test_user_")
+        assert len(second) == 0

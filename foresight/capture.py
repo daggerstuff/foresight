@@ -99,6 +99,12 @@ _DECISION_PATTERNS = [
     re.compile(r"\bmake\s+sure\b", re.IGNORECASE),
     re.compile(r"\bensure\b", re.IGNORECASE),
     re.compile(r"\bimplement(?:ed)?\b", re.IGNORECASE),
+    re.compile(r"\b(?:fixed|fixing)\b", re.IGNORECASE),
+    re.compile(r"\b(?:patched|patching)\b", re.IGNORECASE),
+    re.compile(r"\b(?:resolved|resolving)\b", re.IGNORECASE),
+    re.compile(r"\broot\s+cause\b", re.IGNORECASE),
+    re.compile(r"\bconfigured\b", re.IGNORECASE),
+    re.compile(r"\bupgraded\b", re.IGNORECASE),
 ]
 
 # preference: user likes/dislikes that inform future interactions
@@ -277,20 +283,16 @@ class MemoryExtractor:
     @classmethod
     def _extract_line(cls, text: str, pos: int) -> str:
         """Extract the line/sentence around position *pos*."""
-        # Try sentence boundaries first
-        start = text.rfind(".", 0, pos)
-        if start == -1:
-            start = text.rfind("\n", 0, pos)
-        if start == -1:
-            start = max(0, pos - 120)
-        else:
-            start += 1  # skip delimiter
+        before = text[:pos]
+        m_before = list(re.finditer(r"(?:\.\s+|\n+)", before))
+        start = m_before[-1].end() if m_before else 0
 
-        end = text.find(".", pos)
-        if end == -1:
-            end = text.find("\n", pos)
-        if end == -1:
-            end = min(len(text), pos + 240)
+        after = text[pos:]
+        m_after = re.search(r"(?:\.\s+|\n+|$)", after)
+        end = pos + (m_after.start() if m_after else len(after))
+
+        if end < len(text) and text[end] == ".":
+            end += 1
 
         line = text[start:end].strip()
         # Truncate to 240 chars max
@@ -527,6 +529,85 @@ class CapturePipeline:
             stats.near_duplicates,
         )
         return stats
+
+    def capture_in_flight(
+        self,
+        text_or_messages: str | list[dict],
+        user_id: str,
+        tenant_id: str | None = None,
+        source: str = "in-flight",
+    ) -> list[tuple[str, str]]:
+        """Extract and persist memories immediately (in-flight) without requiring a full session transcript.
+
+        Returns list of stored (category, content) tuples.
+        """
+        tid = tenant_id or get_current_account_id()
+        if isinstance(text_or_messages, str):
+            messages = [{"role": "user", "content": text_or_messages}]
+        else:
+            messages = text_or_messages
+
+        candidates = self.extractor.extract(messages)
+        if not candidates:
+            return []
+
+        stored_items: list[tuple[str, str]] = []
+        now = datetime.now(timezone.utc).isoformat()
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            for candidate in candidates:
+                dedupe = self.dedupe.check(candidate, user_id, tid, db_path=self.db_path)
+                if dedupe.status == "DUPLICATE":
+                    continue
+
+                mid = hashlib.sha256(f"{candidate.content}{now}".encode()).hexdigest()[:16]
+                content = f"[auto-captured/{candidate.category}] {candidate.content}"
+                h = _content_hash(content)
+                conn.execute(
+                    """INSERT INTO memories
+                       (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
+                        created_at, updated_at, tags, emotional_context, metrics,
+                        is_ghost, synthesized_from, importance)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
+                       ON CONFLICT (id) DO NOTHING""",
+                    (
+                        mid,
+                        content,
+                        h,
+                        candidate.scope,
+                        candidate.retention,
+                        candidate.category,
+                        user_id,
+                        BANK_ID,
+                        tid,
+                        now,
+                        now,
+                        json.dumps(candidate.tags),
+                        candidate.importance,
+                    ),
+                )
+                conn.commit()
+
+                if dedupe.status == "NEAR_DUPLICATE" and dedupe.existing_id and dedupe.existing_id != mid:
+                    rel_id = hashlib.sha256(f"{mid}-derives-{dedupe.existing_id}".encode()).hexdigest()[:16]
+                    conn.execute(
+                        """INSERT INTO memory_relationships
+                           (id, tenant_id, user_id, source_memory_id, target_memory_id,
+                            relationship_type, confidence, metadata, created_at)
+                           VALUES (?, ?, ?, ?, ?, 'derives', 1.0, '{}', ?)
+                           ON CONFLICT (id) DO NOTHING""",
+                        (rel_id, tid, user_id, mid, dedupe.existing_id, now),
+                    )
+                    conn.commit()
+
+                stored_items.append((candidate.category, candidate.content))
+        finally:
+            pool.release(conn)
+            conn.close()
+
+        logger.info("capture_in_flight: %d candidates → %d stored", len(candidates), len(stored_items))
+        return stored_items
 
 
 # ---------------------------------------------------------------------------

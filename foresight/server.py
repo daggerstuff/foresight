@@ -3015,6 +3015,52 @@ def capture_triggered_memories(
     )
 
 
+@mcp.tool(output_schema=None)
+def capture_in_flight_memory(
+    content: str,
+    category: str = "decision",
+    scope: str = "arc",
+    importance: float = 0.7,
+    retention: str = "long_term",
+    user_id: str | None = None,
+) -> str:
+    """Store a memory immediately at any point during active work without waiting for session wrapup.
+
+    Args:
+        content: Memory content to store immediately (decision, fix, preference, pattern, recipe)
+        category: Memory category ('decision', 'fact', 'preference', 'lesson', 'pattern', 'pending')
+        scope: Scope ('arc', 'trait', 'fact', 'session', 'project')
+        importance: Importance score between 0.1 and 1.0 (default: 0.7)
+        retention: Retention policy ('long_term' or 'short_term')
+        user_id: Optional user ID override
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+    action = MemoryAction(
+        action="store",
+        content=content.strip(),
+        options=MemoryOptions(
+            category=category,
+            scope=scope,
+            importance=importance,
+            retention=retention,
+            tags=["in-flight", category],
+        ),
+    )
+    res = _handle_memory_store(uid, tenant_id, action)
+    if category == "preference":
+        with contextlib.suppress(Exception):
+            agent = get_context_block_agent(uid, tenant_id)
+            agent.state.append_to_block("user_preferences", content.strip())
+            agent._persist_block("user_preferences")
+    elif category in ("pending", "pending_item"):
+        with contextlib.suppress(Exception):
+            agent = get_context_block_agent(uid, tenant_id)
+            agent.state.append_to_block("pending_items", content.strip())
+            agent._persist_block("pending_items")
+    return f"Stored in-flight memory: {res}"
+
+
 # =============================================================================
 # Curation Run Tools
 # =============================================================================
@@ -4122,14 +4168,19 @@ def inject_context(
     if memories:
         _auto_reinforce_batch([m.memory_id for m in memories], uid, tenant_id)
 
-    # Side-effect: silently capture any phrase-triggered memories in the message
-    # ("remember this:", "decision:", "preference:", etc.) without the user
-    # needing to call a separate tool.
+    # Side-effect: silently capture any phrase-triggered or in-flight pattern memories
+    # in the background without blocking retrieval or requiring end-of-session wrapup.
     if conversation_text:
         try:
-            _auto_capture_triggered(conversation_text, uid, tenant_id)
+            import threading
+
+            threading.Thread(
+                target=_auto_capture_in_flight,
+                args=(conversation_text, uid, tenant_id),
+                daemon=True,
+            ).start()
         except Exception:
-            logger.debug("auto_capture_triggered failed (non-fatal)", exc_info=True)
+            logger.debug("auto_capture_in_flight launch failed (non-fatal)", exc_info=True)
 
     budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else None
 
@@ -4166,34 +4217,72 @@ def inject_context(
     return res_output
 
 
-def _auto_capture_triggered(text: str, uid: str, tenant_id: str) -> None:
-    """Fire-and-forget phrase trigger capture called as a side effect of inject_context.
+def _auto_capture_in_flight(
+    text: str,
+    uid: str,
+    tenant_id: str,
+    messages: list[dict] | None = None,
+) -> int:
+    """In-flight memory capture called at any point during active sessions.
 
-    Scans the conversation text for trigger phrases ("remember this:", "decision:",
-    "preference:", "lesson:", etc.) and automatically stores matching content as
-    memories. Users get persistent memory just by typing naturally — no separate
-    tool call required.
+    Captures both explicit phrase triggers ('remember this:', 'decision:') AND
+    natural language patterns (fixes, decisions, preferences, tool recipes)
+    without waiting for an end-of-session wrapup.
     """
-    matches = extract_triggered_memories(text, triggers=DEFAULT_TRIGGERS)
-    for match in matches:
+    stored_count = 0
+    # 1. Check explicit phrase triggers if text is provided
+    if text:
         try:
-            _handle_memory_store(
-                uid,
-                tenant_id,
-                MemoryAction(
-                    action="store",
-                    content=match.content,
-                    options=MemoryOptions(
-                        category=match.metadata.get("category", "fact"),
-                        scope=match.metadata.get("scope", "arc"),
-                        retention=match.metadata.get("retention", "long_term"),
-                        importance=float(match.metadata.get("importance", 0.6)),
+            matches = extract_triggered_memories(text, triggers=DEFAULT_TRIGGERS)
+            for match in matches:
+                res = _handle_memory_store(
+                    uid,
+                    tenant_id,
+                    MemoryAction(
+                        action="store",
+                        content=match.content,
+                        options=MemoryOptions(
+                            category=match.metadata.get("category", "fact"),
+                            scope=match.metadata.get("scope", "arc"),
+                            retention=match.metadata.get("retention", "long_term"),
+                            importance=float(match.metadata.get("importance", 0.6)),
+                            tags=match.metadata.get("tags", ["auto-captured"]),
+                        ),
                     ),
-                ),
-            )
-            logger.debug("auto_capture_triggered: stored %r (trigger=%r)", match.content[:60], match.trigger)
+                )
+                if "Error:" not in str(res):
+                    stored_count += 1
+                    logger.debug("auto_capture_in_flight (trigger): stored %r", match.content[:60])
         except Exception:
-            logger.debug("auto_capture_triggered store failed (non-fatal)", exc_info=True)
+            logger.debug("auto_capture_in_flight trigger store failed", exc_info=True)
+
+    # 2. In-flight pattern extraction via CapturePipeline
+    try:
+        pipeline = get_capture_pipeline()
+        target = messages if messages else text
+        if target:
+            stored = pipeline.capture_in_flight(target, user_id=uid, tenant_id=tenant_id)
+            stored_count += len(stored)
+            if stored:
+                try:
+                    agent = get_context_block_agent(uid, tenant_id)
+                    for cat, content in stored:
+                        if cat == "preference":
+                            agent.state.append_to_block("user_preferences", content)
+                            agent._persist_block("user_preferences")
+                        elif cat in ("pending_item", "pending"):
+                            agent.state.append_to_block("pending_items", content)
+                            agent._persist_block("pending_items")
+                except Exception:
+                    logger.debug("auto_capture_in_flight context block update failed", exc_info=True)
+    except Exception:
+        logger.debug("auto_capture_in_flight pipeline extraction failed", exc_info=True)
+
+    return stored_count
+
+
+# Backwards compatibility alias
+_auto_capture_triggered = _auto_capture_in_flight
 
 
 def _format_injection_output(
@@ -7372,15 +7461,52 @@ async def ui_api_inject(request: Any) -> Any:
     try:
         body = await request.json()
         text = body.get("text", "")
+        messages = body.get("messages")
     except Exception:
         text = ""
+        messages = None
 
     res = inject_context(conversation_text=text, include_details=True)
+    if messages and isinstance(messages, list):
+        import threading
+
+        uid = USER_ID
+        tid = get_current_account_id()
+        threading.Thread(
+            target=_auto_capture_in_flight,
+            args=("", uid, tid, messages),
+            daemon=True,
+        ).start()
     try:
         data = json.loads(res) if isinstance(res, str) else res
     except Exception:
         data = {"formatted": str(res)}
     return JSONResponse(data if isinstance(data, dict) else {"formatted": str(res)})
+
+
+@mcp.custom_route("/ui/api/capture", methods=["POST"])
+async def ui_api_capture(request: Any) -> Any:
+    """API endpoint for in-flight memory capture during ongoing sessions."""
+    from starlette.responses import JSONResponse
+
+    try:
+        body = await request.json()
+        text = body.get("text", "")
+        messages = body.get("messages", [])
+        user_id = body.get("user_id") or USER_ID
+        tenant_id = get_current_account_id()
+
+        import threading
+
+        threading.Thread(
+            target=_auto_capture_in_flight,
+            args=(text, user_id, tenant_id, messages),
+            daemon=True,
+        ).start()
+        return JSONResponse({"ok": True, "status": "in-flight capture dispatched"})
+    except Exception as e:
+        logger.exception("UI capture failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @mcp.custom_route("/ui/api/maintenance", methods=["POST"])
