@@ -67,14 +67,14 @@ Out of scope:
 
 ### Assets
 
-| Asset | Classification | Notes |
-| ----- | -------------- | ----- |
-| Memory contents | Sensitive | May include personal, clinical, or proprietary context volunteered by users |
-| Context blocks | Sensitive | Distilled user preferences, project state, patterns — cross-session by design |
-| Tenant / user identifiers | Internal | Every store and query is scoped by `tenant_id` + `user_id` |
-| `FORESIGHT_ENCRYPTION_KEY` | Secret | AES-256-GCM master key; optional at-rest encryption layer |
-| `FORESIGHT_DB_URL` | Secret | Database DSN (Postgres or SQLite path) |
-| LLM provider API keys | Secret | Outbound-only; used for extraction and semantic search backends |
+| Asset                      | Classification | Notes                                                                         |
+| -------------------------- | -------------- | ----------------------------------------------------------------------------- |
+| Memory contents            | Sensitive      | May include personal, clinical, or proprietary context volunteered by users   |
+| Context blocks             | Sensitive      | Distilled user preferences, project state, patterns — cross-session by design |
+| Tenant / user identifiers  | Internal       | Every store and query is scoped by `tenant_id` + `user_id`                    |
+| `FORESIGHT_ENCRYPTION_KEY` | Secret         | AES-256-GCM master key; optional at-rest encryption layer                     |
+| `FORESIGHT_DB_URL`         | Secret         | Database DSN (Postgres or SQLite path)                                        |
+| LLM provider API keys      | Secret         | Outbound-only; used for extraction and semantic search backends               |
 
 ### Trust Boundaries
 
@@ -100,15 +100,15 @@ Agent / CLI client ──── MCP protocol (stdio | HTTP) ────▶ Fore
 
 ### STRIDE Summary
 
-| Threat | Boundary | Mitigation |
-| ------ | -------- | ---------- |
-| Spoofing | Client ↔ server | MCP session/auth handled by transport; operator binds the listener |
-| Tampering | Memory store | Optional AES-256-GCM encryption at rest; integrity via primary keys + versioning |
-| Repudiation | Memory mutations | `memory_versions` table retains per-change history |
-| Information disclosure | Cross-tenant | Every read/write scoped by `tenant_id` + `user_id`; regression tests assert scope isolation (`tests/test_memory_scope.py`) |
-| Information disclosure | At rest | `manage_encryption encrypt_all` + `FORESIGHT_ENCRYPTION_KEY`; key rotation supported |
-| Denial of service | Retrieval path | TF-IDF / hybrid caches with size caps; connection pooling with bounded pools |
-| Elevation of privilege | Hooks | No bundled remote code execution; hooks are local operator-installed files |
+| Threat                 | Boundary         | Mitigation                                                                                                                 |
+| ---------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Spoofing               | Client ↔ server  | MCP session/auth handled by transport; operator binds the listener                                                         |
+| Tampering              | Memory store     | Optional AES-256-GCM encryption at rest; integrity via primary keys + versioning                                           |
+| Repudiation            | Memory mutations | `memory_versions` table retains per-change history                                                                         |
+| Information disclosure | Cross-tenant     | Every read/write scoped by `tenant_id` + `user_id`; regression tests assert scope isolation (`tests/test_memory_scope.py`) |
+| Information disclosure | At rest          | `manage_encryption encrypt_all` + `FORESIGHT_ENCRYPTION_KEY`; key rotation supported                                       |
+| Denial of service      | Retrieval path   | TF-IDF / hybrid caches with size caps; connection pooling with bounded pools                                               |
+| Elevation of privilege | Hooks            | No bundled remote code execution; hooks are local operator-installed files                                                 |
 
 ### Secrets Handling
 

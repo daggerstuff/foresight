@@ -7,7 +7,7 @@ updates:
     groups:
       python-deps:
         patterns:
-          - "*"
+          - '*'
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
@@ -17,5 +17,5 @@ updates:
     groups:
       actions-deps:
         patterns:
-          - "*"
+          - '*'
     open-pull-requests-limit: 5

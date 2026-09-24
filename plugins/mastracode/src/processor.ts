@@ -84,7 +84,9 @@ export function createForesightProcessor(
 
     async processInput(args: MastraProcessInputArgs) {
       const { messages, systemMessages } = args
-      const threadId = resolveThreadId(args as unknown as Record<string, unknown>)
+      const threadId = resolveThreadId(
+        args as unknown as Record<string, unknown>,
+      )
       const state = getSessionState(threadId)
 
       // Extract user text
@@ -172,7 +174,9 @@ export function createForesightProcessor(
     async processOutputResult(args: MastraProcessOutputResultArgs) {
       const { messages } = args
       const result = (args as unknown as { result?: { text?: string } }).result
-      const threadId = resolveThreadId(args as unknown as Record<string, unknown>)
+      const threadId = resolveThreadId(
+        args as unknown as Record<string, unknown>,
+      )
       const state = getSessionState(threadId)
 
       const userText = state.lastUserQuery

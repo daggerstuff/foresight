@@ -2,8 +2,8 @@
 
 Companion to `INSTALL.md` and `README.md`. This guide documents operational and
 deploy-time concerns for Foresight: environment architecture, database backend
-topology (Neon PostgreSQL), Redis caching, systemd daemonization, multi-agent fleet
-rollout, containerization, and troubleshooting.
+topology (Neon PostgreSQL), Redis caching, systemd daemonization, multi-agent
+fleet rollout, containerization, and troubleshooting.
 
 ---
 
@@ -32,52 +32,55 @@ uv run python -c "from foresight.backend import create_backend; b=create_backend
 uv run foresight doctor
 ```
 
-> **Note**: Postgres is strictly required in production. If `FORESIGHT_DB_URL` is unset
-> or invalid, the backend factory raises `RuntimeError`.
+> **Note**: Postgres is strictly required in production. If `FORESIGHT_DB_URL`
+> is unset or invalid, the backend factory raises `RuntimeError`.
 
 ---
 
 ## 2. Environment Variables Specification
 
-| Variable | Required? | Purpose | Default |
-| :--- | :--- | :--- | :--- |
-| `FORESIGHT_DB_URL` | **Yes** | PostgreSQL connection DSN (`postgresql://` or `postgres://` with `sslmode=require`). | _(none — must set)_ |
-| `FORESIGHT_IDENTITY` | **Yes** | Primary logical agent identity (`user` or `user@account`). Propagated to memories. | `$USER@default` |
-| `FORESIGHT_BANK_ID` | Recommended | Tenant/bank namespace for cross-tenant isolation and memory domains. | `default` |
-| `FORESIGHT_ENCRYPTION_KEY` | Recommended | 32-byte symmetric master key (hex or base64) for AES-256-GCM envelope encryption. | _(none — optional plaintext)_ |
-| `FORESIGHT_REDIS_URL` | _Optional_ | Canonical Redis companion cache URL (`redis://[:pw]@host:port[/db]`). | `""` (in-process cache) |
-| `REDIS_URL` | _Optional_ | Fallback Redis connection URL for infrastructure compatibility. | `""` |
-| `FORESIGHT_HOST` | _Optional_ | FastMCP streamable HTTP server bind host. | `127.0.0.1` |
-| `FORESIGHT_PORT` | _Optional_ | FastMCP streamable HTTP server listen port. | `8764` |
-| `FASTMCP_STATELESS_HTTP` | _Optional_ | Set `1` for stateless HTTP to avoid 404 "Session expired" on server restarts. | `1` (in systemd/scripts) |
-| `FORESIGHT_ALLOW_UNAUTHENTICATED`| _Optional_ | Set `1` for local agent tooling without per-request bearer tokens. | `0` (enforce auth if set) |
-| `FORESIGHT_LLM_PROVIDER` | _Optional_ | LLM provider for synthesis/reflection (`openai`, `anthropic`, `gemini`, `ollama`, `vllm`). | `none` |
-| `FORESIGHT_LLM_API_KEY` | _Optional_ | API key for the chosen LLM provider. | _(none)_ |
-| `FORESIGHT_LLM_MODEL` | _Optional_ | Model identifier override (e.g. `claude-3-5-sonnet-latest`, `gpt-4o`). | Provider default |
-| `FORESIGHT_LLM_BASE_URL` | _Optional_ | Custom base URL for OpenAI-compatible inference endpoints. | Provider default |
-| `FORESIGHT_DECAY_INTERVAL_HOURS` | _Optional_ | Background daemon memory decay recalculation interval. | `6` |
-| `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | _Optional_ | Background daemon memory consolidation, archive, and GC sweep interval. | `24` |
-| `FORESIGHT_DB_PATH` | _Test Only_ | Local SQLite file path override for isolated test fixtures. | `None` (forces Postgres) |
+| Variable                               | Required?   | Purpose                                                                                    | Default                       |
+| :------------------------------------- | :---------- | :----------------------------------------------------------------------------------------- | :---------------------------- |
+| `FORESIGHT_DB_URL`                     | **Yes**     | PostgreSQL connection DSN (`postgresql://` or `postgres://` with `sslmode=require`).       | _(none — must set)_           |
+| `FORESIGHT_IDENTITY`                   | **Yes**     | Primary logical agent identity (`user` or `user@account`). Propagated to memories.         | `$USER@default`               |
+| `FORESIGHT_BANK_ID`                    | Recommended | Tenant/bank namespace for cross-tenant isolation and memory domains.                       | `default`                     |
+| `FORESIGHT_ENCRYPTION_KEY`             | Recommended | 32-byte symmetric master key (hex or base64) for AES-256-GCM envelope encryption.          | _(none — optional plaintext)_ |
+| `FORESIGHT_REDIS_URL`                  | _Optional_  | Canonical Redis companion cache URL (`redis://[:pw]@host:port[/db]`).                      | `""` (in-process cache)       |
+| `REDIS_URL`                            | _Optional_  | Fallback Redis connection URL for infrastructure compatibility.                            | `""`                          |
+| `FORESIGHT_HOST`                       | _Optional_  | FastMCP streamable HTTP server bind host.                                                  | `127.0.0.1`                   |
+| `FORESIGHT_PORT`                       | _Optional_  | FastMCP streamable HTTP server listen port.                                                | `8764`                        |
+| `FASTMCP_STATELESS_HTTP`               | _Optional_  | Set `1` for stateless HTTP to avoid 404 "Session expired" on server restarts.              | `1` (in systemd/scripts)      |
+| `FORESIGHT_ALLOW_UNAUTHENTICATED`      | _Optional_  | Set `1` for local agent tooling without per-request bearer tokens.                         | `0` (enforce auth if set)     |
+| `FORESIGHT_LLM_PROVIDER`               | _Optional_  | LLM provider for synthesis/reflection (`openai`, `anthropic`, `gemini`, `ollama`, `vllm`). | `none`                        |
+| `FORESIGHT_LLM_API_KEY`                | _Optional_  | API key for the chosen LLM provider.                                                       | _(none)_                      |
+| `FORESIGHT_LLM_MODEL`                  | _Optional_  | Model identifier override (e.g. `claude-3-5-sonnet-latest`, `gpt-4o`).                     | Provider default              |
+| `FORESIGHT_LLM_BASE_URL`               | _Optional_  | Custom base URL for OpenAI-compatible inference endpoints.                                 | Provider default              |
+| `FORESIGHT_DECAY_INTERVAL_HOURS`       | _Optional_  | Background daemon memory decay recalculation interval.                                     | `6`                           |
+| `FORESIGHT_MAINTENANCE_INTERVAL_HOURS` | _Optional_  | Background daemon memory consolidation, archive, and GC sweep interval.                    | `24`                          |
+| `FORESIGHT_DB_PATH`                    | _Test Only_ | Local SQLite file path override for isolated test fixtures.                                | `None` (forces Postgres)      |
 
-> **Security Guardrail**: Credentials, connection strings, and encryption keys must
-> remain strictly in `.env` or system secret managers. `.env` files must always be
-> `chmod 600` and gitignored.
+> **Security Guardrail**: Credentials, connection strings, and encryption keys
+> must remain strictly in `.env` or system secret managers. `.env` files must
+> always be `chmod 600` and gitignored.
 
 ---
 
 ## 3. Database Architecture & Neon PostgreSQL Topology
 
-Foresight relies on PostgreSQL 17 with `pgvector` for semantic embeddings, hybrid
-retrieval (BM25 + pgvector Reciprocal Rank Fusion), temporal decay curves, and
-relational entity tracking.
+Foresight relies on PostgreSQL 17 with `pgvector` for semantic embeddings,
+hybrid retrieval (BM25 + pgvector Reciprocal Rank Fusion), temporal decay
+curves, and relational entity tracking.
 
 ### Neon Connection Pooling
 
 Neon provides two connection hostnames:
+
 1. **Connection Pooler (`*-pooler.*.neon.tech`)**: Operates via pgBouncer in
-   transaction-pooling mode. Ideal for multiple agents and short-lived CLI calls.
+   transaction-pooling mode. Ideal for multiple agents and short-lived CLI
+   calls.
 2. **Direct Compute (`*.*.neon.tech`)**: Direct TCP connection to the PostgreSQL
-   compute node. Required for migrations, long-lived locks, and maintenance sweeps.
+   compute node. Required for migrations, long-lived locks, and maintenance
+   sweeps.
 
 ```
 AI Agents (Claude / OpenCode / Antigravity)
@@ -95,13 +98,14 @@ PostgreSQL 17 Compute Node (23 Tables + pgvector HNSW Indexes)
 ### Critical Neon Rules
 
 - **`sslmode=require` is mandatory**: Neon drops unencrypted handshakes.
-- **Connection Idle Kill**: Neon automatically terminates connections idle for > 5 min.
-  `psycopg_pool` handles this transparently by reconnecting on checkout.
-- **Test vs. Production Isolation**: Production uses the `foresight` database; test
-  suites auto-route to `foresight_test` to guarantee zero state contamination.
-- **23 Public Schema Tables**: All tables (`memories`, `context_blocks`, `entity_nodes`,
-  `entity_edges`, `curation_runs`, `reflections`, `temporal_anchors`, etc.) are
-  versioned and verified by `foresight doctor`.
+- **Connection Idle Kill**: Neon automatically terminates connections idle for >
+  5 min. `psycopg_pool` handles this transparently by reconnecting on checkout.
+- **Test vs. Production Isolation**: Production uses the `foresight` database;
+  test suites auto-route to `foresight_test` to guarantee zero state
+  contamination.
+- **23 Public Schema Tables**: All tables (`memories`, `context_blocks`,
+  `entity_nodes`, `entity_edges`, `curation_runs`, `reflections`,
+  `temporal_anchors`, etc.) are versioned and verified by `foresight doctor`.
 
 ---
 
@@ -118,8 +122,9 @@ def create_backend() -> DatabaseBackend:
 ```
 
 - **Prefix Matching**: Schemes must be `postgresql://` or `postgres://`.
-- **Driver**: The runtime uses `psycopg` 3.3+ and `psycopg_pool` for high-throughput
-  connection pooling with lowercase `dict_row` row factory functions.
+- **Driver**: The runtime uses `psycopg` 3.3+ and `psycopg_pool` for
+  high-throughput connection pooling with lowercase `dict_row` row factory
+  functions.
 
 ---
 
@@ -129,10 +134,11 @@ Cross-process shared narrative caching is handled by
 `foresight/redis_cache.py:RedisCache` and `RedisCompanion`:
 
 - **Key Schema**: `{prefix}:narrative:{tenant_id}:{user_id}:{sha256_hash}`
-- **Auxiliary Shard LRU**: `{prefix}:zset:{tenant_id}:{user_id}` scored by epoch timestamp.
+- **Auxiliary Shard LRU**: `{prefix}:zset:{tenant_id}:{user_id}` scored by epoch
+  timestamp.
 - **TTL**: 7 days (`604,800` seconds) natively enforced via `SETEX`.
-- **LRU Eviction**: Caps storage at 10,000 entries per user shard. Oldest entries are
-  deleted via pipelined `ZREMRANGEBYRANK`.
+- **LRU Eviction**: Caps storage at 10,000 entries per user shard. Oldest
+  entries are deleted via pipelined `ZREMRANGEBYRANK`.
 - **Credential Masking**: Connection URLs and logs mask auth tokens
   (`rediss://default:***@host:6379`).
 
@@ -198,8 +204,9 @@ journalctl --user -u foresight -f
 
 ### Topology B: Multi-Agent Fleet Rollout (`scripts/rollout_fleet.sh`)
 
-In distributed environments with multiple agent nodes, `scripts/rollout_fleet.sh`
-orchestrates automated updates and health verification:
+In distributed environments with multiple agent nodes,
+`scripts/rollout_fleet.sh` orchestrates automated updates and health
+verification:
 
 ```bash
 # Preview status across all nodes
@@ -216,11 +223,12 @@ bash scripts/rollout_fleet.sh --apply
 - **`gnasty`**: `167.233.25.111` (Secondary agent execution & staging node)
 
 The fleet rollout script ensures:
+
 1. Git checkouts are cleanly fetched and submodules synced.
 2. Dependencies are synchronized with `uv sync --extra all`.
 3. Database migrations and schema checks are executed.
-4. Systemd services (`foresight.service`) are reloaded and verified healthy
-   with `foresight doctor`.
+4. Systemd services (`foresight.service`) are reloaded and verified healthy with
+   `foresight doctor`.
 
 ---
 
@@ -265,13 +273,13 @@ CMD ["--host", "0.0.0.0", "--port", "8764"]
 #### `docker-compose.yml`
 
 ```yaml
-version: "3.8"
+version: '3.8'
 
 services:
   foresight:
     build: .
     ports:
-      - "8764:8764"
+      - '8764:8764'
     environment:
       - FORESIGHT_DB_URL=postgresql://foresight:secret@postgres:5432/foresight?sslmode=disable
       - FORESIGHT_REDIS_URL=redis://redis:6379/0
@@ -292,12 +300,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - '5432:5432'
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - '6379:6379'
 
 volumes:
   pgdata:
@@ -331,12 +339,13 @@ Foresight supports two FastMCP transport models:
 
 ### Why Streamable HTTP is Preferred for Multi-Agent Work
 
-1. **Zero Cold-Start Latency**: The connection pool and pgvector indexes stay warm
-   in memory; tool calls execute in < 25ms.
-2. **Stateless Reconnect Safety**: With `FASTMCP_STATELESS_HTTP=1`, clients that cache
-   session IDs survive server restarts without 404s.
-3. **Cross-Agent Resource Sharing**: Multiple agent tools (Claude Code, OpenCode,
-   Antigravity) multiplex over one shared endpoint without connection contention.
+1. **Zero Cold-Start Latency**: The connection pool and pgvector indexes stay
+   warm in memory; tool calls execute in < 25ms.
+2. **Stateless Reconnect Safety**: With `FASTMCP_STATELESS_HTTP=1`, clients that
+   cache session IDs survive server restarts without 404s.
+3. **Cross-Agent Resource Sharing**: Multiple agent tools (Claude Code,
+   OpenCode, Antigravity) multiplex over one shared endpoint without connection
+   contention.
 
 ---
 
@@ -362,12 +371,12 @@ foresight security status
 
 ## 9. Troubleshooting & Operational Runbook
 
-| Symptom | Probable Cause | Corrective Action |
-| :--- | :--- | :--- |
-| `RuntimeError: FORESIGHT_DB_URL is required` | Environment variable missing or not sourced | Export `FORESIGHT_DB_URL` in `.env` or run `install.sh`. |
-| `SSL connection closed unexpectedly` | Neon idle-timeout or missing SSL parameters | Append `?sslmode=require` to your DSN. Connection pool auto-reconnects. |
-| `warning: VIRTUAL_ENV does not match project` | Outer virtualenv shadowed the runtime | Run `unset VIRTUAL_ENV VIRTUAL_ENV_DIR` or use `--project <dir> --no-active`. |
-| `HTTP 404: Session expired` on MCP tool call | Stateful session lost on server restart | Set `FASTMCP_STATELESS_HTTP=1` in the systemd service or wrapper. |
-| `Systemd service inactive after SSH logout` | Systemd user session lingering disabled | Run `loginctl enable-linger $USER`. |
-| `Port 8764 already in use` | Zombie foresight process running | Check with `fuser 8764/tcp` or `ss -tulpn \| grep 8764` and restart service. |
-| `AttributeError: dict_row` | Stale or incompatible `psycopg` install | Run `uv sync --extra all` to install `psycopg>=3.3.4` and `psycopg-pool>=3.3.1`. |
+| Symptom                                       | Probable Cause                              | Corrective Action                                                                |
+| :-------------------------------------------- | :------------------------------------------ | :------------------------------------------------------------------------------- |
+| `RuntimeError: FORESIGHT_DB_URL is required`  | Environment variable missing or not sourced | Export `FORESIGHT_DB_URL` in `.env` or run `install.sh`.                         |
+| `SSL connection closed unexpectedly`          | Neon idle-timeout or missing SSL parameters | Append `?sslmode=require` to your DSN. Connection pool auto-reconnects.          |
+| `warning: VIRTUAL_ENV does not match project` | Outer virtualenv shadowed the runtime       | Run `unset VIRTUAL_ENV VIRTUAL_ENV_DIR` or use `--project <dir> --no-active`.    |
+| `HTTP 404: Session expired` on MCP tool call  | Stateful session lost on server restart     | Set `FASTMCP_STATELESS_HTTP=1` in the systemd service or wrapper.                |
+| `Systemd service inactive after SSH logout`   | Systemd user session lingering disabled     | Run `loginctl enable-linger $USER`.                                              |
+| `Port 8764 already in use`                    | Zombie foresight process running            | Check with `fuser 8764/tcp` or `ss -tulpn \| grep 8764` and restart service.     |
+| `AttributeError: dict_row`                    | Stale or incompatible `psycopg` install     | Run `uv sync --extra all` to install `psycopg>=3.3.4` and `psycopg-pool>=3.3.1`. |

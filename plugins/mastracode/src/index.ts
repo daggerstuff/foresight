@@ -10,10 +10,7 @@ import {
   parseSSEResult,
   type ForesightClientConfig,
 } from './client.js'
-import {
-  createForesightProcessor,
-  FORESIGHT_DIRECTIVES,
-} from './processor.js'
+import { createForesightProcessor, FORESIGHT_DIRECTIVES } from './processor.js'
 import { createForesightTools } from './tools.js'
 
 export {

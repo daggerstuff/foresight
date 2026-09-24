@@ -23,7 +23,10 @@ export class EventStoreClient {
   /**
    * Get events by type
    */
-  async getByType(_eventType: EventType, _limit: number = 100): Promise<Event[]> {
+  async getByType(
+    _eventType: EventType,
+    _limit: number = 100,
+  ): Promise<Event[]> {
     throw new Error('Not implemented - requires MCP connection')
   }
 

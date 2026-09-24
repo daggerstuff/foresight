@@ -86,7 +86,10 @@ export function createForesightTools(config?: ForesightClientConfig) {
         config,
       )
       if (!res) {
-        return { error: 'Failed to store memory: Foresight MCP server call failed or timed out.' }
+        return {
+          error:
+            'Failed to store memory: Foresight MCP server call failed or timed out.',
+        }
       }
       return { result: res }
     },

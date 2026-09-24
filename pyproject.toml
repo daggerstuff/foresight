@@ -152,7 +152,16 @@ max-args = 10
 "foresight/__main__.py" = ["E402"]
 "foresight_cli/**" = ["PLR0912", "PLR0913", "E402", "B008", "ARG001"]
 "foresight_cli/commands/system.py" = ["PLR0915"]
-"tests/*" = ["PLC0415", "ARG001", "PLR0913", "SIM115", "ARG005", "PT019", "E402", "PT012"]
+"tests/*" = [
+  "PLC0415",
+  "ARG001",
+  "PLR0913",
+  "SIM115",
+  "ARG005",
+  "PT019",
+  "E402",
+  "PT012",
+]
 "scripts/*" = ["T201", "E402", "N999"]
 
 [tool.ruff.lint.isort]
