@@ -12,6 +12,11 @@ from unittest.mock import patch
 from foresight import profile_synthesizer as ps_mod, subconscious as sub_mod
 from foresight.context_blocks import update_context_block
 from foresight.profile_synthesizer import (
+    DEFAULT_PROFILE_BUCKETS,
+    ProfileBucket,
+    ProfileConfig,
+    _bucketize_lines,
+    _classify_line,
     _deduplicate_lines,
     _extract_block_lines,
     _is_placeholder,
@@ -315,3 +320,167 @@ class TestSynthesizeProfile:
         profile = {"static": ["Engineer"], "dynamic": []}
         prompt = profile_to_prompt(profile, user_label="Developer")
         assert "ABOUT DEVELOPER" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Bucketing tests
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyLine:
+    def test_preferences_line(self):
+        line = "Always uses concise replies and prefers text over voice"
+        assert _classify_line(line, DEFAULT_PROFILE_BUCKETS) == "preferences"
+
+    def test_goals_line(self):
+        line = "Wants to ship the dashboard redesign before Friday"
+        assert _classify_line(line, DEFAULT_PROFILE_BUCKETS) == "goals"
+
+    def test_work_line(self):
+        line = "Maintains the CI pipeline for the payments repo"
+        assert _classify_line(line, DEFAULT_PROFILE_BUCKETS) == "work"
+
+    def test_unrelated_line_falls_back_to_general(self):
+        line = "Recovered from knee surgery last spring"
+        assert _classify_line(line, DEFAULT_PROFILE_BUCKETS) == "general"
+
+    def test_tie_keeps_earlier_bucket(self):
+        # "prefers" matches preferences (bucket 1), "project" matches work
+        assert _classify_line("Prefers the project", DEFAULT_PROFILE_BUCKETS) == "preferences"
+
+    def test_empty_or_symbol_only_line(self):
+        assert _classify_line("", DEFAULT_PROFILE_BUCKETS) == "general"
+        assert _classify_line("!!!", DEFAULT_PROFILE_BUCKETS) == "general"
+
+    def test_no_buckets(self):
+        assert _classify_line("Prefers dark mode", ()) == "general"
+
+    def test_custom_buckets_use_description_vocabulary(self):
+        buckets = (ProfileBucket(name="health", description="medical conditions, medications, symptoms"),)
+        assert _classify_line("Has medical conditions requiring medications", buckets) == "health"
+        assert _classify_line("Prefers dark mode", buckets) == "general"
+
+
+class TestBucketizeLines:
+    def test_groups_by_bucket(self):
+        lines = [
+            "Always uses concise replies and prefers text over voice",
+            "Wants to ship the dashboard redesign before Friday",
+            "Maintains the CI pipeline for the payments repo",
+            "Recovered from knee surgery last spring",
+        ]
+        grouped = _bucketize_lines(lines, DEFAULT_PROFILE_BUCKETS)
+        assert grouped == {
+            "preferences": [lines[0]],
+            "goals": [lines[1]],
+            "work": [lines[2]],
+            "general": [lines[3]],
+        }
+
+    def test_empty_input(self):
+        assert _bucketize_lines([], DEFAULT_PROFILE_BUCKETS) == {}
+
+
+class TestSynthesizeProfileBuckets:
+    def test_buckets_populated_when_configured(self):
+        db_path = _make_test_db()
+        with _patched_profile_env(db_path):
+            update_context_block(
+                "user_preferences",
+                "Always uses concise replies and prefers text over voice",
+                user_id="test_user",
+            )
+            profile = synthesize_profile(
+                "test_user",
+                config=ProfileConfig(buckets=DEFAULT_PROFILE_BUCKETS),
+            )
+        assert "buckets" in profile
+        assert any("concise replies" in line for line in profile["buckets"]["preferences"])
+
+    def test_buckets_absent_when_not_configured(self):
+        db_path = _make_test_db()
+        with _patched_profile_env(db_path):
+            profile = synthesize_profile("test_user")
+        assert "buckets" not in profile
+
+    def test_empty_bucket_tuple_skips_bucketing(self):
+        db_path = _make_test_db()
+        with _patched_profile_env(db_path):
+            profile = synthesize_profile("test_user", config=ProfileConfig(buckets=()))
+        assert "buckets" not in profile
+
+    def test_static_lines_only_are_bucketed(self):
+        """Dynamic context must never leak into buckets."""
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        _seed_memory(conn, MemorySeed("Wants to ship the payments API", scope="session", retention="short_term"))
+        conn.close()
+
+        with _patched_profile_env(db_path):
+            profile = synthesize_profile(
+                "test_user",
+                config=ProfileConfig(buckets=DEFAULT_PROFILE_BUCKETS),
+            )
+
+        assert any("payments API" in d for d in profile["dynamic"])
+        assert "ship the payments API" not in str(profile.get("buckets", {}))
+
+
+# ---------------------------------------------------------------------------
+# Budget-aware prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestProfileToPromptBudget:
+    def test_unbounded_unchanged(self):
+        profile = {"static": ["Engineer"], "dynamic": ["Fixing auth bug"]}
+        prompt = profile_to_prompt(profile)
+        assert prompt.startswith("ABOUT USER:")
+        assert "- Engineer" in prompt
+        assert "- Fixing auth bug" in prompt
+
+    def test_generous_budget_keeps_everything(self):
+        profile = {"static": ["Engineer", "Prefers dark mode"], "dynamic": []}
+        prompt = profile_to_prompt(profile, max_chars=10_000)
+        assert "- Engineer" in prompt
+        assert "- Prefers dark mode" in prompt
+        assert len(prompt) <= 10_000
+
+    def test_static_preferred_over_dynamic(self):
+        profile = {"static": ["A" * 40], "dynamic": ["B" * 40]}
+        prompt = profile_to_prompt(profile, max_chars=60)
+        assert prompt.startswith("ABOUT USER:")
+        assert "CURRENT CONTEXT:" not in prompt
+        assert len(prompt) <= 60
+
+    def test_buckets_dropped_when_tight(self):
+        profile = {"static": ["A" * 40], "buckets": {"preferences": ["B" * 40]}}
+        prompt = profile_to_prompt(profile, max_chars=60)
+        assert "BY TOPIC:" not in prompt
+        assert len(prompt) <= 60
+
+    def test_truncates_last_line_at_word_boundary(self):
+        line = "Engineer working on the payments platform"
+        prompt = profile_to_prompt({"static": [line]}, max_chars=30)
+        assert len(prompt) <= 30
+        assert prompt.startswith("ABOUT USER:")
+        assert "..." in prompt
+        assert "Engineer w" not in prompt  # never cuts mid-word
+
+    def test_returns_empty_when_nothing_fits(self):
+        profile = {"static": ["A" * 100], "dynamic": ["B" * 100]}
+        assert profile_to_prompt(profile, max_chars=5) == ""
+
+    def test_zero_budget_returns_empty(self):
+        profile = {"static": ["Engineer"], "dynamic": []}
+        assert profile_to_prompt(profile, max_chars=0) == ""
+
+    def test_buckets_rendered_in_prompt(self):
+        profile = {
+            "static": ["Prefers concise replies"],
+            "buckets": {"preferences": ["Prefers concise replies"]},
+        }
+        prompt = profile_to_prompt(profile)
+        assert "BY TOPIC:" in prompt
+        assert "- preferences: Prefers concise replies" in prompt
