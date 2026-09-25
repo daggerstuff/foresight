@@ -1220,9 +1220,18 @@ class HybridRetriever:
         limit: int,
         rankings: Rankings,
     ) -> list[HybridResult]:
-        """Build HybridResult objects from merged rankings."""
+        """Build HybridResult objects from merged rankings.
+
+        Scoring (truth multipliers, decay, entity boost) happens AFTER the
+        RRF merge, so the candidate slice is taken over the full merged list
+        and ``limit`` is applied only to the final re-sorted output — a
+        superseded/inferred memory in the initial top-N cannot displace a
+        live memory from the result set.
+        """
         results = []
-        for memory_id, rrf_score in merged[:limit]:
+        # Over-fetch so post-RRF penalties can promote candidates from just
+        # outside the raw top-N.
+        for memory_id, rrf_score in merged[: limit * 3]:
             mem = memories.get(memory_id)
             if not mem:
                 continue
@@ -1326,9 +1335,10 @@ class HybridRetriever:
 
             results.append(result)
 
-        # Re-sort by decay-adjusted combined score
+        # Re-sort by decay-adjusted combined score, then apply the caller's
+        # limit to the final ranking.
         results.sort(key=lambda r: r.combined_score, reverse=True)
-        return results
+        return results[:limit]
 
     def _fetch_memories_for_top_ids(
         self,

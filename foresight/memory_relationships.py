@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -442,6 +443,7 @@ class _MemoryRelationshipStoreSingleton:
     """Module-level singleton for MemoryRelationshipStore."""
 
     _instance: MemoryRelationshipStore | None = None
+    _lock = threading.Lock()
 
     @classmethod
     def get_instance(cls) -> MemoryRelationshipStore:
@@ -449,14 +451,16 @@ class _MemoryRelationshipStoreSingleton:
 
         ``DB_PATH is None`` is valid in Postgres-only mode: ``get_pool(None)``
         routes to the active Postgres backend pool."""
-        if cls._instance is None:
-            cls._instance = MemoryRelationshipStore(DB_PATH)
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = MemoryRelationshipStore(DB_PATH)
         return cls._instance
 
     @classmethod
     def reset(cls) -> None:
         """Reset the singleton (test-only helper)."""
-        cls._instance = None
+        with cls._lock:
+            cls._instance = None
 
 
 def get_memory_relationship_store() -> MemoryRelationshipStore:

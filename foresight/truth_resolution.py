@@ -35,7 +35,10 @@ from .enhanced_synthesizer import compute_overlap_score, find_sentiment_conflict
 
 logger = logging.getLogger("foresight_truth_resolution")
 
-CANDIDATE_FETCH_LIMIT = 20
+# Candidate window for supersession detection. A contradictory memory older
+# than this window (ranked by created_at DESC) is never marked superseded —
+# widen deliberately if stores become high-frequency per user/tenant.
+CANDIDATE_FETCH_LIMIT = 100
 OVERLAP_THRESHOLD = 0.30
 
 # A new text carrying one of these markers (and the old text not) flips the
@@ -134,7 +137,7 @@ def detect_and_mark_supersessions(
             continue
         conn.execute(
             "UPDATE memories SET is_latest = 0, superseded_by = ?, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            "WHERE id = ? AND user_id = ? AND tenant_id = ? AND is_latest = 1",
             (new_memory_id, now_iso, row["id"], uid, tenant_id),
         )
         matches.append(
