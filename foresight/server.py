@@ -134,6 +134,7 @@ from .reflection_narrative import (
     _default_cache as _reflection_narrative_cache,
     generate_insight_narrative,
 )
+from .rest_api import register_rest_routes
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
     SemanticSearchError as _SemanticSearchError,
@@ -1613,6 +1614,11 @@ else:
         version="0.19.0",
         middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
     )
+
+# REST surface (PIX-4704 Phase A): HTTP endpoints wrapping the same tool
+# handlers the MCP surface exposes, with their own auth + tenant scoping
+# (FastMCP middleware guards MCP calls, not custom routes).
+register_rest_routes(mcp)
 
 logger = logging.getLogger("foresight_server")
 if not logger.handlers:
@@ -5896,12 +5902,12 @@ def synthesize_profile(
         max_dynamic_memories=max_dynamic_memories,
         include_synthesis=include_synthesis,
     )
-    profile = _run_async(_synthesize_profile(uid, get_current_account_id(), cfg))
+    profile = _synthesize_profile(uid, get_current_account_id(), cfg)
 
     if format_prompt:
         return profile_to_prompt(profile)
 
-    return json.dumps(profile.to_dict(), indent=2, ensure_ascii=False)
+    return json.dumps(profile, indent=2, ensure_ascii=False)
 
 
 # =============================================================================

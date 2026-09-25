@@ -313,27 +313,25 @@ class AuthManager:
                 SELECT user_id, username, email, role, is_active, created_at, last_login,
                        password_hash, api_key, tenant_access
                 FROM users
-                WHERE username = ? AND is_active = 1
+                WHERE username = ? AND is_active = ?
             """,
-                (username,),
+                (username, True),
             )
 
             row = cursor.fetchone()
             if not row:
                 return None
 
-            (
-                user_id,
-                username,
-                email,
-                role_str,
-                is_active,
-                created_at_str,
-                last_login_str,
-                password_hash,
-                api_key,
-                tenant_access_json,
-            ) = row
+            user_id = row["user_id"]
+            username = row["username"]
+            email = row["email"]
+            role_str = row["role"]
+            is_active = row["is_active"]
+            created_at_str = row["created_at"]
+            last_login_str = row["last_login"]
+            password_hash = row["password_hash"]
+            api_key = row["api_key"]
+            tenant_access_json = row["tenant_access"]
 
             if not self._verify_password(password, password_hash):
                 return None
@@ -373,27 +371,25 @@ class AuthManager:
                 SELECT user_id, username, email, role, is_active, created_at, last_login,
                        password_hash, api_key, tenant_access
                 FROM users
-                WHERE api_key = ? AND is_active = 1
+                WHERE api_key = ? AND is_active = ?
             """,
-                (api_key,),
+                (api_key, True),
             )
 
             row = cursor.fetchone()
             if not row:
                 return None
 
-            (
-                user_id,
-                username,
-                email,
-                role_str,
-                is_active,
-                created_at_str,
-                last_login_str,
-                password_hash,
-                _,
-                tenant_access_json,
-            ) = row
+            user_id = row["user_id"]
+            username = row["username"]
+            email = row["email"]
+            role_str = row["role"]
+            is_active = row["is_active"]
+            created_at_str = row["created_at"]
+            last_login_str = row["last_login"]
+            password_hash = row["password_hash"]
+            api_key = row["api_key"]
+            tenant_access_json = row["tenant_access"]
 
             # Update last login
             conn.execute(
@@ -467,42 +463,26 @@ class AuthManager:
                        u.password_hash, u.api_key, u.tenant_access, s.expires_at
                 FROM auth_sessions s
                 JOIN users u ON s.user_id = u.user_id
-                WHERE s.session_id = ? AND s.expires_at > ? AND u.is_active = 1
+                WHERE s.session_id = ? AND s.expires_at > ? AND u.is_active = ?
             """,
-                (session_id, _utcnow().isoformat()),
+                (session_id, _utcnow().isoformat(), True),
             )
 
             row = cursor.fetchone()
             if not row:
                 return None
 
-            (
-                user_id,
-                username,
-                email,
-                role_str,
-                is_active,
-                created_at_str,
-                last_login_str,
-                password_hash,
-                api_key,
-                tenant_access_json,
-                _expires_at_str,
-            ) = row
-
-            # Session hash validation handled elsewhere; no placeholder check needed
-
             return User(
-                user_id=user_id,
-                username=username,
-                email=email,
-                role=Role(role_str),
-                is_active=bool(is_active),
-                created_at=_parse_db_timestamp(created_at_str) or _utcnow(),
-                last_login=_parse_db_timestamp(last_login_str),
-                password_hash=password_hash,
-                api_key=api_key,
-                tenant_access=json.loads(tenant_access_json) if tenant_access_json else [],
+                user_id=row["user_id"],
+                username=row["username"],
+                email=row["email"],
+                role=Role(row["role"]),
+                is_active=bool(row["is_active"]),
+                created_at=_parse_db_timestamp(row["created_at"]) or _utcnow(),
+                last_login=_parse_db_timestamp(row["last_login"]),
+                password_hash=row["password_hash"],
+                api_key=row["api_key"],
+                tenant_access=json.loads(row["tenant_access"]) if row["tenant_access"] else [],
             )
         finally:
             pool.release(conn)
@@ -564,8 +544,9 @@ def initialize_default_users() -> None:
     conn = pool_conn.acquire()
 
     try:
-        cursor = conn.execute("SELECT COUNT(*) FROM users")
-        count = cursor.fetchone()[0]
+        cursor = conn.execute("SELECT COUNT(*) AS user_count FROM users")
+        row = cursor.fetchone()
+        count = row["user_count"]
 
         if count == 0:
             # Create default admin user
