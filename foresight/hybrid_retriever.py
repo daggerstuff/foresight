@@ -22,6 +22,11 @@ The `vector` signal reads from the `memory_embeddings` table populated
 by `index_memory_embedding`. It degrades gracefully to an empty ranking
 when no embeddings are indexed, so the fusion still works on lexical,
 graph, and temporal signals alone.
+
+PIX-4701 adds an optional cross-encoder rerank stage after the fusion
+(see reranker.py, off by default) plus an `explain` option that returns
+global scoring metadata alongside the per-signal scores already exposed
+on each result.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from typing import Any, ClassVar
 
 from .backend.base import DatabaseBackend
 from .connection_pool import get_pool
+from .reranker import get_reranker, rerank_active, score_to_multiplier
 from .rrf_tuning import get_rrf_config
 
 logger = logging.getLogger("foresight_hybrid_retriever")
@@ -84,6 +90,9 @@ class HybridSearchOptions:
     use_graph: bool = True
     use_temporal: bool = True
     fast_path_enabled: bool = True
+    # PIX-4701: attach global explain metadata (weights, max possible score,
+    # rerank status) to the returned HybridSearchResult.
+    explain: bool = False
 
 
 @dataclass
@@ -161,6 +170,13 @@ class HybridResult:
     superseded_by: str | None = None
     truth_multiplier: float = 1.0
 
+    # PIX-4701 reranker metadata. rrf_score is the raw pre-multiplier fused
+    # score (the "raw combined" value for explain output); rerank fields are
+    # only populated when the rerank stage actually ran.
+    rrf_score: float = 0.0
+    rerank_score: float | None = None
+    rerank_multiplier: float = 1.0
+
     temporal_category: str = ""
 
     def to_dict(self) -> dict:
@@ -187,6 +203,9 @@ class HybridResult:
             "inferred": self.inferred,
             "superseded_by": self.superseded_by,
             "truth_multiplier": round(self.truth_multiplier, 4),
+            "rrf_score": round(self.rrf_score, 4),
+            "rerank_score": None if self.rerank_score is None else round(self.rerank_score, 4),
+            "rerank_multiplier": round(self.rerank_multiplier, 4),
         }
         temporal_category = self.temporal_category
         if temporal_category:
@@ -201,13 +220,19 @@ class HybridSearchResult:
     results: list[HybridResult]
     total_candidates: int
     signal_counts: dict[str, int | str] = field(default_factory=dict)
+    # PIX-4701 explain output: global scoring metadata (signal weights, RRF
+    # constant, max achievable score, rerank status). None unless explain=True.
+    score_details: dict[str, object] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "total_candidates": self.total_candidates,
             "signal_counts": self.signal_counts,
             "results": [r.to_dict() for r in self.results],
         }
+        if self.score_details is not None:
+            d["score_details"] = self.score_details
+        return d
 
 
 class HybridRetriever:
@@ -408,10 +433,12 @@ class HybridRetriever:
         self._schema_cache[table_name] = cols
         return cols
 
-    def _cache_key(self, query: str, user_id: str, tenant_id: str) -> tuple[str, str, str]:
-        return (_normalize_query(query), user_id, tenant_id)
+    def _cache_key(self, query: str, user_id: str, tenant_id: str) -> tuple[str, str, str, bool]:
+        """Cache key includes the rerank-stage state so cached results are
+        only reused for searches run with the same reranking configuration."""
+        return (_normalize_query(query), user_id, tenant_id, rerank_active())
 
-    def _get_cached_result(self, cache_key: tuple[str, str, str]) -> Any | None:
+    def _get_cached_result(self, cache_key: tuple[str, str, str, bool]) -> Any | None:
         with self._result_cache_lock:
             if cache_key in self._result_cache:
                 result = self._result_cache[cache_key]
@@ -419,7 +446,7 @@ class HybridRetriever:
                 return result
         return None
 
-    def _cache_result(self, cache_key: tuple[str, str, str], result: Any) -> None:
+    def _cache_result(self, cache_key: tuple[str, str, str, bool], result: Any) -> None:
         with self._result_cache_lock:
             if cache_key in self._result_cache:
                 self._result_cache.move_to_end(cache_key)
@@ -471,19 +498,33 @@ class HybridRetriever:
         use_temporal = options.use_temporal
         fast_path_enabled = options.fast_path_enabled
 
+        # PIX-4701: the rerank stage re-scores candidates the RRF fusion
+        # under-ranked, so while it is on every signal over-fetches 3x —
+        # otherwise the candidate pool is capped at options.limit and nothing
+        # outside the raw top-N can ever be promoted. The keyword-only
+        # early-termination shortcut must not fire either (explain is the
+        # same); options.limit is re-applied after reranking.
+        rerank_on = rerank_active()
+        search_limit = limit * 3 if rerank_on else limit
+        use_cache = fast_path_enabled and not options.explain
+
         cache_key = self._cache_key(query, user_id, tenant_id)
 
-        if fast_path_enabled:
+        if use_cache:
             cached = self._get_cached_result(cache_key)
             if cached is not None:
                 cached.signal_counts["fast_path"] = "cache"
                 return cached
 
-        keyword_ranking = self._run_keyword_search(query, user_id, tenant_id, limit) if use_keyword else {}
-        tfidf_cosine_ranking = self._run_tfidf_search(query, user_id, tenant_id, limit) if use_tfidf_cosine else {}
-        vector_ranking = self._run_vector_search(query, user_id, tenant_id, limit) if use_vector else {}
-        graph_ranking = self._run_graph_search(query, user_id, tenant_id, limit) if use_graph else {}
-        temporal_ranking = self._run_temporal_search(user_id, tenant_id, limit, min_importance) if use_temporal else {}
+        keyword_ranking = self._run_keyword_search(query, user_id, tenant_id, search_limit) if use_keyword else {}
+        tfidf_cosine_ranking = (
+            self._run_tfidf_search(query, user_id, tenant_id, search_limit) if use_tfidf_cosine else {}
+        )
+        vector_ranking = self._run_vector_search(query, user_id, tenant_id, search_limit) if use_vector else {}
+        graph_ranking = self._run_graph_search(query, user_id, tenant_id, search_limit) if use_graph else {}
+        temporal_ranking = (
+            self._run_temporal_search(user_id, tenant_id, search_limit, min_importance) if use_temporal else {}
+        )
 
         rankings = Rankings(
             keyword=keyword_ranking,
@@ -515,7 +556,9 @@ class HybridRetriever:
                     "temporal": len(rankings.temporal),
                 },
             )
-            if fast_path_enabled:
+            if options.explain:
+                result.score_details = self._build_score_details(result, options, rerank_on, None)
+            if use_cache:
                 self._cache_result(cache_key, result)
             return result
 
@@ -523,23 +566,40 @@ class HybridRetriever:
             keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking, vector_ranking
         )
 
-        early = self._try_early_termination(merged, rankings, user_id, options)
+        early: HybridSearchResult | None = None
+        if not rerank_on:
+            early = self._try_early_termination(merged, rankings, user_id, options)
         if early is not None:
             self._cache_result(cache_key, early)
             return early
 
-        top_ids = [mid for mid, _ in merged[:limit]]
+        # Over-fetch 3x so the rerank stage can promote candidates from
+        # outside the raw top-N; options.limit is re-applied after reranking.
+        build_limit = search_limit
+        top_ids = [mid for mid, _ in merged[:build_limit]]
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id)
 
         results = self._build_results(
             merged,
             memories,
-            limit,
+            build_limit,
             rankings,
         )
 
-        result = self._make_search_result(results, all_ids, rankings)
-        if fast_path_enabled:
+        rerank_provider: str | None = None
+        if rerank_on:
+            results, rerank_provider = self._apply_reranker(query, results)
+            results = results[:limit]
+
+        result = self._make_search_result(
+            results,
+            all_ids,
+            rankings,
+            extra_signals={"rerank": rerank_provider} if rerank_provider else None,
+        )
+        if options.explain:
+            result.score_details = self._build_score_details(result, options, rerank_on, rerank_provider)
+        if use_cache:
             self._cache_result(cache_key, result)
         return result
 
@@ -597,6 +657,64 @@ class HybridRetriever:
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, options.tenant_id)
         results = self._build_results(merged, memories, options.limit, rankings)
         return self._make_search_result(results, all_ids, rankings, extra_signals={"fast_path": "early_termination"})
+
+    def _apply_reranker(
+        self,
+        query: str,
+        results: list[HybridResult],
+    ) -> tuple[list[HybridResult], str | None]:
+        """PIX-4701 optional cross-encoder rerank stage, applied after RRF.
+
+        Scores each candidate's content against the query with the configured
+        reranker and folds the relevance score into ``combined_score`` as a
+        bounded multiplier, then re-sorts. Down-ranks only — never filters.
+        No-op when the reranker is disabled or unavailable.
+        """
+        if not results:
+            return results, None
+        reranker = get_reranker()
+        if reranker is None:
+            return results, None
+        scores = reranker.rerank(query, [r.content for r in results])
+        for result, score in zip(results, scores, strict=True):
+            result.rerank_score = score
+            result.rerank_multiplier = score_to_multiplier(score)
+            result.combined_score *= result.rerank_multiplier
+        results.sort(key=lambda r: r.combined_score, reverse=True)
+        return results, reranker.provider_name
+
+    def _build_score_details(
+        self,
+        result: HybridSearchResult,
+        options: HybridSearchOptions,
+        rerank_on: bool,
+        rerank_provider: str | None,
+    ) -> dict[str, object]:
+        """mem0-style explain output (PIX-4701): signal weights, the maximum
+        achievable fused score for this query, the candidate-importance
+        threshold, and rerank status. Per-signal scores, per-result multipliers,
+        raw RRF and final combined scores live on each ``HybridResult``."""
+        best_rank_contribution = 1.0 / (self.rrf_k + 1.0)
+        per_signal_max: dict[str, float] = {}
+        for signal, weight_key in (
+            ("keyword", "keyword"),
+            ("tfidf_cosine", "semantic"),
+            ("vector", "vector"),
+            ("graph", "graph"),
+            ("temporal", "temporal"),
+        ):
+            count = result.signal_counts.get(signal)
+            weight = self.weights.get(weight_key, 0.0)
+            if isinstance(count, int) and count > 0 and weight > 0:
+                per_signal_max[weight_key] = round(weight * best_rank_contribution, 6)
+        return {
+            "weights": {k: self.weights.get(k, 0.0) for k in ("keyword", "semantic", "vector", "graph", "temporal")},
+            "rrf_k": self.rrf_k,
+            "max_possible_score": round(sum(per_signal_max.values()), 6),
+            "per_signal_max": per_signal_max,
+            "min_importance_threshold": options.min_importance,
+            "rerank": {"enabled": rerank_on, "applied": rerank_provider is not None, "provider": rerank_provider},
+        }
 
     def _keyword_search(
         self,
@@ -1260,6 +1378,7 @@ class HybridRetriever:
                 strength_trend=strength_trend,
                 created_at=created_at,
                 combined_score=rrf_score,
+                rrf_score=rrf_score,
                 source_signals=[],
                 temporal_category=temporal_category,
             )

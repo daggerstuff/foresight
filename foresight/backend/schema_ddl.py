@@ -487,7 +487,35 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE memories ADD COLUMN review_status TEXT",
         "ALTER TABLE memories ADD COLUMN review_reason TEXT",
     ],
+    17: [
+        # PIX-4701 retrieval quality. pgvector ANN support for
+        # memory_embeddings. The untyped `vector` column accepts any
+        # dimension; the partial HNSW expression index only covers 384-dim
+        # rows (the local-hash / FastEmbed default) so mixed-dimension
+        # deployments never feed wrong-width vectors into the cast. Requires
+        # the pgvector extension: run_migrations probes it first via
+        # ensure_pgvector_extension and skips this version (still recording
+        # it) when unavailable, degrading gracefully to the Python cosine
+        # scan. Postgres-only — skipped on SQLite (see
+        # POSTGRES_ONLY_MIGRATIONS).
+        "CREATE EXTENSION IF NOT EXISTS vector",
+        "ALTER TABLE memory_embeddings ADD COLUMN embedding vector",
+        "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_hnsw_384 ON memory_embeddings"
+        " USING hnsw ((embedding::vector(384)) vector_cosine_ops) WHERE dimension = 384",
+    ],
 }
 
 
-__all__ = ["MIGRATIONS"]
+# Versions whose statements are PostgreSQL-only. Migration runners apply
+# them (and record the version) only on postgresql backends; other backends
+# skip the statements but still record the version so bookkeeping stays
+# uniform across deployments sharing one schema ledger.
+POSTGRES_ONLY_MIGRATIONS: frozenset[int] = frozenset({17})
+
+# The pgvector ANN migration. Gated behind a runtime capability probe
+# (ensure_pgvector_extension) because Postgres deploys may lack the
+# extension; those degrade to the existing Python cosine scan.
+PGVECTOR_MIGRATION: int = 17
+
+
+__all__ = ["MIGRATIONS", "PGVECTOR_MIGRATION", "POSTGRES_ONLY_MIGRATIONS"]
