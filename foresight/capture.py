@@ -542,7 +542,6 @@ class CapturePipeline:
         text_or_messages: str | list[dict],
         user_id: str,
         tenant_id: str | None = None,
-        source: str = "in-flight",
     ) -> list[tuple[str, str]]:
         """Extract and persist memories immediately (in-flight) without requiring a full session transcript.
 
