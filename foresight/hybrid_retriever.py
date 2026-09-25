@@ -104,6 +104,12 @@ class Rankings:
 MAX_QUERY_LENGTH = 500
 MAX_USER_ID_LENGTH = 128
 
+# PIX-4702 truth-resolution ranking penalties (post-RRF multipliers applied
+# on top of decay/entity factors). Superseded memories are down-ranked much
+# harder than inferred ones; neither is ever filtered out of results.
+SUPERSEDED_RANK_PENALTY = 0.35
+INFERRED_RANK_PENALTY = 0.8
+
 
 def _escape_like(term: str) -> str:
     """Escape SQL LIKE metacharacters to prevent wildcard injection."""
@@ -149,6 +155,12 @@ class HybridResult:
     # Entity salience boost factor (cross-cutting post-RRF)
     entity_salience_boost: float = 1.0
 
+    # PIX-4702 truth-resolution metadata
+    is_latest: bool = True
+    inferred: bool = False
+    superseded_by: str | None = None
+    truth_multiplier: float = 1.0
+
     temporal_category: str = ""
 
     def to_dict(self) -> dict:
@@ -171,6 +183,10 @@ class HybridResult:
             "entity_confidence_avg": round(self.entity_confidence_avg, 4),
             "entity_salience_boost": round(self.entity_salience_boost, 4),
             "decay_multiplier": round(self.decay_multiplier, 4),
+            "is_latest": self.is_latest,
+            "inferred": self.inferred,
+            "superseded_by": self.superseded_by,
+            "truth_multiplier": round(self.truth_multiplier, 4),
         }
         temporal_category = self.temporal_category
         if temporal_category:
@@ -1092,7 +1108,8 @@ class HybridRetriever:
         rows = self._fetch_rows(
             f"""
             SELECT id, content, category, importance,
-                   strength_trend, created_at, current_strength
+                   strength_trend, created_at, current_strength,
+                   is_latest, inferred, superseded_by
             FROM memories
             WHERE id IN ({placeholders})
             AND user_id = ? AND tenant_id = ?
@@ -1108,6 +1125,9 @@ class HybridRetriever:
                 "strength_trend": row["strength_trend"],
                 "created_at": row["created_at"],
                 "current_strength": row["current_strength"],
+                "is_latest": bool(row["is_latest"]),
+                "inferred": bool(row["inferred"]),
+                "superseded_by": row["superseded_by"],
             }
             for row in rows
         }
@@ -1276,6 +1296,21 @@ class HybridRetriever:
                 decay_multiplier = max(floor, min(1.0, ratio))
             result.decay_multiplier = decay_multiplier
 
+            # PIX-4702 truth resolution: down-rank (never filter) memories that
+            # were superseded by a newer statement or inferred from another
+            # memory. Superseded wins when both flags are set.
+            is_latest = bool(mem.get("is_latest", True))
+            inferred = bool(mem.get("inferred", False))
+            result.is_latest = is_latest
+            result.inferred = inferred
+            result.superseded_by = mem.get("superseded_by")
+            truth_multiplier = 1.0
+            if not is_latest:
+                truth_multiplier = SUPERSEDED_RANK_PENALTY
+            elif inferred:
+                truth_multiplier = INFERRED_RANK_PENALTY
+            result.truth_multiplier = truth_multiplier
+
             # Entity salience boost: memories with many high-confidence entity
             # connections get a cross-cutting post-RRF boost. This complements the
             # RRF-level graph signal by rewarding entity richness even when graph
@@ -1287,7 +1322,7 @@ class HybridRetriever:
                 entity_boost = 1.0 + min(0.25, _eh * _ec * 0.06)
             result.entity_salience_boost = entity_boost
 
-            result.combined_score = rrf_score * decay_multiplier * entity_boost
+            result.combined_score = rrf_score * decay_multiplier * entity_boost * truth_multiplier
 
             results.append(result)
 

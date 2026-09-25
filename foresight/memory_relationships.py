@@ -124,7 +124,7 @@ def _validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 class MemoryRelationshipStore:
     """SQLite-backed store for typed memory-to-memory relationships."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str | None) -> None:
         self.db_path = db_path
         self._ensure_table()
 
@@ -445,10 +445,11 @@ class _MemoryRelationshipStoreSingleton:
 
     @classmethod
     def get_instance(cls) -> MemoryRelationshipStore:
-        """Return the process-singleton store, initializing lazily on first call."""
+        """Return the process-singleton store, initializing lazily on first call.
+
+        ``DB_PATH is None`` is valid in Postgres-only mode: ``get_pool(None)``
+        routes to the active Postgres backend pool."""
         if cls._instance is None:
-            if DB_PATH is None:
-                raise RuntimeError("DB_PATH is not configured")
             cls._instance = MemoryRelationshipStore(DB_PATH)
         return cls._instance
 

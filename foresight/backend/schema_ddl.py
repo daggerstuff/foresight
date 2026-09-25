@@ -469,6 +469,16 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_merge_history_user ON memory_merge_history(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_merge_history_merged_at ON memory_merge_history(merged_at)",
     ],
+    15: [
+        # PIX-4702 truth resolution. is_latest=1 marks the current version of
+        # a fact; write-time supersede detection flips it to 0 and stores the
+        # replacing memory id in superseded_by. inferred=1 marks memories
+        # synthesized via 'derives' links rather than directly captured.
+        "ALTER TABLE memories ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE memories ADD COLUMN inferred INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_latest ON memories(tenant_id, user_id, is_latest)",
+    ],
 }
 
 

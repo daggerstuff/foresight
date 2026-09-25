@@ -61,7 +61,10 @@ def create_test_db():
             activation_count INTEGER DEFAULT 0,
             strength_trend TEXT DEFAULT 'stable',
             accessed_at TEXT,
-            last_retrieved_at TEXT
+            last_retrieved_at TEXT,
+            is_latest INTEGER DEFAULT 1,
+            inferred INTEGER DEFAULT 0,
+            superseded_by TEXT
         )
     """)
 
@@ -948,7 +951,9 @@ class TestDecayCrossCutting:
                 content TEXT, category TEXT, importance REAL DEFAULT 0.5,
                 current_strength REAL, strength_trend TEXT DEFAULT 'stable',
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             )
         """)
         uid = "u1"
@@ -1194,7 +1199,9 @@ class TestDecayFloor:
                 content TEXT, category TEXT, importance REAL DEFAULT 0.5,
                 current_strength REAL, strength_trend TEXT DEFAULT 'stable',
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             )
         """)
         uid = "u1"
@@ -1230,7 +1237,9 @@ class TestDecayFloor:
                 content TEXT, category TEXT, importance REAL DEFAULT 0.5,
                 current_strength REAL, strength_trend TEXT DEFAULT 'stable',
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             )
         """)
         uid = "u1"
@@ -1301,7 +1310,9 @@ class TestTemporalCategories:
                 content TEXT, category TEXT, importance REAL DEFAULT 0.5,
                 current_strength REAL, strength_trend TEXT DEFAULT 'stable',
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             )
         """)
         uid = "u1"
@@ -1371,7 +1382,9 @@ class TestTrendAwareDecayFloor:
                 content TEXT, category TEXT, importance REAL DEFAULT 0.5,
                 current_strength REAL, strength_trend TEXT DEFAULT 'stable',
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             )
         """)
         uid = "u1"
@@ -1417,7 +1430,9 @@ class TestTrendAwareDecayFloor:
                 content TEXT, category TEXT, importance REAL DEFAULT 0.5,
                 current_strength REAL, strength_trend TEXT DEFAULT 'stable',
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             )
         """)
         uid = "u1"
@@ -1474,7 +1489,9 @@ class TestEntitySalienceBoost:
                 importance REAL DEFAULT 0.5, current_strength REAL,
                 strength_trend TEXT DEFAULT 'stable', category TEXT,
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT
+                last_retrieved_at TEXT,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             );
             CREATE TABLE memory_entities (
                 id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
@@ -1563,7 +1580,9 @@ class TestEntitySalienceBoost:
                 content TEXT, category TEXT, importance REAL DEFAULT 0.5,
                 current_strength REAL, strength_trend TEXT DEFAULT 'stable',
                 created_at TEXT, activation_count INTEGER DEFAULT 0,
-                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0,
+                is_latest INTEGER DEFAULT 1, inferred INTEGER DEFAULT 0,
+                superseded_by TEXT
             )
         """)
         uid = "u1"
