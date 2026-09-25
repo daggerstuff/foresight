@@ -379,6 +379,15 @@ class MemoryAction(BaseModel):
     updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
 
 
+class InferredAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    action: Literal["list", "approve", "decline", "undo"] = Field(..., description="Action to perform")
+    memory_id: str | None = Field(default=None, description="Memory ID for approve/decline/undo")
+    reason: str | None = Field(default=None, description="Reason recorded when declining")
+    limit: int | None = Field(default=None, description="Max items for list (1-50, default 50)")
+
+
 class VersionAction(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -654,7 +663,7 @@ def get_db_connection(db_path: str | None = None):
     return PostgresPooledConnection(conn, pool)
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 def _seed_default_tenant(conn) -> None:
@@ -1093,6 +1102,14 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE memories ADD COLUMN inferred INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
         "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_latest ON memories(tenant_id, user_id, is_latest)",
+    ],
+    16: [
+        # PIX-4703 inferred-fact review queue. review_status tracks the human
+        # decision on inferred memories: NULL = never reviewed, 'approved' =
+        # promoted to a stated fact, 'declined' = rejected. review_reason
+        # records why a memory was declined.
+        "ALTER TABLE memories ADD COLUMN review_status TEXT",
+        "ALTER TABLE memories ADD COLUMN review_reason TEXT",
     ],
 }
 
@@ -6418,6 +6435,190 @@ def traverse_memory_graph(
 
 
 # =============================================================================
+# Inferred-Fact Review Queue (PIX-4703)
+# =============================================================================
+
+
+def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
+    """List inferred memories pending review, supporting-parent count first."""
+    capped = max(1, min(limit if limit is not None else 50, 50))
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.id, m.content, m.category, m.scope, m.retention, m.importance,
+                   m.created_at, m.updated_at, m.review_status,
+                   (SELECT COUNT(*) FROM memory_relationships r
+                    WHERE r.source_memory_id = m.id AND r.relationship_type = 'derives') AS parent_count
+            FROM memories m
+            WHERE m.user_id = ? AND m.tenant_id = ? AND m.inferred = 1 AND m.is_ghost = 0
+              AND (m.review_status IS NULL OR m.review_status != 'declined')
+            ORDER BY parent_count DESC, m.created_at DESC
+            LIMIT ?
+            """,
+            (uid, tenant_id, capped),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from .encryption import decrypt_if_encrypted
+
+    items = [
+        {
+            "id": r["id"],
+            "content": decrypt_if_encrypted(r["content"], tenant_id=tenant_id, user_id=uid),
+            "category": r["category"],
+            "scope": r["scope"],
+            "retention": r["retention"],
+            "importance": r["importance"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+            "review_status": r["review_status"],
+            "parent_count": r["parent_count"],
+        }
+        for r in rows
+    ]
+    return _tool_response(ok=True, action="list", items=items, count=len(items), limit=capped)
+
+
+def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
+    """Promote an inferred memory to a stated fact (clears the ranking penalty)."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT inferred, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (memory_id, uid, tenant_id),
+        ).fetchone()
+        if row is None:
+            return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["inferred"] != 1:
+            if row["review_status"] == "approved":
+                return _tool_response(
+                    ok=True, action="approve", memory_id=memory_id, already_applied=True, status="approved"
+                )
+            return _tool_error("approve", f"memory {memory_id} is not inferred.", memory_id=memory_id)
+        conn.execute(
+            "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (now, memory_id, uid, tenant_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_context_cache().invalidate_user(uid)
+    return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=False, status="approved")
+
+
+def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: str | None) -> str:
+    """Soft-forget a rejected inferred memory (recoverable via undo)."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT inferred, is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (memory_id, uid, tenant_id),
+        ).fetchone()
+        if row is None:
+            return _tool_error("decline", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["review_status"] == "declined" and row["is_ghost"] == 1:
+            return _tool_response(
+                ok=True, action="decline", memory_id=memory_id, already_applied=True, status="declined"
+            )
+        if row["inferred"] != 1:
+            return _tool_error("decline", f"memory {memory_id} is not inferred.", memory_id=memory_id)
+        conn.execute(
+            "UPDATE memories SET is_ghost = 1, review_status = 'declined', review_reason = ?, updated_at = ? "
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (reason, now, memory_id, uid, tenant_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_context_cache().invalidate_user(uid)
+    return _tool_response(
+        ok=True, action="decline", memory_id=memory_id, already_applied=False, status="declined", reason=reason
+    )
+
+
+def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
+    """Reverse approve/decline and return the memory to the review queue."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (memory_id, uid, tenant_id),
+        ).fetchone()
+        if row is None:
+            return _tool_error("undo", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["review_status"] is None and row["is_ghost"] != 1:
+            return _tool_error("undo", f"memory {memory_id} has no review action to undo.", memory_id=memory_id)
+        conn.execute(
+            "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, review_reason = NULL, updated_at = ? "
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (now, memory_id, uid, tenant_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_context_cache().invalidate_user(uid)
+    return _tool_response(ok=True, action="undo", memory_id=memory_id, status="unreviewed")
+
+
+@mcp.tool(output_schema=None)
+def manage_inferred(
+    options: InferredAction | None = None,
+    user_id: str | None = None,
+    action: Literal["list", "approve", "decline", "undo"] | None = None,
+    memory_id: str | None = None,
+    reason: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """
+    Review queue for inferred memories.
+
+    list    — inferred memories awaiting review, ordered by supporting-parent
+              count then created_at (newest first), capped at 50.
+    approve — promote an inferred memory to a stated fact (clears the
+              inferred ranking penalty).
+    decline — soft-forget a rejected inferred memory (recoverable via undo).
+    undo    — reverse approve/decline and return the memory to the queue.
+
+    Args:
+        options: Action and parameters (list, approve, decline, undo)
+        user_id: Optional user ID override
+        action: Flat parameter for action (optional, fallback if options not provided)
+        memory_id: Memory ID for approve/decline/undo
+        reason: Reason recorded when declining
+        limit: Max items for list (1-50, default 50)
+    """
+    if options is None:
+        if action is None:
+            return _tool_error("manage_inferred", "either 'options' or 'action' must be provided.")
+        options = InferredAction(action=action, memory_id=memory_id, reason=reason, limit=limit)
+
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+
+    if options.action == "list":
+        return _handle_inferred_list(uid, tenant_id, options.limit)
+    if not options.memory_id:
+        return _tool_error(options.action, "'memory_id' is required for this action.")
+    if options.action == "approve":
+        return _handle_inferred_approve(uid, tenant_id, options.memory_id)
+    if options.action == "decline":
+        return _handle_inferred_decline(uid, tenant_id, options.memory_id, options.reason)
+    return _handle_inferred_undo(uid, tenant_id, options.memory_id)
+
+
+# =============================================================================
 # Semantic Vector Search Tools (MEM-5)
 # =============================================================================
 
@@ -6921,6 +7122,8 @@ def curate_review_prompt(run_id: str | None = None, user_id: str | None = None) 
     else:
         run_res = manage_curation_runs(CurationRunAction(action="list", status="staged"), user_id=uid)
 
+    inferred_res = _handle_inferred_list(uid, get_current_account_id(), 20)
+
     return f"""# Foresight Curation Review
 
 Evaluate the following proposed memory maintenance and consolidation operations:
@@ -6929,10 +7132,19 @@ Evaluate the following proposed memory maintenance and consolidation operations:
 {run_res}
 ```
 
+### Inferred Memory Queue:
+
+Review these synthesized (inferred) memories and confirm or reject each one:
+
+```json
+{inferred_res}
+```
+
 ### Review Objectives:
 - Ensure no durable or permanent facts are accidentally degraded or lost.
 - Verify that merged memories retain all essential entity tags and attributes.
 - Approve or cancel the curation run using `manage_curation_runs`.
+- Approve or decline each inferred memory using `manage_inferred`.
 """
 
 

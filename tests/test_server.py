@@ -297,6 +297,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
 
     assert tool_names == {
         "analyze_memories",
+        "capture_in_flight_memory",
         "capture_triggered_memories",
         "compaction_lifecycle",
         "get_system_status",
@@ -304,6 +305,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "link_memories",
         "manage_context_blocks",
         "manage_curation_runs",
+        "manage_inferred",
         "manage_memories",
         "manage_memory_versions",
         "process_session_transcript",

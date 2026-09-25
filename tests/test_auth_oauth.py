@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
-
-from foresight.auth_oauth import ForesightOAuthProvider
-
-from fastmcp.server.auth.auth import AccessToken, AuthorizationCode, RefreshToken
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, TokenError
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl
+
+from foresight.auth_oauth import ForesightOAuthProvider
 
 
 def _make_provider() -> ForesightOAuthProvider:
