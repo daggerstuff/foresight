@@ -42,7 +42,9 @@ that swapping in a real model (e.g. bge-large-en-v1.5) is a drop-in change.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import importlib.util
 import logging
 import math
 import os
@@ -80,6 +82,13 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 AUTO_PROVIDER = "auto"
 
 VALID_PROVIDERS: frozenset[str] = frozenset({DEFAULT_PROVIDER, FASTEMBED_PROVIDER, OPENAI_PROVIDER})
+
+# Dimension served by the pgvector HNSW ANN index (migration v17). Both
+# default providers (local-hash, fastembed) emit 384-dim vectors, so ANN
+# covers them; other dimensions keep the Python cosine scan.
+ANN_DIM = LOCAL_HASH_DIM
+# Upper bound on BLOB → pgvector backfill rows per _ensure_table call.
+_PGVECTOR_BACKFILL_CAP = 5000
 
 MAX_TEXT_LENGTH = 100_000
 MAX_USER_ID_LENGTH = 128
@@ -177,12 +186,8 @@ def _validate_embed_text(text: str) -> None:
 
 
 def _fastembed_available() -> bool:
-    """True when the optional fastembed dependency can be imported."""
-    try:
-        import fastembed  # noqa: F401
-    except Exception:
-        return False
-    return True
+    """True when the optional fastembed dependency is importable."""
+    return importlib.util.find_spec("fastembed") is not None
 
 
 def resolve_provider(requested: str | None = None) -> str:
@@ -426,6 +431,11 @@ def deserialize_vector(blob: bytes, expected_dim: int) -> list[float]:
     return list(struct.unpack(f"<{expected_dim}f", blob))
 
 
+def _vector_literal(vec: list[float]) -> str:
+    """Render a float vector as pgvector's text literal ``[a,b,...]``."""
+    return "[" + ",".join(repr(float(x)) for x in vec) + "]"
+
+
 @dataclass
 class SemanticMatch:
     """A single semantic search match."""
@@ -485,7 +495,13 @@ def _validate_memory_id(memory_id: str) -> None:
 
 
 class SemanticSearch:
-    """SQLite-backed semantic vector store with pluggable embedder."""
+    """Semantic vector store with pluggable embedder.
+
+    Uses pgvector ANN (``embedding`` column + HNSW index, migration v17)
+    when the backing database supports it and the embedder emits
+    ``ANN_DIM``-dimensional vectors; otherwise falls back to the Python
+    cosine scan over the float32 blobs.
+    """
 
     def __init__(
         self,
@@ -504,6 +520,8 @@ class SemanticSearch:
             )
         self.dimension = self.embedder.dimension
         self._lock = threading.Lock()
+        # pgvector capability, resolved once per instance in _ensure_table.
+        self._pgvector_ready: bool | None = None
         self._ensure_table()
 
     def _connect(self) -> Any:
@@ -534,12 +552,102 @@ class SemanticSearch:
                 "ON memory_embeddings(tenant_id, user_id, provider)"
             )
             conn.commit()
+            if self._pgvector_ready is None:
+                self._pgvector_ready = self._setup_pgvector(conn)
+            if self._pgvector_ready:
+                self._backfill_pgvector(conn)
         finally:
             pool = getattr(conn, "_pool", None)
             if pool is not None:
                 pool.release(conn)
             else:
                 conn.close()
+
+    # ------------------------------------------------------------------
+    # pgvector ANN support (PIX-4701). All helpers are best-effort: any
+    # failure downgrades the instance to the Python cosine scan.
+    # ------------------------------------------------------------------
+
+    def _setup_pgvector(self, conn: Any) -> bool:
+        """Probe pgvector availability; create the ANN column + index.
+
+        Returns True only when the ``vector`` extension is present (or was
+        just created), in which case the untyped ``embedding`` column and
+        the partial 384-dim HNSW expression index are ensured idempotently.
+        On SQLite (or Postgres without the extension) returns False.
+        """
+        try:
+            conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+            conn.commit()
+        except Exception:
+            # SQLite or Postgres without pgvector: no ANN, keep the scan.
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            return False
+
+        try:
+            conn.execute("ALTER TABLE memory_embeddings ADD COLUMN IF NOT EXISTS embedding vector")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_hnsw_384 ON memory_embeddings"
+                " USING hnsw ((embedding::vector(384)) vector_cosine_ops) WHERE dimension = 384"
+            )
+            conn.commit()
+            return True
+        except Exception as exc:
+            logger.warning("pgvector ANN setup failed; falling back to Python cosine scan: %s", exc)
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            return False
+
+    def _backfill_pgvector(self, conn: Any) -> None:
+        """Copy float32 blobs into the pgvector column for 384-dim rows.
+
+        Idempotent (only touches ``embedding IS NULL`` rows) and capped so a
+        large legacy backlog cannot block startup; unprocessed rows are
+        backfilled on the next init.
+        """
+        try:
+            rows = conn.execute(
+                """
+                SELECT tenant_id, user_id, memory_id, provider, vector
+                FROM memory_embeddings
+                WHERE dimension = ? AND embedding IS NULL
+                LIMIT ?
+                """,
+                (ANN_DIM, _PGVECTOR_BACKFILL_CAP),
+            ).fetchall()
+        except Exception as exc:
+            logger.warning("pgvector backfill fetch failed; skipping: %s", exc)
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            return
+
+        if not rows:
+            return
+
+        updated = 0
+        for i, r in enumerate(rows):
+            vec = deserialize_vector(bytes(r["vector"]), ANN_DIM)
+            with self._lock:
+                cur = conn.execute(
+                    """
+                    UPDATE memory_embeddings
+                    SET embedding = ?::vector
+                    WHERE tenant_id = ? AND user_id = ? AND memory_id = ? AND provider = ?
+                    """,
+                    (_vector_literal(vec), r["tenant_id"], r["user_id"], r["memory_id"], r["provider"]),
+                )
+                updated += cur.rowcount
+            if (i + 1) % 500 == 0:
+                conn.commit()
+        conn.commit()
+        if len(rows) == _PGVECTOR_BACKFILL_CAP:
+            logger.info(
+                "pgvector backfill hit the per-init cap of %d rows; remaining rows backfill on next init",
+                _PGVECTOR_BACKFILL_CAP,
+            )
+        elif updated:
+            logger.info("pgvector backfilled %d embeddings into the ANN column", updated)
 
     def index_memory(
         self,
@@ -565,33 +673,64 @@ class SemanticSearch:
 
         blob = serialize_vector(vec)
         now = datetime.now(timezone.utc).isoformat()
+        ann = self._pgvector_ready and embedder.dimension == ANN_DIM
         conn = self._connect()
         try:
             with self._lock:
-                conn.execute(
-                    """
-                    INSERT INTO memory_embeddings (
-                        memory_id, tenant_id, user_id,
-                        provider, dimension, vector,
-                        model_version, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, '1', ?, ?)
-                    ON CONFLICT(tenant_id, user_id, memory_id, provider)
-                    DO UPDATE SET
-                        vector = excluded.vector,
-                        dimension = excluded.dimension,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        memory_id,
-                        tid,
-                        user_id,
-                        prov,
-                        embedder.dimension,
-                        blob,
-                        now,
-                        now,
-                    ),
-                )
+                if ann:
+                    # Also maintain the pgvector column so the HNSW ANN
+                    # index stays usable without a backfill pass.
+                    conn.execute(
+                        """
+                        INSERT INTO memory_embeddings (
+                            memory_id, tenant_id, user_id,
+                            provider, dimension, vector, embedding,
+                            model_version, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?::vector, '1', ?, ?)
+                        ON CONFLICT(tenant_id, user_id, memory_id, provider)
+                        DO UPDATE SET
+                            vector = excluded.vector,
+                            dimension = excluded.dimension,
+                            embedding = excluded.embedding,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            memory_id,
+                            tid,
+                            user_id,
+                            prov,
+                            embedder.dimension,
+                            blob,
+                            _vector_literal(vec),
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO memory_embeddings (
+                            memory_id, tenant_id, user_id,
+                            provider, dimension, vector,
+                            model_version, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, '1', ?, ?)
+                        ON CONFLICT(tenant_id, user_id, memory_id, provider)
+                        DO UPDATE SET
+                            vector = excluded.vector,
+                            dimension = excluded.dimension,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            memory_id,
+                            tid,
+                            user_id,
+                            prov,
+                            embedder.dimension,
+                            blob,
+                            now,
+                            now,
+                        ),
+                    )
                 conn.commit()
         finally:
             pool = getattr(conn, "_pool", None)
@@ -633,6 +772,49 @@ class SemanticSearch:
                 pool.release(conn)
             else:
                 conn.close()
+
+    def _search_ann(
+        self,
+        conn: Any,
+        query_vec: list[float],
+        tid: str,
+        user_id: str,
+        prov: str,
+        limit: int,
+        min_score: float,
+    ) -> list[SemanticMatch]:
+        """ANN query over the pgvector HNSW index (384-dim rows only).
+
+        ``<=>`` is pgvector's cosine distance; the SQL converts it to a
+        cosine-similarity score (``1 - distance``) so results are identical
+        in semantics to the Python scan. The partial expression index
+        restricts the cast to ``dimension = 384`` rows, so mixed-dimension
+        tables never feed wrong-width vectors into it.
+        """
+        literal = _vector_literal(query_vec)
+        rows = conn.execute(
+            """
+            SELECT memory_id,
+                   1 - (embedding::vector(384) <=> ?::vector(384)) AS score
+            FROM memory_embeddings
+            WHERE tenant_id = ? AND user_id = ? AND provider = ?
+              AND dimension = 384
+              AND embedding IS NOT NULL
+              AND 1 - (embedding::vector(384) <=> ?::vector(384)) >= ?
+            ORDER BY embedding::vector(384) <=> ?::vector(384)
+            LIMIT ?
+            """,
+            (literal, tid, user_id, prov, literal, min_score, literal, limit),
+        ).fetchall()
+        return [
+            SemanticMatch(
+                memory_id=r["memory_id"],
+                score=float(r["score"]),
+                provider=prov,
+                dimension=ANN_DIM,
+            )
+            for r in rows
+        ]
 
     def search(
         self,
@@ -680,14 +862,10 @@ class SemanticSearch:
 
         conn = self._connect()
         try:
-            rows = conn.execute(
-                """
-                SELECT memory_id, vector, dimension
-                FROM memory_embeddings
-                WHERE tenant_id = ? AND user_id = ? AND provider = ?
-                """,
-                (tid, user_id, prov),
-            ).fetchall()
+            if self._pgvector_ready and embedder.dimension == ANN_DIM:
+                matches = self._search_ann(conn, query_vec, tid, user_id, prov, limit, min_score)
+            else:
+                matches = self._search_scan(conn, query_vec, tid, user_id, prov, min_score)
         finally:
             pool = getattr(conn, "_pool", None)
             if pool is not None:
@@ -695,15 +873,42 @@ class SemanticSearch:
             else:
                 conn.close()
 
+        matches.sort(key=lambda m: m.score, reverse=True)
+        return SemanticSearchResult(
+            query=query,
+            provider=prov,
+            dimension=embedder.dimension,
+            matches=matches[:limit],
+        )
+
+    def _search_scan(
+        self,
+        conn: Any,
+        query_vec: list[float],
+        tid: str,
+        user_id: str,
+        prov: str,
+        min_score: float,
+    ) -> list[SemanticMatch]:
+        """Python cosine scan over stored float32 blobs (non-ANN fallback)."""
+        rows = conn.execute(
+            """
+            SELECT memory_id, vector, dimension
+            FROM memory_embeddings
+            WHERE tenant_id = ? AND user_id = ? AND provider = ?
+            """,
+            (tid, user_id, prov),
+        ).fetchall()
+
         matches: list[SemanticMatch] = []
         for r in rows:
             dim = int(r["dimension"])
-            if dim != embedder.dimension:
+            if dim != len(query_vec):
                 logger.warning(
                     "Skipping memory %s: dim %d != embedder dim %d",
                     r["memory_id"],
                     dim,
-                    embedder.dimension,
+                    len(query_vec),
                 )
                 continue
             vec = deserialize_vector(bytes(r["vector"]), dim)
@@ -717,14 +922,7 @@ class SemanticSearch:
                         dimension=dim,
                     )
                 )
-
-        matches.sort(key=lambda m: m.score, reverse=True)
-        return SemanticSearchResult(
-            query=query,
-            provider=prov,
-            dimension=embedder.dimension,
-            matches=matches[:limit],
-        )
+        return matches
 
 
 class _SemanticSearchSingleton:

@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 
 from .base import DatabaseBackend
 from .postgres_backend import _translate_sql
-from .schema_ddl import MIGRATIONS
+from .schema_ddl import MIGRATIONS, PGVECTOR_MIGRATION, POSTGRES_ONLY_MIGRATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,36 @@ def _applied_at_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def ensure_pgvector_extension(backend: DatabaseBackend) -> bool:
+    """Best-effort ``CREATE EXTENSION IF NOT EXISTS vector`` probe.
+
+    Returns True when the pgvector extension is (or becomes) available on
+    the backend, False otherwise. Used to gate the pgvector ANN migration
+    (v17) so Postgres deploys without the extension degrade gracefully: the
+    migration version is still recorded, but the vector column and HNSW
+    index are not created and semantic search keeps using the Python cosine
+    scan.
+    """
+    if backend.backend_type != "postgresql":
+        return False
+    try:
+        with backend.connection() as conn:
+            try:
+                conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return True
+    except Exception as exc:
+        logger.warning(
+            "pgvector extension unavailable (%s); vector ANN disabled, "
+            "semantic search falls back to the Python cosine scan",
+            exc,
+        )
+        return False
+
+
 def run_migrations(backend: DatabaseBackend) -> list[int]:
     """Run all pending migrations against ``backend``.
 
@@ -130,6 +160,26 @@ def run_migrations(backend: DatabaseBackend) -> list[int]:
             continue
 
         statements = MIGRATIONS[version]
+
+        if version in POSTGRES_ONLY_MIGRATIONS and backend.backend_type != "postgresql":
+            logger.info(
+                "Migration %s: Postgres-only, skipping statements on %s (version recorded)",
+                version,
+                backend.backend_type,
+            )
+            backend.set_version(version, _applied_at_iso())
+            newly_applied.append(version)
+            continue
+
+        if version == PGVECTOR_MIGRATION and not ensure_pgvector_extension(backend):
+            logger.warning(
+                "Migration %s: pgvector unavailable, skipping ANN statements (version recorded)",
+                version,
+            )
+            backend.set_version(version, _applied_at_iso())
+            newly_applied.append(version)
+            continue
+
         try:
             with backend.connection() as conn:
                 # The runner executes DDL directly on the connection, so the

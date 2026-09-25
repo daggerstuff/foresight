@@ -38,7 +38,11 @@ from starlette.responses import JSONResponse
 from .auth import AuthMiddleware, get_auth_manager
 from .auth_oauth import ForesightOAuthProvider
 from .backend import RedisCompanion, create_backend
-from .backend.backend_migrations import ensure_schema_migrations_table
+from .backend.backend_migrations import (
+    ensure_pgvector_extension,
+    ensure_schema_migrations_table,
+)
+from .backend.schema_ddl import PGVECTOR_MIGRATION, POSTGRES_ONLY_MIGRATIONS
 from .block_registry import InjectionPoint, initialize_default_blocks
 from .capture import get_capture_pipeline
 from .clustering import ClusterResult, cluster_memories
@@ -669,7 +673,7 @@ def get_db_connection(db_path: str | None = None):
     return PostgresPooledConnection(conn, pool)
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 def _seed_default_tenant(conn) -> None:
@@ -1117,6 +1121,18 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE memories ADD COLUMN review_status TEXT",
         "ALTER TABLE memories ADD COLUMN review_reason TEXT",
     ],
+    17: [
+        # PIX-4701 retrieval quality. pgvector ANN support for
+        # memory_embeddings (see schema_ddl.MIGRATIONS v17 for the full
+        # rationale). Postgres-only: init_db skips the statements (still
+        # recording the version) on non-Postgres backends and when the
+        # pgvector extension cannot be created, so those deployments keep
+        # the Python cosine scan in semantic_search.
+        "CREATE EXTENSION IF NOT EXISTS vector",
+        "ALTER TABLE memory_embeddings ADD COLUMN embedding vector",
+        "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_hnsw_384 ON memory_embeddings"
+        " USING hnsw ((embedding::vector(384)) vector_cosine_ops) WHERE dimension = 384",
+    ],
 }
 
 
@@ -1145,6 +1161,24 @@ def init_db(backend=None):
         for version in sorted(_SCHEMA_MIGRATIONS):
             if version in applied:
                 continue
+
+            if version in POSTGRES_ONLY_MIGRATIONS and backend.backend_type != "postgresql":
+                logger.info(
+                    "Schema v%s: Postgres-only, skipping statements on %s (version recorded)",
+                    version,
+                    backend.backend_type,
+                )
+                backend.set_version(version, datetime.now(timezone.utc).isoformat())
+                continue
+
+            if version == PGVECTOR_MIGRATION and not ensure_pgvector_extension(backend):
+                logger.warning(
+                    "Schema v%s: pgvector unavailable, skipping ANN statements (version recorded)",
+                    version,
+                )
+                backend.set_version(version, datetime.now(timezone.utc).isoformat())
+                continue
+
             for stmt in _SCHEMA_MIGRATIONS[version]:
                 try:
                     backend.execute(stmt)
