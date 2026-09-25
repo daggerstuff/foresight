@@ -126,7 +126,12 @@ from .memory_types import (
 )
 from .narrative_cache import NarrativeCache
 from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
-from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
+from .profile_synthesizer import (
+    DEFAULT_PROFILE_BUCKETS,
+    ProfileConfig,
+    profile_to_prompt,
+    synthesize_profile as _synthesize_profile,
+)
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
 from .reflection_engine import get_reflection_engine
 from .reflection_narrative import (
@@ -5872,12 +5877,15 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
 # =============================================================================
 
 
+@mcp.tool(output_schema=None)
 def synthesize_profile(
     user_id: str | None = None,
     max_static_memories: int = 20,
     max_dynamic_memories: int = 10,
     include_synthesis: bool = True,
     format_prompt: bool = False,
+    max_chars: int | None = None,
+    include_buckets: bool = False,
 ) -> str:
     """
     Build a user profile with static (stable facts) and dynamic (recent context) layers.
@@ -5891,9 +5899,14 @@ def synthesize_profile(
         max_dynamic_memories: Max session/arc memories to consider.
         include_synthesis: Run enhanced synthesis for contradiction detection.
         format_prompt: Return as a formatted prompt block instead of JSON.
+        max_chars: Character budget for the formatted prompt (only used with
+            ``format_prompt=True``); static lines take priority, then dynamic,
+            then buckets. Ignored for the JSON payload.
+        include_buckets: Group static facts into topical buckets
+            (preferences / goals / work / general) in the output.
 
     Returns:
-        JSON:  ``{"static": [...], "dynamic": [...]}``
+        JSON:  ``{"static": [...], "dynamic": [...], "buckets"?: {...}}``
         Prompt block when ``format_prompt=True``.
     """
     uid = user_id or USER_ID
@@ -5901,11 +5914,12 @@ def synthesize_profile(
         max_static_memories=max_static_memories,
         max_dynamic_memories=max_dynamic_memories,
         include_synthesis=include_synthesis,
+        buckets=DEFAULT_PROFILE_BUCKETS if include_buckets else None,
     )
     profile = _synthesize_profile(uid, get_current_account_id(), cfg)
 
     if format_prompt:
-        return profile_to_prompt(profile)
+        return profile_to_prompt(profile, max_chars=max_chars)
 
     return json.dumps(profile, indent=2, ensure_ascii=False)
 

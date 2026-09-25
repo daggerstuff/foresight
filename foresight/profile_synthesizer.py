@@ -21,6 +21,8 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,9 +36,77 @@ from .context_blocks import (
     get_context_block_agent,
 )
 from .enhanced_synthesizer import get_enhanced_synthesizer
+from .injection_budget import _truncate_to_chars
 from .memory_types import EmotionalMetadata, MemoryObject
 
 logger = logging.getLogger("foresight_profile")
+
+
+@dataclass(frozen=True)
+class ProfileBucket:
+    """A topical bucket for grouping static profile facts."""
+
+    name: str
+    description: str
+    keywords: tuple[str, ...] = ()
+
+
+DEFAULT_PROFILE_BUCKETS: tuple[ProfileBucket, ...] = (
+    ProfileBucket(
+        name="preferences",
+        description="user preferences, likes, dislikes, style, habits, communication rules",
+        keywords=(
+            "prefer",
+            "prefers",
+            "preference",
+            "like",
+            "dislike",
+            "style",
+            "habit",
+            "tone",
+            "concise",
+            "always",
+            "never",
+            "avoid",
+        ),
+    ),
+    ProfileBucket(
+        name="goals",
+        description="goals, plans, ambitions, targets, milestones, intended outcomes",
+        keywords=(
+            "goal",
+            "wants",
+            "plan",
+            "aim",
+            "target",
+            "milestone",
+            "objective",
+            "intend",
+            "ship",
+            "launch",
+            "deadline",
+            "roadmap",
+        ),
+    ),
+    ProfileBucket(
+        name="work",
+        description="work, projects, job, team, tools, stack, employer, day-to-day tasks",
+        keywords=(
+            "work",
+            "job",
+            "project",
+            "team",
+            "stack",
+            "code",
+            "repo",
+            "pipeline",
+            "deploy",
+            "company",
+            "employer",
+            "tooling",
+        ),
+    ),
+)
 
 
 @dataclass
@@ -48,6 +118,7 @@ class ProfileConfig:
     include_synthesis: bool = True
     max_static_lines: int = 30
     max_dynamic_lines: int = 20
+    buckets: tuple[ProfileBucket, ...] | None = None
 
 
 @dataclass
@@ -180,6 +251,82 @@ def _deduplicate_lines(lines: list[str]) -> list[str]:
     return unique
 
 
+_TOKEN_RE = re.compile(r"[a-z']+")
+_STOPWORD_TOKENS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "with",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "at",
+        "by",
+        "from",
+        "user",
+        "it",
+        "this",
+        "that",
+        "their",
+        "they",
+        "them",
+        "when",
+        "while",
+    }
+)
+
+
+def _tokenize(text: str) -> set[str]:
+    return {t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORD_TOKENS}
+
+
+def _classify_line(line: str, buckets: Sequence[ProfileBucket]) -> str:
+    """Classify a profile line into the best-matching bucket name.
+
+    Scores each bucket by lexical overlap between the line's tokens and the
+    bucket's vocabulary (description + keywords). Ties keep the earlier
+    bucket; zero overlap falls back to ``general``.
+    """
+    line_tokens = _tokenize(line)
+    if not line_tokens or not buckets:
+        return "general"
+    best_name = "general"
+    best_score = 0
+    for bucket in buckets:
+        vocab = _tokenize(bucket.description) | {k.lower() for k in bucket.keywords}
+        score = len(line_tokens & vocab)
+        if score > best_score:
+            best_score = score
+            best_name = bucket.name
+    return best_name
+
+
+def _bucketize_lines(
+    lines: list[str],
+    buckets: Sequence[ProfileBucket],
+) -> dict[str, list[str]]:
+    """Group static profile lines into topical buckets.
+
+    Lines matching no bucket land in the implicit ``general`` bucket;
+    buckets with no lines are omitted.
+    """
+    grouped: dict[str, list[str]] = {}
+    for line in lines:
+        grouped.setdefault(_classify_line(line, buckets), []).append(line)
+    return grouped
+
+
 def _run_async(coro):
     """Run an async coroutine safely, handling existing event loops.
 
@@ -201,7 +348,7 @@ def synthesize_profile(
     user_id: str,
     tenant_id: str = "default",
     config: ProfileConfig | None = None,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     """
     Build a user profile with static (stable facts) and dynamic (recent context) layers.
 
@@ -209,9 +356,12 @@ def synthesize_profile(
         user_id: User identifier.
         tenant_id: Tenant identifier.
         config: Tuning parameters (max memories, synthesis toggle, etc.).
+            When ``config.buckets`` is set, static facts are additionally
+            grouped under a ``buckets`` key.
 
     Returns:
-        ``{"static": [str, ...], "dynamic": [str, ...]}``
+        ``{"static": [str, ...], "dynamic": [str, ...]}`` plus
+        ``{"buckets": {name: [str, ...]}}`` when bucketing is enabled.
     """
     cfg = config or ProfileConfig()
     pool = get_pool(DB_PATH)
@@ -284,18 +434,56 @@ def synthesize_profile(
                 logger.debug("Profile synthesis skipped (non-critical)", exc_info=True)
 
         # ── Deduplicate and trim ────────────────────────────────────────
-        return {
+        profile: dict[str, Any] = {
             "static": _deduplicate_lines(static_lines)[: cfg.max_static_lines],
             "dynamic": _deduplicate_lines(dynamic_lines)[: cfg.max_dynamic_lines],
         }
+
+        # ── Optional topical bucketing of static facts ─────────────────
+        if cfg.buckets:
+            profile["buckets"] = _bucketize_lines(profile["static"], cfg.buckets)
+
+        return profile
     finally:
         conn.close()
 
 
+def _fit_section(header: str, lines: list[str], budget: int) -> str:
+    """Greedily fit a header plus bullet lines within *budget* characters.
+
+    The first line that does not fit whole is truncated at a word boundary;
+    later lines are dropped. Returns ``""`` when the header or no line fits.
+    """
+    if budget <= 0 or not lines:
+        return ""
+    used = len(header)
+    if used > budget:
+        return ""
+    pieces = [header]
+    for line in lines:
+        entry = f"- {line}"
+        if used + 1 + len(entry) <= budget:
+            pieces.append(entry)
+            used += 1 + len(entry)
+            continue
+        # _truncate_to_chars may grow the text by up to 3 chars ("..."),
+        # so leave room for the "- " prefix and that growth.
+        avail = budget - used - 1
+        if avail > 2:
+            fitted_line = _truncate_to_chars(line, avail - 5)
+            if fitted_line.strip(" .,;:!?"):
+                pieces.append(f"- {fitted_line}")
+        break
+    if len(pieces) == 1:
+        return ""
+    return "\n".join(pieces)
+
+
 def profile_to_prompt(
-    profile: dict[str, list[str]],
+    profile: dict[str, Any],
     *,
     user_label: str = "User",
+    max_chars: int | None = None,
 ) -> str:
     """
     Format a profile dict into an LLM system-prompt snippet.
@@ -303,17 +491,45 @@ def profile_to_prompt(
     Args:
         profile: Output from ``synthesize_profile()``.
         user_label: Label to use for the user in the prompt.
+        max_chars: Optional character budget applied to the formatted prompt
+            only (the JSON payload from ``synthesize_profile()`` is never
+            affected). Static lines take priority, then dynamic, then
+            buckets; over-budget lines are truncated at word boundaries.
 
     Returns:
-        Formatted prompt block.
+        Formatted prompt block, or ``""`` when a budget is set and no
+        section fits.
     """
-    parts: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
 
     if profile.get("static"):
-        parts.append(f"ABOUT {user_label.upper()}:\n" + "\n".join(f"- {s}" for s in profile["static"]))
+        sections.append((f"ABOUT {user_label.upper()}:", list(profile["static"])))
 
     if profile.get("dynamic"):
-        parts.append("CURRENT CONTEXT:\n" + "\n".join(f"- {d}" for d in profile["dynamic"]))
+        sections.append(("CURRENT CONTEXT:", list(profile["dynamic"])))
+
+    buckets = profile.get("buckets")
+    if buckets:
+        bucket_lines = [f"{name}: {line}" for name, lines in buckets.items() for line in lines]
+        if bucket_lines:
+            sections.append(("BY TOPIC:", bucket_lines))
+
+    if max_chars is not None:
+        fitted: list[str] = []
+        remaining = max_chars
+        for header, lines in sections:
+            if remaining <= 0:
+                break
+            text = _fit_section(header, lines, remaining)
+            if not text:
+                continue
+            fitted.append(text)
+            remaining -= len(text) + 2  # account for the "\n\n" join
+        return "\n\n".join(fitted)
+
+    parts: list[str] = []
+    for header, lines in sections:
+        parts.append(f"{header}\n" + "\n".join(f"- {line}" for line in lines))
 
     if not parts:
         return f"# {user_label} Profile\nNo profile data available yet."

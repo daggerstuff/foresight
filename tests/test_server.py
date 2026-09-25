@@ -311,6 +311,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "process_session_transcript",
         "query_memories_temporal",
         "search_memories",
+        "synthesize_profile",
     }
 
 
@@ -328,6 +329,35 @@ async def test_local_mcp_calls_return_text_without_api_key(monkeypatch):
 
     assert result.is_error is False
     assert result.content
+
+
+@pytest.mark.asyncio
+async def test_mcp_synthesize_profile_buckets_and_budget(monkeypatch):
+    """synthesize_profile honors include_buckets and max_chars via MCP."""
+    monkeypatch.setenv("FORESIGHT_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.delenv("FORESIGHT_REQUIRE_API_KEY", raising=False)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "manage_context_blocks",
+            {
+                "options": {
+                    "action": "update",
+                    "label": "user_preferences",
+                    "content": "Always uses concise replies and prefers text over voice",
+                },
+                "user_id": "_test_user_",
+            },
+        )
+        result = await client.call_tool(
+            "synthesize_profile",
+            {"user_id": "_test_user_", "include_buckets": True, "format_prompt": True, "max_chars": 200},
+        )
+
+    assert result.is_error is False
+    text = result.content[0].text
+    assert "concise replies" in text
+    assert len(text) <= 200
 
 
 @contextmanager
