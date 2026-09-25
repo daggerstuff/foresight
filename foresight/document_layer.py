@@ -415,7 +415,7 @@ __all__ = [
 class DocumentStore:
     """SQLite-backed document + chunk store."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str | None) -> None:
         self.db_path = db_path
         self._lock = threading.Lock()
         self._ensure_tables()
@@ -834,11 +834,13 @@ class _DocumentStoreSingleton:
 
     @classmethod
     def get_instance(cls) -> DocumentStore:
-        """Return the process-singleton DocumentStore, initializing lazily."""
+        """Return the process-singleton DocumentStore, initializing lazily.
+
+        ``DB_PATH`` may legitimately be ``None`` in Postgres-only mode:
+        ``get_pool(None)`` routes to the active Postgres backend's pool.
+        """
         with cls._lock:
             if cls._instance is None:
-                if DB_PATH is None:
-                    raise RuntimeError("DB_PATH must be configured")
                 cls._instance = DocumentStore(DB_PATH)
             return cls._instance
 
