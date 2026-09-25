@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -124,7 +125,7 @@ def _validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 class MemoryRelationshipStore:
     """SQLite-backed store for typed memory-to-memory relationships."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str | None) -> None:
         self.db_path = db_path
         self._ensure_table()
 
@@ -442,20 +443,24 @@ class _MemoryRelationshipStoreSingleton:
     """Module-level singleton for MemoryRelationshipStore."""
 
     _instance: MemoryRelationshipStore | None = None
+    _lock = threading.Lock()
 
     @classmethod
     def get_instance(cls) -> MemoryRelationshipStore:
-        """Return the process-singleton store, initializing lazily on first call."""
-        if cls._instance is None:
-            if DB_PATH is None:
-                raise RuntimeError("DB_PATH is not configured")
-            cls._instance = MemoryRelationshipStore(DB_PATH)
+        """Return the process-singleton store, initializing lazily on first call.
+
+        ``DB_PATH is None`` is valid in Postgres-only mode: ``get_pool(None)``
+        routes to the active Postgres backend pool."""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = MemoryRelationshipStore(DB_PATH)
         return cls._instance
 
     @classmethod
     def reset(cls) -> None:
         """Reset the singleton (test-only helper)."""
-        cls._instance = None
+        with cls._lock:
+            cls._instance = None
 
 
 def get_memory_relationship_store() -> MemoryRelationshipStore:

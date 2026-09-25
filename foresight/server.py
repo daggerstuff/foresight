@@ -654,7 +654,7 @@ def get_db_connection(db_path: str | None = None):
     return PostgresPooledConnection(conn, pool)
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 def _seed_default_tenant(conn) -> None:
@@ -1083,6 +1083,16 @@ _SCHEMA_MIGRATIONS = {
         "CREATE INDEX IF NOT EXISTS idx_merge_history_tenant ON memory_merge_history(tenant_id)",
         "CREATE INDEX IF NOT EXISTS idx_merge_history_user ON memory_merge_history(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_merge_history_merged_at ON memory_merge_history(merged_at)",
+    ],
+    15: [
+        # PIX-4702 truth resolution. is_latest=1 marks the current version of
+        # a fact; write-time supersede detection flips it to 0 and stores the
+        # replacing memory id in superseded_by. inferred=1 marks memories
+        # synthesized via 'derives' links rather than directly captured.
+        "ALTER TABLE memories ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE memories ADD COLUMN inferred INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_latest ON memories(tenant_id, user_id, is_latest)",
     ],
 }
 
@@ -1821,7 +1831,26 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     else:
         conn.execute(insert_sql, insert_params)
     conn.commit()
+    # PIX-4702 truth resolution: best-effort supersede marking on the same
+    # connection — must not fail an already-committed store.
+    from .truth_resolution import supersede_detection_enabled
+
+    supersede_matches = []
+    if supersede_detection_enabled():
+        from .truth_resolution import detect_and_mark_supersessions
+
+        try:
+            supersede_matches = detect_and_mark_supersessions(conn, memory_id, content, uid, tenant_id)
+        except Exception as exc:
+            logger.warning(f"Supersede detection failed for {memory_id}: {exc}")
     conn.close()
+    if supersede_matches:
+        from .truth_resolution import create_supersede_edges
+
+        try:
+            create_supersede_edges(memory_id, supersede_matches, uid, tenant_id)
+        except Exception as exc:
+            logger.warning(f"Failed to create supersede edges for {memory_id}: {exc}")
     # Create memory relationship if specified
     if opts.relation_type and opts.related_memory_id:
         store = get_memory_relationship_store()

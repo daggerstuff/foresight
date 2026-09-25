@@ -511,6 +511,13 @@ class CapturePipeline:
                                ON CONFLICT (id) DO NOTHING""",
                             (rel_id, tid, user_id, mid, dedupe.existing_id, now),
                         )
+                        # PIX-4702: a memory written with a derives edge was
+                        # synthesized from the source memory, not stated —
+                        # flag it inferred so the retriever can down-rank it.
+                        conn.execute(
+                            "UPDATE memories SET inferred = 1, updated_at = ? WHERE id = ?",
+                            (now, mid),
+                        )
                         conn.commit()
 
                     if dedupe.status != "DUPLICATE":
@@ -598,6 +605,13 @@ class CapturePipeline:
                            VALUES (?, ?, ?, ?, ?, 'derives', 1.0, '{}', ?)
                            ON CONFLICT (id) DO NOTHING""",
                         (rel_id, tid, user_id, mid, dedupe.existing_id, now),
+                    )
+                    # PIX-4702: a memory written with a derives edge was
+                    # synthesized from the source memory, not stated —
+                    # flag it inferred so the retriever can down-rank it.
+                    conn.execute(
+                        "UPDATE memories SET inferred = 1, updated_at = ? WHERE id = ?",
+                        (now, mid),
                     )
                     conn.commit()
 

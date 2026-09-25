@@ -22,6 +22,78 @@ from .memory_types import MemoryObject, StanceShift
 
 logger = logging.getLogger("foresight_enhanced_synthesizer")
 
+# Shared sentiment-opposite pairs used by contradiction/supersede detection.
+# Aliased as EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES below.
+SENTIMENT_OPPOSITES: tuple[tuple[str, str], ...] = (
+    ("love", "hate"),
+    ("good", "bad"),
+    ("happy", "sad"),
+    ("better", "worse"),
+    ("helpful", "harmful"),
+    ("easy", "hard"),
+    ("improve", "worsen"),
+    ("like", "dislike"),
+    ("hope", "despair"),
+    ("calm", "anxious"),
+    ("confident", "doubtful"),
+    ("safe", "afraid"),
+    ("trust", "distrust"),
+    ("accept", "reject"),
+    ("satisfied", "frustrated"),
+    ("optimistic", "pessimistic"),
+    ("grateful", "resentful"),
+    ("comfortable", "uncomfortable"),
+    ("peaceful", "distressed"),
+    ("motivated", "discouraged"),
+    ("supported", "abandoned"),
+    ("connected", "isolated"),
+    ("valued", "worthless"),
+    ("strong", "weak"),
+    ("progress", "regress"),
+    ("healing", "hurting"),
+    ("joy", "sorrow"),
+)
+
+
+def compute_overlap_score(content_a: str, content_b: str) -> float:
+    """
+    Compute keyword overlap (Jaccard similarity) between two memory contents.
+
+    Tokenizes both contents into word sets and returns the Jaccard index:
+    |A intersection B| / |A union B|
+
+    This gives content-based similarity without requiring embeddings.
+    """
+    words_a = set(re.findall(r"\b\w+\b", content_a.lower()))
+    words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
+
+    if not words_a or not words_b:
+        return 0.0
+
+    intersection = words_a & words_b
+    union = words_a | words_b
+
+    return len(intersection) / len(union)
+
+
+def find_sentiment_conflict(
+    content_a: str, content_b: str, opposites: tuple[tuple[str, str], ...] = SENTIMENT_OPPOSITES
+) -> tuple[str, str] | None:
+    """
+    Check if two contents contain opposite sentiment words.
+
+    Returns a tuple of (positive_word, negative_word) if a conflicting
+    pair is found, or None otherwise.
+    """
+    words_a = set(re.findall(r"\b\w+\b", content_a.lower()))
+    words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
+
+    for pos_word, neg_word in opposites:
+        if (pos_word in words_a and neg_word in words_b) or (neg_word in words_a and pos_word in words_b):
+            return (pos_word, neg_word)
+
+    return None
+
 
 @dataclass
 class Contradiction:
@@ -160,35 +232,9 @@ class EnhancedMemorySynthesizer:
     - Evidence-anchored insight generation
     """
 
-    SENTIMENT_OPPOSITES: tuple[tuple[str, str], ...] = (
-        ("love", "hate"),
-        ("good", "bad"),
-        ("happy", "sad"),
-        ("better", "worse"),
-        ("helpful", "harmful"),
-        ("easy", "hard"),
-        ("improve", "worsen"),
-        ("like", "dislike"),
-        ("hope", "despair"),
-        ("calm", "anxious"),
-        ("confident", "doubtful"),
-        ("safe", "afraid"),
-        ("trust", "distrust"),
-        ("accept", "reject"),
-        ("satisfied", "frustrated"),
-        ("optimistic", "pessimistic"),
-        ("grateful", "resentful"),
-        ("comfortable", "uncomfortable"),
-        ("peaceful", "distressed"),
-        ("motivated", "discouraged"),
-        ("supported", "abandoned"),
-        ("connected", "isolated"),
-        ("valued", "worthless"),
-        ("strong", "weak"),
-        ("progress", "regress"),
-        ("healing", "hurting"),
-        ("joy", "sorrow"),
-    )
+    # Alias kept for backwards compatibility; the detection helpers live at
+    # module level (compute_overlap_score / find_sentiment_conflict).
+    SENTIMENT_OPPOSITES: tuple[tuple[str, str], ...] = SENTIMENT_OPPOSITES
 
     def __init__(
         self,
@@ -436,40 +482,12 @@ class EnhancedMemorySynthesizer:
         return clusters
 
     def _compute_overlap_score(self, content_a: str, content_b: str) -> float:
-        """
-        Compute keyword overlap (Jaccard similarity) between two memory contents.
-
-        Tokenizes both contents into word sets and returns the Jaccard index:
-        |A intersection B| / |A union B|
-
-        This gives content-based similarity without requiring embeddings.
-        """
-        words_a = set(re.findall(r"\b\w+\b", content_a.lower()))
-        words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
-
-        if not words_a or not words_b:
-            return 0.0
-
-        intersection = words_a & words_b
-        union = words_a | words_b
-
-        return len(intersection) / len(union)
+        """Delegate to module-level :func:`compute_overlap_score`."""
+        return compute_overlap_score(content_a, content_b)
 
     def _find_sentiment_conflict(self, content_a: str, content_b: str) -> tuple[str, str] | None:
-        """
-        Check if two contents contain opposite sentiment words.
-
-        Returns a tuple of (positive_word, negative_word) if a conflicting
-        pair is found, or None otherwise.
-        """
-        words_a = set(re.findall(r"\b\w+\b", content_a.lower()))
-        words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
-
-        for pos_word, neg_word in self.SENTIMENT_OPPOSITES:
-            if (pos_word in words_a and neg_word in words_b) or (neg_word in words_a and pos_word in words_b):
-                return (pos_word, neg_word)
-
-        return None
+        """Delegate to module-level :func:`find_sentiment_conflict`."""
+        return find_sentiment_conflict(content_a, content_b)
 
     def _extract_metric_value(self, memories: list[MemoryObject]) -> float:
         """
