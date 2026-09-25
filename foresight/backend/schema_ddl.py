@@ -479,6 +479,14 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
         "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_latest ON memories(tenant_id, user_id, is_latest)",
     ],
+    16: [
+        # PIX-4703 inferred-fact review queue. review_status tracks the human
+        # decision on inferred memories: NULL = never reviewed, 'approved' =
+        # promoted to a stated fact, 'declined' = rejected. review_reason
+        # records why a memory was declined.
+        "ALTER TABLE memories ADD COLUMN review_status TEXT",
+        "ALTER TABLE memories ADD COLUMN review_reason TEXT",
+    ],
 }
 
 
