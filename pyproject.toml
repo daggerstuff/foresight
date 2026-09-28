@@ -53,7 +53,13 @@ redis = ["redis>=8.1.0"]
 # FORESIGHT_EMBEDDING_PROVIDER=auto the server uses this when present, and warns
 # loudly before falling back to the dependency-free local-hash embedder.
 embeddings = ["fastembed>=0.8.0"]
-all = ["foresight[cli,tui,redis,embeddings]"]
+# Document ingestion (PIX-4704). Opt-in and fully local: pypdf extracts text
+# from PDFs, pytesseract+Pillow OCR raster images (also needs the `tesseract`
+# binary on PATH). Kept optional so a bare install stays dependency-light.
+pdf = ["pypdf>=5.0.0"]
+ocr = ["pytesseract>=0.3.13", "Pillow>=10.0.0"]
+documents = ["foresight[pdf,ocr]"]
+all = ["foresight[cli,tui,redis,embeddings,pdf,ocr]"]
 dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",

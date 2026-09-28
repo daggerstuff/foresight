@@ -6179,6 +6179,44 @@ def delete_document(
     )
 
 
+@mcp.tool(output_schema=None)
+def ingest_document_file(
+    path: str,
+    title: str | None = None,
+    user_id: str | None = None,
+    source: str | None = None,
+    char_budget: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Ingest a local PDF, image (OCR), or text file as a document.
+
+    Extracts text from the file and stores it via ``create_document``. PDF
+    extraction needs ``pip install 'foresight[pdf]'``; image OCR needs
+    ``pip install 'foresight[ocr]'`` plus the ``tesseract`` binary.
+
+    Args:
+        path: Local filesystem path to the file (self-hosted deployment).
+        title: Human-readable title; defaults to the file stem.
+        user_id: Optional user ID override.
+        source: Document source type; defaults to "pdf" for PDFs, else "document".
+        char_budget: Optional soft max chars per chunk.
+        metadata: Optional JSON-serializable metadata.
+    """
+    from .document_ingestion import ingest_document_file as _ingest
+
+    try:
+        return _ingest(
+            path=path,
+            title=title,
+            user_id=user_id,
+            source=source,
+            char_budget=char_budget,
+            metadata=metadata,
+        )
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+
 # =============================================================================
 # Clustering Tools (PIX-3841)
 # =============================================================================
