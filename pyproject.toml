@@ -35,10 +35,10 @@ classifiers = [
 ]
 
 dependencies = [
-  "fastmcp>=4.0.5",
+  "fastmcp>=4.0.10",
   "psycopg[binary,pool]>=3.3.6",
   "redis>=8.1.0,<9.0",
-  "psycopg-pool>=3.3.2",
+  "psycopg-pool>=3.3.3",
   "httpx>=0.28.1,<1.0.0",
   "cryptography>=50.0.1",
 ]
@@ -52,12 +52,12 @@ redis = ["redis>=8.1.0"]
 # a hard dependency would break installation there. With
 # FORESIGHT_EMBEDDING_PROVIDER=auto the server uses this when present, and warns
 # loudly before falling back to the dependency-free local-hash embedder.
-embeddings = ["fastembed>=0.8.0"]
+embeddings = ["fastembed>=0.8.1"]
 # Document ingestion (PIX-4704). Opt-in and fully local: pypdf extracts text
 # from PDFs, pytesseract+Pillow OCR raster images (also needs the `tesseract`
 # binary on PATH). Kept optional so a bare install stays dependency-light.
-pdf = ["pypdf>=5.0.0"]
-ocr = ["pytesseract>=0.3.13", "Pillow>=10.0.0"]
+pdf = ["pypdf>=6.19.0"]
+ocr = ["pytesseract>=0.3.13", "Pillow>=12.3.0"]
 documents = ["foresight[pdf,ocr]"]
 all = ["foresight[cli,tui,redis,embeddings,pdf,ocr]"]
 dev = [
@@ -96,7 +96,7 @@ dev = [
   "typer>=0.27.2",
   "rich>=15.0.0",
   "textual>=8.2.8",
-  "ruff>=0.16.8",
+  "ruff>=0.16.9",
   "bandit>=1.9.4",
   "twine>=7.0.0",
 ]
