@@ -729,6 +729,9 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "fastembed" },
+    { name = "pillow" },
+    { name = "pypdf" },
+    { name = "pytesseract" },
     { name = "redis" },
     { name = "rich" },
     { name = "textual" },
@@ -749,8 +752,20 @@ dev = [
     { name = "twine" },
     { name = "typer" },
 ]
+documents = [
+    { name = "pillow" },
+    { name = "pypdf" },
+    { name = "pytesseract" },
+]
 embeddings = [
     { name = "fastembed" },
+]
+ocr = [
+    { name = "pillow" },
+    { name = "pytesseract" },
+]
+pdf = [
+    { name = "pypdf" },
 ]
 redis = [
     { name = "redis" },
@@ -778,11 +793,15 @@ requires-dist = [
     { name = "cryptography", specifier = ">=50.0.1" },
     { name = "fastembed", marker = "extra == 'embeddings'", specifier = ">=0.8.0" },
     { name = "fastmcp", specifier = ">=4.0.5" },
-    { name = "foresight", extras = ["cli", "tui", "redis", "embeddings"], marker = "extra == 'all'" },
+    { name = "foresight", extras = ["cli", "tui", "redis", "embeddings", "pdf", "ocr"], marker = "extra == 'all'" },
+    { name = "foresight", extras = ["pdf", "ocr"], marker = "extra == 'documents'" },
     { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.32.4" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
+    { name = "pillow", marker = "extra == 'ocr'", specifier = ">=10.0.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.6" },
     { name = "psycopg-pool", specifier = ">=3.3.2" },
+    { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=5.0.0" },
+    { name = "pytesseract", marker = "extra == 'ocr'", specifier = ">=0.3.13" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
@@ -796,7 +815,7 @@ requires-dist = [
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.27.2" },
     { name = "typer", marker = "extra == 'dev'", specifier = ">=0.27.2" },
 ]
-provides-extras = ["cli", "tui", "redis", "embeddings", "all", "dev"]
+provides-extras = ["cli", "tui", "redis", "embeddings", "pdf", "ocr", "documents", "all", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1960,6 +1979,15 @@ crypto = [
 ]
 
 [[package]]
+name = "pypdf"
+version = "6.19.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1f/ac/63d71aaedb59acbcdef491e6ca6469165e3771c9c74358204818fd9bc5a6/pypdf-6.19.0.tar.gz", hash = "sha256:bbc43aca292369ccc6cbc8a921991ecf2538a3587ab5a116eff06c321d647155", size = 7033266, upload-time = "2026-09-16T09:32:05.946Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/2c/c43c03eaf630435f023f1dc61ec4a4a78951ad5530a62c71cc89bde307b7/pypdf-6.19.0-py3-none-any.whl", hash = "sha256:7e5d6e730e7dae87d560a2cee218b852f6498c8be61966f3cd02ead971e48d14", size = 395480, upload-time = "2026-09-16T09:32:04.087Z" },
+]
+
+[[package]]
 name = "pyperclip"
 version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1975,6 +2003,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e7/82/28175b2414effca1cdac8dc99f76d660e7a4fb0ceefa4b4ab8f5f6742925/pyproject_hooks-1.2.0.tar.gz", hash = "sha256:1e859bd5c40fae9448642dd871adf459e5e2084186e8d2c2a79a824c970da1f8", size = 19228, upload-time = "2024-09-29T09:24:13.293Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/24/12818598c362d7f300f18e74db45963dbcb85150324092410c8b49405e42/pyproject_hooks-1.2.0-py3-none-any.whl", hash = "sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913", size = 10216, upload-time = "2024-09-29T09:24:11.978Z" },
+]
+
+[[package]]
+name = "pytesseract"
+version = "0.3.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9f/a6/7d679b83c285974a7cb94d739b461fa7e7a9b17a3abfd7bf6cbc5c2394b0/pytesseract-0.3.13.tar.gz", hash = "sha256:4bf5f880c99406f52a3cfc2633e42d9dc67615e69d8a509d74867d3baddb5db9", size = 17689, upload-time = "2024-08-16T02:33:56.762Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/33/8312d7ce74670c9d39a532b2c246a853861120486be9443eebf048043637/pytesseract-0.3.13-py3-none-any.whl", hash = "sha256:7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34", size = 14705, upload-time = "2024-08-16T02:36:10.09Z" },
 ]
 
 [[package]]
