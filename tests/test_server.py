@@ -302,6 +302,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "compaction_lifecycle",
         "get_system_status",
         "inject_context",
+        "ingest_document_file",
         "link_memories",
         "manage_context_blocks",
         "manage_curation_runs",
