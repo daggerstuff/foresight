@@ -205,7 +205,7 @@ def init(
         out.info("Use --force to reinitialize")
     else:
         config_dir.mkdir(parents=True, exist_ok=True)
-        config_dir.chmod(0o700)
+        cfg.chmod_best_effort(config_dir, 0o700)
         out.done(f"Created config directory: {config_dir}")
 
     # Write config

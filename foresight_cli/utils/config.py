@@ -8,12 +8,26 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 CONFIG_DIR = Path.home() / ".foresight"
 CONFIG_PATH = CONFIG_DIR / "config.json"
+
+
+def chmod_best_effort(path: Path, mode: int) -> None:
+    """Restrict ``path`` permissions without failing on read-only filesystems.
+
+    The ``chmod`` calls are opportunistic hardening: on a read-only mount (or
+    when the process lacks ownership), the directory/file already exists and is
+    still usable, so we degrade gracefully instead of aborting the whole CLI.
+    """
+    with suppress(OSError):
+        # EROFS / EPERM / EACCES — hardening unavailable here; keep going.
+        path.chmod(mode)
+
 
 # Env var → config key mapping
 ENV_MAP: dict[str, str] = {
@@ -92,7 +106,7 @@ class CliConfig:
     def save(self) -> None:
         """Save config to file."""
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_DIR.chmod(0o700)
+        chmod_best_effort(CONFIG_DIR, 0o700)
         data = {
             "db_url": self.db_url,
             "user_id": self.user_id,
@@ -106,7 +120,7 @@ class CliConfig:
             },
         }
         CONFIG_PATH.write_text(json.dumps(data, indent=2))
-        CONFIG_PATH.chmod(0o600)
+        chmod_best_effort(CONFIG_PATH, 0o600)
 
 
 def get_db_url() -> str:
@@ -117,7 +131,7 @@ def get_db_url() -> str:
 def ensure_config() -> CliConfig:
     """Ensure config directory and default config exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_DIR.chmod(0o700)
+    chmod_best_effort(CONFIG_DIR, 0o700)
 
     if not CONFIG_PATH.exists():
         CliConfig().save()
