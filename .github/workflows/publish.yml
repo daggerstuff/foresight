@@ -31,6 +31,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+jobs:
   quality:
     runs-on: ubuntu-latest
     permissions:
@@ -182,7 +183,6 @@ concurrency:
       - name: Build SDK
         run: pnpm --dir packages/foresight-core build
 
-jobs:
   build-and-publish:
     name: Build and publish to PyPI
     runs-on: ubuntu-latest
