@@ -11,6 +11,8 @@ Current default weights (subject to tuning):
 - RRF k: 60 (standard smoothing constant)
 """
 
+from __future__ import annotations
+
 import hashlib
 import itertools
 import json
