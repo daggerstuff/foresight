@@ -590,9 +590,7 @@ class CapturePipeline:
         Returns (stored_count, content). stored_count is 0 when the transcript
         is empty (nothing persisted).
         """
-        transcript = "\n".join(
-            f"{m.get('role', 'unknown')}: {m.get('content', '') or ''}" for m in messages
-        ).strip()
+        transcript = "\n".join(f"{m.get('role', 'unknown')}: {m.get('content', '') or ''}" for m in messages).strip()
         if not transcript:
             return 0, ""
         mid = hashlib.sha256(f"{transcript}{now}".encode()).hexdigest()[:16]

@@ -210,9 +210,7 @@ class TestMemoryLifecycle:
         _store_memory(client, api_key, "alpha category filter", category="preference")
         _store_memory(client, api_key, "beta category filter", category="fact")
 
-        resp = client.post(
-            "/search", json={"query_type": "list", "category": "preference"}, headers=_headers(api_key)
-        )
+        resp = client.post("/search", json={"query_type": "list", "category": "preference"}, headers=_headers(api_key))
         assert resp.status_code == 200
         result = resp.json()["result"]
         assert "alpha category filter" in result

@@ -75,9 +75,7 @@ class StoreMemoryBody(BaseModel):
     memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
         default=None, description="Memory taxonomy type: episodic, semantic, or procedural"
     )
-    auto_tag: bool = Field(
-        default=False, description="When true, derive topical tags from content deterministically"
-    )
+    auto_tag: bool = Field(default=False, description="When true, derive topical tags from content deterministically")
 
 
 class UpdateMemoryBody(BaseModel):

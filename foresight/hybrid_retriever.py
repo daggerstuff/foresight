@@ -643,11 +643,7 @@ class HybridRetriever:
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id)
         if has_filters:
             now_iso = datetime.now(timezone.utc).isoformat()
-            memories = {
-                mid: row
-                for mid, row in memories.items()
-                if _row_matches_filters(row, options, now_iso)
-            }
+            memories = {mid: row for mid, row in memories.items() if _row_matches_filters(row, options, now_iso)}
 
         results = self._build_results(
             merged,

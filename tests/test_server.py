@@ -2207,7 +2207,10 @@ def test_store_expires_at_roundtrip():
 
     marker = hashlib.md5(b"expires").hexdigest()[:8]
     res = manage_memories(
-        action="store", content=f"temporary fact {marker}", expires_at="2027-01-01T00:00:00+00:00", user_id="_test_user_"
+        action="store",
+        content=f"temporary fact {marker}",
+        expires_at="2027-01-01T00:00:00+00:00",
+        user_id="_test_user_",
     )
     assert "Stored memory" in res or "Duplicate detected" in res
 
@@ -2272,9 +2275,7 @@ def test_search_memories_filters_by_category():
     manage_memories(action="store", content=f"alpha {marker}", category="preference", user_id="_test_user_")
     manage_memories(action="store", content=f"beta {marker}", category="fact", user_id="_test_user_")
 
-    res = search_memories(
-        SearchOptions(query_type="list", category="preference"), user_id="_test_user_"
-    )
+    res = search_memories(SearchOptions(query_type="list", category="preference"), user_id="_test_user_")
     assert f"alpha {marker}"[:40] in res or "alpha" in res
     assert "beta" not in res
 
