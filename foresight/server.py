@@ -2711,7 +2711,7 @@ def search_memories(
             conn = get_db_connection()
             placeholders = ",".join("?" * len(match_ids))
             rows = conn.execute(
-                f"SELECT * FROM memories WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?",
+                f"SELECT * FROM memories WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?",  # nosec B608 - values parameterized; IN placeholders generated count-only
                 (*match_ids, uid, tenant_id),
             ).fetchall()
             conn.close()
@@ -2739,7 +2739,7 @@ def search_memories(
         frag, fparams = _build_filter_fragments(*filters)
         now_iso = datetime.now(timezone.utc).isoformat()
         row = conn.execute(
-            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
             + frag
             + " AND (expires_at IS NULL OR expires_at >= ?)",
             (mid, uid, tenant_id, *fparams, now_iso),
@@ -2819,7 +2819,7 @@ def search_memories(
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'"
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
             + frag
             + expiry_sql
             + " LIMIT ? OFFSET ?"
@@ -2827,7 +2827,7 @@ def search_memories(
         params = (uid, tenant_id, f"%{escaped}%", *fparams, now_iso, options.limit, options.offset)
     else:
         query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ?"
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
             + frag
             + expiry_sql
             + " ORDER BY created_at DESC LIMIT ? OFFSET ?"

@@ -41,7 +41,7 @@ import argparse
 import contextlib
 import json
 import os
-import subprocess
+import subprocess  # nosec B404 - benchmark runner; fixed argv git call only, no shell
 import sys
 import time
 from collections import Counter
@@ -387,7 +387,7 @@ def _locomo_session(name: str, raw_turns: Any, dia_to_text: dict[str, str]) -> S
 def _locomo_category(value: Any) -> str:
     try:
         num = int(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return str(value or "unknown")
     return {
         1: "multi-hop",
@@ -935,7 +935,7 @@ def _build_report(
 
 def _git_sha() -> str:
     try:
-        out = subprocess.run(
+        out = subprocess.run(  # nosec B607, B603 - fixed argv list, git rev-parse only, no shell, timeout set
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
