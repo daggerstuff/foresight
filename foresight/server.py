@@ -224,6 +224,22 @@ class MemoryOptions(BaseModel):
             " True forces the row is_sensitive=1; False forces is_sensitive=0."
         ),
     )
+    tags: list[str] | None = Field(
+        default=None,
+        description="Explicit tags. When provided they win over auto-tagging.",
+    )
+    expires_at: str | float | int | None = Field(
+        default=None,
+        description="Optional expiration (ISO-8601 string or epoch seconds). Expired memories are excluded from retrieval and GC'd.",
+    )
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None,
+        description="Memory taxonomy type (mem0-style): episodic, semantic, or procedural. Defaults to semantic.",
+    )
+    auto_tag: bool = Field(
+        default=False,
+        description="When true, derive salient topical tags from content deterministically (zero egress).",
+    )
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -269,6 +285,14 @@ class SearchOptions(BaseModel):
     )
     min_score: float = Field(default=0.0, description="Minimum cosine similarity for semantic search [-1.0, 1.0]")
     provider: str | None = Field(default=None, description="Embedder provider name for semantic search")
+    # PIX-4720 filtered retrieval: constrain results to memories matching these
+    # column values. category/tags accept a single value or a list (match-any).
+    category: str | list[str] | None = Field(default=None, description="Filter by category (single value or list)")
+    scope: str | None = Field(default=None, description="Filter by scope (session, arc, trait, fact)")
+    retention: str | None = Field(default=None, description="Filter by retention policy")
+    bank_id: str | None = Field(default=None, description="Filter by bank ID")
+    tags: list[str] | None = Field(default=None, description="Filter to memories carrying any of these tags")
+    memory_type: str | None = Field(default=None, description="Filter by memory_type (episodic, semantic, procedural)")
 
 
 class ContextBlockAction(BaseModel):
@@ -444,6 +468,169 @@ def _run_async(coro):
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, coro).result()
     return asyncio.run(coro)
+
+
+def _normalize_expires_at(value: str | float | int | None) -> str | None:
+    """Normalize a caller-supplied expiration to an ISO-8601 UTC string.
+
+    Accepts an ISO-8601 string or numeric epoch seconds. Returns None for
+    empty/invalid input so a bad expires_at never blocks a store.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+        except (ValueError, OSError, OverflowError):
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+        except ValueError:
+            with contextlib.suppress(ValueError):
+                return datetime.fromtimestamp(float(text), tz=timezone.utc).isoformat()
+            return None
+    return None
+
+
+# Deterministic, zero-egress stopword set for topical tag extraction. PIX-4724.
+_AUTO_TAG_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "are", "but", "not", "you", "all", "any", "can",
+        "her", "was", "one", "our", "out", "has", "had", "his", "him", "she",
+        "they", "them", "their", "this", "that", "with", "from", "have", "will",
+        "would", "could", "should", "about", "into", "than", "then", "there",
+        "what", "when", "where", "which", "who", "whom", "your", "yours",
+        "its", "it's", "i'm", "don't", "just", "also", "very", "really", "more",
+        "most", "some", "such", "only", "been", "being", "does", "did", "doing",
+        "like", "get", "got", "how", "why", "over", "under", "after", "before",
+        "i", "me", "my", "we", "us", "it", "is", "am", "were",
+        "be", "a", "an", "to", "of", "in", "on", "at", "by",
+    }
+)
+
+
+def _extract_topical_tags(content: str, max_tags: int = 5) -> list[str]:
+    """Derive salient topical tags from content (deterministic, no egress).
+
+    Tokenizes on non-alphanumeric boundaries, drops stopwords and tokens
+    shorter than 3 chars, then returns the most frequent tokens. This is a
+    local heuristic, not an LLM call — safe for the zero-egress default.
+    """
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", content.lower())
+    counts: dict[str, int] = {}
+    for tok in tokens:
+        if tok in _AUTO_TAG_STOPWORDS:
+            continue
+        counts[tok] = counts.get(tok, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [tok for tok, _ in ranked[:max_tags]]
+
+
+def _like_escape(value: str) -> str:
+    """Escape LIKE metacharacters in a literal to prevent wildcard injection."""
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
+def _build_filter_fragments(
+    category: str | list[str] | None,
+    scope: str | None,
+    retention: str | None,
+    bank_id: str | None,
+    tags: list[str] | None,
+    memory_type: str | None,
+    column_prefix: str = "",
+) -> tuple[str, list]:
+    """Build (sql_fragment, params) for memory-column filters.
+
+    The returned fragment is ready to be appended after an existing WHERE with
+    " AND ". Empty string + empty params when no filters are set.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    def col(name: str) -> str:
+        return f"{column_prefix}{name}" if column_prefix else name
+
+    if category:
+        cats = [category] if isinstance(category, str) else list(category)
+        cats = [c for c in cats if c]
+        if cats:
+            placeholders = ",".join("?" * len(cats))
+            clauses.append(f"{col('category')} IN ({placeholders})")
+            params.extend(cats)
+    if scope:
+        clauses.append(f"{col('scope')} = ?")
+        params.append(scope)
+    if retention:
+        clauses.append(f"{col('retention')} = ?")
+        params.append(retention)
+    if bank_id:
+        clauses.append(f"{col('bank_id')} = ?")
+        params.append(bank_id)
+    if memory_type:
+        clauses.append(f"{col('memory_type')} = ?")
+        params.append(memory_type)
+    if tags:
+        wanted = [t for t in tags if t]
+        if wanted:
+            tag_clauses = []
+            for tag in wanted:
+                tag_clauses.append(f"{col('tags')} LIKE ? ESCAPE '!'")
+                params.append(f'%"{_like_escape(tag)}"%')
+            clauses.append("(" + " OR ".join(tag_clauses) + ")")
+
+    if not clauses:
+        return "", []
+    return " AND " + " AND ".join(clauses), params
+
+
+def _memory_matches_filters(
+    row: Mapping[str, Any],
+    category: str | list[str] | None,
+    scope: str | None,
+    retention: str | None,
+    bank_id: str | None,
+    tags: list[str] | None,
+    memory_type: str | None,
+) -> bool:
+    """Python-side filter predicate for post-filtering fetched memory rows."""
+    if category:
+        cats = {category} if isinstance(category, str) else set(category)
+        if row.get("category") not in cats:
+            return False
+    if scope and row.get("scope") != scope:
+        return False
+    if retention and row.get("retention") != retention:
+        return False
+    if bank_id and row.get("bank_id") != bank_id:
+        return False
+    if memory_type and row.get("memory_type") != memory_type:
+        return False
+    if tags:
+        wanted = {t for t in tags if t}
+        if wanted:
+            raw = row.get("tags") or "[]"
+            try:
+                have = set(json.loads(raw) if isinstance(raw, str) else raw)
+            except (TypeError, ValueError):
+                have = set()
+            if not wanted & have:
+                return False
+    return True
+
+
+def _is_expired_row(row: Mapping[str, Any], now_iso: str) -> bool:
+    """True when a memory carries an expires_at timestamp in the past."""
+    expires_at = row.get("expires_at")
+    if not expires_at:
+        return False
+    # Both values are normalized ISO-8601 UTC strings, so lexicographic
+    # comparison is a correct chronological comparison for the same format.
+    return str(expires_at) < now_iso
 
 
 def _check_rate_limit(tenant_id: str | None = None) -> None:
@@ -1132,6 +1319,15 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE memory_embeddings ADD COLUMN embedding vector",
         "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_hnsw_384 ON memory_embeddings"
         " USING hnsw ((embedding::vector(384)) vector_cosine_ops) WHERE dimension = 384",
+    ],
+    18: [
+        # PIX-4721 per-memory expiration: nullable ISO-8601 timestamp; a
+        # memory with expires_at in the past is excluded from retrieval and
+        # deleted by memory_gc. PIX-4723 memory taxonomy: episodic / semantic
+        # / procedural (mem0's taxonomy). Default 'semantic' preserves legacy
+        # behavior for rows written before this column existed.
+        "ALTER TABLE memories ADD COLUMN expires_at TEXT",
+        "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'semantic'",
     ],
 }
 
@@ -1847,9 +2043,20 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     # Socratic Gate
     ms = get_memory_system()
     gate_result = _run_async(SocraticGate(ms["tagger"]).evaluate(memory, uid))
-    memory.tags = gate_result.suggested_tags
+    crisis_tags = gate_result.suggested_tags or []
+    # PIX-4724 tag precedence: explicit tags win over auto-tagging; both are
+    # merged with the Socratic Gate's crisis/safety tags (never dropped).
+    if opts.tags:
+        topical_tags = list(opts.tags)
+    elif opts.auto_tag:
+        topical_tags = _extract_topical_tags(content)
+    else:
+        topical_tags = []
+    memory.tags = list(dict.fromkeys([*topical_tags, *crisis_tags]))
     if opts.category and opts.category not in memory.tags:
         memory.tags.append(opts.category)
+    # PIX-4721: normalize the optional per-memory expiration.
+    expires_at = _normalize_expires_at(opts.expires_at)
     # Re-evaluate sensitivity at INSERT-time — content may have been
     # mutated by a PRE_STORE hook above.
     is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
@@ -1865,8 +2072,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     insert_sql = (
         "INSERT INTO memories (id, user_id, tenant_id, bank_id, category, scope, retention, "
         "content, content_hash, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags, is_sensitive, sensitivity_reason) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "created_at, updated_at, tags, is_sensitive, sensitivity_reason, expires_at, memory_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     insert_params = (
         memory_id,
@@ -1887,6 +2094,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         json.dumps(memory.tags),
         1 if is_sensitive_bit else 0,
         sensitivity_reason,
+        expires_at,
+        opts.memory_type or "semantic",
     )
     if _supports_execute_returning(conn):
         conn.execute_returning(insert_sql, insert_params).fetchone()
@@ -2165,6 +2374,9 @@ def manage_memories(
     related_memory_id: str | None = None,
     emotional_context: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
+    expires_at: str | float | int | None = None,
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = None,
+    auto_tag: bool | None = None,
 ) -> str:
     """
     Manage memory lifecycle: store, update, delete, or archive.
@@ -2187,6 +2399,9 @@ def manage_memories(
         related_memory_id: Flat parameter for related memory ID
         emotional_context: Flat parameter for emotional metadata
         metrics: Flat parameter for empathy metrics
+        expires_at: Flat parameter for per-memory expiration (ISO-8601 or epoch seconds)
+        memory_type: Flat parameter for memory taxonomy type
+        auto_tag: Flat parameter to derive topical tags deterministically
     """
     flat_store_kwargs: dict[str, Any] = {}
     if category is not None:
@@ -2201,6 +2416,14 @@ def manage_memories(
         flat_store_kwargs["emotional_context"] = emotional_context
     if metrics is not None:
         flat_store_kwargs["metrics"] = metrics
+    if tags is not None:
+        flat_store_kwargs["tags"] = tags
+    if expires_at is not None:
+        flat_store_kwargs["expires_at"] = expires_at
+    if memory_type is not None:
+        flat_store_kwargs["memory_type"] = memory_type
+    if auto_tag is not None:
+        flat_store_kwargs["auto_tag"] = auto_tag
     if relation_type is not None:
         flat_store_kwargs["relation_type"] = relation_type
     if related_memory_id is not None:
@@ -2357,6 +2580,12 @@ def search_memories(
     debug: bool | None = None,
     min_score: float | None = None,
     provider: str | None = None,
+    category: str | list[str] | None = None,
+    scope: str | None = None,
+    retention: str | None = None,
+    bank_id: str | None = None,
+    tags: list[str] | None = None,
+    memory_type: str | None = None,
 ) -> str:
     """
     Unified search and retrieval for memories.
@@ -2378,6 +2607,12 @@ def search_memories(
         debug: Flat parameter for debug mode (optional)
         min_score: Flat parameter for min semantic similarity score (optional)
         provider: Flat parameter for embedder provider name (optional)
+        category: Flat filter by category (single value or list, match-any)
+        scope: Flat filter by scope
+        retention: Flat filter by retention policy
+        bank_id: Flat filter by bank ID
+        tags: Flat filter to memories carrying any of these tags
+        memory_type: Flat filter by memory_type
     """
     if options is None:
         kwargs = {}
@@ -2407,10 +2642,33 @@ def search_memories(
             kwargs["min_score"] = min_score
         if provider is not None:
             kwargs["provider"] = provider
+        if category is not None:
+            kwargs["category"] = category
+        if scope is not None:
+            kwargs["scope"] = scope
+        if retention is not None:
+            kwargs["retention"] = retention
+        if bank_id is not None:
+            kwargs["bank_id"] = bank_id
+        if tags is not None:
+            kwargs["tags"] = tags
+        if memory_type is not None:
+            kwargs["memory_type"] = memory_type
         options = SearchOptions(**kwargs)
 
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
+
+    # PIX-4720 filter bundle, used by every retrieval path.
+    filters = (
+        options.category,
+        options.scope,
+        options.retention,
+        options.bank_id,
+        options.tags,
+        options.memory_type,
+    )
+    has_filters = any(f is not None for f in filters)
 
     # ── PRE_RETRIEVE hook ──────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
@@ -2444,6 +2702,29 @@ def search_memories(
             )
         except _SemanticSearchError as exc:
             return f"Error: {exc}"
+        # PIX-4720/4721: filter semantic matches by column filters and drop
+        # already-expired memories. ANN top-k is fetched first, so this is a
+        # post-filter over the returned IDs (may return fewer than limit).
+        match_ids = [m.memory_id for m in result.matches]
+        if match_ids:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn = get_db_connection()
+            placeholders = ",".join("?" * len(match_ids))
+            rows = conn.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?",
+                (*match_ids, uid, tenant_id),
+            ).fetchall()
+            conn.close()
+            by_id = {r["id"]: r for r in rows}
+            result.matches = [
+                m
+                for m in result.matches
+                if (row := by_id.get(m.memory_id))
+                and not _is_expired_row(row, now_iso)
+                and (not has_filters or _memory_matches_filters(row, *filters))
+            ]
+        else:
+            result.matches = []
         # Reinforce surfaced memories (closes decay loop).
         _auto_reinforce_batch([m.memory_id for m in result.matches], uid, tenant_id)
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
@@ -2455,8 +2736,13 @@ def search_memories(
         if not mid:
             return "Error: memory_id or query (as ID) required for id lookup."
         conn = get_db_connection()
+        frag, fparams = _build_filter_fragments(*filters)
+        now_iso = datetime.now(timezone.utc).isoformat()
         row = conn.execute(
-            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (mid, uid, tenant_id)
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"
+            + frag
+            + " AND (expires_at IS NULL OR expires_at >= ?)",
+            (mid, uid, tenant_id, *fparams, now_iso),
         ).fetchone()
         conn.close()
 
@@ -2500,6 +2786,12 @@ def search_memories(
                     use_semantic=None,
                     use_graph=True,
                     use_temporal=True,
+                    category=options.category,
+                    scope=options.scope,
+                    retention=options.retention,
+                    bank_id=options.bank_id,
+                    tags=options.tags,
+                    memory_type=options.memory_type,
                 ),
             )
             if options.debug:
@@ -2521,17 +2813,26 @@ def search_memories(
 
     # 3. Fallback to basic list/keyword search
     conn = get_db_connection()
+    frag, fparams = _build_filter_fragments(*filters)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'"
+            + frag
+            + expiry_sql
+            + " LIMIT ? OFFSET ?"
         )
-        params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
+        params = (uid, tenant_id, f"%{escaped}%", *fparams, now_iso, options.limit, options.offset)
     else:
         query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ?"
+            + frag
+            + expiry_sql
+            + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         )
-        params = (uid, tenant_id, options.limit, options.offset)
+        params = (uid, tenant_id, *fparams, now_iso, options.limit, options.offset)
 
     rows = conn.execute(query_sql, params).fetchall()
     conn.close()
@@ -3008,7 +3309,12 @@ def _detect_git_root() -> str | None:
 
 @mcp.tool(output_schema=None)
 def process_session_transcript(
-    session_id: str, messages: list[dict], project_path: str | None = None, user_id: str | None = None
+    session_id: str,
+    messages: list[dict],
+    project_path: str | None = None,
+    user_id: str | None = None,
+    infer: bool = True,
+    instructions: str | None = None,
 ) -> str:
     """
     Process a session transcript and extract memories.
@@ -3018,6 +3324,11 @@ def process_session_transcript(
         messages: List of message dicts with role/content
         project_path: Optional project path for context
         user_id: Optional user ID override
+        infer: When False (PIX-4722), store the transcript verbatim as a single
+            memory instead of running extraction/dedupe. Default True.
+        instructions: Optional advisory guidance for extraction (reserved for a
+            future LLM-guided extractor; recorded in the verbatim memory's
+            metrics when infer=False).
 
     Returns:
         Confirmation message
@@ -3038,7 +3349,14 @@ def process_session_transcript(
     _bridge_transcript_entities(messages, uid)
 
     pipeline = get_capture_pipeline()
-    stats = pipeline.run(session_id=session_id, messages=messages, user_id=uid, tenant_id=tenant_id)
+    stats = pipeline.run(
+        session_id=session_id,
+        messages=messages,
+        user_id=uid,
+        tenant_id=tenant_id,
+        infer=infer,
+        instructions=instructions,
+    )
 
     # Sync capture-pipeline memories back into context blocks
     if stats.stored_items:
@@ -4549,6 +4867,12 @@ def get_relevant_memories(
     limit: int = 5,
     min_relevance: float = 0.01,
     max_chars: int | None = None,
+    category: str | list[str] | None = None,
+    scope: str | None = None,
+    retention: str | None = None,
+    bank_id: str | None = None,
+    tags: list[str] | None = None,
+    memory_type: str | None = None,
 ) -> str:
     """Return structured list of relevant memories for a query.
 
@@ -4564,6 +4888,12 @@ def get_relevant_memories(
             each memory's content is truncated at sentence boundaries
             if the total payload would exceed this limit. Default None
             = unbounded (legacy behavior).
+        category: Optional filter by category (single value or list)
+        scope: Optional filter by scope
+        retention: Optional filter by retention policy
+        bank_id: Optional filter by bank ID
+        tags: Optional filter to memories carrying any of these tags
+        memory_type: Optional filter by memory_type
 
     Returns:
         JSON string with:
@@ -4586,6 +4916,12 @@ def get_relevant_memories(
             tenant_id=tenant_id,
             limit=max(limit * 2, 20),
             min_importance=0.0,
+            category=category,
+            scope=scope,
+            retention=retention,
+            bank_id=bank_id,
+            tags=tags,
+            memory_type=memory_type,
         ),
     )
     latency_ms = (time.perf_counter() - t0) * 1000
@@ -5818,6 +6154,10 @@ def store_memory(
     metrics: dict[str, Any] | None = None,
     relation_type: str | None = None,
     related_memory_id: str | None = None,
+    tags: list[str] | None = None,
+    expires_at: str | float | int | None = None,
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = None,
+    auto_tag: bool = False,
 ) -> str:
     """Legacy alias for manage_memories(action="store") used by callers and tests."""
     options = MemoryAction(
@@ -5832,6 +6172,10 @@ def store_memory(
             metrics=metrics,
             relation_type=relation_type,
             related_memory_id=related_memory_id,
+            tags=tags,
+            expires_at=expires_at,
+            memory_type=memory_type,
+            auto_tag=auto_tag,
         ),
     )
     return manage_memories(options, user_id=user_id)

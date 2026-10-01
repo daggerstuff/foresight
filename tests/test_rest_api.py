@@ -190,6 +190,34 @@ class TestMemoryLifecycle:
         assert f"[{mid}]" in result
         assert f"Content: {content}" in result
 
+    def test_store_new_fields_roundtrip(self, client: TestClient, api_key: str) -> None:
+        """PIX-4721/4723/4724: StoreMemoryBody accepts expires_at, memory_type, auto_tag."""
+        resp = client.post(
+            "/memories",
+            json={
+                "content": "rest new fields target",
+                "memory_type": "procedural",
+                "expires_at": "2027-01-01T00:00:00+00:00",
+                "auto_tag": True,
+            },
+            headers=_headers(api_key),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["result"].startswith("Stored memory ")
+
+    def test_search_filters_via_body(self, client: TestClient, api_key: str) -> None:
+        """PIX-4720: SearchBody forwards category/tags filters to the search layer."""
+        _store_memory(client, api_key, "alpha category filter", category="preference")
+        _store_memory(client, api_key, "beta category filter", category="fact")
+
+        resp = client.post(
+            "/search", json={"query_type": "list", "category": "preference"}, headers=_headers(api_key)
+        )
+        assert resp.status_code == 200
+        result = resp.json()["result"]
+        assert "alpha category filter" in result
+        assert "beta category filter" not in result
+
     def test_patch_updates_content(self, client: TestClient, api_key: str) -> None:
         mid = _store_memory(client, api_key, "before patch")
         resp = client.patch(f"/memories/{mid}", json={"content": "after patch"}, headers=_headers(api_key))

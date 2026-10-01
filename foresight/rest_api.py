@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -69,6 +69,15 @@ class StoreMemoryBody(BaseModel):
         description="Typed relationship to another memory (updates, extends, derives, contradicts, supports, related)",
     )
     related_memory_id: str | None = Field(default=None, description="Target memory ID for relation_type")
+    expires_at: str | float | int | None = Field(
+        default=None, description="Optional expiration (ISO-8601 string or epoch seconds)"
+    )
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None, description="Memory taxonomy type: episodic, semantic, or procedural"
+    )
+    auto_tag: bool = Field(
+        default=False, description="When true, derive topical tags from content deterministically"
+    )
 
 
 class UpdateMemoryBody(BaseModel):
@@ -106,6 +115,12 @@ class SearchBody(BaseModel):
     cascade_limit: int | None = Field(default=None, description="Cascade limit")
     min_score: float | None = Field(default=None, description="Minimum semantic similarity score")
     provider: str | None = Field(default=None, description="Embedder provider name for semantic search")
+    category: str | list[str] | None = Field(default=None, description="Filter by category (single value or list)")
+    scope: str | None = Field(default=None, description="Filter by scope")
+    retention: str | None = Field(default=None, description="Filter by retention policy")
+    bank_id: str | None = Field(default=None, description="Filter by bank ID")
+    tags: list[str] | None = Field(default=None, description="Filter to memories carrying any of these tags")
+    memory_type: str | None = Field(default=None, description="Filter by memory_type (episodic, semantic, procedural)")
 
 
 class InjectBody(BaseModel):
@@ -323,6 +338,9 @@ async def _handle_store_memory(request: Request) -> Response:
             metrics=body.metrics,
             relation_type=body.relation_type,
             related_memory_id=body.related_memory_id,
+            expires_at=body.expires_at,
+            memory_type=body.memory_type,
+            auto_tag=body.auto_tag,
         )
     finally:
         reset_tenant_context()
@@ -349,6 +367,9 @@ def _store_one(user_id: str | None, tenant_id: str, body: StoreMemoryBody) -> st
             metrics=body.metrics,
             relation_type=body.relation_type,
             related_memory_id=body.related_memory_id,
+            expires_at=body.expires_at,
+            memory_type=body.memory_type,
+            auto_tag=body.auto_tag,
         )
     finally:
         reset_tenant_context()

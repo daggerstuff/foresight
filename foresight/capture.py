@@ -241,8 +241,15 @@ class MemoryExtractor:
     """Extract categorized memory candidates from transcript messages."""
 
     @classmethod
-    def extract(cls, messages: list[dict]) -> list[CapturedMemory]:
-        """Scan messages and return potential memory candidates."""
+    def extract(cls, messages: list[dict], instructions: str | None = None) -> list[CapturedMemory]:
+        """Scan messages and return potential memory candidates.
+
+        ``instructions`` is accepted for API parity with the infer/instructions
+        contract (PIX-4722). The current extractor is deterministic and
+        regex-based, so instructions are advisory (reserved for a future
+        LLM-guided extractor); they do not change extraction today.
+        """
+        _ = instructions
 
         candidates: list[CapturedMemory] = []
         seen: set[str] = set()  # dedup within a single extraction pass
@@ -415,14 +422,25 @@ class CapturePipeline:
         messages: list[dict],
         user_id: str,
         tenant_id: str | None = None,
+        infer: bool = True,
+        instructions: str | None = None,
     ) -> CaptureStats:
         """Run the full capture pipeline.
+
+        When ``infer`` is False (PIX-4722), skip classification/extraction and
+        store the concatenated transcript verbatim as a single episodic memory
+        — no rewriting, no dedupe. ``instructions`` is carried into that
+        memory's metrics for traceability.
 
         Returns CaptureStats summarizing what happened.
         """
         stats = CaptureStats()
         tid = tenant_id or get_current_account_id()
         now = datetime.now(timezone.utc).isoformat()
+
+        # PIX-4722: verbatim (no-inference) fast path.
+        if infer is False:
+            return self._run_verbatim(session_id, messages, user_id, tid, now, instructions)
 
         # Phase 1: Classify
         skip, reason = self.classifier.should_skip(messages)
@@ -433,7 +451,7 @@ class CapturePipeline:
             return stats
 
         # Phase 2: Extract
-        candidates = self.extractor.extract(messages)
+        candidates = self.extractor.extract(messages, instructions=instructions)
         stats.candidates_found = len(candidates)
 
         if not candidates:
@@ -536,6 +554,79 @@ class CapturePipeline:
             stats.near_duplicates,
         )
         return stats
+
+    def _run_verbatim(
+        self,
+        session_id: str,
+        messages: list[dict],
+        user_id: str,
+        tenant_id: str,
+        now: str,
+        instructions: str | None,
+    ) -> CaptureStats:
+        """Handle the infer=False path, returning a fully-populated CaptureStats."""
+        stats = CaptureStats()
+        stored, content = self._store_verbatim(messages, user_id, tenant_id, now, instructions)
+        if stored:
+            stats.candidates_found = 1
+            stats.stored = 1
+            stats.stored_items.append(("episodic", content))
+            logger.info("Session %s: stored verbatim transcript (infer=False)", session_id)
+        else:
+            stats.skipped = True
+            stats.skip_reason = "empty transcript"
+        return stats
+
+    def _store_verbatim(
+        self,
+        messages: list[dict],
+        user_id: str,
+        tenant_id: str,
+        now: str,
+        instructions: str | None,
+    ) -> tuple[int, str]:
+        """Store the concatenated transcript verbatim as one episodic memory.
+
+        Returns (stored_count, content). stored_count is 0 when the transcript
+        is empty (nothing persisted).
+        """
+        transcript = "\n".join(
+            f"{m.get('role', 'unknown')}: {m.get('content', '') or ''}" for m in messages
+        ).strip()
+        if not transcript:
+            return 0, ""
+        mid = hashlib.sha256(f"{transcript}{now}".encode()).hexdigest()[:16]
+        tags = ["verbatim"]
+        metrics = {"capture_instructions": instructions} if instructions else {}
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            conn.execute(
+                """INSERT INTO memories
+                   (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
+                    created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from,
+                    importance, memory_type)
+                   VALUES (?, ?, ?, 'session', 'short_term', 'episodic', ?, ?, ?, ?, ?, ?, '{}', ?, 0, '[]', ?, 'episodic')
+                   ON CONFLICT (id) DO NOTHING""",
+                (
+                    mid,
+                    transcript,
+                    _content_hash(transcript),
+                    user_id,
+                    BANK_ID,
+                    tenant_id,
+                    now,
+                    now,
+                    json.dumps(tags),
+                    json.dumps(metrics),
+                    1.0,
+                ),
+            )
+            conn.commit()
+        finally:
+            pool.release(conn)
+            conn.close()
+        return 1, transcript
 
     def capture_in_flight(
         self,

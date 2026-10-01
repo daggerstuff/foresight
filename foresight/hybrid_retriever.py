@@ -31,6 +31,7 @@ on each result.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import threading
@@ -76,6 +77,52 @@ def _normalize_query(query: str) -> str:
     return " ".join(unique)
 
 
+def _row_matches_filters(row: dict, options: HybridSearchOptions, now_iso: str) -> bool:
+    """PIX-4720/4721: filter a fetched memory row by column filters + expiry.
+
+    Mirrors server._memory_matches_filters so the hybrid path agrees with the
+    SQL-filtered keyword/list path. Expired memories are always excluded.
+    """
+    if row.get("expires_at") and str(row["expires_at"]) < now_iso:
+        return False
+
+    category = options.category
+    cats = {category} if isinstance(category, str) else (set(category) if category else set())
+    ok_category = not cats or row.get("category") in cats
+    ok_scope = not options.scope or row.get("scope") == options.scope
+    ok_retention = not options.retention or row.get("retention") == options.retention
+    ok_bank = not options.bank_id or row.get("bank_id") == options.bank_id
+    ok_type = not options.memory_type or row.get("memory_type") == options.memory_type
+
+    ok_tags = True
+    if options.tags:
+        wanted = {t for t in options.tags if t}
+        if wanted:
+            raw = row.get("tags") or "[]"
+            try:
+                have = set(json.loads(raw) if isinstance(raw, str) else raw)
+            except (TypeError, ValueError):
+                have = set()
+            ok_tags = bool(wanted & have)
+
+    return ok_category and ok_scope and ok_retention and ok_bank and ok_type and ok_tags
+
+
+def _filters_active(options: HybridSearchOptions) -> bool:
+    """True when any column filter is set on the options."""
+    return any(
+        v is not None
+        for v in (
+            options.category,
+            options.scope,
+            options.retention,
+            options.bank_id,
+            options.tags,
+            options.memory_type,
+        )
+    )
+
+
 @dataclass
 class HybridSearchOptions:
     """Options for hybrid search configuration."""
@@ -93,6 +140,14 @@ class HybridSearchOptions:
     # PIX-4701: attach global explain metadata (weights, max possible score,
     # rerank status) to the returned HybridSearchResult.
     explain: bool = False
+    # PIX-4720 filtered retrieval: constrain the candidate pool to memories
+    # matching these column values (mirrors server.SearchOptions).
+    category: str | list[str] | None = None
+    scope: str | None = None
+    retention: str | None = None
+    bank_id: str | None = None
+    tags: list[str] | None = None
+    memory_type: str | None = None
 
 
 @dataclass
@@ -506,7 +561,10 @@ class HybridRetriever:
         # same); options.limit is re-applied after reranking.
         rerank_on = rerank_active()
         search_limit = limit * 3 if rerank_on else limit
-        use_cache = fast_path_enabled and not options.explain
+        # PIX-4720: column filters change the candidate set, so a cached
+        # result from an unfiltered query can never be reused (and vice versa).
+        has_filters = _filters_active(options)
+        use_cache = fast_path_enabled and not options.explain and not has_filters
 
         cache_key = self._cache_key(query, user_id, tenant_id)
 
@@ -567,7 +625,7 @@ class HybridRetriever:
         )
 
         early: HybridSearchResult | None = None
-        if not rerank_on:
+        if not rerank_on and not has_filters:
             early = self._try_early_termination(merged, rankings, user_id, options)
         if early is not None:
             self._cache_result(cache_key, early)
@@ -575,9 +633,21 @@ class HybridRetriever:
 
         # Over-fetch 3x so the rerank stage can promote candidates from
         # outside the raw top-N; options.limit is re-applied after reranking.
+        # PIX-4720: filters can exclude many top candidates, so widen the
+        # candidate window further to avoid starving matching memories that
+        # ranked just below the raw cutoff.
         build_limit = search_limit
-        top_ids = [mid for mid, _ in merged[:build_limit]]
+        fetch_window = build_limit * 4 if has_filters else build_limit
+        fetch_window = min(fetch_window, len(merged))
+        top_ids = [mid for mid, _ in merged[:fetch_window]]
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id)
+        if has_filters:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            memories = {
+                mid: row
+                for mid, row in memories.items()
+                if _row_matches_filters(row, options, now_iso)
+            }
 
         results = self._build_results(
             merged,
@@ -589,6 +659,11 @@ class HybridRetriever:
         rerank_provider: str | None = None
         if rerank_on:
             results, rerank_provider = self._apply_reranker(query, results)
+            results = results[:limit]
+        elif has_filters:
+            # Without rerank the result size is normally bounded by the fetched
+            # candidate window; the wider filter window can exceed limit, so
+            # re-apply it here to keep the filtered contract identical.
             results = results[:limit]
 
         result = self._make_search_result(

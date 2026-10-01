@@ -2157,3 +2157,191 @@ def test_analyze_memories_flat_parameters():
     # Test AnalysisAction extra fields
     a_action = AnalysisAction(action="reflect", period="weekly", extra_junk="ignored")
     assert a_action.period == "weekly"
+
+
+# ====== PIX-4720/4721/4723/4724: retrieval filters, TTL, taxonomy, auto-tag ======
+
+
+def test_extract_topical_tags_helper():
+    from foresight.server import _extract_topical_tags
+
+    tags = _extract_topical_tags("we decided to use postgresql for the database and redis for caching")
+    assert any(t in tags for t in ("postgresql", "redis", "database", "caching")), tags
+
+
+def test_normalize_expires_at_helper():
+    from foresight.server import _normalize_expires_at
+
+    assert _normalize_expires_at(None) is None
+    assert _normalize_expires_at("") is None
+    iso = _normalize_expires_at("2027-01-01T00:00:00+00:00")
+    assert iso is not None
+    assert iso.startswith("2027-01-01")
+    epoch = _normalize_expires_at(1767225600)
+    assert epoch is not None
+    assert epoch.startswith("2026")
+
+
+def test_store_memory_type_roundtrip():
+    """PIX-4723: memory_type persists to the memories row."""
+    from foresight.server import get_db_connection, manage_memories
+
+    marker = hashlib.md5(b"mem_type").hexdigest()[:8]
+    res = manage_memories(
+        action="store", content=f"procedural howto {marker}", memory_type="procedural", user_id="_test_user_"
+    )
+    assert "Stored memory" in res or "Duplicate detected" in res
+
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT memory_type FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        ("_test_user_",),
+    ).fetchone()
+    assert row is not None
+    assert row["memory_type"] == "procedural"
+
+
+def test_store_expires_at_roundtrip():
+    """PIX-4721: expires_at normalizes to ISO and persists."""
+    from foresight.server import get_db_connection, manage_memories
+
+    marker = hashlib.md5(b"expires").hexdigest()[:8]
+    res = manage_memories(
+        action="store", content=f"temporary fact {marker}", expires_at="2027-01-01T00:00:00+00:00", user_id="_test_user_"
+    )
+    assert "Stored memory" in res or "Duplicate detected" in res
+
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT expires_at FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        ("_test_user_",),
+    ).fetchone()
+    assert row is not None
+    assert row["expires_at"] is not None
+    assert row["expires_at"].startswith("2027-01-01")
+
+
+def test_auto_tag_extracts_topical_tags():
+    """PIX-4724: auto_tag=True derives topical tags deterministically."""
+    from foresight.server import get_db_connection, manage_memories
+
+    marker = hashlib.md5(b"autotag").hexdigest()[:8]
+    res = manage_memories(
+        action="store",
+        content=f"we adopted postgresql for storage and redis for caching {marker}",
+        auto_tag=True,
+        user_id="_test_user_",
+    )
+    assert "Stored memory" in res or "Duplicate detected" in res
+
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT tags FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        ("_test_user_",),
+    ).fetchone()
+    tags = json.loads(row["tags"]) if row and row["tags"] else []
+    assert any(t in tags for t in ("postgresql", "redis", "storage", "caching")), tags
+
+
+def test_explicit_tags_win_over_auto_tag():
+    """PIX-4724: explicit tags are kept; auto-tagging does not replace them."""
+    from foresight.server import get_db_connection, manage_memories
+
+    marker = hashlib.md5(b"explicit").hexdigest()[:8]
+    manage_memories(
+        action="store",
+        content=f"explicit tags test {marker}",
+        tags=["explicit_marker"],
+        auto_tag=True,
+        user_id="_test_user_",
+    )
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT tags FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        ("_test_user_",),
+    ).fetchone()
+    tags = json.loads(row["tags"]) if row and row["tags"] else []
+    assert "explicit_marker" in tags
+
+
+def test_search_memories_filters_by_category():
+    """PIX-4720: list search filters by category."""
+    from foresight.server import SearchOptions, manage_memories, search_memories
+
+    marker = hashlib.md5(b"cat").hexdigest()[:8]
+    manage_memories(action="store", content=f"alpha {marker}", category="preference", user_id="_test_user_")
+    manage_memories(action="store", content=f"beta {marker}", category="fact", user_id="_test_user_")
+
+    res = search_memories(
+        SearchOptions(query_type="list", category="preference"), user_id="_test_user_"
+    )
+    assert f"alpha {marker}"[:40] in res or "alpha" in res
+    assert "beta" not in res
+
+
+def test_search_memories_filters_by_tags():
+    """PIX-4720: list search filters to memories carrying a tag."""
+    from foresight.server import SearchOptions, manage_memories, search_memories
+
+    marker = hashlib.md5(b"tagfilter").hexdigest()[:8]
+    manage_memories(action="store", content=f"work item {marker}", tags=["work"], user_id="_test_user_")
+    manage_memories(action="store", content=f"personal item {marker}", tags=["home"], user_id="_test_user_")
+
+    res = search_memories(SearchOptions(query_type="list", tags=["work"]), user_id="_test_user_")
+    assert "work item" in res
+    assert "personal item" not in res
+
+
+def test_search_memories_excludes_expired():
+    """PIX-4721: expired memories are excluded from retrieval."""
+    from foresight.server import SearchOptions, manage_memories, search_memories
+
+    marker = hashlib.md5(b"expired_filter").hexdigest()[:8]
+    manage_memories(
+        action="store", content=f"gone {marker}", expires_at="2020-01-01T00:00:00+00:00", user_id="_test_user_"
+    )
+    manage_memories(action="store", content=f"alive {marker}", user_id="_test_user_")
+
+    res = search_memories(SearchOptions(query_type="list"), user_id="_test_user_")
+    assert "gone" not in res
+    assert "alive" in res
+
+
+def test_process_session_transcript_infer_false_stores_verbatim():
+    """PIX-4722: infer=False stores the transcript verbatim as one memory."""
+    from foresight.server import get_db_connection, process_session_transcript
+
+    marker = hashlib.md5(b"verbatim").hexdigest()[:8]
+    messages = [
+        {"role": "user", "content": f"hello {marker}"},
+        {"role": "assistant", "content": "hi there"},
+    ]
+    # Isolate the verbatim storage path from LLM-dependent context-block/entity
+    # bridging (the capture pipeline itself is deterministic).
+    with (
+        patch("foresight.server.get_context_block_agent", return_value=MagicMock()),
+        patch("foresight.server._run_async"),
+        patch("foresight.server._bridge_context_blocks_to_memories"),
+        patch("foresight.server._bridge_transcript_entities"),
+        patch("foresight.server._bridge_capture_memories_to_blocks", return_value=[]),
+    ):
+        res = process_session_transcript(
+            session_id=f"sess-{marker}",
+            messages=messages,
+            user_id="_test_user_",
+            project_path="/tmp",
+            infer=False,
+            instructions="focus on greetings",
+        )
+    assert "Processed transcript" in res
+
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT content, tags, metrics FROM memories WHERE user_id = ? AND tags LIKE ? ORDER BY created_at DESC LIMIT 1",
+        ("_test_user_", "%verbatim%"),
+    ).fetchone()
+    assert row is not None, "expected a verbatim memory to be stored"
+    assert marker in row["content"]
+    assert "user:" in row["content"]
+    metrics = json.loads(row["metrics"]) if row["metrics"] else {}
+    assert metrics.get("capture_instructions") == "focus on greetings"
