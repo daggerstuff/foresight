@@ -503,6 +503,28 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_hnsw_384 ON memory_embeddings"
         " USING hnsw ((embedding::vector(384)) vector_cosine_ops) WHERE dimension = 384",
     ],
+    18: [
+        # PIX-4721 per-memory expiration: nullable ISO-8601 timestamp; a
+        # memory with expires_at in the past is excluded from retrieval and
+        # deleted by memory_gc. PIX-4723 memory taxonomy: episodic / semantic
+        # / procedural (mem0's taxonomy). Default 'semantic' preserves legacy
+        # behavior for rows written before this column existed.
+        # Mirror of server.py _SCHEMA_MIGRATIONS v18 (which shipped first via
+        # the MCP init_db path); mirrored here so the backend-agnostic runner
+        # and the version ledger stay contiguous.
+        "ALTER TABLE memories ADD COLUMN expires_at TEXT",
+        "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'semantic'",
+    ],
+    19: [
+        # Postgres btree caps index rows at ~2704 bytes (BTMaxItemSize), so
+        # the v1 index on raw memories.content made every INSERT with content
+        # over that limit fail with "index row size N exceeds btree maximum"
+        # — no memory longer than ~2.7 KB could ever be stored. No query
+        # filters on raw content (dedupe uses the content_hash index from
+        # v10), so the index is dropped rather than replaced. Idempotent and
+        # valid on both backends.
+        "DROP INDEX IF EXISTS idx_memories_content",
+    ],
 }
 
 
