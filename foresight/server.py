@@ -1409,6 +1409,16 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE memories ADD COLUMN expires_at TEXT",
         "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'semantic'",
     ],
+    19: [
+        # Postgres btree caps index rows at ~2704 bytes (BTMaxItemSize), so
+        # the v1 index on raw memories.content made every INSERT with content
+        # over that limit fail with "index row size N exceeds btree maximum"
+        # — no memory longer than ~2.7 KB could ever be stored. No query
+        # filters on raw content (dedupe uses the content_hash index from
+        # v10), so the index is dropped rather than replaced. Mirror of
+        # schema_ddl.MIGRATIONS v19 — keep both copies in sync.
+        "DROP INDEX IF EXISTS idx_memories_content",
+    ],
 }
 
 

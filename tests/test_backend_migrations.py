@@ -1,7 +1,7 @@
 """Tests for the backend-agnostic migration runner (PIX-3992).
 
 Verifies that ``foresight.backend.backend_migrations.run_migrations``
-correctly bootstraps a fresh Schema (versions 1..11) against the SQLite
+correctly bootstraps a fresh Schema (versions 1..19) against the SQLite
 backend. A clean postgreSQL happy path is exercised only when
 ``psycopg`` is installed and ``FORESIGHT_DB_URL_TEST`` points at a
 reachable DSN; otherwise that case is skipped.
@@ -118,6 +118,25 @@ class TestSqliteMigrationRunner:
                 rows = backend.fetch("SELECT content FROM memories WHERE id = ?", ("mem-1",))
                 assert len(rows) == 1
                 assert rows[0]["content"] == "hello world"
+            finally:
+                backend.close()
+
+    def test_v19_drops_raw_content_index(self):
+        """The v1 btree index on raw memories.content capped Postgres writes
+        at ~2704 bytes ("index row size exceeds btree maximum"), so no memory
+        longer than ~2.7 KB could ever be stored. v19 drops it (dedupe uses
+        the content_hash index from v10); no migration may recreate it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "foresight.sqlite")
+            backend = SqliteBackend(db_path=db)
+            backend.connect()
+            try:
+                run_migrations(backend)
+                leftover = backend.fetch(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    ("idx_memories_content",),
+                )
+                assert leftover == [], "idx_memories_content must not survive v19"
             finally:
                 backend.close()
 
@@ -285,6 +304,10 @@ class TestPostgresMigrationRunner:
             assert applied == list(range(1, max_version + 1))
             assert current_version(backend) == max_version
             assert backend.table_exists("memories") is True
+            # v19 must leave no btree on raw content (the ~2704-byte index
+            # row cap made every memory over that size un-storable).
+            idx = backend.fetch("SELECT indexname FROM pg_indexes WHERE indexname = 'idx_memories_content'")
+            assert idx == [], "v19 must drop the raw-content btree index"
         finally:
             backend.close()
 
