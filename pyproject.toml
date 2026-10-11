@@ -35,7 +35,7 @@ classifiers = [
 ]
 
 dependencies = [
-  "fastmcp>=4.0.10",
+  "fastmcp>=4.0.11",
   "psycopg[binary,pool]>=3.3.6",
   "redis>=8.1.0,<9.0",
   "psycopg-pool>=3.3.3",
@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cli = ["typer>=0.27.2", "rich>=15.0.0"]
+cli = ["typer>=0.27.3", "rich>=15.0.0"]
 tui = ["textual>=8.2.8"]
 redis = ["redis>=8.1.0"]
 # Local sentence embeddings (PIX-4701). Opt-in because fastembed pulls in
@@ -52,7 +52,7 @@ redis = ["redis>=8.1.0"]
 # a hard dependency would break installation there. With
 # FORESIGHT_EMBEDDING_PROVIDER=auto the server uses this when present, and warns
 # loudly before falling back to the dependency-free local-hash embedder.
-embeddings = ["fastembed>=0.8.1"]
+embeddings = ["fastembed>=0.9.0"]
 # Document ingestion (PIX-4704). Opt-in and fully local: pypdf extracts text
 # from PDFs, pytesseract+Pillow OCR raster images (also needs the `tesseract`
 # binary on PATH). Kept optional so a bare install stays dependency-light.
@@ -64,7 +64,7 @@ dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
   "pytest-cov>=7.1.0",
-  "typer>=0.27.2",
+  "typer>=0.27.3",
   "rich>=15.0.0",
   "textual>=8.2.8",
   "hatchling>=1.32.4",
@@ -93,10 +93,10 @@ dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
   "pytest-cov>=7.1.0",
-  "typer>=0.27.2",
+  "typer>=0.27.3",
   "rich>=15.0.0",
   "textual>=8.2.8",
-  "ruff>=0.16.9",
+  "ruff>=0.16.10",
   "bandit>=1.9.4",
   "twine>=7.0.0",
 ]
