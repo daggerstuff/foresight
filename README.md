@@ -145,6 +145,54 @@ uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
 foresight prove
 ```
 
+## 🚀 Deployment & Operational Runbooks
+
+Foresight supports containerized Docker execution as well as systemd daemon orchestration:
+- **Docker Compose**: Launch PostgreSQL with pgvector, Redis, and Foresight MCP server via `docker compose up -d`.
+- **Systemd Service**: A reference service definition is provided in `foresight.service` for standalone production host deployment.
+- **Connection Pool Tuning**: Configure `MAX_CONNECTIONS` and `POOL_RECYCLE_SECONDS` to prevent connection exhaustion.
+- **Circuit Breaker Policies**: Upstream LLM extraction requests fail over automatically when transient provider rate limits occur.
+
+## 📐 Architecture & Subsystem Layout
+
+```text
+foresight/
+├── server.py              # FastMCP protocol implementation and tool dispatch
+├── hybrid_retriever.py    # Reciprocal Rank Fusion (RRF) combining BM25 and vector embeddings
+├── graph_store.py         # Knowledge graph entity and relationship store
+├── reflection_engine.py   # Background memory consolidation and decay modeling
+└── observability.py       # OpenTelemetry, Prometheus, and structured logging adapters
+```
+
+## 📊 Telemetry Protocol & Token Economics
+
+Foresight tracks context economics dynamically:
+- **Baseline Prompt Tokens**: Estimated context tokens without Foresight synthesis.
+- **Injected Tokens**: Compacted token payload returned by `inject_context`.
+- **Saved Token Delta**: Cumulative tokens saved per session, reducing agent inference costs.
+- **Latency Percentiles**: Rolling p50/p90/p99 query latencies captured in telemetry state.
+
+## 🔌 Client SDKs & Integration Patterns
+
+Foresight provides native integration patterns for agentic execution:
+- **Python Async Client**: Direct async RPC access via `foresight.client.ForesightClient`.
+- **FastMCP Protocol**: Standardized JSON-RPC tool interface for Claude Code, Cursor, and OpenCode.
+- **REST Gateway**: HTTP REST endpoints on `/api/v1/memories` and `/api/v1/context`.
+- **Streaming WebSockets**: Live memory synchronization and push notifications.
+
+## ⚡ Database Indexing & Performance
+
+Foresight leverages specialized PostgreSQL indexing structures:
+- **HNSW Vector Indices**: Approximate nearest neighbor vector search with cosine distance.
+- **pg_trgm Generalized Inverted Index (GIN)**: Sub-millisecond substring and fuzzy phrase lookup.
+- **B-tree Partitioning**: Tenant and temporal range indexing ensuring predictable sub-10ms query times.
+
+## 🩺 Health & Readiness Monitoring
+
+- **CLI Status Check**: Run `foresight status` to view active pool connections and cache stats.
+- **Database Connectivity**: Verify PostgreSQL SSL connection parameters.
+- **Redis Health**: Ping Redis cache instance with `redis-cli ping`.
+
 New here? Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup and ground
 rules, and [ARCHITECTURE.md](ARCHITECTURE.md) for the map of the codebase.
 
