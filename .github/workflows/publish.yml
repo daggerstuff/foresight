@@ -31,6 +31,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+jobs:
   quality:
     runs-on: ubuntu-latest
     permissions:
@@ -156,7 +157,7 @@ concurrency:
         uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.24.0
 
@@ -182,7 +183,6 @@ concurrency:
       - name: Build SDK
         run: pnpm --dir packages/foresight-core build
 
-jobs:
   build-and-publish:
     name: Build and publish to PyPI
     runs-on: ubuntu-latest

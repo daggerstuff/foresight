@@ -45,6 +45,18 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.12', '3.14']
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -63,15 +75,17 @@ jobs:
         run: uv sync --frozen
 
       # Tests run against PostgreSQL (the production backend — SQLite is not
-      # supported at runtime). FORESIGHT_DB_URL must stay mapped here or
-      # conftest.py skips the whole session and pytest exits 1.
-      #
+      # supported at runtime). A job-local Postgres container is used instead
+      # of the shared remote server: running the suite over the network
+      # against a multi-tenant instance made every TRUNCATE (two per test,
+      # ACCESS EXCLUSIVE) take seconds of network round-trips, stretching the
+      # suite from ~2 minutes to ~35 and producing deadlocks, AdminShutdown
+      # (the other matrix leg's terminate), and credential-expiry failures.
       # Each matrix leg gets a FRESH database (dropped + recreated per run):
-      # the suite assumes isolation between runs and between legs — a shared
-      # persistent DB breaks dedup/hard-cap/narrative-cache expectations.
+      # the suite assumes isolation between runs and between legs.
       - name: Ensure test database exists
         env:
-          FORESIGHT_DB_URL: ${{ secrets.FORESIGHT_DB_URL }}
+          FORESIGHT_DB_URL: postgresql://postgres@localhost:5432/postgres?sslmode=disable
         run: |
           PYTAG=$(echo "${{ matrix.python-version }}" | tr -d '.')
           export FORESIGHT_TEST_DB_NAME="foresight_test_${PYTAG}"
@@ -101,7 +115,7 @@ jobs:
 
       - name: Run unit tests
         env:
-          FORESIGHT_DB_URL: ${{ secrets.FORESIGHT_DB_URL }}
+          FORESIGHT_DB_URL: postgresql://postgres@localhost:5432/postgres?sslmode=disable
         run: |
           uv run pytest tests/ --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 

@@ -147,6 +147,46 @@ class MemoryGC:
             conn.commit()
 
             # ------------------------------------------------------------------
+            # Phase 1.5: Delete explicitly-expired memories (PIX-4721 expires_at)
+            # ------------------------------------------------------------------
+            expiry_cutoff = start_time.isoformat()
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
+                FROM memories
+                WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
+                """,
+                (tenant_id, expiry_cutoff),
+            )
+            row = cursor.fetchone()
+            exp_count = row[0] if row else 0
+            exp_bytes = row[1] if row else 0
+            stats.expired_memories_found += exp_count
+            stats.bytes_freed += exp_bytes
+
+            if exp_count:
+                deleted = 0
+                while deleted < exp_count:
+                    cursor = conn.execute(
+                        """
+                        DELETE FROM memories WHERE id IN (
+                            SELECT id FROM memories
+                            WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
+                            LIMIT ?
+                        )
+                        """,
+                        (tenant_id, expiry_cutoff, cfg.max_batch_size),
+                    )
+                    batch = cursor.rowcount
+                    deleted += batch
+                    if batch == 0:
+                        break
+
+                stats.expired_memories_deleted += deleted
+
+            conn.commit()
+
+            # ------------------------------------------------------------------
             # Phase 2: Prune old memory_decay_events
             # ------------------------------------------------------------------
             decay_cutoff = (start_time - timedelta(days=cfg.decay_events_retention_days)).isoformat()

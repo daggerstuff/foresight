@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -69,6 +69,13 @@ class StoreMemoryBody(BaseModel):
         description="Typed relationship to another memory (updates, extends, derives, contradicts, supports, related)",
     )
     related_memory_id: str | None = Field(default=None, description="Target memory ID for relation_type")
+    expires_at: str | float | int | None = Field(
+        default=None, description="Optional expiration (ISO-8601 string or epoch seconds)"
+    )
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None, description="Memory taxonomy type: episodic, semantic, or procedural"
+    )
+    auto_tag: bool = Field(default=False, description="When true, derive topical tags from content deterministically")
 
 
 class UpdateMemoryBody(BaseModel):
@@ -106,6 +113,12 @@ class SearchBody(BaseModel):
     cascade_limit: int | None = Field(default=None, description="Cascade limit")
     min_score: float | None = Field(default=None, description="Minimum semantic similarity score")
     provider: str | None = Field(default=None, description="Embedder provider name for semantic search")
+    category: str | list[str] | None = Field(default=None, description="Filter by category (single value or list)")
+    scope: str | None = Field(default=None, description="Filter by scope")
+    retention: str | None = Field(default=None, description="Filter by retention policy")
+    bank_id: str | None = Field(default=None, description="Filter by bank ID")
+    tags: list[str] | None = Field(default=None, description="Filter to memories carrying any of these tags")
+    memory_type: str | None = Field(default=None, description="Filter by memory_type (episodic, semantic, procedural)")
 
 
 class InjectBody(BaseModel):
@@ -133,6 +146,18 @@ class CreateDocumentBody(BaseModel):
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Optional JSON-serializable metadata")
     char_budget: int | None = Field(default=None, ge=100, le=8000, description="Soft max chars per chunk")
+
+
+class IngestDocumentFileBody(BaseModel):
+    """Body for ``POST /documents/ingest`` — file ingestion (PDF/OCR/text)."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    path: str = Field(..., description="Server-local filesystem path to the file")
+    title: str | None = Field(default=None, description="Human-readable title; defaults to file stem")
+    source: str | None = Field(default=None, description="Source type; defaults to pdf/document")
+    char_budget: int | None = Field(default=None, ge=100, le=8000, description="Soft max chars per chunk")
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional JSON-serializable metadata")
 
 
 class BatchStoreBody(BaseModel):
@@ -311,6 +336,9 @@ async def _handle_store_memory(request: Request) -> Response:
             metrics=body.metrics,
             relation_type=body.relation_type,
             related_memory_id=body.related_memory_id,
+            expires_at=body.expires_at,
+            memory_type=body.memory_type,
+            auto_tag=body.auto_tag,
         )
     finally:
         reset_tenant_context()
@@ -337,6 +365,9 @@ def _store_one(user_id: str | None, tenant_id: str, body: StoreMemoryBody) -> st
             metrics=body.metrics,
             relation_type=body.relation_type,
             related_memory_id=body.related_memory_id,
+            expires_at=body.expires_at,
+            memory_type=body.memory_type,
+            auto_tag=body.auto_tag,
         )
     finally:
         reset_tenant_context()
@@ -610,6 +641,44 @@ async def _handle_create_document(request: Request) -> Response:
     return _tool_json(result, success_status=201)
 
 
+async def _handle_ingest_document_file(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    body, err = await _validated_body(request, IngestDocumentFileBody)
+    if err:
+        return err
+
+    from .document_ingestion import DocumentIngestionError, ingest_document_file
+
+    ingest_kwargs: dict[str, Any] = {
+        "path": body.path,
+        "title": body.title,
+        "user_id": user_id,
+        "source": body.source,
+        "metadata": body.metadata,
+    }
+    if body.char_budget is not None:
+        ingest_kwargs["char_budget"] = body.char_budget
+
+    set_current_user_id(user_id or DEFAULT_USER_ID)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(ingest_document_file, **ingest_kwargs)
+    except DocumentIngestionError as exc:
+        return _error(422, str(exc))
+    finally:
+        reset_tenant_context()
+    return _tool_json(result, success_status=201)
+
+
 async def _handle_get_document(request: Request) -> Response:
     user, auth_err = _authenticate(request)
     if auth_err:
@@ -685,6 +754,7 @@ def _openapi_spec() -> dict[str, Any]:
         SearchBody,
         InjectBody,
         CreateDocumentBody,
+        IngestDocumentFileBody,
         BatchStoreBody,
     ):
         schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
@@ -817,6 +887,14 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": {"201": _json_response("Created"), **_ok()},
                 }
             },
+            "/documents/ingest": {
+                "post": {
+                    "summary": "Ingest a PDF, image (OCR), or text file as a document",
+                    "operationId": "ingestDocumentFile",
+                    "requestBody": _body("IngestDocumentFileBody"),
+                    "responses": {"201": _json_response("Created"), **_ok()},
+                }
+            },
             "/documents/{document_id}": {
                 "get": {
                     "summary": "Fetch a stored document",
@@ -864,6 +942,7 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/search", ["POST"], "rest_search", _handle_search),
     ("/inject", ["POST"], "rest_inject", _handle_inject),
     ("/documents", ["POST"], "rest_create_document", _handle_create_document),
+    ("/documents/ingest", ["POST"], "rest_ingest_document_file", _handle_ingest_document_file),
     ("/documents/{document_id}", ["GET"], "rest_get_document", _handle_get_document),
     ("/profile", ["GET"], "rest_profile", _handle_profile),
 )

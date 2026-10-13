@@ -11,6 +11,8 @@ Current default weights (subject to tuning):
 - RRF k: 60 (standard smoothing constant)
 """
 
+from __future__ import annotations
+
 import hashlib
 import itertools
 import json
@@ -70,7 +72,7 @@ class RRFConfig:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RRFConfig":
+    def from_dict(cls, data: dict[str, Any]) -> RRFConfig:
         """Create from dictionary, coercing all values to finite positive floats."""
         import math as _math
 
@@ -104,7 +106,7 @@ class RRFConfig:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
-    def from_json_file(cls, path: str) -> "RRFConfig":
+    def from_json_file(cls, path: str) -> RRFConfig:
         """Load configuration from JSON file."""
         with open(path) as f:
             data = json.load(f)

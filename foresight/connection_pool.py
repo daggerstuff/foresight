@@ -176,10 +176,15 @@ class _PsycopgPoolAdapter:
 
     def release(self, conn: Any) -> None:
         try:
-            if hasattr(conn, "_conn"):
-                self._pool.putconn(conn._conn)
-            else:
-                self._pool.putconn(conn)
+            raw = conn._conn if hasattr(conn, "_conn") else conn
+            # Commit before returning to the pool: psycopg connections default
+            # to non-autocommit, so even SELECT-only use leaves the connection
+            # INTRANS. putconn() on a dirty connection logs "rolling back
+            # returned connection" and discards uncommitted writes from code
+            # paths that rely on implicit commits.
+            with suppress(Exception):
+                raw.commit()
+            self._pool.putconn(raw)
         except Exception:  # pragma: no cover - defensive
             logger.debug("release() failed to close PostgresPooledConnection", exc_info=True)
 

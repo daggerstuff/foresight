@@ -47,7 +47,8 @@ def _make_test_db() -> str:
             emotional_context TEXT,
             metrics TEXT,
             tags TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            expires_at TEXT
         )"""
     )
     conn.execute(
@@ -359,6 +360,94 @@ class TestPhase1ExpiredRetention:
 
         assert stats.expired_memories_found == 20
         assert stats.expired_memories_deleted == 20
+
+
+# ---------------------------------------------------------------------------
+# MemoryGC - Phase 1.5: Explicit expires_at cleanup (PIX-4721)
+# ---------------------------------------------------------------------------
+
+
+def _insert_memory_with_expiry(
+    conn,
+    mid: str,
+    content: str,
+    expires_at: str | None,
+    *,
+    tenant_id: str = "t1",
+    user_id: str = "u1",
+) -> None:
+    conn.execute(
+        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, "
+        "strength_trend, is_ghost, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            mid,
+            user_id,
+            tenant_id,
+            content,
+            "session",
+            "short_term",
+            0.5,
+            "stable",
+            0,
+            datetime.now(timezone.utc).isoformat(),
+            expires_at,
+        ),
+    )
+    conn.commit()
+
+
+class TestPhase15ExplicitExpiry:
+    def test_deletes_memories_past_expires_at(self) -> None:
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        _insert_memory_with_expiry(conn, "m1", "already expired", past)
+        _insert_memory_with_expiry(conn, "m2", "not yet expired", future)
+        _insert_memory_with_expiry(conn, "m3", "no expiry", None)
+        conn.close()
+
+        gc = MemoryGC(db_path)
+        stats = gc.run(tenant_id="t1")
+
+        assert stats.expired_memories_deleted == 1
+
+        conn2 = sqlite3.connect(db_path)
+        remaining = [r[0] for r in conn2.execute("SELECT id FROM memories ORDER BY id").fetchall()]
+        assert remaining == ["m2", "m3"]
+        conn2.close()
+
+    def test_expires_at_respects_tenant_isolation(self) -> None:
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        _insert_memory_with_expiry(conn, "m1", "t1 expired", past, tenant_id="t1")
+        _insert_memory_with_expiry(conn, "m2", "t2 expired", past, tenant_id="t2")
+        conn.close()
+
+        gc = MemoryGC(db_path)
+        stats = gc.run(tenant_id="t1")
+
+        assert stats.expired_memories_deleted == 1
+
+        conn2 = sqlite3.connect(db_path)
+        remaining = [r[0] for r in conn2.execute("SELECT id FROM memories ORDER BY id").fetchall()]
+        assert remaining == ["m2"]
+        conn2.close()
+
+    def test_no_explicit_expiry_deletes_nothing(self) -> None:
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        _insert_memory_with_expiry(conn, "m1", "future", future)
+        _insert_memory_with_expiry(conn, "m2", "none", None)
+        conn.close()
+
+        gc = MemoryGC(db_path)
+        stats = gc.run(tenant_id="t1")
+
+        assert stats.expired_memories_deleted == 0
 
 
 # ---------------------------------------------------------------------------
