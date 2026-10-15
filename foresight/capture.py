@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import BANK_ID
+from .config import BANK_ID, RAW_RETENTION
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
 from .tenant_context import get_current_account_id
@@ -44,6 +44,8 @@ class CapturedMemory:
     retention: str  # long_term | short_term
     tags: list[str] = field(default_factory=list)
     is_immutable: bool = False
+    # Id of the raw_events row this candidate was derived from (MemLake provenance)
+    raw_event_id: str | None = None
 
 
 @dataclass
@@ -79,6 +81,28 @@ class CaptureStats:
             "near_duplicates": self.near_duplicates,
             "skipped_candidates": self.skipped_candidates,
             "stored_items": self.stored_items,
+        }
+
+
+@dataclass
+class ReprocessStats:
+    """Summary of a raw-event reprocess run."""
+
+    sessions_reprocessed: int = 0
+    raw_events_replayed: int = 0
+    memories_stored: int = 0
+    duplicates: int = 0
+    near_duplicates: int = 0
+    skipped_sessions: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sessions_reprocessed": self.sessions_reprocessed,
+            "raw_events_replayed": self.raw_events_replayed,
+            "memories_stored": self.memories_stored,
+            "duplicates": self.duplicates,
+            "near_duplicates": self.near_duplicates,
+            "skipped_sessions": self.skipped_sessions,
         }
 
 
@@ -241,23 +265,34 @@ class MemoryExtractor:
     """Extract categorized memory candidates from transcript messages."""
 
     @classmethod
-    def extract(cls, messages: list[dict], instructions: str | None = None) -> list[CapturedMemory]:
+    def extract(
+        cls,
+        messages: list[dict],
+        instructions: str | None = None,
+        raw_event_ids: list[str | None] | None = None,
+    ) -> list[CapturedMemory]:
         """Scan messages and return potential memory candidates.
 
         ``instructions`` is accepted for API parity with the infer/instructions
         contract (PIX-4722). The current extractor is deterministic and
         regex-based, so instructions are advisory (reserved for a future
         LLM-guided extractor); they do not change extraction today.
+
+        ``raw_event_ids`` is an optional list aligned with ``messages``; when a
+        raw-events layer is being persisted, each candidate carries the id of
+        the source observation so ``memory_provenance`` links can be written.
         """
         _ = instructions
 
         candidates: list[CapturedMemory] = []
         seen: set[str] = set()  # dedup within a single extraction pass
 
-        for msg in messages:
+        for idx, msg in enumerate(messages):
             content = (msg.get("content", "") or "").strip()
             if not content:
                 continue
+
+            raw_event_id = raw_event_ids[idx] if raw_event_ids and idx < len(raw_event_ids) else None
 
             for category, (patterns, config) in _CATEGORY_PATTERNS.items():
                 for pattern in patterns:
@@ -281,6 +316,7 @@ class MemoryExtractor:
                                 retention=config["retention"],
                                 tags=list(config["tags"]),
                                 is_immutable=config.get("is_immutable", False),
+                                raw_event_id=raw_event_id,
                             )
                         )
                         break  # first pattern match per category per message
@@ -416,7 +452,98 @@ class CapturePipeline:
         self.dedupe = DedupeEngine()
         self.db_path = db_path
 
-    def run(
+    @staticmethod
+    def _generate_raw_event_id(
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None,
+        index: int,
+        role: str,
+        content: str,
+    ) -> str:
+        """Deterministic 16-char id for an immutable raw observation row."""
+        key = f"{tenant_id}|{user_id}|{session_id or ''}|{index}|{role}|{content}"
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    def _persist_raw_events(
+        self,
+        session_id: str | None,
+        messages: list[dict],
+        user_id: str,
+        tenant_id: str,
+        source: str,
+        now: str,
+    ) -> list[str | None]:
+        """Persist the raw transcript as append-only rows when retention is enabled.
+
+        Returns a list aligned with ``messages`` containing either the raw event id
+        or ``None`` for messages that had no content.  When retention is disabled,
+        returns an empty list.
+        """
+        if not RAW_RETENTION:
+            return []
+
+        raw_event_ids: list[str | None] = []
+        rows: list[tuple[str, str, str, str | None, str, str, int, str, str, str]] = []
+        for idx, msg in enumerate(messages):
+            role = msg.get("role", "unknown") or "unknown"
+            content = (msg.get("content", "") or "").strip()
+            if not content:
+                raw_event_ids.append(None)
+                continue
+            rid = self._generate_raw_event_id(tenant_id, user_id, session_id, idx, role, content)
+            raw_event_ids.append(rid)
+            rows.append(
+                (rid, tenant_id, user_id, session_id, role, content, idx, now, source, json.dumps({"source": source}))
+            )
+
+        if not rows:
+            return raw_event_ids
+
+        # Single multi-row INSERT reduces round trips and preserves the append-only
+        # contract via ON CONFLICT.  Placeholders are SQLite-style; the Postgres
+        # adapter translates them to %s automatically.
+        cols = "id, tenant_id, user_id, session_id, role, content, position, captured_at, source, metadata, tombstone"
+        placeholders = ", ".join(
+            f"({','.join('?' for _ in range(len(rows[0]) + 1))})" for _ in rows
+        )
+        params: list[Any] = []
+        for row in rows:
+            params.extend(row)
+            params.append(0)  # tombstone = 0
+        sql = f"INSERT INTO raw_events ({cols}) VALUES {placeholders} ON CONFLICT (id) DO NOTHING"
+
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            conn.execute(sql, tuple(params))
+            conn.commit()
+        finally:
+            pool.release(conn)
+            conn.close()
+
+        return raw_event_ids
+
+    def _link_provenance(
+        self,
+        conn: Any,
+        memory_id: str,
+        raw_event_id: str | None,
+        tenant_id: str,
+        now: str,
+    ) -> None:
+        """Link a stored memory to the raw event it was derived from."""
+        if not raw_event_id:
+            return
+        conn.execute(
+            """INSERT INTO memory_provenance (memory_id, raw_event_id, tenant_id, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (memory_id, raw_event_id) DO NOTHING""",
+            (memory_id, raw_event_id, tenant_id, now),
+        )
+        conn.commit()
+
+    def run(  # noqa: PLR0912,PLR0915
         self,
         session_id: str,
         messages: list[dict],
@@ -424,6 +551,7 @@ class CapturePipeline:
         tenant_id: str | None = None,
         infer: bool = True,
         instructions: str | None = None,
+        raw_event_ids: list[str | None] | None = None,
     ) -> CaptureStats:
         """Run the full capture pipeline.
 
@@ -432,15 +560,30 @@ class CapturePipeline:
         — no rewriting, no dedupe. ``instructions`` is carried into that
         memory's metrics for traceability.
 
+        If ``raw_event_ids`` is provided (e.g. during reprocess), raw events are
+        assumed already persisted and are not written again; otherwise the
+        append-only raw layer is populated from ``messages`` when retention is on.
+
         Returns CaptureStats summarizing what happened.
         """
         stats = CaptureStats()
         tid = tenant_id or get_current_account_id()
         now = datetime.now(timezone.utc).isoformat()
 
+        # Phase 0: Persist raw observations before any derivation so the transcript
+        # can be reprocessed later even if classification/extraction skips it.
+        # During reprocess the IDs are supplied and must not be rewritten.
+        if raw_event_ids is None:
+            raw_event_ids = self._persist_raw_events(
+                session_id, messages, user_id, tid, "capture:transcript", now
+            )
+        raw_event_ids = raw_event_ids or []
+
         # PIX-4722: verbatim (no-inference) fast path.
         if infer is False:
-            return self._run_verbatim(session_id, messages, user_id, tid, now, instructions)
+            return self._run_verbatim(
+                session_id, messages, user_id, tid, now, instructions, raw_event_ids
+            )
 
         # Phase 1: Classify
         skip, reason = self.classifier.should_skip(messages)
@@ -451,7 +594,9 @@ class CapturePipeline:
             return stats
 
         # Phase 2: Extract
-        candidates = self.extractor.extract(messages, instructions=instructions)
+        candidates = self.extractor.extract(
+            messages, instructions=instructions, raw_event_ids=raw_event_ids or []
+        )
         stats.candidates_found = len(candidates)
 
         if not candidates:
@@ -518,6 +663,11 @@ class CapturePipeline:
                     )
                     conn.commit()
 
+                    # MemLake provenance: link stored memory back to the raw observation(s).
+                    # For a regex-extracted candidate this is a single message; verbatim
+                    # transcripts may link to many raw events.
+                    self._link_provenance(conn, mid, candidate.raw_event_id, tid, now)
+
                     # Link near duplicates via direct INSERT (same connection avoids FK issues)
                     if dedupe.status == "NEAR_DUPLICATE" and dedupe.existing_id and dedupe.existing_id != mid:
                         rel_id = hashlib.sha256(f"{mid}-derives-{dedupe.existing_id}".encode()).hexdigest()[:16]
@@ -555,6 +705,100 @@ class CapturePipeline:
         )
         return stats
 
+    def reprocess(
+        self,
+        user_id: str,
+        tenant_id: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        infer: bool = True,
+        instructions: str | None = None,
+    ) -> ReprocessStats:
+        """Rebuild derived memories from the immutable raw-events layer.
+
+        Replays raw observations for a user, re-running classification and
+        extraction. Dedupe prevents duplicates, so reprocess is idempotent by
+        construction. If ``infer=False`` the verbatim transcript path is used
+        instead.
+        """
+        tid = tenant_id or get_current_account_id()
+        stats = ReprocessStats()
+
+        if not RAW_RETENTION:
+            logger.warning("reprocess skipped: FORESIGHT_RAW_RETENTION is not enabled")
+            return stats
+
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            sql = """SELECT id, session_id, role, content, position, captured_at
+                       FROM raw_events
+                      WHERE tenant_id = ? AND user_id = ? AND tombstone = 0"""
+            params: list[Any] = [tid, user_id]
+            if start_time:
+                sql += " AND captured_at >= ?"
+                params.append(start_time)
+            if end_time:
+                sql += " AND captured_at <= ?"
+                params.append(end_time)
+            sql += " ORDER BY session_id, position, captured_at"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        finally:
+            pool.release(conn)
+            conn.close()
+
+        if not rows:
+            logger.info("reprocess: no raw events for user %s in window", user_id)
+            return stats
+
+        current_session: str | None = None
+        messages: list[dict] = []
+        session_raw_ids: list[str | None] = []
+        sessions_seen: set[str] = set()
+
+        def _flush_session() -> None:
+            nonlocal current_session, messages, session_raw_ids
+            if current_session is None or not messages:
+                return
+            sessions_seen.add(current_session)
+            run_stats = self.run(
+                current_session,
+                messages,
+                user_id,
+                tid,
+                infer=infer,
+                instructions=instructions,
+                raw_event_ids=session_raw_ids,
+            )
+            stats.sessions_reprocessed += 1
+            stats.memories_stored += run_stats.stored
+            stats.duplicates += run_stats.duplicates
+            stats.near_duplicates += run_stats.near_duplicates
+            stats.skipped_sessions += 1 if run_stats.skipped else 0
+            current_session = None
+            messages = []
+            session_raw_ids = []
+
+        for row in rows:
+            sid = row["session_id"]
+            if sid != current_session:
+                _flush_session()
+                current_session = sid
+            messages.append({"role": row["role"], "content": row["content"]})
+            session_raw_ids.append(row["id"])
+            stats.raw_events_replayed += 1
+
+        _flush_session()
+
+        logger.info(
+            "reprocess: %d sessions (%d raw events) → %d stored, %d duplicates",
+            len(sessions_seen),
+            stats.raw_events_replayed,
+            stats.memories_stored,
+            stats.duplicates,
+        )
+        return stats
+
     def _run_verbatim(
         self,
         session_id: str,
@@ -563,10 +807,13 @@ class CapturePipeline:
         tenant_id: str,
         now: str,
         instructions: str | None,
+        raw_event_ids: list[str | None],
     ) -> CaptureStats:
         """Handle the infer=False path, returning a fully-populated CaptureStats."""
         stats = CaptureStats()
-        stored, content = self._store_verbatim(messages, user_id, tenant_id, now, instructions)
+        stored, content, _mid = self._store_verbatim(
+            messages, user_id, tenant_id, now, instructions, raw_event_ids
+        )
         if stored:
             stats.candidates_found = 1
             stats.stored = 1
@@ -584,15 +831,16 @@ class CapturePipeline:
         tenant_id: str,
         now: str,
         instructions: str | None,
-    ) -> tuple[int, str]:
+        raw_event_ids: list[str | None],
+    ) -> tuple[int, str, str | None]:
         """Store the concatenated transcript verbatim as one episodic memory.
 
-        Returns (stored_count, content). stored_count is 0 when the transcript
+        Returns (stored_count, content, memory_id). stored_count is 0 when the transcript
         is empty (nothing persisted).
         """
         transcript = "\n".join(f"{m.get('role', 'unknown')}: {m.get('content', '') or ''}" for m in messages).strip()
         if not transcript:
-            return 0, ""
+            return 0, "", None
         mid = hashlib.sha256(f"{transcript}{now}".encode()).hexdigest()[:16]
         tags = ["verbatim"]
         metrics = {"capture_instructions": instructions} if instructions else {}
@@ -621,10 +869,14 @@ class CapturePipeline:
                 ),
             )
             conn.commit()
+            # MemLake provenance: verbatim memory is derived from every raw event.
+            if RAW_RETENTION:
+                for rid in raw_event_ids:
+                    self._link_provenance(conn, mid, rid, tenant_id, now)
         finally:
             pool.release(conn)
             conn.close()
-        return 1, transcript
+        return 1, transcript, mid
 
     def capture_in_flight(
         self,
@@ -642,12 +894,21 @@ class CapturePipeline:
         else:
             messages = text_or_messages
 
-        candidates = self.extractor.extract(messages)
+        now = datetime.now(timezone.utc).isoformat()
+        # In-flight messages are not a real session transcript, but a stable
+        # synthetic session id lets them participate in the raw layer deterministically.
+        synthetic_session_id = hashlib.sha256(
+            json.dumps(messages, sort_keys=True).encode()
+        ).hexdigest()[:16]
+        raw_event_ids = self._persist_raw_events(
+            synthetic_session_id, messages, user_id, tid, "capture:in_flight", now
+        )
+
+        candidates = self.extractor.extract(messages, raw_event_ids=raw_event_ids)
         if not candidates:
             return []
 
         stored_items: list[tuple[str, str]] = []
-        now = datetime.now(timezone.utc).isoformat()
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         try:
@@ -683,6 +944,7 @@ class CapturePipeline:
                     ),
                 )
                 conn.commit()
+                self._link_provenance(conn, mid, candidate.raw_event_id, tid, now)
 
                 if dedupe.status == "NEAR_DUPLICATE" and dedupe.existing_id and dedupe.existing_id != mid:
                     rel_id = hashlib.sha256(f"{mid}-derives-{dedupe.existing_id}".encode()).hexdigest()[:16]

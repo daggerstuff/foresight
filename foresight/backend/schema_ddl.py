@@ -503,6 +503,91 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_hnsw_384 ON memory_embeddings"
         " USING hnsw ((embedding::vector(384)) vector_cosine_ops) WHERE dimension = 384",
     ],
+    18: [
+        # PIX-4721 per-memory expiration: nullable ISO-8601 timestamp; a
+        # memory with expires_at in the past is excluded from retrieval and
+        # deleted by memory_gc. PIX-4723 memory taxonomy: episodic / semantic
+        # / procedural (mem0's taxonomy). Default 'semantic' preserves legacy
+        # behavior for rows written before this column existed.
+        #
+        # Version note: this content shipped as v18 in server.py's local
+        # migration dict before the registries were unified, so existing
+        # databases already record version 18 with this meaning.
+        "ALTER TABLE memories ADD COLUMN expires_at TEXT",
+        "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'semantic'",
+    ],
+    19: [
+        # Postgres btree caps index rows at ~2704 bytes (BTMaxItemSize), so
+        # the v1 index on raw memories.content made every INSERT with content
+        # over that limit fail with "index row size N exceeds btree maximum"
+        # — no memory longer than ~2.7 KB could ever be stored. No query
+        # filters on raw content (dedupe uses the content_hash index from
+        # v10), so the index is dropped rather than replaced. Idempotent and
+        # valid on both backends.
+        "DROP INDEX IF EXISTS idx_memories_content",
+    ],
+    20: [
+        # Bitemporal validity intervals (MemLake/Hindsight model). valid_from
+        # / valid_until delimit when a memory was true in the world (business
+        # time); created_at stays the system-time record. NULL valid_until
+        # means the memory is still valid. truth_resolution closes the
+        # interval when a supersede fires. Backfill: every existing row was
+        # valid since its creation. The backfill is one atomic UPDATE — the
+        # migration runner applies static statements only, and a one-time
+        # single-statement backfill is acceptable for self-hosted deploys.
+        #
+        # Version note: v19 was already consumed by the idx_memories_content
+        # drop (branch fix/pool-intrans-commit, applied to the shared
+        # production and test databases on 2026-10-10 before it reached
+        # main), so the bitemporal migration lands as v20 — reusing v19
+        # would be silently skipped by databases whose ledger already
+        # records it.
+        "ALTER TABLE memories ADD COLUMN valid_from TEXT",
+        "ALTER TABLE memories ADD COLUMN valid_until TEXT",
+        "UPDATE memories SET valid_from = created_at WHERE valid_from IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_validity ON memories(tenant_id, user_id, valid_from)",
+    ],
+    21: [
+        # MemLake raw layer. raw_events stores immutable source observations
+        # (session messages) so derived memories can be rebuilt by reprocessing.
+        # tombstone=1 indicates a privacy erasure: content is nulled but the row
+        # shape is preserved for auditability. memory_provenance links each
+        # derived memory back to the raw events that contributed to it.
+        """CREATE TABLE IF NOT EXISTS raw_events (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL DEFAULT 'default',
+            session_id TEXT,
+            role TEXT,
+            content TEXT,
+            position INTEGER NOT NULL DEFAULT 0,
+            captured_at TEXT NOT NULL,
+            source TEXT,
+            metadata TEXT DEFAULT '{}',
+            tombstone INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_tenant_user ON raw_events(tenant_id, user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_session ON raw_events(tenant_id, user_id, session_id, position)",
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_captured ON raw_events(tenant_id, user_id, captured_at DESC)",
+        """CREATE TABLE IF NOT EXISTS memory_provenance (
+            memory_id TEXT NOT NULL,
+            raw_event_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            created_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (memory_id, raw_event_id),
+            FOREIGN KEY (raw_event_id) REFERENCES raw_events(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_memory_provenance_raw_event ON memory_provenance(raw_event_id)",
+    ],
+    22: [
+        # Backfill for databases that recorded migration 21 before the
+        # `position` and `created_at` columns were added. SQLite test DBs are
+        # recreated from v21 and skip these statements; production and shared
+        # Postgres databases recorded v21 without these columns.
+        "ALTER TABLE raw_events ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE memory_provenance ADD COLUMN IF NOT EXISTS created_at TEXT NOT NULL DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_session ON raw_events(tenant_id, user_id, session_id, position)",
+    ],
 }
 
 
@@ -510,7 +595,7 @@ MIGRATIONS: dict[int, list[str]] = {
 # them (and record the version) only on postgresql backends; other backends
 # skip the statements but still record the version so bookkeeping stays
 # uniform across deployments sharing one schema ledger.
-POSTGRES_ONLY_MIGRATIONS: frozenset[int] = frozenset({17})
+POSTGRES_ONLY_MIGRATIONS: frozenset[int] = frozenset({17, 22})
 
 # The pgvector ANN migration. Gated behind a runtime capability probe
 # (ensure_pgvector_extension) because Postgres deploys may lack the

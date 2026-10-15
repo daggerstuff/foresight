@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg import errors as psycopg_errors
 
-from .config import DB_PATH, DB_URL
+from .config import DB_PATH, DB_URL, RAW_RETENTION_WINDOW_DAYS
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_memory_gc")
@@ -37,6 +37,7 @@ class GCConfig:
     decay_events_retention_days: int = 30
     maintenance_events_retention_days: int = 60
     max_batch_size: int = 500
+    raw_retention_window_days: int | None = RAW_RETENTION_WINDOW_DAYS
 
     def to_dict(self) -> dict:
         return {
@@ -44,6 +45,7 @@ class GCConfig:
             "decay_events_retention_days": self.decay_events_retention_days,
             "maintenance_events_retention_days": self.maintenance_events_retention_days,
             "max_batch_size": self.max_batch_size,
+            "raw_retention_window_days": self.raw_retention_window_days,
         }
 
 
@@ -57,6 +59,7 @@ class GCStats:
     maintenance_events_pruned: int = 0
     orphan_links_cleaned: int = 0
     orphan_embeddings_cleaned: int = 0
+    raw_events_tombstoned: int = 0
     gc_duration_seconds: float = 0.0
     bytes_freed: int = 0
 
@@ -72,13 +75,15 @@ class MemoryGC:
     1. Delete memories past retention TTL (ephemeral >24h, short_term >7d)
     2. Prune old memory_decay_events log
     3. Prune old maintenance events (>60d)
-    4. Clean orphaned memory_entity_links and memory_embeddings
+    4. Prune old memory_merge_history rows
+    5. Tombstone raw events past retention window (content nulled, row kept)
+    6. Clean orphaned memory_entity_links and memory_embeddings
     """
 
     def __init__(self, db_path: str):
         self.db_path = db_path
 
-    def run(
+    def run(  # noqa: PLR0912
         self,
         tenant_id: str = "default",
         config: GCConfig | None = None,
@@ -234,6 +239,30 @@ class MemoryGC:
                 logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
 
             # ------------------------------------------------------------------
+            # Phase 5: Tombstone raw events past retention window
+            # ------------------------------------------------------------------
+            if cfg.raw_retention_window_days:
+                raw_cutoff = (start_time - timedelta(days=cfg.raw_retention_window_days)).isoformat()
+                try:
+                    cursor = conn.execute(
+                        """
+                        UPDATE raw_events
+                        SET tombstone = 1, content = NULL, metadata = '{}'
+                        WHERE tenant_id = ? AND tombstone = 0 AND captured_at < ?
+                        """,
+                        (tenant_id, raw_cutoff),
+                    )
+                    conn.commit()
+                    stats.raw_events_tombstoned = cursor.rowcount
+                except sqlite3.OperationalError as e:
+                    if "no such table" in str(e):
+                        logging.getLogger(__name__).warning("raw_events table not found, skipping tombstone: %s", e)
+                    else:
+                        raise
+                except psycopg_errors.UndefinedTable as e:
+                    logging.getLogger(__name__).warning("raw_events table not found, skipping tombstone: %s", e)
+
+            # ------------------------------------------------------------------
             # Phase 4: Clean orphaned data (no FK cascade protection)
             # ------------------------------------------------------------------
 
@@ -268,11 +297,69 @@ class MemoryGC:
             f"pruned {stats.decay_events_pruned} decay events, "
             f"{stats.maintenance_events_pruned} maintenance events, "
             f"{stats.orphan_links_cleaned} orphan links, "
-            f"{stats.orphan_embeddings_cleaned} orphan embeddings "
+            f"{stats.orphan_embeddings_cleaned} orphan embeddings, "
+            f"{stats.raw_events_tombstoned} raw events tombstoned "
             f"in {stats.gc_duration_seconds:.2f}s"
         )
 
         return stats
+
+
+def tombstone_raw_events(
+    user_id: str | None = None,
+    session_id: str | None = None,
+    older_than: str | None = None,
+    tenant_id: str = "default",
+    db_path: str | None = None,
+) -> int:
+    """Privacy-safe erasure of raw events: set tombstone=1 and clear content.
+
+    The rows are retained for auditability but their sensitive content is
+    nulled.  Filters combine with AND; at least user_id or session_id or
+    older_than must be supplied to avoid accidental broad erasure.
+
+    Args:
+        user_id: Optional user scope.
+        session_id: Optional session scope.
+        older_than: Optional ISO-8601 cutoff; rows with captured_at < this are
+            tombstoned (within the other filters).
+        tenant_id: Tenant scope.
+        db_path: Optional DB override.
+
+    Returns:
+        Number of raw events tombstoned.
+    """
+    if not user_id and not session_id and not older_than:
+        raise ValueError("At least one of user_id, session_id, or older_than is required")
+
+    pool = get_pool(db_path or DB_PATH or DB_URL)
+    conn = pool.acquire()
+
+    clauses = ["tenant_id = ?", "tombstone = 0"]
+    params: list[str | int] = [tenant_id]
+
+    if user_id:
+        clauses.append("user_id = ?")
+        params.append(user_id)
+    if session_id:
+        clauses.append("session_id = ?")
+        params.append(session_id)
+    if older_than:
+        clauses.append("captured_at < ?")
+        params.append(older_than)
+
+    sql = f"""
+        UPDATE raw_events
+        SET tombstone = 1, content = NULL, metadata = '{{}}'
+        WHERE {' AND '.join(clauses)}
+    """
+
+    try:
+        cursor = conn.execute(sql, tuple(params))
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        pool.release(conn)
 
 
 # ---------------------------------------------------------------------------

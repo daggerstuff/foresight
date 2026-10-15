@@ -146,6 +146,20 @@ def _reset_in_memory_singletons() -> None:
     except Exception:
         pass
 
+    try:
+        from foresight.memory_relationships import reset_memory_relationship_store
+
+        reset_memory_relationship_store()
+    except Exception:
+        pass
+
+    try:
+        from foresight.subconscious import _context_block_agents
+
+        _context_block_agents.clear()
+    except Exception:
+        pass
+
     # Re-wire the Postgres-backed singletons. Tests that exercise SQLite
     # fallback paths call reset_hybrid_retriever()/reset_graph_store() without
     # restoring the backend, leaving a backend-less singleton that silently

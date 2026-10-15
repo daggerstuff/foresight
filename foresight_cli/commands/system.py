@@ -609,13 +609,15 @@ def maintenance(
         "all",
         "--mode",
         "-m",
-        help="Comma-separated modes (consolidate,contradict,archive_stale,synthesize) or 'all'",
+        help="Comma-separated modes (consolidate,contradict,archive_stale,synthesize,reprocess) or 'all'",
     ),
     batch_size: int = typer.Option(200, "--batch-size", help="Max memories to process per mode"),
     max_runtime: float = typer.Option(300, "--max-runtime", help="Wall-clock budget in seconds"),
+    reprocess_window_start: str | None = typer.Option(None, "--reprocess-start", help="ISO-8601 start of reprocess window"),
+    reprocess_window_end: str | None = typer.Option(None, "--reprocess-end", help="ISO-8601 end of reprocess window"),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
-    """Run memory maintenance (consolidation, contradiction detection, stale archival)."""
+    """Run memory maintenance (consolidation, contradiction detection, stale archival, reprocess)."""
     _init_backend()
     from foresight.server import MaintenanceAction, run_maintenance
 
@@ -629,6 +631,8 @@ def maintenance(
             modes=modes_list,
             batch_size=batch_size,
             max_runtime_seconds=max_runtime,
+            reprocess_window_start=reprocess_window_start,
+            reprocess_window_end=reprocess_window_end,
         ),
         user_id=user_id,
     )

@@ -119,6 +119,10 @@ class SearchBody(BaseModel):
     bank_id: str | None = Field(default=None, description="Filter by bank ID")
     tags: list[str] | None = Field(default=None, description="Filter to memories carrying any of these tags")
     memory_type: str | None = Field(default=None, description="Filter by memory_type (episodic, semantic, procedural)")
+    signal_weights: dict[str, float] | None = Field(
+        default=None,
+        description="Per-request RRF signal-weight overrides (keyword, tfidf_cosine, vector, graph, temporal)",
+    )
 
 
 class InjectBody(BaseModel):

@@ -3,8 +3,12 @@
 When a newly stored memory contradicts an existing latest-truth memory for
 the same user and tenant, the older memory is marked ``is_latest = 0`` with
 ``superseded_by`` pointing at the new memory, and an ``updates`` edge is
-created between the two. Superseded and inferred memories stay retrievable:
-the hybrid retriever only down-ranks them, it never filters them out.
+created between the two. The supersede event also closes the bitemporal
+validity interval: the old memory's ``valid_until`` and the superseder's
+``valid_from`` are set to the supersede timestamp, so point-in-time queries
+reconstruct which fact was true at a given moment. Superseded and inferred
+memories stay retrievable: the hybrid retriever only down-ranks them, it
+never filters them out.
 
 Supersede detection is OFF by default and must be enabled with the
 ``FORESIGHT_SUPERSEDE_DETECTION`` environment variable. The detector is
@@ -118,8 +122,9 @@ def detect_and_mark_supersessions(
 
     Fetches the newest latest-truth candidates for the same user and tenant,
     decrypts their content, runs :func:`detect_supersession`, and sets
-    ``is_latest = 0`` / ``superseded_by`` on every match. Commits the
-    updates on the given connection; the caller owns closing it.
+    ``is_latest = 0`` / ``superseded_by`` / ``valid_until`` on every match,
+    plus ``valid_from`` on the superseder. Commits the updates on the given
+    connection; the caller owns closing it.
     """
     rows = conn.execute(
         "SELECT id, content FROM memories "
@@ -136,9 +141,9 @@ def detect_and_mark_supersessions(
         if detection is None:
             continue
         conn.execute(
-            "UPDATE memories SET is_latest = 0, superseded_by = ?, updated_at = ? "
+            "UPDATE memories SET is_latest = 0, superseded_by = ?, updated_at = ?, valid_until = ? "
             "WHERE id = ? AND user_id = ? AND tenant_id = ? AND is_latest = 1",
-            (new_memory_id, now_iso, row["id"], uid, tenant_id),
+            (new_memory_id, now_iso, now_iso, row["id"], uid, tenant_id),
         )
         matches.append(
             SupersessionMatch(
@@ -151,6 +156,15 @@ def detect_and_mark_supersessions(
         )
 
     if matches:
+        # Bitemporal closure: the supersede event ends the old fact's
+        # validity (valid_until above) and starts the superseder's. Using
+        # the same timestamp for both sides keeps the intervals contiguous
+        # so point-in-time queries never see a gap.
+        conn.execute(
+            "UPDATE memories SET valid_from = ? "
+            "WHERE id = ? AND user_id = ? AND tenant_id = ? AND valid_from IS NULL",
+            (now_iso, new_memory_id, uid, tenant_id),
+        )
         conn.commit()
         logger.info(
             "Supersede: memory %s supersedes %d older memories (%s)",

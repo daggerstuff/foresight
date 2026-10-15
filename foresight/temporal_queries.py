@@ -30,6 +30,30 @@ def _is_missing_tenant_column_error(error: Exception) -> bool:
     return "no such column: tenant_id" in message or "no column named tenant_id" in message
 
 
+def _is_missing_bitemporal_schema_error(error: Exception) -> bool:
+    """True when the error indicates a schema that predates the bitemporal model.
+
+    Legacy databases may lack ``tenant_id`` on memories, the
+    ``valid_from``/``valid_until`` columns, or the ``memory_versions``
+    table entirely. SQLite reports missing columns with whatever qualifier
+    the query used (e.g. ``m.valid_from``).
+    """
+    message = str(error).lower()
+    needles = (
+        "no such column: tenant_id",
+        "no such column: m.tenant_id",
+        "no such column: valid_from",
+        "no such column: m.valid_from",
+        "no such column: valid_until",
+        "no such column: m.valid_until",
+        "no such table: memory_versions",
+        "no column named tenant_id",
+        "no column named valid_from",
+        "no column named valid_until",
+    )
+    return any(needle in message for needle in needles)
+
+
 TimeWindow = Literal["today", "week", "month", "year"]
 
 
@@ -223,41 +247,64 @@ class TemporalQueryBuilder:
     def get_memories_as_of_time(
         self, user_id: str, target_date: datetime, category: str | None = None, min_importance: float = 0.1
     ) -> list[TemporalQueryResult]:
-        """Get memories as of a specific time."""
+        """Get memories as of a specific time (point-in-time state reconstruction).
+
+        Bitemporal semantics (MemLake/Hindsight model):
+
+        - System time: only memories recorded at or before ``target_date``
+          (``created_at <= T``) are visible.
+        - Business time: only memories whose validity interval covers T are
+          visible (``COALESCE(valid_from, created_at) <= T`` and
+          ``valid_until IS NULL OR valid_until > T``), so a fact superseded
+          after T still appears and a fact recorded after T never does.
+        - Content: edited memories resolve to the content that was live at
+          T. ``memory_versions`` snapshots store the *pre-change* content
+          with ``created_at`` equal to the moment that content stopped being
+          live, so the content live at T is the earliest snapshot written
+          *after* T; with no such snapshot, the current row content was
+          already live at T.
+        """
         tenant_id = get_current_account_id()
+        target_iso = target_date.isoformat()
+
+        # The version subquery selects the content snapshot that was live at
+        # target_iso: the first snapshot recorded after it (snapshots are
+        # written *before* a change overwrites the row content, so a
+        # snapshot at time S > T holds the content valid up to S, i.e. at T).
+        sql = """
+            SELECT
+                m.id, m.content, m.importance, m.strength_trend,
+                m.activation_count, m.created_at, m.accessed_at, m.category,
+                (
+                    SELECT v.content
+                    FROM memory_versions v
+                    WHERE v.memory_id = m.id AND v.tenant_id = m.tenant_id
+                    AND v.created_at > ?
+                    ORDER BY v.created_at ASC, v.version ASC
+                    LIMIT 1
+                ) AS content_as_of
+            FROM memories m
+            WHERE m.user_id = ? AND m.tenant_id = ?
+            AND m.created_at <= ?
+            AND COALESCE(m.valid_from, m.created_at) <= ?
+            AND (m.valid_until IS NULL OR m.valid_until > ?)
+            AND m.importance > ?
+        """
+        base_params = [target_iso, user_id, tenant_id, target_iso, target_iso, target_iso, min_importance]
         if category:
-            sql = """
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND created_at <= ?
-                AND importance > ?
-                AND category = ?
-                ORDER BY created_at DESC
-            """
-            base_params = [user_id, tenant_id, target_date.isoformat(), min_importance, category]
-        else:
-            sql = """
-                SELECT
-                    id, content, importance, strength_trend,
-                    activation_count, created_at, accessed_at, category
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                AND created_at <= ?
-                AND importance > ?
-                ORDER BY created_at DESC
-            """
-            base_params = [user_id, tenant_id, target_date.isoformat(), min_importance]
+            sql += " AND m.category = ?"
+            base_params.append(category)
+        sql += " ORDER BY m.created_at DESC"
 
         try:
             rows = self._fetch_rows(sql, base_params)
         except Exception as e:
             if self._backend is not None:
                 raise
-            if not _is_missing_tenant_column_error(e):
+            if not _is_missing_bitemporal_schema_error(e):
                 raise
+            # Legacy schema without tenant_id predates the bitemporal
+            # columns too — fall back to the pre-interval query shape.
             if category:
                 sql_no_tenant = """
                     SELECT
@@ -270,7 +317,7 @@ class TemporalQueryBuilder:
                     AND category = ?
                     ORDER BY created_at DESC
                 """
-                params = [user_id, target_date.isoformat(), min_importance, category]
+                params = [user_id, target_iso, min_importance, category]
             else:
                 sql_no_tenant = """
                     SELECT
@@ -282,22 +329,25 @@ class TemporalQueryBuilder:
                     AND importance > ?
                     ORDER BY created_at DESC
                 """
-                params = [user_id, target_date.isoformat(), min_importance]
+                params = [user_id, target_iso, min_importance]
             rows = self._fetch_rows(sql_no_tenant, params)
 
-        return [
-            TemporalQueryResult(
-                memory_id=row["id"],
-                content=row["content"],
-                importance=row["importance"],
-                strength_trend=row["strength_trend"],
-                activation_count=row["activation_count"],
-                created_at=row["created_at"],
-                accessed_at=row["accessed_at"],
-                category=row["category"],
+        results = []
+        for row in rows:
+            content_as_of = row.get("content_as_of")
+            results.append(
+                TemporalQueryResult(
+                    memory_id=row["id"],
+                    content=row["content"] if content_as_of is None else content_as_of,
+                    importance=row["importance"],
+                    strength_trend=row["strength_trend"],
+                    activation_count=row["activation_count"],
+                    created_at=row["created_at"],
+                    accessed_at=row["accessed_at"],
+                    category=row["category"],
+                )
             )
-            for row in rows
-        ]
+        return results
 
     def get_memories_by_trend(
         self, user_id: str, trend: str, limit: int = 50, category: str | None = None

@@ -79,6 +79,20 @@ DEFAULT_BURST_LIMIT = 20  # burst requests
 # FORESIGHT_LLM_MIN_INTERVAL     -- minimum seconds between requests (default: 0.5)
 # FORESIGHT_LLM_MAX_PROMPT_CHARS -- max prompt character length (default: 10000)
 
+# Raw transcript retention (Phase 2 / MemLake append-only raw layer)
+# Persist message-level raw events so the derived memory layer can be reprocessed.
+# Default OFF for clinical / sensitive-content deployments.
+RAW_RETENTION = os.environ.get("FORESIGHT_RAW_RETENTION", "0").lower() in ("1", "true", "yes")
+
+# Optional raw-events retention window in days.  None (or unset) means keep
+# raw events forever; an integer >0 means raw events older than that many
+# days are tombstoned during GC (content nulled, row retained for audit).
+RAW_RETENTION_WINDOW_DAYS_RAW = os.environ.get("FORESIGHT_RAW_RETENTION_WINDOW_DAYS", "")
+try:
+    RAW_RETENTION_WINDOW_DAYS = int(RAW_RETENTION_WINDOW_DAYS_RAW) if RAW_RETENTION_WINDOW_DAYS_RAW.strip() else None
+except ValueError:
+    RAW_RETENTION_WINDOW_DAYS = None
+
 
 def load_dotenv_walkup() -> None:
     """Load the nearest .env, checking candidates in order:

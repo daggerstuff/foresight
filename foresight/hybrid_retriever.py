@@ -148,6 +148,13 @@ class HybridSearchOptions:
     bank_id: str | None = None
     tags: list[str] | None = None
     memory_type: str | None = None
+    # PIX-4730: per-request ranking weights override global RRF tuning. Maps
+    # one or more signal names (keyword, tfidf_cosine, vector, graph, temporal)
+    # to a non-negative float. Unknown keys raise ValueError.
+    signal_weights: dict[str, float] | None = None
+
+
+VALID_SIGNAL_WEIGHT_KEYS = frozenset({"keyword", "tfidf_cosine", "vector", "graph", "temporal"})
 
 
 @dataclass
@@ -186,6 +193,19 @@ def _validate_input(query: str, user_id: str) -> None:
         raise ValueError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
     if len(query) > MAX_QUERY_LENGTH:
         raise ValueError(f"query must be <= {MAX_QUERY_LENGTH} chars")
+
+
+def _normalize_signal_weights(weights: dict[str, float]) -> dict[str, float]:
+    """Coerce raw per-request signal weights to finite non-negative floats."""
+    normalized: dict[str, float] = {}
+    for k, v in weights.items():
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f) and f >= 0:
+            normalized[k] = f
+    return normalized
 
 
 @dataclass
@@ -401,6 +421,25 @@ class HybridRetriever:
         self._entity_hits: dict[str, int] = {}
         self._entity_confidence: dict[str, float] = {}
 
+    def _effective_weights(self, options: HybridSearchOptions) -> dict[str, float]:
+        """Return weights for this request, merging per-request overrides."""
+        base = self.weights.copy()
+        if options.signal_weights:
+            unknown = set(options.signal_weights.keys()) - VALID_SIGNAL_WEIGHT_KEYS
+            if unknown:
+                raise ValueError(
+                    f"Invalid signal_weight keys: {sorted(unknown)}. "
+                    f"Valid keys: {sorted(VALID_SIGNAL_WEIGHT_KEYS)}"
+                )
+            for k, v in _normalize_signal_weights(options.signal_weights).items():
+                base[k] = v
+        # Preserve the semantic/tf-idf alias so downstream helpers can use either key.
+        if "semantic" not in base and "tfidf_cosine" in base:
+            base["semantic"] = base["tfidf_cosine"]
+        if "tfidf_cosine" not in base and "semantic" in base:
+            base["tfidf_cosine"] = base["semantic"]
+        return base
+
     def _get_connection(self) -> Any:
         """Get a database connection with WAL mode for concurrent safety."""
         pool = get_pool(self.db_path)
@@ -602,6 +641,9 @@ class HybridRetriever:
         all_ids.update(graph_ranking.keys())
         all_ids.update(temporal_ranking.keys())
 
+        # Resolve per-request signal weights (PIX-4730) before any fusion/scoring.
+        effective_weights = self._effective_weights(options)
+
         if not all_ids:
             result = HybridSearchResult(
                 results=[],
@@ -615,13 +657,13 @@ class HybridRetriever:
                 },
             )
             if options.explain:
-                result.score_details = self._build_score_details(result, options, rerank_on, None)
+                result.score_details = self._build_score_details(result, options, rerank_on, None, effective_weights)
             if use_cache:
                 self._cache_result(cache_key, result)
             return result
 
         merged = self._reciprocal_rank_fusion(
-            keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking, vector_ranking
+            keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking, vector_ranking, weights=effective_weights
         )
 
         early: HybridSearchResult | None = None
@@ -669,7 +711,7 @@ class HybridRetriever:
             extra_signals={"rerank": rerank_provider} if rerank_provider else None,
         )
         if options.explain:
-            result.score_details = self._build_score_details(result, options, rerank_on, rerank_provider)
+            result.score_details = self._build_score_details(result, options, rerank_on, rerank_provider, effective_weights)
         if use_cache:
             self._cache_result(cache_key, result)
         return result
@@ -760,11 +802,13 @@ class HybridRetriever:
         options: HybridSearchOptions,
         rerank_on: bool,
         rerank_provider: str | None,
+        weights: dict[str, float] | None = None,
     ) -> dict[str, object]:
         """mem0-style explain output (PIX-4701): signal weights, the maximum
         achievable fused score for this query, the candidate-importance
         threshold, and rerank status. Per-signal scores, per-result multipliers,
         raw RRF and final combined scores live on each ``HybridResult``."""
+        effective_weights = weights if weights is not None else self.weights
         best_rank_contribution = 1.0 / (self.rrf_k + 1.0)
         per_signal_max: dict[str, float] = {}
         for signal, weight_key in (
@@ -775,11 +819,11 @@ class HybridRetriever:
             ("temporal", "temporal"),
         ):
             count = result.signal_counts.get(signal)
-            weight = self.weights.get(weight_key, 0.0)
+            weight = effective_weights.get(weight_key, 0.0)
             if isinstance(count, int) and count > 0 and weight > 0:
                 per_signal_max[weight_key] = round(weight * best_rank_contribution, 6)
         return {
-            "weights": {k: self.weights.get(k, 0.0) for k in ("keyword", "semantic", "vector", "graph", "temporal")},
+            "weights": {k: effective_weights.get(k, 0.0) for k in ("keyword", "semantic", "vector", "graph", "temporal")},
             "rrf_k": self.rrf_k,
             "max_possible_score": round(sum(per_signal_max.values()), 6),
             "per_signal_max": per_signal_max,
@@ -1238,6 +1282,7 @@ class HybridRetriever:
         graph: dict[str, int],
         temporal: dict[str, int],
         vector: dict[str, int] | None = None,
+        weights: dict[str, float] | None = None,
     ) -> list[tuple]:
         """
         Merge ranked lists using Reciprocal Rank Fusion.
@@ -1245,11 +1290,13 @@ class HybridRetriever:
         RRF: score(d) = sum_i(w_i / (k + rank_i(d)))
 
         `vector` is optional and trailing so existing 4-signal callers
-        (and tests) keep working unchanged.
+        (and tests) keep working unchanged.  When ``weights`` is provided,
+        it overrides ``self.weights`` for this fusion.
 
         Returns list of (memory_id, rrf_score) sorted descending.
         """
         vector = vector or {}
+        effective_weights = weights if weights is not None else self.weights
         all_ids = set()
         all_ids.update(keyword.keys())
         all_ids.update(tfidf_cosine.keys())
@@ -1263,15 +1310,15 @@ class HybridRetriever:
             score = 0.0
 
             if mid in keyword:
-                score += self.weights["keyword"] / (self.rrf_k + keyword[mid])
+                score += effective_weights["keyword"] / (self.rrf_k + keyword[mid])
             if mid in tfidf_cosine:
-                score += self.weights["tfidf_cosine"] / (self.rrf_k + tfidf_cosine[mid])
+                score += effective_weights["tfidf_cosine"] / (self.rrf_k + tfidf_cosine[mid])
             if mid in vector:
-                score += self.weights.get("vector", 0.9) / (self.rrf_k + vector[mid])
+                score += effective_weights.get("vector", 0.9) / (self.rrf_k + vector[mid])
             if mid in graph:
-                score += self.weights["graph"] / (self.rrf_k + graph[mid])
+                score += effective_weights["graph"] / (self.rrf_k + graph[mid])
             if mid in temporal:
-                score += self.weights["temporal"] / (self.rrf_k + temporal[mid])
+                score += effective_weights["temporal"] / (self.rrf_k + temporal[mid])
 
             scores[mid] = score
 

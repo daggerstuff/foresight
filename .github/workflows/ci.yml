@@ -119,6 +119,14 @@ jobs:
         run: |
           uv run pytest tests/ --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 
+      - name: Retrieval quality regression gate
+        run: |
+          uv run python -m foresight.eval_harness \
+            --db-path /tmp/foresight_eval_ci.db \
+            --compare foresight/eval/baseline.json \
+            --fail-under 100 \
+            --max-regression-pct 0
+
       - name: Upload coverage report
         uses: actions/upload-artifact@v7
         with:

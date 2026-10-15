@@ -27,10 +27,11 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger("foresight_eval")
@@ -245,6 +246,49 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
         "strength_trend": "weakening",
         "created_at_offset_hours": -96,
     },
+    # --- S8/S9: Temporal contradiction pair ---
+    {
+        "id": "temp_loves_therapy",
+        "content": "User says they love therapy and find weekly sessions very helpful.",
+        "scope": "fact",
+        "retention": "long_term",
+        "category": "fact",
+        "importance": 0.8,
+        "strength_trend": "stable",
+        "created_at_offset_hours": -96,
+    },
+    {
+        "id": "temp_hates_therapy",
+        "content": "User says they hate therapy and want to stop going completely.",
+        "scope": "fact",
+        "retention": "long_term",
+        "category": "fact",
+        "importance": 0.8,
+        "strength_trend": "stable",
+        "created_at_offset_hours": -24,
+    },
+    # --- S10: Edit history ---
+    {
+        "id": "temp_therapist",
+        "content": "User's therapist is Dr. Jones at the uptown clinic.",
+        "scope": "fact",
+        "retention": "long_term",
+        "category": "fact",
+        "importance": 0.75,
+        "strength_trend": "stable",
+        "created_at_offset_hours": -168,
+    },
+    # --- S11: Raw-event provenance ---
+    {
+        "id": "temp_prefers_dark_mode",
+        "content": "User prefers dark mode for all interfaces.",
+        "scope": "trait",
+        "retention": "long_term",
+        "category": "preference",
+        "importance": 0.7,
+        "strength_trend": "stable",
+        "created_at_offset_hours": -48,
+    },
 ]
 
 
@@ -263,6 +307,9 @@ class EvalScenario:
     expected_memory_ids: set[str]
     pass_condition: str  # Human-readable condition
     min_expected: int = 1  # Minimum number of expected memories that should be found
+    as_of_offset_hours: int | None = None  # For temporal scenarios: query state as of now + offset
+    expected_contains: str | None = None  # Optional substring expected in found memory content
+    expected_provenance_count: int | None = None  # Optional raw-event provenance linkage count
 
 
 SCENARIOS: list[EvalScenario] = [
@@ -321,6 +368,44 @@ SCENARIOS: list[EvalScenario] = [
         expected_memory_ids={"decay_priority_high", "decay_priority_low"},
         pass_condition="decay_priority_high ranks higher than decay_priority_low",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
         min_expected=2,
+    ),
+    EvalScenario(
+        id="S8_as_of_before_supersede",
+        description="Point-in-time query returns the pre-supersede fact",
+        query="How does the user feel about therapy?",
+        expected_memory_ids={"temp_loves_therapy"},
+        pass_condition="temp_loves_therapy is visible as of -60h (before supersede boundary)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        min_expected=1,
+        as_of_offset_hours=-60,
+    ),
+    EvalScenario(
+        id="S9_as_of_after_supersede",
+        description="Point-in-time query returns the post-supersede fact",
+        query="How does the user feel about therapy?",
+        expected_memory_ids={"temp_hates_therapy"},
+        pass_condition="temp_hates_therapy is visible as of -12h (after supersede boundary)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        min_expected=1,
+        as_of_offset_hours=-12,
+    ),
+    EvalScenario(
+        id="S10_edit_history_content",
+        description="Point-in-time query resolves to pre-edit content via memory_versions",
+        query="Who is the user's therapist?",
+        expected_memory_ids={"temp_therapist"},
+        pass_condition="temp_therapist content as of -120h is the pre-edit Dr. Smith version",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        min_expected=1,
+        as_of_offset_hours=-120,
+        expected_contains="Dr. Smith",
+    ),
+    EvalScenario(
+        id="S11_provenance_link",
+        description="Memory derived from raw-event layer is retrievable and traceable",
+        query="What display preferences does the user have?",
+        expected_memory_ids={"temp_prefers_dark_mode"},
+        pass_condition="temp_prefers_dark_mode is visible and linked to a raw event",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        min_expected=1,
+        as_of_offset_hours=0,
+        expected_provenance_count=1,
     ),
 ]
 
@@ -512,6 +597,7 @@ class EvalHarness:
 
         self._conn: Any | None = None
         self._monkeypatches: list[tuple[Any, str, Any]] = []  # (module, attr, original_value)
+        self._patches_applied: bool = False
 
     @property
     def db_path(self) -> str:
@@ -538,6 +624,8 @@ class EvalHarness:
         Note: hybrid_retriever has its own `from .config import DB_PATH` local
         binding, so we must patch that module's attribute directly too.
         """
+        if self._patches_applied:
+            return
         import foresight.config as config_module
         import foresight.connection_pool as conn_pool_module
         from foresight.connection_pool import reset_pool
@@ -554,9 +642,40 @@ class EvalHarness:
             mod.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
+        # The package __init__ already imported modules like subconscious,
+        # semantic_search, etc., each with its own `from .config import DB_PATH`
+        # binding.  Patch those module-level copies too so the harness temp DB
+        # path is used end-to-end.
+        for mod_name in (
+            "foresight.semantic_search",
+            "foresight.subconscious",
+            "foresight.memory_maintenance",
+            "foresight.memory_relationships",
+            "foresight.memory_gc",
+            "foresight.graph_store",
+            "foresight.graph_edge_decay",
+            "foresight.decay_model",
+            "foresight.ghost_cleanup",
+            "foresight.document_layer",
+            "foresight.profile_synthesizer",
+            "foresight.reflection_engine",
+            "foresight.temporal_queries",
+            "foresight.temporal_service",
+        ):
+            try:
+                mod = __import__(mod_name, fromlist=["DB_PATH"])
+            except Exception:  # pragma: no cover - optional/legacy modules
+                continue
+            if not hasattr(mod, "DB_PATH"):
+                continue
+            orig = mod.DB_PATH
+            mod.DB_PATH = self.db_path
+            self._monkeypatches.append((mod, "DB_PATH", orig))
+
         # Set tenant context
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
+        self._patches_applied = True
 
         # Ensure schema exists using the connection pool
         from .connection_pool import get_pool
@@ -583,12 +702,19 @@ class EvalHarness:
 
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
+        self._patches_applied = False
         import foresight.hybrid_retriever as hr_module
 
         hr_module.reset_hybrid_retriever()
         from foresight.connection_pool import reset_pool
 
         reset_pool()
+        from foresight.memory_relationships import reset_memory_relationship_store
+
+        reset_memory_relationship_store()
+        from foresight import subconscious
+
+        subconscious._context_block_agents.clear()
         for module, attr, orig in self._monkeypatches:
             setattr(module, attr, orig)
         self._monkeypatches.clear()
@@ -664,6 +790,9 @@ class EvalHarness:
 
         # Build the entity_entity_links and memory_entity_links for graph search
         self._seed_entities(conn)
+
+        # Set up temporal validity, edit-history snapshots, and raw-event provenance
+        self._seed_temporal_state(conn, now)
 
         logger.info("Seeded %d fixture memories (%s)", count, self.db_path)
         return count
@@ -760,6 +889,87 @@ class EvalHarness:
 
         conn.commit()
 
+    def _seed_temporal_state(self, conn: Any, now: datetime) -> None:
+        """Seed temporal validity, edit-history snapshots, and raw-event provenance.
+
+        Exercises the bitemporal model (MemLake Phase 1), the append-only raw
+        layer (Phase 2), and provenance linking from derived memories to raw
+        observations.
+        """
+        supersede_at = now + timedelta(hours=-48)
+        supersede_iso = supersede_at.isoformat()
+
+        # S8/S9: close the validity interval of the older fact at -48h and
+        # mark the newer fact valid from the same boundary.
+        conn.execute(
+            "UPDATE memories SET valid_until = ? WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            (supersede_iso, "temp_loves_therapy", self.tenant_id, self.user_id),
+        )
+        conn.execute(
+            "UPDATE memories SET valid_from = ? WHERE id = ? AND tenant_id = ? AND user_id = ? AND valid_from IS NULL",
+            (supersede_iso, "temp_hates_therapy", self.tenant_id, self.user_id),
+        )
+
+        # S10: snapshot the pre-edit therapist content at -72h, then leave the
+        # memories row holding the post-edit content.  get_memories_as_of_time
+        # will pick the snapshot for queries before the edit.
+        snapshot_at = now + timedelta(hours=-72)
+        snapshot_iso = snapshot_at.isoformat()
+        old_content = "User's therapist is Dr. Smith at the downtown clinic."
+        version_id = hashlib.sha256(
+            f"temp_therapist|{snapshot_iso}".encode()
+        ).hexdigest()[:16]
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_versions "
+            "(id, memory_id, tenant_id, content, version, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (version_id, "temp_therapist", self.tenant_id, old_content, 1, snapshot_iso),
+        )
+        new_content = "User's therapist is Dr. Jones at the uptown clinic."
+        conn.execute(
+            "UPDATE memories SET content = ?, content_hash = ? "
+            "WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            (
+                new_content,
+                hashlib.sha256(new_content.encode()).hexdigest(),
+                "temp_therapist",
+                self.tenant_id,
+                self.user_id,
+            ),
+        )
+
+        # S11: link a raw observation to the dark-mode preference memory.
+        captured_at = now + timedelta(hours=-48)
+        captured_iso = captured_at.isoformat()
+        raw_event_id = hashlib.sha256(
+            f"{self.tenant_id}|{self.user_id}|eval_provenance|0|user|User prefers dark mode".encode()
+        ).hexdigest()[:16]
+        conn.execute(
+            "INSERT OR IGNORE INTO raw_events "
+            "(id, tenant_id, user_id, session_id, role, content, position, captured_at, source, metadata, tombstone) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                raw_event_id,
+                self.tenant_id,
+                self.user_id,
+                "eval_provenance",
+                "user",
+                "User prefers dark mode",
+                0,
+                captured_iso,
+                "eval",
+                "{}",
+                0,
+            ),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_provenance (memory_id, raw_event_id, tenant_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("temp_prefers_dark_mode", raw_event_id, self.tenant_id, captured_iso),
+        )
+
+        conn.commit()
+
     # ------------------------------------------------------------------
     # Scenario execution
     # ------------------------------------------------------------------
@@ -812,6 +1022,12 @@ class EvalHarness:
         server_module.USER_ID = self.user_id
 
         try:
+            # Temporal scenarios run through the bitemporal point-in-time API
+            # rather than live retrieval, so they can verify supersede,
+            # edit-history, and provenance correctness.
+            if scenario.as_of_offset_hours is not None:
+                return self._run_temporal_scenario(scenario)
+
             # Run inject_context (budgeted) with low relevance threshold
             # because fixture memories are short and produce low RRF scores.
             t0 = time.perf_counter()
@@ -922,6 +1138,92 @@ class EvalHarness:
             )
         finally:
             server_module.USER_ID = original_user_id
+
+    def _run_temporal_scenario(
+        self,
+        scenario: EvalScenario,
+    ) -> ScenarioResult:
+        """Run a bitemporal point-in-time scenario (S8-S11).
+
+        Uses TemporalQueryBuilder.get_memories_as_of_time to reconstruct the
+        user's memory state at ``scenario.as_of_offset_hours``.  Verifies
+        expected memory IDs, optional content substring, and raw-event
+        provenance linkage.
+        """
+        from foresight.temporal_queries import TemporalQueryBuilder
+        from foresight.tenant_context import set_current_account_id, set_current_user_id
+
+        set_current_user_id(self.user_id)
+        set_current_account_id(self.tenant_id)
+
+        as_of = datetime.now(timezone.utc) + timedelta(hours=scenario.as_of_offset_hours)
+
+        t0 = time.perf_counter()
+        builder = TemporalQueryBuilder(db_path=self.db_path)
+        rows = builder.get_memories_as_of_time(
+            user_id=self.user_id,
+            target_date=as_of,
+            min_importance=0.01,
+        )
+        latency_ms = (time.perf_counter() - t0) * 1000
+
+        found_ids = [r.memory_id for r in rows]
+        found_set = set(found_ids)
+        contents = [r.content for r in rows]
+
+        # Provenance check (S11)
+        provenance_count = 0
+        if scenario.expected_provenance_count is not None:
+            expected_id = next(iter(scenario.expected_memory_ids))
+            conn = self._get_connection()
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM memory_provenance "
+                "WHERE memory_id = ? AND tenant_id = ?",
+                (expected_id, self.tenant_id),
+            )
+            provenance_count = cursor.fetchone()[0]
+
+        # Content substring check (S10)
+        contains_ok = True
+        if scenario.expected_contains:
+            contains_ok = any(scenario.expected_contains in c for c in contents)
+
+        found_expected = found_set & scenario.expected_memory_ids
+        passed = (
+            len(found_expected) >= scenario.min_expected
+            and contains_ok
+            and (
+                scenario.expected_provenance_count is None
+                or provenance_count >= scenario.expected_provenance_count
+            )
+        )
+
+        missing = list(scenario.expected_memory_ids - found_set)
+        formatted = "\n".join(contents)
+        pii_findings = scan_for_pii(formatted)
+
+        metrics = {
+            "as_of_offset_hours": scenario.as_of_offset_hours,
+            "as_of_iso": as_of.isoformat(),
+            "result_count": len(rows),
+            "provenance_count": provenance_count
+            if scenario.expected_provenance_count is not None
+            else None,
+        }
+
+        return ScenarioResult(
+            scenario_id=scenario.id,
+            query=scenario.query,
+            passed=passed,
+            metrics=metrics,
+            found_memory_ids=found_ids,
+            missing_expected=missing,
+            injection_payload_size=len(formatted),
+            latency_ms=latency_ms,
+            signal_counts={},
+            fast_path=None,
+            pii_findings=pii_findings,
+        )
 
     def run_all(
         self,
@@ -1048,6 +1350,8 @@ def run_eval(
     json_output: bool = False,
     compare_path: str | None = None,
     save_baseline: str | None = None,
+    fail_under: float = 100.0,
+    max_regression_pct: float = 0.0,
 ) -> EvalReport:
     """Run the full evaluation harness and optionally persist the report.
 
@@ -1058,9 +1362,16 @@ def run_eval(
         json_output: If True, print JSON report to stdout instead of text.
         compare_path: Path to a baseline JSON report to diff against.
         save_baseline: If set, save the report as a baseline JSON at this path.
+        fail_under: Minimum pass rate (%) required for the run to succeed.
+        max_regression_pct: Maximum allowed pass-rate regression (percentage
+            points) versus the committed baseline when ``compare_path`` is set.
 
     Returns:
         EvalReport instance.
+
+    Raises:
+        SystemExit: if the pass-rate floor is not met or the baseline regression
+            exceeds ``max_regression_pct``.
     """
     harness = EvalHarness(db_path=db_path)
     try:
@@ -1068,6 +1379,7 @@ def run_eval(
         logger.info("Seeded %d fixture memories", count)
         report = harness.run_all(budget_chars=budget_chars)
 
+        diff: dict[str, Any] | None = None
         if compare_path:
             try:
                 baseline = EvalReport.load(compare_path)
@@ -1083,10 +1395,21 @@ def run_eval(
         if save_baseline:
             report.save(save_baseline)
 
-        if json_output:
-            pass
-        else:
-            pass
+        pass_rate = report.summary.get("pass_rate_pct", 0.0)
+        if pass_rate < fail_under:
+            _error_out(
+                json_output,
+                f"Pass rate {pass_rate:.1f}% is below floor {fail_under:.1f}%",
+            )
+
+        if diff is not None:
+            regression = diff.get("pass_rate_change", 0.0)
+            if regression < -max_regression_pct:
+                _error_out(
+                    json_output,
+                    f"Pass-rate regression {-regression:.1f}% exceeds "
+                    f"allowed {max_regression_pct:.1f}%",
+                )
 
         return report
     finally:
@@ -1117,6 +1440,15 @@ def _format_pct_change(value: float | None) -> str:
     if value is None:
         return "N/A"
     return f"{value:+.1f}%"
+
+
+def _error_out(json_output: bool, message: str) -> None:
+    """Print an error and exit the harness with a failure status."""
+    if json_output:
+        print(json.dumps({"error": message}))  # noqa: T201
+    else:
+        print(f"ERROR: {message}", file=sys.stderr)  # noqa: T201
+    sys.exit(1)
 
 
 def main() -> None:
@@ -1155,6 +1487,18 @@ def main() -> None:
         default=None,
         help="Save this run as a baseline JSON report at this path",
     )
+    parser.add_argument(
+        "--fail-under",
+        type=float,
+        default=100.0,
+        help="Minimum pass rate (%%) required for a successful run (default: 100)",
+    )
+    parser.add_argument(
+        "--max-regression-pct",
+        type=float,
+        default=0.0,
+        help="Maximum allowed pass-rate regression (percentage points) versus baseline (default: 0)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING)
@@ -1165,6 +1509,8 @@ def main() -> None:
         json_output=args.json,
         compare_path=args.compare,
         save_baseline=getattr(args, "save_baseline", None),
+        fail_under=args.fail_under,
+        max_regression_pct=args.max_regression_pct,
     )
 
 

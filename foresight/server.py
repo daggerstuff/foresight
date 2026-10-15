@@ -42,7 +42,11 @@ from .backend.backend_migrations import (
     ensure_pgvector_extension,
     ensure_schema_migrations_table,
 )
-from .backend.schema_ddl import PGVECTOR_MIGRATION, POSTGRES_ONLY_MIGRATIONS
+from .backend.schema_ddl import (
+    MIGRATIONS,
+    PGVECTOR_MIGRATION,
+    POSTGRES_ONLY_MIGRATIONS,
+)
 from .block_registry import InjectionPoint, initialize_default_blocks
 from .capture import get_capture_pipeline
 from .clustering import ClusterResult, cluster_memories
@@ -293,6 +297,10 @@ class SearchOptions(BaseModel):
     bank_id: str | None = Field(default=None, description="Filter by bank ID")
     tags: list[str] | None = Field(default=None, description="Filter to memories carrying any of these tags")
     memory_type: str | None = Field(default=None, description="Filter by memory_type (episodic, semantic, procedural)")
+    signal_weights: dict[str, float] | None = Field(
+        default=None,
+        description="Per-request RRF signal-weight overrides (keyword, tfidf_cosine, vector, graph, temporal)",
+    )
 
 
 class ContextBlockAction(BaseModel):
@@ -451,6 +459,8 @@ class MaintenanceAction(BaseModel):
     stale_importance_threshold: float = Field(default=0.1, description="Archive memories below this importance")
     batch_size: int = Field(default=200, description="Max memories to process per mode")
     max_runtime_seconds: float = Field(default=300, description="Wall-clock budget in seconds")
+    reprocess_window_start: str | None = Field(default=None, description="ISO-8601 start of reprocess window (inclusive)")
+    reprocess_window_end: str | None = Field(default=None, description="ISO-8601 end of reprocess window (inclusive)")
 
 
 def _run_async(coro):
@@ -955,461 +965,13 @@ def _seed_default_tenant(conn) -> None:
     )
 
 
-_SCHEMA_MIGRATIONS = {
-    1: [
-        """CREATE TABLE IF NOT EXISTS tenants (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            rate_limit INTEGER DEFAULT 100,
-            burst_limit INTEGER DEFAULT 20,
-            created_at TEXT NOT NULL,
-            config TEXT DEFAULT '{}'
-        )""",
-        """CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            content TEXT NOT NULL,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            scope TEXT DEFAULT 'session',
-            retention TEXT DEFAULT 'short_term',
-            category TEXT DEFAULT 'fact',
-            user_id TEXT DEFAULT 'default',
-            bank_id TEXT DEFAULT 'default',
-            created_at TEXT NOT NULL,
-            updated_at TEXT,
-            tags TEXT DEFAULT '[]',
-            emotional_context TEXT DEFAULT '{}',
-            metrics TEXT DEFAULT '{}',
-            vector_id TEXT,
-            gist TEXT,
-            is_ghost INTEGER DEFAULT 0,
-            synthesized_from TEXT DEFAULT '[]',
-            version INTEGER DEFAULT 1
-        )""",
-        """CREATE TABLE IF NOT EXISTS memory_versions (
-            id TEXT PRIMARY KEY,
-            memory_id TEXT NOT NULL,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            content TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            tags TEXT DEFAULT '[]',
-            emotional_context TEXT DEFAULT '{}',
-            metrics TEXT DEFAULT '{}',
-            rollback_of TEXT DEFAULT NULL,
-            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_content ON memories(content)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags)",
-        "CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id)",
-        "CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id)",
-        "CREATE INDEX IF NOT EXISTS idx_versions_created ON memory_versions(created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_tenants_id ON tenants(id)",
-    ],
-    2: [
-        "ALTER TABLE memories ADD COLUMN accessed_at TEXT DEFAULT CURRENT_TIMESTAMP",
-        "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 1.0",
-        "ALTER TABLE memories ADD COLUMN decay_rate REAL DEFAULT 0.01",
-        "ALTER TABLE memories ADD COLUMN activation_count INTEGER DEFAULT 0",
-        "ALTER TABLE memories ADD COLUMN retrieval_count INTEGER DEFAULT 0",
-        "ALTER TABLE memories ADD COLUMN strength_trend TEXT DEFAULT 'stable'",
-        "ALTER TABLE memories ADD COLUMN last_retrieved_at TEXT",
-        "ALTER TABLE memories ADD COLUMN category TEXT DEFAULT 'general'",
-        # PIX-3956 clinical/safety/privacy gating. ALTER is idempotent on
-        # re-runs because the runner catches "duplicate column" errors and
-        # skips them. sensitivity_reason is nullable so legacy rows can
-        # stay at NULL.
-        "ALTER TABLE memories ADD COLUMN is_sensitive INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE memories ADD COLUMN sensitivity_reason TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_memories_user_created ON memories(user_id, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_user_accessed ON memories(user_id, accessed_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(user_id, importance DESC, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_strength_trend ON memories(user_id, strength_trend, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category, created_at DESC)",
-        """CREATE TABLE IF NOT EXISTS decay_config (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            category TEXT NOT NULL DEFAULT 'general',
-            half_life_hours REAL DEFAULT 168.0,
-            min_importance REAL DEFAULT 0.1,
-            activation_boost REAL DEFAULT 1.2,
-            strengthening_threshold INTEGER DEFAULT 5,
-            stale_threshold REAL DEFAULT 0.2,
-            UNIQUE(tenant_id, user_id, category)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)",
-    ],
-    3: [
-        """CREATE TABLE IF NOT EXISTS curation_runs (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            source_bank_id TEXT NOT NULL,
-            output_bank_id TEXT NOT NULL,
-            policy_mode TEXT NOT NULL,
-            tool_access TEXT NOT NULL,
-            output_mode TEXT NOT NULL,
-            status TEXT NOT NULL,
-            instructions TEXT,
-            summary_json TEXT DEFAULT '{}',
-            error_json TEXT DEFAULT '{}',
-            created_at TEXT NOT NULL,
-            started_at TEXT,
-            ended_at TEXT,
-            archived_at TEXT
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_curation_runs_tenant_user ON curation_runs(tenant_id, user_id, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_curation_runs_status ON curation_runs(tenant_id, user_id, status, created_at DESC)",
-    ],
-    4: [
-        """CREATE TABLE IF NOT EXISTS context_blocks (
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            label TEXT NOT NULL,
-            content TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (tenant_id, user_id, label)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_context_blocks_lookup ON context_blocks(tenant_id, user_id, updated_at DESC)",
-    ],
-    5: [
-        "ALTER TABLE curation_runs ADD COLUMN transcript_bundle_json TEXT",
-        "ALTER TABLE curation_runs ADD COLUMN session_id TEXT",
-        "ALTER TABLE curation_runs ADD COLUMN project_path TEXT",
-    ],
-    6: [
-        """CREATE TABLE IF NOT EXISTS memory_relationships (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            source_memory_id TEXT NOT NULL,
-            target_memory_id TEXT NOT NULL,
-            relationship_type TEXT NOT NULL
-                CHECK(relationship_type IN (
-                    'updates', 'extends', 'derives',
-                    'contradicts', 'supports', 'related'
-                )),
-            confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
-            metadata TEXT DEFAULT '{}',
-            created_at TEXT NOT NULL,
-            UNIQUE(tenant_id, user_id, source_memory_id, target_memory_id, relationship_type),
-            FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
-            FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_source ON memory_relationships(tenant_id, user_id, source_memory_id)",
-        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_target ON memory_relationships(tenant_id, user_id, target_memory_id)",
-        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_type ON memory_relationships(tenant_id, user_id, relationship_type)",
-        "ALTER TABLE memories ADD COLUMN relation_type TEXT",
-        "ALTER TABLE memories ADD COLUMN related_memory_id TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_memories_relation ON memories(tenant_id, user_id, relation_type)",
-    ],
-    7: [
-        """CREATE TABLE IF NOT EXISTS memory_embeddings (
-            memory_id TEXT NOT NULL,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            dimension INTEGER NOT NULL,
-            vector BLOB NOT NULL,
-            model_version TEXT DEFAULT '1',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (tenant_id, user_id, memory_id, provider)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_user ON memory_embeddings(tenant_id, user_id, provider)",
-    ],
-    8: [
-        """CREATE TABLE IF NOT EXISTS documents (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            source TEXT NOT NULL,
-            content TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            char_count INTEGER NOT NULL,
-            chunk_count INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            metadata TEXT DEFAULT '{}',
-            UNIQUE(tenant_id, user_id, content_hash)
-        )""",
-        """CREATE TABLE IF NOT EXISTS document_chunks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            document_id TEXT NOT NULL,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            memory_id TEXT,
-            chunk_index INTEGER NOT NULL,
-            start_offset INTEGER NOT NULL,
-            end_offset INTEGER NOT NULL,
-            text TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(document_id, chunk_index),
-            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(tenant_id, user_id, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(tenant_id, user_id, content_hash)",
-        "CREATE INDEX IF NOT EXISTS idx_document_chunks_doc ON document_chunks(document_id, chunk_index)",
-        "CREATE INDEX IF NOT EXISTS idx_document_chunks_memory ON document_chunks(memory_id)",
-    ],
-    9: [
-        "ALTER TABLE memories ADD COLUMN current_strength REAL",
-        "ALTER TABLE memories ADD COLUMN last_decay_at TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_memories_strength ON memories(tenant_id, user_id, current_strength)",
-        """CREATE TABLE IF NOT EXISTS memory_decay_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            memory_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            old_strength REAL,
-            new_strength REAL,
-            decay_factor REAL,
-            reason TEXT,
-            created_at TEXT NOT NULL
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_lookup ON memory_decay_events (tenant_id, user_id, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_memory ON memory_decay_events (memory_id, created_at DESC)",
-    ],
-    10: [
-        "ALTER TABLE memories ADD COLUMN content_hash TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(tenant_id, user_id, content_hash)",
-    ],
-    11: [
-        "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_created ON memories(tenant_id, user_id, created_at DESC)",
-    ],
-    # v12 — Register 11 tables that individual modules create inline with
-    # CREATE TABLE IF NOT EXISTS, plus 002_unified_schema columns. Mirrors
-    # foresight/backend/schema_ddl.py MIGRATIONS[12].
-    12: [
-        # 002_unified_schema columns
-        "ALTER TABLE memories ADD COLUMN schema_version TEXT",
-        "ALTER TABLE memories ADD COLUMN source_service TEXT",
-        # graph_store tables
-        """CREATE TABLE IF NOT EXISTS memory_entities (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            entity_type TEXT NOT NULL
-                CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object', 'cluster')),
-            description TEXT,
-            properties TEXT DEFAULT '{}',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(tenant_id, user_id, name, entity_type)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_entities_user ON memory_entities(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_entities_tenant ON memory_entities(tenant_id)",
-        "CREATE INDEX IF NOT EXISTS idx_memory_entities_tenant ON memory_entities(tenant_id)",
-        "CREATE INDEX IF NOT EXISTS idx_entities_type ON memory_entities(entity_type)",
-        "CREATE INDEX IF NOT EXISTS idx_entities_name ON memory_entities(name)",
-        """CREATE TABLE IF NOT EXISTS entity_relationships (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            source_entity_id TEXT NOT NULL,
-            target_entity_id TEXT NOT NULL,
-            relationship_type TEXT NOT NULL
-                CHECK(relationship_type IN (
-                    'mentions', 'located_at', 'experienced', 'caused',
-                    'relates_to', 'contradicts', 'supports', 'part_of', 'created'
-                )),
-            confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
-            last_accessed TEXT DEFAULT CURRENT_TIMESTAMP,
-            decay_factor REAL DEFAULT 1.0 CHECK(decay_factor >= 0 AND decay_factor <= 1),
-            metadata TEXT DEFAULT '{}',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_rel_source ON entity_relationships(source_entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_rel_target ON entity_relationships(target_entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_rel_user ON entity_relationships(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_rel_tenant ON entity_relationships(tenant_id)",
-        """CREATE TABLE IF NOT EXISTS memory_entity_links (
-            memory_id TEXT NOT NULL,
-            entity_id TEXT NOT NULL,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT NOT NULL,
-            relevance_score REAL DEFAULT 1.0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (memory_id, entity_id)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_links_memory ON memory_entity_links(memory_id)",
-        "CREATE INDEX IF NOT EXISTS idx_links_entity ON memory_entity_links(entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_links_user ON memory_entity_links(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_links_tenant ON memory_entity_links(tenant_id)",
-        # auth tables
-        """CREATE TABLE IF NOT EXISTS users (
-            user_id TEXT PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            role TEXT NOT NULL,
-            is_active BOOLEAN DEFAULT true,
-            created_at TEXT NOT NULL,
-            last_login TEXT,
-            password_hash TEXT NOT NULL,
-            api_key TEXT UNIQUE NOT NULL,
-            tenant_access TEXT
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
-        "CREATE INDEX IF NOT EXISTS idx_users_api_key ON users(api_key)",
-        """CREATE TABLE IF NOT EXISTS auth_sessions (
-            session_id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            ip_address TEXT,
-            user_agent TEXT,
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON auth_sessions(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON auth_sessions(expires_at)",
-        # event_bus tables
-        """CREATE TABLE IF NOT EXISTS events (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            event_type TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            actor TEXT NOT NULL,
-            entity_id TEXT NOT NULL,
-            payload TEXT NOT NULL,
-            metadata TEXT DEFAULT '{}'
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)",
-        "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)",
-        "CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id)",
-        # audit tables
-        """CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tenant_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            resource_id TEXT NOT NULL,
-            metadata_json TEXT NOT NULL,
-            created_at REAL NOT NULL
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time ON audit_events(tenant_id, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type)",
-        "CREATE INDEX IF NOT EXISTS idx_audit_events_resource ON audit_events(resource_id)",
-        "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_type ON audit_events(tenant_id, event_type)",
-        # hooks tables
-        """CREATE TABLE IF NOT EXISTS hooks (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            name TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            hook_type TEXT NOT NULL,
-            handler TEXT NOT NULL,
-            condition_name TEXT,
-            retry_count INTEGER DEFAULT 3,
-            timeout INTEGER DEFAULT 30,
-            metadata TEXT DEFAULT '{}',
-            enabled INTEGER DEFAULT 1,
-            created_at TEXT NOT NULL
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_hooks_event_type ON hooks(event_type)",
-        "CREATE INDEX IF NOT EXISTS idx_hooks_enabled ON hooks(enabled)",
-        "CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)",
-        # sync tables
-        """CREATE TABLE IF NOT EXISTS operations (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            type TEXT NOT NULL,
-            entity_type TEXT NOT NULL,
-            entity_id TEXT NOT NULL,
-            payload TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            retry_count INTEGER DEFAULT 0,
-            last_attempt TEXT,
-            vector_clock TEXT DEFAULT '{}'
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_ops_entity ON operations(entity_type, entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_ops_created ON operations(created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_ops_tenant ON operations(tenant_id)",
-        # narrative_cache table
-        """CREATE TABLE IF NOT EXISTS narrative_cache (
-            cache_key TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            report_id TEXT NOT NULL,
-            model_version TEXT NOT NULL,
-            insights_hash TEXT NOT NULL,
-            narrative TEXT NOT NULL,
-            created_at DOUBLE PRECISION NOT NULL,
-            last_accessed_at DOUBLE PRECISION NOT NULL,
-            access_count INTEGER NOT NULL DEFAULT 0
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_narrative_cache_tenant_user ON narrative_cache(tenant_id, user_id)",
-    ],
-    13: [
-        "ALTER TABLE narrative_cache ALTER COLUMN created_at TYPE DOUBLE PRECISION",
-        "ALTER TABLE narrative_cache ALTER COLUMN last_accessed_at TYPE DOUBLE PRECISION",
-    ],
-    14: [
-        """CREATE TABLE IF NOT EXISTS memory_merge_history (
-            id TEXT PRIMARY KEY,
-            primary_id TEXT NOT NULL,
-            merged_ids TEXT NOT NULL DEFAULT '[]',
-            tenant_id TEXT NOT NULL DEFAULT 'default',
-            user_id TEXT,
-            cluster_id TEXT,
-            avg_overlap REAL,
-            merged_at TEXT NOT NULL,
-            merged_by TEXT DEFAULT 'system',
-            pre_merge_content TEXT,
-            merged_content TEXT
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_merge_history_primary ON memory_merge_history(primary_id)",
-        "CREATE INDEX IF NOT EXISTS idx_merge_history_tenant ON memory_merge_history(tenant_id)",
-        "CREATE INDEX IF NOT EXISTS idx_merge_history_user ON memory_merge_history(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_merge_history_merged_at ON memory_merge_history(merged_at)",
-    ],
-    15: [
-        # PIX-4702 truth resolution. is_latest=1 marks the current version of
-        # a fact; write-time supersede detection flips it to 0 and stores the
-        # replacing memory id in superseded_by. inferred=1 marks memories
-        # synthesized via 'derives' links rather than directly captured.
-        "ALTER TABLE memories ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 1",
-        "ALTER TABLE memories ADD COLUMN inferred INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_memories_tenant_user_latest ON memories(tenant_id, user_id, is_latest)",
-    ],
-    16: [
-        # PIX-4703 inferred-fact review queue. review_status tracks the human
-        # decision on inferred memories: NULL = never reviewed, 'approved' =
-        # promoted to a stated fact, 'declined' = rejected. review_reason
-        # records why a memory was declined.
-        "ALTER TABLE memories ADD COLUMN review_status TEXT",
-        "ALTER TABLE memories ADD COLUMN review_reason TEXT",
-    ],
-    17: [
-        # PIX-4701 retrieval quality. pgvector ANN support for
-        # memory_embeddings (see schema_ddl.MIGRATIONS v17 for the full
-        # rationale). Postgres-only: init_db skips the statements (still
-        # recording the version) on non-Postgres backends and when the
-        # pgvector extension cannot be created, so those deployments keep
-        # the Python cosine scan in semantic_search.
-        "CREATE EXTENSION IF NOT EXISTS vector",
-        "ALTER TABLE memory_embeddings ADD COLUMN embedding vector",
-        "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_hnsw_384 ON memory_embeddings"
-        " USING hnsw ((embedding::vector(384)) vector_cosine_ops) WHERE dimension = 384",
-    ],
-    18: [
-        # PIX-4721 per-memory expiration: nullable ISO-8601 timestamp; a
-        # memory with expires_at in the past is excluded from retrieval and
-        # deleted by memory_gc. PIX-4723 memory taxonomy: episodic / semantic
-        # / procedural (mem0's taxonomy). Default 'semantic' preserves legacy
-        # behavior for rows written before this column existed.
-        "ALTER TABLE memories ADD COLUMN expires_at TEXT",
-        "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'semantic'",
-    ],
-}
+# Schema DDL lives in foresight/backend/schema_ddl.py (single source of truth,
+# shared with backend_migrations.run_migrations). The alias keeps the
+# historical import path used by init_db, benchmarks and eval_harness.
+# Register new migrations there — a local copy here drifted once and
+# silently skipped a migration that had been recorded under a different
+# version number.
+_SCHEMA_MIGRATIONS = MIGRATIONS
 
 
 def init_db(backend=None):
@@ -2666,6 +2228,7 @@ def search_memories(
     bank_id: str | None = None,
     tags: list[str] | None = None,
     memory_type: str | None = None,
+    signal_weights: dict[str, float] | None = None,
 ) -> str:
     """
     Unified search and retrieval for memories.
@@ -2693,6 +2256,7 @@ def search_memories(
         bank_id: Flat filter by bank ID
         tags: Flat filter to memories carrying any of these tags
         memory_type: Flat filter by memory_type
+        signal_weights: Flat per-request signal weight overrides for hybrid retrieval
     """
     if options is None:
         kwargs = {}
@@ -2734,6 +2298,8 @@ def search_memories(
             kwargs["tags"] = tags
         if memory_type is not None:
             kwargs["memory_type"] = memory_type
+        if signal_weights is not None:
+            kwargs["signal_weights"] = signal_weights
         options = SearchOptions(**kwargs)
 
     uid = user_id or USER_ID
@@ -2872,6 +2438,7 @@ def search_memories(
                     bank_id=options.bank_id,
                     tags=options.tags,
                     memory_type=options.memory_type,
+                    signal_weights=options.signal_weights,
                 ),
             )
             if options.debug:
@@ -7563,7 +7130,9 @@ def run_maintenance(
     """Run a conservative memory maintenance job.
 
     Performs background memory quality operations: duplicate consolidation,
-    contradiction detection, stale archival, and cross-memory synthesis.
+    contradiction detection, stale archival, cross-memory synthesis, and
+    raw-event reprocessing (when ``reprocess`` is requested).
+
     High-impact changes (contradictions) are flagged for admin review and
     never auto-applied.
 
@@ -7576,6 +7145,26 @@ def run_maintenance(
     tid = tenant_id or get_current_account_id()
 
     _check_rate_limit(tid)
+
+    # MemLake reprocess runs outside the classic maintenance job because it
+    # rebuilds derived state from the append-only raw-events layer.
+    if "reprocess" in options.modes:
+        pipeline = get_capture_pipeline()
+        reprocess_stats = pipeline.reprocess(
+            user_id=uid,
+            tenant_id=tid,
+            start_time=options.reprocess_window_start,
+            end_time=options.reprocess_window_end,
+            infer=True,
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "action": "run_maintenance",
+                "reprocess": reprocess_stats.to_dict(),
+            },
+            indent=2,
+        )
 
     config = MaintenanceConfig(
         tenant_id=tid,
