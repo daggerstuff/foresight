@@ -50,3 +50,6 @@ coverage.lcov
 apps/docs/.docusaurus/
 AUDIT_REPORT.md
 scripts/.temp/
+
+# Qoder local agent settings
+.qoder/
