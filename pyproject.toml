@@ -39,7 +39,7 @@ dependencies = [
   # Imported directly (mcp.types.TextContent, mcp.server.auth) but otherwise
   # arrives transitively through fastmcp[client,server] — not a contract we own.
   # Lower bound is the 2.0 rename of CallToolResult.isError to is_error.
-  "mcp>=2.0.0,<3.0.0",
+  "mcp>=2.2.0,<3.0.0",
   "python-dotenv>=1.0.0",
   "psycopg[binary,pool]>=3.3.6",
   "redis>=8.1.0,<9.0",
