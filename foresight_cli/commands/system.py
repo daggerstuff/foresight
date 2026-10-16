@@ -519,6 +519,66 @@ def stats(
 
 
 @app.command()
+def temporal(
+    window: str = typer.Option("week", "--window", "-w", help="Time window: today, week, month, year"),
+    trend: str | None = typer.Option(
+        None, "--trend", "-t", help="Trend filter: stable, strengthening, weakening, stale"
+    ),
+    category: str | None = typer.Option(None, "--category", "-c", help="Category filter"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Max results"),
+    as_of: str | None = typer.Option(
+        None,
+        "--as-of",
+        help="ISO-8601 instant. Reconstructs what memory was true at that point in time "
+        "(bitemporal); overrides --window and --trend.",
+    ),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+):
+    """Query memories by time window, trend, or point in time."""
+    _init_backend()
+    from foresight.server import TemporalWindow, _parse_as_of, query_memories_temporal
+
+    try:
+        if as_of is not None:
+            # Validate before querying: TemporalWindow is a plain dataclass, so an
+            # unparseable instant would otherwise surface as a traceback from the tool.
+            _parse_as_of(as_of)
+        options = TemporalWindow(window=window, trend=trend, category=category, limit=limit, as_of=as_of)
+    except (ValueError, TypeError) as exc:
+        out.error(f"Invalid temporal query: {exc}")
+        raise typer.Exit(2) from exc
+
+    result = query_memories_temporal(options=options, user_id=cfg.get_user_id(user_id))
+    if out.get_settings().mode in ("agent", "json"):
+        out.print_json(result)
+        return
+
+    try:
+        memories = json.loads(result)
+    except json.JSONDecodeError:
+        out.result_block({"raw": result}, title="Temporal Query")
+        return
+
+    if not memories:
+        out.info("No memories matched.")
+        return
+
+    rows = [
+        [
+            str(m.get("memory_id", "?"))[:12],
+            str(m.get("content", ""))[:60],
+            str(m.get("category") or "-"),
+            str(m.get("importance", "?")),
+            str(m.get("strength_trend") or "-"),
+            str(m.get("created_at", "?"))[:19],
+        ]
+        for m in memories
+    ]
+    title = f"Memories as of {as_of}" if as_of else f"Memories ({window})"
+    out.print_table(["Memory", "Content", "Category", "Importance", "Trend", "Created"], rows, title=title)
+
+
+@app.command()
 def config(
     key: str | None = typer.Argument(None, help="Config key to view/set (e.g. user_id, db_url, bank_id)"),
     value: str | None = typer.Argument(None, help="Value to set (omit to view current)"),
@@ -613,7 +673,9 @@ def maintenance(
     ),
     batch_size: int = typer.Option(200, "--batch-size", help="Max memories to process per mode"),
     max_runtime: float = typer.Option(300, "--max-runtime", help="Wall-clock budget in seconds"),
-    reprocess_window_start: str | None = typer.Option(None, "--reprocess-start", help="ISO-8601 start of reprocess window"),
+    reprocess_window_start: str | None = typer.Option(
+        None, "--reprocess-start", help="ISO-8601 start of reprocess window"
+    ),
     reprocess_window_end: str | None = typer.Option(None, "--reprocess-end", help="ISO-8601 end of reprocess window"),
     user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
 ):
@@ -640,6 +702,33 @@ def maintenance(
         out.print_json(result)
     else:
         out.result_block(result, title="Maintenance Results")
+
+
+@app.command()
+def reprocess(
+    window_start: str | None = typer.Option(None, "--start", help="ISO-8601 start of the reprocess window (inclusive)"),
+    window_end: str | None = typer.Option(None, "--end", help="ISO-8601 end of the reprocess window (inclusive)"),
+    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
+):
+    """Rebuild derived memories from the append-only raw-events layer.
+
+    Idempotent by construction: replaying a window re-runs classification and
+    extraction, and dedupe keeps duplicates from being created. Requires
+    FORESIGHT_RAW_RETENTION — the flag is read per call, so the environment of
+    this process decides whether there is anything to replay.
+    """
+    _init_backend()
+    from foresight.config import raw_retention_enabled
+    from foresight.server import reprocess_raw_events
+
+    if not raw_retention_enabled():
+        out.warn("FORESIGHT_RAW_RETENTION is off — the raw layer was never written, so this is a no-op.")
+
+    result = reprocess_raw_events(window_start=window_start, window_end=window_end, user_id=cfg.get_user_id(user_id))
+    if out.get_settings().mode in ("agent", "json"):
+        out.print_json(result)
+    else:
+        out.result_block(result, title="Raw-Event Reprocess")
 
 
 @app.command()

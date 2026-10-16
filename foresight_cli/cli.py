@@ -61,7 +61,9 @@ app.add_typer(benchmark.app, name="benchmark", help="Run Production Value & Proo
 app.add_typer(security.app, name="security", help="Manage security, sensitivity policies, and AES-256-GCM encryption.")
 app.add_typer(eval_cmd.app, name="eval", help="Run evaluation harness (PIX-3953).")
 app.add_typer(
-    system.app, name="system", help="System status, init, doctor, config, stats, history, maintenance, tenant."
+    system.app,
+    name="system",
+    help="System status, init, doctor, config, stats, temporal, history, maintenance, reprocess, tenant.",
 )
 app.add_typer(rrf.app, name="rrf", help="View and tune RRF retrieval weights.")
 app.add_typer(documents.app, name="documents", help="Manage source documents and chunks.")
