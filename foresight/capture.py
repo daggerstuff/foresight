@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import BANK_ID, RAW_RETENTION
+from .config import BANK_ID, raw_retention_enabled
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
 from .tenant_context import get_current_account_id
@@ -480,7 +480,7 @@ class CapturePipeline:
         or ``None`` for messages that had no content.  When retention is disabled,
         returns an empty list.
         """
-        if not RAW_RETENTION:
+        if not raw_retention_enabled():
             return []
 
         raw_event_ids: list[str | None] = []
@@ -724,7 +724,7 @@ class CapturePipeline:
         tid = tenant_id or get_current_account_id()
         stats = ReprocessStats()
 
-        if not RAW_RETENTION:
+        if not raw_retention_enabled():
             logger.warning("reprocess skipped: FORESIGHT_RAW_RETENTION is not enabled")
             return stats
 
@@ -870,7 +870,7 @@ class CapturePipeline:
             )
             conn.commit()
             # MemLake provenance: verbatim memory is derived from every raw event.
-            if RAW_RETENTION:
+            if raw_retention_enabled():
                 for rid in raw_event_ids:
                     self._link_provenance(conn, mid, rid, tenant_id, now)
         finally:

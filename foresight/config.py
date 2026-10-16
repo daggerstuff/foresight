@@ -14,6 +14,41 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+
+def load_dotenv_walkup() -> None:
+    """Load the nearest .env, checking candidates in order:
+
+    1. ``.env`` — current working directory
+    2. ``_project_root/.env`` — the workspace root (parent of the
+       ``foresight/`` and ``foresight_cli/`` packages)
+    3. ``~/.env`` — home directory
+
+    Stops at the first candidate that exists. Skipped entirely while under
+    pytest so test execution never loads a developer .env (the test suite
+    derives its own ``foresight_test`` database URL instead).
+
+    Both entry-point modules (``foresight/__main__.py`` and
+    ``foresight_cli/cli.py``) live at the same depth below the workspace
+    root, so ``_project_root`` resolves identically for all callers.
+
+    Existing process variables always win over the file (``load_dotenv``
+    without ``override``): a .env must never silently retarget a running
+    server, least of all its ``FORESIGHT_DB_URL``.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _project_root = Path(__file__).resolve().parent.parent.parent
+    for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
+        if _candidate.exists():
+            load_dotenv(_candidate)
+            break
+
+
+# The constants below snapshot os.environ, so the .env has to be read first.
+# Entry points cannot do this themselves: importing anything from this package
+# runs foresight/__init__.py, which imports this module before main() executes.
+load_dotenv_walkup()
+
 # Database
 # Neon / PostgreSQL is the only production backend. Set FORESIGHT_DB_URL in production.
 # Format: postgresql://user:password@host:port/dbname?sslmode=verify-full&channel_binding=require
@@ -82,40 +117,28 @@ DEFAULT_BURST_LIMIT = 20  # burst requests
 # Raw transcript retention (Phase 2 / MemLake append-only raw layer)
 # Persist message-level raw events so the derived memory layer can be reprocessed.
 # Default OFF for clinical / sensitive-content deployments.
-RAW_RETENTION = os.environ.get("FORESIGHT_RAW_RETENTION", "0").lower() in ("1", "true", "yes")
+
+
+def raw_retention_enabled() -> bool:
+    """Whether the append-only raw-events layer is persisted.
+
+    Read at call time, never snapshotted at import: entry points load the
+    developer ``.env`` after this module is already imported, and tests flip
+    the flag with ``monkeypatch.setenv()``. ``FORESIGHT_SUPERSEDE_DETECTION``
+    works the same way (see ``foresight/truth_resolution.py``).
+    """
+    return os.environ.get("FORESIGHT_RAW_RETENTION", "0").strip().lower() in ("1", "true", "yes")
+
 
 # Optional raw-events retention window in days.  None (or unset) means keep
 # raw events forever; an integer >0 means raw events older than that many
 # days are tombstoned during GC (content nulled, row retained for audit).
-RAW_RETENTION_WINDOW_DAYS_RAW = os.environ.get("FORESIGHT_RAW_RETENTION_WINDOW_DAYS", "")
-try:
-    RAW_RETENTION_WINDOW_DAYS = int(RAW_RETENTION_WINDOW_DAYS_RAW) if RAW_RETENTION_WINDOW_DAYS_RAW.strip() else None
-except ValueError:
-    RAW_RETENTION_WINDOW_DAYS = None
-
-
-def load_dotenv_walkup() -> None:
-    """Load the nearest .env, checking candidates in order:
-
-    1. ``.env`` — current working directory
-    2. ``_project_root/.env`` — the workspace root (parent of the
-       ``foresight/`` and ``foresight_cli/`` packages)
-    3. ``~/.env`` — home directory
-
-    Stops at the first candidate that exists. Called from entry points
-    (``main()`` / the Typer callback) — never at import time — so
-    importing a module has no side effects on the environment. Skipped
-    entirely while under pytest so test execution never loads a developer
-    .env.
-
-    Both entry-point modules (``foresight/__main__.py`` and
-    ``foresight_cli/cli.py``) live at the same depth below the workspace
-    root, so ``_project_root`` resolves identically for all callers.
-    """
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return
-    _project_root = Path(__file__).resolve().parent.parent.parent
-    for _candidate in [Path(".env"), _project_root / ".env", Path.home() / ".env"]:
-        if _candidate.exists():
-            load_dotenv(_candidate, override=True)
-            break
+def raw_retention_window_days() -> int | None:
+    """Raw-event retention window in days, or ``None`` to keep them forever."""
+    text = os.environ.get("FORESIGHT_RAW_RETENTION_WINDOW_DAYS", "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None

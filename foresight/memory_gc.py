@@ -12,12 +12,12 @@ Designed to run frequently alongside heavy maintenance operations.
 
 import logging
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from psycopg import errors as psycopg_errors
 
-from .config import DB_PATH, DB_URL, RAW_RETENTION_WINDOW_DAYS
+from .config import DB_PATH, DB_URL, raw_retention_window_days
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_memory_gc")
@@ -37,7 +37,7 @@ class GCConfig:
     decay_events_retention_days: int = 30
     maintenance_events_retention_days: int = 60
     max_batch_size: int = 500
-    raw_retention_window_days: int | None = RAW_RETENTION_WINDOW_DAYS
+    raw_retention_window_days: int | None = field(default_factory=raw_retention_window_days)
 
     def to_dict(self) -> dict:
         return {
