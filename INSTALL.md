@@ -84,6 +84,19 @@ mkdir -p ~/.local/bin
 ln -sf "$PWD/scripts/foresight" ~/.local/bin/foresight
 ```
 
+The first `.env` found (cwd, workspace root, then home) is loaded, but it never
+overrides a variable the process already has exported — so a shell `export` or a
+systemd `Environment=` entry always wins over the file. That is deliberate: a
+`.env` left in a directory must not silently retarget a running server's
+`FORESIGHT_DB_URL`.
+
+The corollary matters for throwaway instances: if your shell already exports
+`FORESIGHT_DB_URL` (a workspace `direnv` `.envrc` that sources the project `.env`
+does exactly that), a scratch `.env` in another directory will *not* retarget it.
+Unset the inherited variable when launching the scratch instance
+(`env -u FORESIGHT_DB_URL …`), and assert the target before writing anything —
+`SELECT current_database()` must return the database you intended.
+
 For development and testing:
 
 ```bash
@@ -123,12 +136,15 @@ foresight doctor
 
 ## 🤖 Connecting AI Agent Tooling
 
-Foresight exposes an 8-tool FastMCP surface:
+Foresight exposes an 18-tool FastMCP surface. The ones you will reach for first:
 
 - `inject_context`, `manage_memories`, `search_memories`,
   `manage_context_blocks`
-- `query_memories_temporal`, `manage_encryption`, `process_session_transcript`,
-  `get_system_status`
+- `query_memories_temporal` (time window, trend, or `as_of` point-in-time),
+  `reprocess_raw_events`, `process_session_transcript`
+- `manage_encryption`, `get_system_status`
+
+`foresight --help` (or `GET /openapi.json` on the REST surface) lists the rest.
 
 ### 1. Claude Code
 

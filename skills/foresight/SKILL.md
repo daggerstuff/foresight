@@ -435,7 +435,34 @@ deduplicates.
 query_memories_temporal(window="week", limit=20)  # this week
 query_memories_temporal(window="today", category="preference")  # today, filtered
 query_memories_temporal(trend="rising", limit=10)  # gaining activation
+
+# Bitemporal point-in-time: what memory was true at that instant. Overrides
+# window/trend, and a malformed instant is rejected rather than ignored.
+query_memories_temporal(as_of="2026-03-01T00:00:00Z")
 ```
+
+Use `as_of` when you must not contaminate an answer with anything recorded
+afterwards, or with a correction that superseded the fact later — e.g.
+reconstructing what a session knew last Tuesday.
+
+---
+
+### `reprocess_raw_events` — replay the raw layer
+
+Rebuilds derived memories from the append-only raw events (message-level
+transcripts) for a time window. Dedupe makes it idempotent: replaying the same
+window never creates duplicates.
+
+```python
+reprocess_raw_events(window_start="2026-09-01T00:00:00Z", window_end="2026-10-01T00:00:00Z")
+reprocess_raw_events()  # whole retained raw layer
+```
+
+Only useful when the server runs with `FORESIGHT_RAW_RETENTION=1`; otherwise the
+raw layer was never written and the call is a no-op that reports
+`raw_events_replayed: 0`. Use it after changing extraction or classification
+behaviour, when the derived layer should be rebuilt from the original evidence
+rather than re-inferred from scratch.
 
 ---
 

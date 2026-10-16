@@ -93,11 +93,12 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | :--------------------------- | :------------------------------------------------------------------- | :------------------------------------------------ |
 | `inject_context`             | Single-turn context hydration returning active memories & directives | `conversation_text`, `max_memories=5`             |
 | `manage_memories`            | Store, update, delete, search, and archive long-term memory units    | `action="store"\|"search"`, `category`, `content` |
-| `search_memories`            | Hybrid semantic vector search + keyword rank fusion                  | `query`, `use_hybrid=True`, `limit=10`            |
+| `search_memories`            | Hybrid semantic vector search + keyword rank fusion                  | `query`, `use_hybrid`, `signal_weights`, `limit`  |
 | `manage_context_blocks`      | Standing guidance, user preferences, and pending tasks               | `action="get"\|"update"`, `label`, `content`      |
-| `query_memories_temporal`    | Time-windowed memory queries, trend analytics, and decay inspection  | `window="week"\|"month"`, `category`              |
+| `query_memories_temporal`    | Time-window, trend, decay, and point-in-time (bitemporal) queries    | `window="week"\|"month"`, `as_of`, `category`     |
 | `manage_encryption`          | Live AES-256-GCM key rotation and encryption status telemetry        | `action="status"\|"rotate_key"`                   |
 | `process_session_transcript` | End-of-session auto-distillation and decision extraction             | `session_id`, `messages`                          |
+| `reprocess_raw_events`       | Rebuild derived memories from the append-only raw layer (idempotent) | `window_start`, `window_end`                      |
 | `get_system_status`          | Health telemetry, cache statistics, and memory counts                | `include_trends=True`                             |
 
 ---
@@ -112,6 +113,7 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `FORESIGHT_DEFAULT_TENANT` | `default`                  | Default tenant isolation domain                     |
 | `FORESIGHT_LLM_PROVIDER`   | `anthropic`                | LLM extraction provider (`anthropic`, `openai`)     |
 | `FORESIGHT_RATE_LIMIT`     | `60`                       | Max tool calls per minute per tenant                |
+| `FORESIGHT_RAW_RETENTION`  | `0`                        | Persist raw events for `reprocess_raw_events`      |
 
 ---
 
@@ -177,7 +179,10 @@ Foresight tracks context economics dynamically:
 Foresight provides native integration patterns for agentic execution:
 - **Python Async Client**: Direct async RPC access via `foresight.client.ForesightClient`.
 - **FastMCP Protocol**: Standardized JSON-RPC tool interface for Claude Code, Cursor, and OpenCode.
-- **REST Gateway**: HTTP REST endpoints on `/api/v1/memories` and `/api/v1/context`.
+- **REST Gateway**: HTTP endpoints mirroring the MCP tools one-to-one
+  (`/memories`, `/memories/temporal`, `/search`, `/inject`, `/documents`,
+  `/profile`, `/admin/raw-events/reprocess`); the full surface is served at
+  `/openapi.json`.
 - **Streaming WebSockets**: Live memory synchronization and push notifications.
 
 ## ⚡ Database Indexing & Performance
