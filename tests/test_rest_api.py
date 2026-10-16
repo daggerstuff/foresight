@@ -5,11 +5,12 @@ tests assert the HTTP mapping (auth, identity headers, status codes) around
 return values produced by the real tool functions against the Postgres test
 backend. Return-value shapes mirror the legacy tool contract: JSON tool
 responses map to their explicit ok/error status, legacy plain-text returns
-become ``{"ok": true, "result": ...}``, and "not found" returns map to 404.
+become ``{"ok": true, "result": ...}``, and a "not found" error message maps to 404.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -78,12 +79,14 @@ class TestOpenApi:
         for path in (
             "/memories",
             "/memories/batch",
+            "/memories/temporal",
             "/memories/{memory_id}",
             "/search",
             "/inject",
             "/documents",
             "/documents/{document_id}",
             "/profile",
+            "/admin/raw-events/reprocess",
         ):
             assert path in spec["paths"], path
         schemas = spec["components"]["schemas"]
@@ -92,6 +95,8 @@ class TestOpenApi:
             "UpdateMemoryBody",
             "SearchBody",
             "InjectBody",
+            "TemporalQueryBody",
+            "ReprocessBody",
             "CreateDocumentBody",
             "BatchStoreBody",
         ):
@@ -322,3 +327,143 @@ class TestOtherEndpoints:
         )
         assert resp.status_code == 400
         assert "valid JSON" in resp.json()["error"]["message"]
+
+
+def _user_memory_count(user: str = USER, tenant: str = TENANT) -> int:
+    from foresight import server as server_module
+
+    with server_module._global_backend.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM memories WHERE tenant_id = %s AND user_id = %s",
+            (tenant, user),
+        )
+        return int(cur.fetchone()["count"])
+
+
+def _restricted_key(username: str, email: str) -> str:
+    """An API key whose user may only reach a different tenant (403 on TENANT)."""
+    user = get_auth_manager().create_user(
+        username,
+        email,
+        "password-123",
+        role=Role.USER,
+        tenant_access=["_other_tenant_"],
+    )
+    return user.api_key
+
+
+class TestTemporalAndReprocess:
+    """REST mirrors of ``query_memories_temporal`` and ``reprocess_raw_events``.
+
+    The bitemporal and dedupe semantics of the underlying tools are covered by
+    ``test_raw_layer.py`` / ``test_memlake_invariants.py``; what is asserted here
+    is the HTTP mapping around them.
+    """
+
+    def test_temporal_window_returns_recent_memory(self, client: TestClient, api_key: str) -> None:
+        memory_id = _store_memory(client, api_key, "temporal window mirror note", importance=0.9)
+        resp = client.post("/memories/temporal", json={"window": "week"}, headers=_headers(api_key))
+        assert resp.status_code == 200
+        assert memory_id in {m["memory_id"] for m in resp.json()}
+
+    def test_temporal_as_of_reconstructs_point_in_time(self, client: TestClient, api_key: str) -> None:
+        memory_id = _store_memory(client, api_key, "as of mirror note", importance=0.9)
+
+        before = client.post("/memories/temporal", json={"as_of": "2000-01-01T00:00:00Z"}, headers=_headers(api_key))
+        assert before.status_code == 200
+        assert memory_id not in {m["memory_id"] for m in before.json()}
+
+        after = client.post("/memories/temporal", json={"as_of": "2100-01-01T00:00:00Z"}, headers=_headers(api_key))
+        assert after.status_code == 200
+        assert memory_id in {m["memory_id"] for m in after.json()}
+
+    def test_temporal_invalid_as_of_422(self, client: TestClient, api_key: str) -> None:
+        """An unparseable instant must not be ignored — that would answer from the present."""
+        resp = client.post("/memories/temporal", json={"as_of": "last tuesday"}, headers=_headers(api_key))
+        assert resp.status_code == 422
+        assert "Invalid as_of" in resp.json()["error"]["message"]
+
+    def test_temporal_post_not_answered_by_memory_id_route(self, client: TestClient, api_key: str) -> None:
+        """/memories/{memory_id} matches this path shape but only serves PATCH/DELETE."""
+        resp = client.post("/memories/temporal", json={}, headers=_headers(api_key))
+        assert resp.status_code == 200, resp.text
+        assert isinstance(resp.json(), list)
+
+    def test_listing_content_mentioning_not_found_stays_200(self, client: TestClient, api_key: str) -> None:
+        """A *successful* result whose content contains "not found" is not an error.
+
+        Regression: the response converter used to scan the serialized payload for
+        that wording, so any listing that happened to include such a memory came
+        back as an HTTP 404 with the whole payload as the error message.
+        """
+        memory_id = _store_memory(client, api_key, "root cause: the error was not found in any log", importance=0.9)
+        resp = client.post("/memories/temporal", json={"window": "week"}, headers=_headers(api_key))
+        assert resp.status_code == 200, resp.text
+        assert memory_id in {m["memory_id"] for m in resp.json()}
+
+    def test_tool_json_wording_only_applies_to_plain_text(self) -> None:
+        from foresight.rest_api import _tool_json
+
+        ok = _tool_json(json.dumps({"ok": True, "memories": [{"content": "not found"}]}))
+        assert ok.status_code == 200
+
+        legacy = _tool_json("Memory abc not found.")
+        assert legacy.status_code == 404
+
+        structured = _tool_json(json.dumps({"ok": False, "error": {"message": "Memory abc not found."}}))
+        assert structured.status_code == 404
+
+    def test_temporal_requires_credentials(self, client: TestClient) -> None:
+        resp = client.post("/memories/temporal", json={}, headers={"X-Tenant-Id": TENANT})
+        assert resp.status_code == 401
+
+    def test_temporal_denied_for_other_tenant(self, client: TestClient) -> None:
+        key = _restricted_key("rest_temporal_gated", "rest-temporal-gated@test.local")
+        resp = client.post("/memories/temporal", json={}, headers=_headers(key))
+        assert resp.status_code == 403
+
+    def test_reprocess_requires_credentials(self, client: TestClient) -> None:
+        resp = client.post("/admin/raw-events/reprocess", json={}, headers={"X-Tenant-Id": TENANT})
+        assert resp.status_code == 401
+
+    def test_reprocess_denied_for_other_tenant(self, client: TestClient) -> None:
+        key = _restricted_key("rest_reprocess_gated", "rest-reprocess-gated@test.local")
+        resp = client.post("/admin/raw-events/reprocess", json={}, headers=_headers(key))
+        assert resp.status_code == 403
+
+    def test_reprocess_invalid_window_422(self, client: TestClient, api_key: str) -> None:
+        resp = client.post(
+            "/admin/raw-events/reprocess",
+            json={"window_start": "yesterday"},
+            headers=_headers(api_key),
+        )
+        assert resp.status_code == 422
+
+    def test_reprocess_names_the_retention_gate(
+        self, client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Zero replayed work is ambiguous without the flag: report it explicitly."""
+        monkeypatch.delenv("FORESIGHT_RAW_RETENTION", raising=False)
+        resp = client.post("/admin/raw-events/reprocess", json={}, headers=_headers(api_key))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["action"] == "reprocess_raw_events"
+        assert body["raw_retention_enabled"] is False
+        assert body["reprocess"]["raw_events_replayed"] == 0
+
+    def test_reprocess_is_idempotent(self, client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FORESIGHT_RAW_RETENTION", "1")
+        before = _user_memory_count()
+
+        first = client.post("/admin/raw-events/reprocess", json={}, headers=_headers(api_key))
+        second = client.post(
+            "/admin/raw-events/reprocess",
+            json={"window_start": "2000-01-01T00:00:00Z", "window_end": "2100-01-01T00:00:00Z"},
+            headers=_headers(api_key),
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["raw_retention_enabled"] is True
+        assert first.json()["reprocess"] == second.json()["reprocess"]
+        assert _user_memory_count() == before

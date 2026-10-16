@@ -24,13 +24,13 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from .auth import User, _should_require_api_key, get_auth_manager
-from .config import DEFAULT_ACCOUNT_ID, DEFAULT_USER_ID
+from .config import DEFAULT_ACCOUNT_ID, DEFAULT_USER_ID, raw_retention_enabled
 from .tenant_context import (
     reset_tenant_context,
     set_current_account_id,
@@ -135,6 +135,52 @@ class InjectBody(BaseModel):
     min_relevance: float = Field(default=0.01, description="Minimum relevance score threshold")
     include_details: bool = Field(default=False, description="Return structured details instead of text")
     max_chars: int | None = Field(default=None, description="Character budget for the payload")
+
+
+class TemporalQueryBody(BaseModel):
+    """Body for ``POST /memories/temporal`` — mirrors ``query_memories_temporal``."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    window: Literal["today", "week", "month", "year"] | None = Field(
+        default=None, description="Time window for retrieval"
+    )
+    trend: str | None = Field(default=None, description="Filter by trend (stable/strengthening/weakening/stale)")
+    category: str | None = Field(default=None, description="Category filter")
+    limit: int | None = Field(default=None, ge=1, le=_MAX_LIST_LIMIT, description="Max results")
+    as_of: str | None = Field(
+        default=None,
+        description="ISO-8601 instant for bitemporal point-in-time reconstruction. "
+        "Takes precedence over window and trend.",
+    )
+
+    @field_validator("as_of")
+    @classmethod
+    def _validate_as_of(cls, value: str | None) -> str | None:
+        """Reject an unparseable instant as 422 instead of answering from the present."""
+        if value is not None:
+            from .server import _parse_as_of
+
+            _parse_as_of(value)
+        return value
+
+
+class ReprocessBody(BaseModel):
+    """Body for ``POST /admin/raw-events/reprocess`` — mirrors ``reprocess_raw_events``."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    window_start: str | None = Field(default=None, description="ISO-8601 start of the reprocess window (inclusive)")
+    window_end: str | None = Field(default=None, description="ISO-8601 end of the reprocess window (inclusive)")
+
+    @field_validator("window_start", "window_end")
+    @classmethod
+    def _validate_window(cls, value: str | None) -> str | None:
+        if value is not None:
+            from .server import _parse_as_of
+
+            _parse_as_of(value)
+        return value
 
 
 class CreateDocumentBody(BaseModel):
@@ -264,28 +310,32 @@ def _tool_json(result: str, *, success_status: int = 200) -> JSONResponse:
     """Convert a tool-function return value into an HTTP response.
 
     Tool handlers return JSON strings (``{"ok": true/false, ...}``) or legacy
-    plain-text strings. ``ok: false`` maps to 400; "not found" anywhere in an
-    error result (including legacy plain text like ``Memory X not found.``)
-    maps to 404.
+    plain-text strings. ``ok: false`` maps to 400; a "not found" **error
+    message** maps to 404.
+
+    The wording is only ever tested against an error message or a plain-text
+    result, never against a decoded payload: a successful listing whose memory
+    content happens to contain "not found" is a 200, not a 404.
     """
     if not isinstance(result, str):
         return JSONResponse(result, status_code=success_status)
 
-    lowered = result.lower()
-    if result.startswith("Error") or "not found" in lowered:
-        status = 404 if "not found" in lowered else 400
-        return _error(status, result)
-
     try:
         data: Any = json.loads(result)
     except (TypeError, ValueError):
+        data = None
+
+    if not isinstance(data, (dict, list)):
+        # Legacy plain-text return value — wording is the only signal available.
+        lowered = result.lower()
+        if result.startswith("Error") or "not found" in lowered:
+            return _error(404 if "not found" in lowered else 400, result)
         return JSONResponse({"ok": True, "result": result}, status_code=success_status)
 
     if isinstance(data, dict) and data.get("ok") is False:
         error = data.get("error") or {}
         message = error.get("message", "request failed") if isinstance(error, dict) else str(error)
-        status = 404 if "not found" in message.lower() else 400
-        return _error(status, message)
+        return _error(404 if "not found" in message.lower() else 400, message)
 
     return JSONResponse(data, status_code=success_status)
 
@@ -420,6 +470,36 @@ async def _handle_batch_store(request: Request) -> Response:
         {"ok": all_ok, "action": "batch_store", "count": len(results), "results": results},
         status_code=200,
     )
+
+
+async def _handle_temporal_query(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    body, err = await _validated_body(request, TemporalQueryBody)
+    if err:
+        return err
+
+    from .server import TemporalWindow, query_memories_temporal
+
+    set_current_user_id(user_id or DEFAULT_USER_ID)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            query_memories_temporal,
+            options=TemporalWindow(**body.model_dump(exclude_none=True)),
+            user_id=user_id,
+        )
+    finally:
+        reset_tenant_context()
+    return _tool_json(result)
 
 
 async def _handle_list_memories(request: Request) -> Response:
@@ -744,6 +824,47 @@ async def _handle_profile(request: Request) -> Response:
     return _tool_json(result)
 
 
+async def _handle_reprocess_raw_events(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    body, err = await _validated_body(request, ReprocessBody)
+    if err:
+        return err
+
+    from .server import reprocess_raw_events
+
+    set_current_user_id(user_id or DEFAULT_USER_ID)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            reprocess_raw_events,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            window_start=body.window_start,
+            window_end=body.window_end,
+        )
+    finally:
+        reset_tenant_context()
+
+    if isinstance(result, str):
+        with contextlib.suppress(ValueError):
+            payload = json.loads(result)
+            if isinstance(payload, dict):
+                # Zero replayed events is ambiguous: either the window is empty or
+                # the raw layer was never written. Report which one the caller got.
+                payload["raw_retention_enabled"] = raw_retention_enabled()
+                result = json.dumps(payload)
+    return _tool_json(result)
+
+
 # ---------------------------------------------------------------------------
 # OpenAPI
 # ---------------------------------------------------------------------------
@@ -757,6 +878,8 @@ def _openapi_spec() -> dict[str, Any]:
         UpdateMemoryBody,
         SearchBody,
         InjectBody,
+        TemporalQueryBody,
+        ReprocessBody,
         CreateDocumentBody,
         IngestDocumentFileBody,
         BatchStoreBody,
@@ -843,6 +966,14 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/memories/temporal": {
+                "post": {
+                    "summary": "Temporal query, including bitemporal point-in-time reconstruction",
+                    "operationId": "queryMemoriesTemporal",
+                    "requestBody": _body("TemporalQueryBody"),
+                    "responses": _ok(),
+                }
+            },
             "/memories/{memory_id}": {
                 "patch": {
                     "summary": "Update a memory",
@@ -917,6 +1048,18 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/admin/raw-events/reprocess": {
+                "post": {
+                    "summary": "Rebuild derived memories from the append-only raw-events layer",
+                    "description": "Idempotent: replaying the same window relies on dedupe and "
+                    "never creates duplicates. No-op unless the server runs with "
+                    "``FORESIGHT_RAW_RETENTION`` enabled; the response reports "
+                    "``raw_retention_enabled`` so a zero-work result is interpretable.",
+                    "operationId": "reprocessRawEvents",
+                    "requestBody": _body("ReprocessBody"),
+                    "responses": _ok(),
+                }
+            },
         },
         "components": {
             "securitySchemes": {
@@ -941,6 +1084,7 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/memories", ["POST"], "rest_store_memory", _handle_store_memory),
     ("/memories", ["GET"], "rest_list_memories", _handle_list_memories),
     ("/memories/batch", ["POST"], "rest_batch_store", _handle_batch_store),
+    ("/memories/temporal", ["POST"], "rest_temporal_query", _handle_temporal_query),
     ("/memories/{memory_id}", ["PATCH"], "rest_patch_memory", _handle_patch_memory),
     ("/memories/{memory_id}", ["DELETE"], "rest_delete_memory", _handle_delete_memory),
     ("/search", ["POST"], "rest_search", _handle_search),
@@ -949,6 +1093,7 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/documents/ingest", ["POST"], "rest_ingest_document_file", _handle_ingest_document_file),
     ("/documents/{document_id}", ["GET"], "rest_get_document", _handle_get_document),
     ("/profile", ["GET"], "rest_profile", _handle_profile),
+    ("/admin/raw-events/reprocess", ["POST"], "rest_reprocess_raw_events", _handle_reprocess_raw_events),
 )
 
 
