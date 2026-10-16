@@ -142,7 +142,10 @@ Foresight exposes an 18-tool FastMCP surface. The ones you will reach for first:
   `manage_context_blocks`
 - `query_memories_temporal` (time window, trend, or `as_of` point-in-time),
   `reprocess_raw_events`, `process_session_transcript`
-- `manage_encryption`, `get_system_status`
+- `capture_in_flight_memory`, `get_system_status`
+
+Encryption controls (AES-256-GCM status, `encrypt-all`, key rotation) are
+CLI-only via `foresight security`.
 
 `foresight --help` (or `GET /openapi.json` on the REST surface) lists the rest.
 

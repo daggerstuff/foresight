@@ -96,7 +96,7 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `search_memories`            | Hybrid semantic vector search + keyword rank fusion                  | `query`, `use_hybrid`, `signal_weights`, `limit`  |
 | `manage_context_blocks`      | Standing guidance, user preferences, and pending tasks               | `action="get"\|"update"`, `label`, `content`      |
 | `query_memories_temporal`    | Time-window, trend, decay, and point-in-time (bitemporal) queries    | `window="week"\|"month"`, `as_of`, `category`     |
-| `manage_encryption`          | Live AES-256-GCM key rotation and encryption status telemetry        | `action="status"\|"rotate_key"`                   |
+| `capture_in_flight_memory`   | Immediate mid-session storage of decisions, fixes, and preferences   | `content`, `category`, `importance`             |
 | `process_session_transcript` | End-of-session auto-distillation and decision extraction             | `session_id`, `messages`                          |
 | `reprocess_raw_events`       | Rebuild derived memories from the append-only raw layer (idempotent) | `window_start`, `window_end`                      |
 | `get_system_status`          | Health telemetry, cache statistics, and memory counts                | `include_trends=True`                             |

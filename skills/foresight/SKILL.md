@@ -499,18 +499,10 @@ the server is healthy.
 
 ---
 
-### `manage_encryption` — AES-256-GCM encryption controls
+### AES-256-GCM encryption controls (CLI-only — no MCP tool)
 
 Manage optional field-level Authenticated Encryption at Rest (AEAD) with
-multi-tenant key derivation.
-
-```python
-manage_encryption(action="status")  # check encryption mode & algorithm
-manage_encryption(action="encrypt_all")  # retroactively encrypt all plaintext memories
-manage_encryption(action="rotate_key", old_key="...", new_key="...")  # rotate master encryption key
-```
-
-CLI commands:
+multi-tenant key derivation via the `foresight security` CLI:
 
 ```bash
 foresight security status        # view active security mode and encryption state

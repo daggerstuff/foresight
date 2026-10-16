@@ -160,7 +160,7 @@ CLI, and ambient OS hooks).
   (`os.urandom(12)` or `secrets.token_bytes(12)`).
 - **Tag Validation**: 128-bit authentication tag checked prior to payload
   release; tampering immediately aborts decryption.
-- **Key Rotation**: Supported live via `manage_encryption(action="rotate_key")`
+- **Key Rotation**: Supported live via the `foresight security rotate-key` CLI
   with versioned key identifiers.
 
 ---

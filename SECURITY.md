@@ -106,7 +106,7 @@ Agent / CLI client ──── MCP protocol (stdio | HTTP) ────▶ Fore
 | Tampering              | Memory store     | Optional AES-256-GCM encryption at rest; integrity via primary keys + versioning                                           |
 | Repudiation            | Memory mutations | `memory_versions` table retains per-change history                                                                         |
 | Information disclosure | Cross-tenant     | Every read/write scoped by `tenant_id` + `user_id`; regression tests assert scope isolation (`tests/test_memory_scope.py`) |
-| Information disclosure | At rest          | `manage_encryption encrypt_all` + `FORESIGHT_ENCRYPTION_KEY`; key rotation supported                                       |
+| Information disclosure | At rest          | `foresight security encrypt-all` + `FORESIGHT_ENCRYPTION_KEY`; key rotation supported                                      |
 | Denial of service      | Retrieval path   | TF-IDF / hybrid caches with size caps; connection pooling with bounded pools                                               |
 | Elevation of privilege | Hooks            | No bundled remote code execution; hooks are local operator-installed files                                                 |
 
