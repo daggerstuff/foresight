@@ -157,6 +157,16 @@ class HybridSearchOptions:
 VALID_SIGNAL_WEIGHT_KEYS = frozenset({"keyword", "tfidf_cosine", "vector", "graph", "temporal"})
 
 
+def validate_signal_weights(weights: dict[str, float]) -> None:
+    """Raise ``ValueError`` unless every key names a supported retrieval signal."""
+    unknown = set(weights.keys()) - VALID_SIGNAL_WEIGHT_KEYS
+    if unknown:
+        raise ValueError(
+            f"Invalid signal_weight keys: {sorted(unknown)}. "
+            f"Valid keys: {sorted(VALID_SIGNAL_WEIGHT_KEYS)}"
+        )
+
+
 @dataclass
 class Rankings:
     """Bundled per-signal rankings and metadata for _build_results."""
@@ -414,7 +424,7 @@ class HybridRetriever:
         self._tfidf_cache: dict[tuple[str, str], dict] = {}
         self._tfidf_cache_lock = threading.Lock()
         self._schema_cache: dict[str, set[str]] = {}
-        self._result_cache: OrderedDict[tuple[str, str, str], Any] = OrderedDict()
+        self._result_cache: OrderedDict[tuple, Any] = OrderedDict()
         self._result_cache_lock = threading.Lock()
 
         # Entity metadata side-channel (set by _run_graph_search, consumed by _build_results)
@@ -425,12 +435,7 @@ class HybridRetriever:
         """Return weights for this request, merging per-request overrides."""
         base = self.weights.copy()
         if options.signal_weights:
-            unknown = set(options.signal_weights.keys()) - VALID_SIGNAL_WEIGHT_KEYS
-            if unknown:
-                raise ValueError(
-                    f"Invalid signal_weight keys: {sorted(unknown)}. "
-                    f"Valid keys: {sorted(VALID_SIGNAL_WEIGHT_KEYS)}"
-                )
+            validate_signal_weights(options.signal_weights)
             for k, v in _normalize_signal_weights(options.signal_weights).items():
                 base[k] = v
         # Preserve the semantic/tf-idf alias so downstream helpers can use either key.
@@ -527,12 +532,22 @@ class HybridRetriever:
         self._schema_cache[table_name] = cols
         return cols
 
-    def _cache_key(self, query: str, user_id: str, tenant_id: str) -> tuple[str, str, str, bool]:
-        """Cache key includes the rerank-stage state so cached results are
-        only reused for searches run with the same reranking configuration."""
-        return (_normalize_query(query), user_id, tenant_id, rerank_active())
+    def _cache_key(
+        self, query: str, user_id: str, tenant_id: str, weights: dict[str, float]
+    ) -> tuple[str, str, str, bool, tuple[tuple[str, float], ...]]:
+        """Cache key includes the rerank-stage state and the effective signal
+        weights, so cached results are only reused for searches run with the
+        same ranking policy (a per-request `signal_weights` override must
+        never be served from a globally-weighted result)."""
+        return (
+            _normalize_query(query),
+            user_id,
+            tenant_id,
+            rerank_active(),
+            tuple(sorted(weights.items())),
+        )
 
-    def _get_cached_result(self, cache_key: tuple[str, str, str, bool]) -> Any | None:
+    def _get_cached_result(self, cache_key: tuple) -> Any | None:
         with self._result_cache_lock:
             if cache_key in self._result_cache:
                 result = self._result_cache[cache_key]
@@ -540,7 +555,7 @@ class HybridRetriever:
                 return result
         return None
 
-    def _cache_result(self, cache_key: tuple[str, str, str, bool], result: Any) -> None:
+    def _cache_result(self, cache_key: tuple, result: Any) -> None:
         with self._result_cache_lock:
             if cache_key in self._result_cache:
                 self._result_cache.move_to_end(cache_key)
@@ -600,12 +615,18 @@ class HybridRetriever:
         # same); options.limit is re-applied after reranking.
         rerank_on = rerank_active()
         search_limit = limit * 3 if rerank_on else limit
+        # PIX-4730: resolve per-request signal weights (and reject unknown
+        # keys) before anything can be served from the result cache — the
+        # ranking policy is part of the request, so it must be validated and
+        # folded into the cache key rather than applied after the fact.
+        effective_weights = self._effective_weights(options)
+
         # PIX-4720: column filters change the candidate set, so a cached
         # result from an unfiltered query can never be reused (and vice versa).
         has_filters = _filters_active(options)
         use_cache = fast_path_enabled and not options.explain and not has_filters
 
-        cache_key = self._cache_key(query, user_id, tenant_id)
+        cache_key = self._cache_key(query, user_id, tenant_id, effective_weights)
 
         if use_cache:
             cached = self._get_cached_result(cache_key)
@@ -640,9 +661,6 @@ class HybridRetriever:
         all_ids.update(vector_ranking.keys())
         all_ids.update(graph_ranking.keys())
         all_ids.update(temporal_ranking.keys())
-
-        # Resolve per-request signal weights (PIX-4730) before any fusion/scoring.
-        effective_weights = self._effective_weights(options)
 
         if not all_ids:
             result = HybridSearchResult(

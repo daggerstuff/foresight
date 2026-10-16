@@ -76,6 +76,22 @@ def compute_overlap_score(content_a: str, content_b: str) -> float:
     return len(intersection) / len(union)
 
 
+def _inflected_forms(lemma: str) -> set[str]:
+    """Regular inflections of a lemma.
+
+    ``SENTIMENT_OPPOSITES`` stores lemmas, but memories are written in natural
+    prose — usually third person ("User loves therapy" vs "User hates
+    therapy") — so exact-word matching silently misses ``loves``/``hates`` and
+    ``liked``/``disliked``.
+    """
+    forms = {lemma, f"{lemma}s", f"{lemma}es", f"{lemma}d", f"{lemma}ed", f"{lemma}ing"}
+    if lemma.endswith("e"):
+        forms.add(f"{lemma[:-1]}ing")
+    if lemma.endswith("y"):
+        forms.add(f"{lemma[:-1]}ies")
+    return forms
+
+
 def find_sentiment_conflict(
     content_a: str, content_b: str, opposites: tuple[tuple[str, str], ...] = SENTIMENT_OPPOSITES
 ) -> tuple[str, str] | None:
@@ -89,7 +105,9 @@ def find_sentiment_conflict(
     words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
 
     for pos_word, neg_word in opposites:
-        if (pos_word in words_a and neg_word in words_b) or (neg_word in words_a and pos_word in words_b):
+        pos_forms = _inflected_forms(pos_word)
+        neg_forms = _inflected_forms(neg_word)
+        if (words_a & pos_forms and words_b & neg_forms) or (words_a & neg_forms and words_b & pos_forms):
             return (pos_word, neg_word)
 
     return None

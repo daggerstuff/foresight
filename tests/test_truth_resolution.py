@@ -86,6 +86,29 @@ class TestDetectSupersession:
     def test_low_overlap_not_flagged(self):
         assert detect_supersession("I quit my job at the office", "The sky is blue today") is None
 
+    def test_inflected_sentiment_conflict_detected(self):
+        """Conjugated opposites count: ``loves`` vs ``hates`` is a reversal.
+
+        Third-person clinical notes are written with inflected verbs, so a
+        lemma-only match silently missed every supersession recorded that way.
+        """
+        result = detect_supersession(
+            "User loves weekly poetry readings at the library",
+            "User hates weekly poetry readings at the library",
+        )
+        assert result is not None
+        assert result.signal == "sentiment_conflict"
+
+    def test_same_polarity_inflections_not_flagged(self):
+        """Two inflected statements of the same sentiment are not a reversal."""
+        assert (
+            detect_supersession(
+                "User loved weekly poetry readings at the library",
+                "User loves weekly poetry readings at the library",
+            )
+            is None
+        )
+
     def test_confidence_formula(self):
         result = detect_supersession(
             "Therapy feels helpful for my weekly sessions",

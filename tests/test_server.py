@@ -28,6 +28,8 @@ from foresight.server import (
     manage_curation_runs,
     mcp,
     memory_status,
+    query_memories_temporal,
+    search_memories,
     store_memory,
 )
 from foresight_cli.cli import _decode_tool_result
@@ -311,9 +313,24 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "manage_memory_versions",
         "process_session_transcript",
         "query_memories_temporal",
+        "reprocess_raw_events",
         "search_memories",
         "synthesize_profile",
     }
+
+
+class TestRetrievalInputContracts:
+    """Rejected retrieval arguments must fail the call, not degrade silently."""
+
+    def test_invalid_signal_weights_reach_the_caller(self):
+        """Unknown weights must not fall through to the keyword-only search."""
+        with pytest.raises(ValueError, match="Invalid signal_weight keys"):
+            search_memories(query="therapy sessions", use_hybrid=True, signal_weights={"bogus": 1.0})
+
+    def test_invalid_as_of_reaches_the_caller(self):
+        """A bad ``as_of`` must not quietly answer with current-state memories."""
+        with pytest.raises(ValueError, match="Invalid as_of"):
+            query_memories_temporal(as_of="last tuesday")
 
 
 @pytest.mark.asyncio

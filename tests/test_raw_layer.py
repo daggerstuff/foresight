@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import foresight.capture as capture_module
+from foresight import config as foresight_config
 from foresight.capture import get_capture_pipeline, reset_capture_pipeline
 from foresight.connection_pool import get_pool, reset_pool
 from foresight.memory_gc import GCConfig, MemoryGC, tombstone_raw_events
@@ -40,7 +40,7 @@ def setup_test_db(tmp_path, monkeypatch):
     pipeline.db_path = str(db_file)
 
     # Raw retention is OFF by default; tests that need it opt-in via raw_retention_enabled.
-    monkeypatch.setattr(capture_module, "RAW_RETENTION", False)
+    monkeypatch.delenv("FORESIGHT_RAW_RETENTION", raising=False)
 
     yield
     reset_pool()
@@ -52,7 +52,7 @@ def setup_test_db(tmp_path, monkeypatch):
 @pytest.fixture
 def raw_retention_enabled(monkeypatch):
     """Enable the opt-in append-only raw layer for the duration of a test."""
-    monkeypatch.setattr(capture_module, "RAW_RETENTION", True)
+    monkeypatch.setenv("FORESIGHT_RAW_RETENTION", "1")
 
 
 # ====== Shared helpers ======
@@ -116,7 +116,7 @@ def _get_raw_event_rows(db_path, **filters):
 
 class TestRawRetention:
     def test_raw_retention_off_by_default(self):
-        assert capture_module.RAW_RETENTION is False
+        assert foresight_config.raw_retention_enabled() is False
 
     def test_capture_writes_no_raw_events_when_retention_disabled(self):
         pipeline = get_capture_pipeline()

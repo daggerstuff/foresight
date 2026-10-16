@@ -9,7 +9,13 @@ from foresight.auth import AuthManager, AuthMiddleware, Role
 
 
 def _tool_result_is_error(result) -> bool:
-    return bool((result.meta or {}).get("isError"))
+    """Auth failures must set the result's ``is_error`` flag.
+
+    The flag has to live on the result itself, not in ``meta``: MCP clients
+    read ``CallToolResult.is_error`` and otherwise see a denial as a
+    successful call whose text happens to contain the denial message.
+    """
+    return bool(result.is_error)
 
 
 @pytest.fixture

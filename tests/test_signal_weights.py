@@ -266,3 +266,60 @@ class TestPerRequestSignalWeights:
         assert "b" in default_order
         assert default_order[0] == "a"
         assert weighted_order[0] == "b"
+
+
+class TestSignalWeightsOnCachedPath:
+    """A warm result cache must not ignore the request's ranking policy.
+
+    Real callers send ``signal_weights`` on the default path — fast path on, no
+    explain, no column filters — which is precisely the path where the result
+    cache can return before fusion, so the weights belong in the cache key.
+    """
+
+    @staticmethod
+    def _options(**overrides):
+        return HybridSearchOptions(
+            limit=2,
+            use_vector=False,
+            use_graph=False,
+            use_tfidf_cosine=False,
+            **overrides,
+        )
+
+    @staticmethod
+    def _top_ids(result):
+        return [r.memory_id for r in result.results[:2]]
+
+    def test_weights_apply_when_cache_is_warm(self, swapped_db):
+        retriever = HybridRetriever(swapped_db)
+
+        default_result = retriever.search("firewall", "signal_weights_user", options=self._options())
+        assert self._top_ids(default_result) == ["mem_old_match", "mem_recent_miss"]
+
+        # Prove the cache is live on this path rather than merely bypassed.
+        cached_result = retriever.search("firewall", "signal_weights_user", options=self._options())
+        assert cached_result.signal_counts["fast_path"] == "cache"
+
+        weighted_result = retriever.search(
+            "firewall",
+            "signal_weights_user",
+            options=self._options(signal_weights={"temporal": 50.0, "keyword": 0.01}),
+        )
+        assert self._top_ids(weighted_result) == ["mem_recent_miss", "mem_old_match"]
+
+        # The cached default policy stays correct for the next default search.
+        assert self._top_ids(retriever.search("firewall", "signal_weights_user", options=self._options())) == [
+            "mem_old_match",
+            "mem_recent_miss",
+        ]
+
+    def test_invalid_weights_rejected_when_cache_is_warm(self, swapped_db):
+        retriever = HybridRetriever(swapped_db)
+        retriever.search("firewall", "signal_weights_user", options=self._options())
+
+        with pytest.raises(ValueError, match="Invalid signal_weight keys"):
+            retriever.search(
+                "firewall",
+                "signal_weights_user",
+                options=self._options(signal_weights={"bogus": 1.0}),
+            )

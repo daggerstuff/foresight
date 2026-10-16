@@ -100,7 +100,13 @@ from .hooks import (
     MemoryHookType,
     get_memory_hook_registry,
 )
-from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
+from .hybrid_retriever import (
+    HybridResult,
+    HybridSearchOptions,
+    HybridSearchResult,
+    get_hybrid_retriever,
+    validate_signal_weights,
+)
 from .injection_budget import (
     DEFAULT_LANE_WEIGHTS,
     MIN_LANE_CHARS,
@@ -377,6 +383,11 @@ class TemporalWindow(BaseModel):
     trend: str | None = Field(default=None, description="Filter by trend (stable/strengthening/weakening/stale)")
     category: str | None = Field(default=None, description="Category filter")
     limit: int = Field(default=50, description="Max results")
+    as_of: str | None = Field(
+        default=None,
+        description="ISO-8601 instant for bitemporal point-in-time reconstruction "
+        "(state of memory as it was true at that instant). Takes precedence over window/trend.",
+    )
 
 
 class SystemStatusOptions(BaseModel):
@@ -1351,7 +1362,7 @@ class RateLimitMiddleware(_Middleware):
             await asyncio.sleep(5.0)
             return ToolResult(
                 content=[TextContent(type="text", text=str(e))],
-                meta={"isError": True},
+                is_error=True,
             )
         return await call_next(context)
 
@@ -1448,7 +1459,7 @@ class InputValidationMiddleware(_Middleware):
             if error:
                 return ToolResult(
                     content=[TextContent(type="text", text=f"Validation error: {error}")],
-                    meta={"isError": True},
+                    is_error=True,
                 )
         except Exception:
             logger.debug("Input validation check failed; proceeding to tool call")
@@ -2304,6 +2315,12 @@ def search_memories(
 
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
+
+    # A rejected ranking policy must fail the call: the hybrid path below
+    # catches every exception and degrades to keyword search, which would
+    # silently ignore the caller's invalid ``signal_weights``.
+    if options.signal_weights:
+        validate_signal_weights(options.signal_weights)
 
     # PIX-4720 filter bundle, used by every retrieval path.
     filters = (
@@ -5453,6 +5470,22 @@ def switch_tenant(tenant_id: str) -> str:
 # =============================================================================
 
 
+def _parse_as_of(value: str) -> datetime:
+    """Parse an ``as_of`` instant into an aware UTC datetime.
+
+    Rejects bad input loudly: a silently-ignored ``as_of`` would return
+    current-state answers while looking like a point-in-time result.
+    """
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Invalid as_of {value!r}: expected an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 @mcp.tool(output_schema=None)
 def query_memories_temporal(
     options: TemporalWindow | None = None,
@@ -5461,17 +5494,21 @@ def query_memories_temporal(
     trend: str | None = None,
     category: str | None = None,
     limit: int | None = None,
+    as_of: str | None = None,
 ) -> str:
     """
-    Query memories based on temporal signals (window, trend).
+    Query memories based on temporal signals (window, trend, or point-in-time).
 
     Args:
-        options: Temporal query parameters (window, trend, category, limit)
+        options: Temporal query parameters (window, trend, category, limit, as_of)
         user_id: Optional user ID override
         window: Flat parameter for time window (optional)
         trend: Flat parameter for trend filter (optional)
         category: Flat parameter for category filter (optional)
         limit: Flat parameter for max results (optional)
+        as_of: ISO-8601 instant; reconstructs memory state as of that point in
+            time (bitemporal: honors validity intervals and edit history).
+            Takes precedence over window and trend.
     """
     if options is None:
         kwargs = {}
@@ -5483,12 +5520,21 @@ def query_memories_temporal(
             kwargs["category"] = category
         if limit is not None:
             kwargs["limit"] = limit
+        if as_of is not None:
+            kwargs["as_of"] = as_of
         options = TemporalWindow(**kwargs)
 
     uid = user_id or USER_ID
     builder = get_temporal_query_builder()
 
-    if options.trend:
+    if options.as_of:
+        results = builder.get_memories_as_of_time(
+            user_id=uid,
+            target_date=_parse_as_of(options.as_of),
+            category=options.category,
+            min_importance=0.1,
+        )
+    elif options.trend:
         results = builder.get_memories_by_trend(
             user_id=uid, trend=options.trend, limit=options.limit, category=options.category
         )
@@ -7117,6 +7163,50 @@ def get_decay_events(
             "action": "get_decay_events",
             "count": len(events),
             "events": [e.to_dict() for e in events],
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def reprocess_raw_events(
+    window_start: str | None = None,
+    window_end: str | None = None,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+) -> str:
+    """Rebuild derived memories from the append-only raw-events layer.
+
+    Replays stored raw observations for a user through classification and
+    extraction, relying on dedupe so repeated runs never create duplicates.
+    Requires ``FORESIGHT_RAW_RETENTION`` to be enabled for the server; the flag
+    is read per call, so it can be set in the process environment or in the
+    ``.env`` the server loads at startup.
+
+    Args:
+        window_start: ISO-8601 start of the reprocess window (inclusive)
+        window_end: ISO-8601 end of the reprocess window (inclusive)
+        user_id: Optional user ID override
+        tenant_id: Optional tenant ID override
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_account_id()
+
+    _check_rate_limit(tid)
+
+    pipeline = get_capture_pipeline()
+    stats = pipeline.reprocess(
+        user_id=uid,
+        tenant_id=tid,
+        start_time=window_start,
+        end_time=window_end,
+        infer=True,
+    )
+    return json.dumps(
+        {
+            "ok": True,
+            "action": "reprocess_raw_events",
+            "reprocess": stats.to_dict(),
         },
         indent=2,
     )

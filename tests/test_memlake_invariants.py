@@ -31,7 +31,6 @@ def ml_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
     monkeypatch.setenv("FORESIGHT_RAW_RETENTION", "1")
 
-    import foresight.capture as capture_module
     import foresight.config as config_module
     import foresight.connection_pool as conn_pool_module
     import foresight.server as server_module
@@ -46,7 +45,6 @@ def ml_db(tmp_path, monkeypatch):
     monkeypatch.setattr(conn_pool_module, "DB_PATH", db_path)
     monkeypatch.setattr(server_module, "DB_PATH", db_path)
     monkeypatch.setattr(subconscious_module, "DB_PATH", db_path)
-    monkeypatch.setattr(capture_module, "RAW_RETENTION", True)
 
     reset_pool()
     set_current_user_id("_test_user_")

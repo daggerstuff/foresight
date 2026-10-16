@@ -588,7 +588,7 @@ class AuthMiddleware(_Middleware):
     def _error_result(message: str) -> ToolResult:
         return ToolResult(
             content=[TextContent(type="text", text=message)],
-            meta={"isError": True},
+            is_error=True,
         )
 
     async def on_call_tool(self, context, call_next):
