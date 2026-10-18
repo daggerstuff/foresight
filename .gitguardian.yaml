@@ -1,0 +1,25 @@
+# ggshield configuration — secret-scan exclusions.
+#
+# `version: 2` is REQUIRED: without it ggshield falls back to the legacy config
+# format and silently ignores `secret.ignored_paths`, re-scanning .git/config.
+version: 2
+
+# `secret.ignored_paths` (v2 nested key) is the authoritative exclusion list for
+# both the pre-commit gate (.pre-commit-config.yaml) and the CI tree scan
+# (.github/workflows/secrets-scan.yml). We keep it here so the two scanners
+# never drift.
+secret:
+  # `.git/` is excluded because its `config` carries remote URLs
+  # (git@host:org/repo) that ggshield mis-flags as secrets in CI submodule
+  # checkouts. VCS internals are never secret-bearing by design.
+  #
+  # Trailing slashes are REQUIRED: ggshield's path matcher (`is_path_excluded`)
+  # only matches directory *contents* when the pattern ends in `/`. A bare `.git`
+  # matches only a file literally named `.git` and would still scan `.git/config`.
+  ignored_paths:
+    - .git/
+    - .venv/
+    - dist/
+    - build/
+    - node_modules/
+    - '*.min.js'

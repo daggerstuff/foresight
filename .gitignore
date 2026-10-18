@@ -53,3 +53,22 @@ scripts/.temp/
 
 # Qoder local agent settings
 .qoder/
+
+# Stale pre-refactor copies at repo root (superseded by foresight/backend/*)
+/backend_factory.py
+/postgres_backend.py
+/connection_pool.py
+/patch_checks.py
+/foresight/schema.py
+/foresight/triggers.py
+/foresight/cluster_service.py
+/foresight/backend/sqlite_backend.py
+
+# Local artifacts (transient runs, stray test DBs, bot patches, Replit env)
+/:memory:.ses
+/postgres
+/eval_report.json
+*.backup
+*.patch
+.replit
+replit.md

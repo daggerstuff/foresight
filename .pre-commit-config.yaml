@@ -1,0 +1,23 @@
+# GitGuardian pre-commit hook — gates `git commit` on a ggshield secret scan
+# of the staged diff so a credential can never land in a future commit.
+#
+# Install once per clone:
+#
+#     pipx install pre-commit      # or uv tool install pre-commit
+#     pre-commit install
+#
+# The `ggshield` Python package reads the same `GITGUARDIAN_API_KEY`
+# environment variable that the CI workflow consumes (see
+# .github/workflows/secrets-scan.yml). Per GitGuardian's documented recipe
+# the hook needs no extra args — the `pre-commit` hook id already wraps
+# `ggshield secret scan pre-commit`. To skip the gate for a single commit
+# (e.g. when you don't have the API key in your local environment), use
+# `SKIP=ggshield git commit -m "..."`.
+
+repos:
+  - repo: https://github.com/gitguardian/ggshield
+    rev: v1.52.2
+    hooks:
+      - id: ggshield
+        stages: [pre-commit]
+        language_version: python3
