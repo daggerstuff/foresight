@@ -35,12 +35,12 @@ classifiers = [
 ]
 
 dependencies = [
-  "fastmcp>=4.1.0",
+  "fastmcp>=4.1.3",
   # Imported directly (mcp.types.TextContent, mcp.server.auth) but otherwise
   # arrives transitively through fastmcp[client,server] — not a contract we own.
   # Lower bound is the 2.0 rename of CallToolResult.isError to is_error.
-  "mcp>=2.2.0,<3.0.0",
-  "python-dotenv>=1.0.0",
+  "mcp>=2.3.0,<3.0.0",
+  "python-dotenv>=1.2.4",
   "psycopg[binary,pool]>=3.3.6",
   "redis>=8.1.0,<9.0",
   "psycopg-pool>=3.3.3",
@@ -61,8 +61,8 @@ embeddings = ["fastembed>=0.9.0"]
 # Document ingestion (PIX-4704). Opt-in and fully local: pypdf extracts text
 # from PDFs, pytesseract+Pillow OCR raster images (also needs the `tesseract`
 # binary on PATH). Kept optional so a bare install stays dependency-light.
-pdf = ["pypdf>=6.20.0"]
-ocr = ["pytesseract>=0.3.13", "Pillow>=12.3.0"]
+pdf = ["pypdf>=6.21.2"]
+ocr = ["pytesseract>=0.3.13", "Pillow>=13.0.0"]
 documents = ["foresight[pdf,ocr]"]
 all = ["foresight[cli,tui,redis,embeddings,pdf,ocr]"]
 dev = [
@@ -101,7 +101,7 @@ dev = [
   "typer>=0.27.3",
   "rich>=15.0.0",
   "textual>=8.2.8",
-  "ruff>=0.17.0",
+  "ruff>=0.17.1",
   "bandit>=1.9.4",
   "twine>=7.0.0",
 ]
