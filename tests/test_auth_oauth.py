@@ -1,4 +1,10 @@
-"""Tests for ForesightOAuthProvider — in-memory OAuth 2.1 server with DCR."""
+"""Tests for ForesightOAuthProvider — OAuth 2.1 server with DCR.
+
+These tests exercise the OAuth protocol (registration, authorization, code /
+refresh exchange, bearer validation) and are run memory-only. The durable
+(Postgres-backed) persistence behavior is covered separately in
+``test_auth_oauth_store.py``.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +15,12 @@ from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, TokenE
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl
 
-from foresight.auth_oauth import ForesightOAuthProvider
+from foresight.auth_oauth import MEMORY_ONLY_DB, ForesightOAuthProvider
 
 
 def _make_provider() -> ForesightOAuthProvider:
-    return ForesightOAuthProvider(base_url="http://localhost:8766")
+    # Memory-only: decouples these protocol tests from any active DB backend.
+    return ForesightOAuthProvider(base_url="http://localhost:8766", db_path=MEMORY_ONLY_DB)
 
 
 def _make_client(

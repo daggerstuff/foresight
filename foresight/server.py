@@ -1486,6 +1486,9 @@ if _oauth_base_url:
         base_url=_oauth_base_url,
         service_documentation_url=os.environ.get("FORESIGHT_OAUTH_DOCS_URL"),
     )
+    # The static external-connector client (FORESIGHT_OAUTH_STATIC_CLIENT_ID
+    # etc.) is seeded in main(), after the database backend is initialized —
+    # see _seed_static_oauth_client().
     mcp = FastMCP(
         "Foresight",
         instructions=FORESIGHT_SERVER_INSTRUCTIONS,
@@ -1517,6 +1520,60 @@ if not logger.handlers:
 
 if _oauth_base_url:
     logger.info("OAuth provider enabled (base_url=%s)", _oauth_base_url)
+
+def _seed_static_oauth_client() -> None:
+    """Seed the statically configured external-connector OAuth client if absent.
+
+    Cloud MCP connectors (e.g. Gemini) store the client_id issued by a
+    previous /register call and reuse it on every reconnect. The SDK's DCR
+    endpoint always mints a fresh UUID, so a server restart would strand the
+    connector's client ("Client ID not found"). The provider persists clients
+    durably, so a restarted process usually re-hydrates the client from the
+    store and this is a no-op — but on a first deploy (empty store) it seeds
+    the client as a public client (method "none"): the SDK skips secret
+    verification for it, while PKCE is still enforced, so an intercepted
+    authorization code without its verifier is unusable.
+
+    Must run after ``_initialize_backend()`` so the seed-if-absent check can
+    consult the durable store. The check is idempotent: it only registers
+    when the client is not already known (memory or store), so a later
+    re-registration by the connector — which may carry different metadata —
+    is not clobbered on restart.
+    """
+    if not _oauth_base_url:
+        return
+    static_client_id = os.environ.get("FORESIGHT_OAUTH_STATIC_CLIENT_ID")
+    static_redirect_uri = os.environ.get("FORESIGHT_OAUTH_STATIC_REDIRECT_URI")
+    if not (static_client_id and static_redirect_uri):
+        return
+    try:
+        import asyncio
+
+        from mcp.shared.auth import OAuthClientInformationFull
+
+        async def _seed() -> None:
+            if await _oauth_provider.get_client(static_client_id) is not None:
+                return
+            await _oauth_provider.register_client(
+                OAuthClientInformationFull(
+                    client_id=static_client_id,
+                    client_name=os.environ.get(
+                        "FORESIGHT_OAUTH_STATIC_CLIENT_NAME",
+                        "External MCP Connector",
+                    ),
+                    redirect_uris=[static_redirect_uri],
+                    grant_types=["authorization_code", "refresh_token"],
+                    response_types=["code"],
+                    token_endpoint_auth_method="none",
+                    application_type="web",
+                )
+            )
+
+        # get_client/register_client are coroutine calls; a throwaway loop is
+        # safe here — the real event loop is created later by mcp.run().
+        asyncio.run(_seed())
+    except Exception as exc:
+        logger.warning("Static OAuth client seed skipped: %s", exc)
 
 RowLike = Mapping[str, Any]
 
@@ -1575,6 +1632,27 @@ async def health_endpoint(_request: Request) -> JSONResponse:
     payload = _health_status_dict()
     code = 200 if payload.get("status") in {"ok", "degraded"} else 503
     return JSONResponse(payload, status_code=code)
+
+if _oauth_base_url:
+
+    @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+    async def oauth_protected_resource_root(_request: Request) -> JSONResponse:
+        """RFC 9728 Protected Resource Metadata at the canonical root path.
+
+        FastMCP serves this document only at the resource-suffixed path
+        (``/.well-known/oauth-protected-resource/mcp``). Some OAuth clients
+        (e.g. Gemini's MCP connector) probe the canonical root path first and
+        treat a 404 there as "not a valid MCP server" before ever reaching the
+        authorization flow. Serve the same document at both paths.
+        """
+        return JSONResponse(
+            {
+                "resource": f"{_oauth_base_url.rstrip('/')}/mcp",
+                "authorization_servers": [_oauth_base_url.rstrip("/") + "/"],
+                "scopes_supported": [],
+                "bearer_methods_supported": ["header"],
+            }
+        )
 
 
 def _cleanup_background_systems() -> None:
@@ -5303,6 +5381,11 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
     # Create and connect the database backend (PIX-3994)
     _initialize_backend()
+
+    # Seed the static external-connector OAuth client now that the backend
+    # (and thus the provider's durable store) is reachable. No-op when OAuth
+    # is disabled or the static client env vars are unset.
+    _seed_static_oauth_client()
 
     # Initialize Redis companion (PIX-3995) — must come after backend init
     _initialize_redis()
