@@ -5364,6 +5364,16 @@ def _run_scheduled_maintenance_gc() -> None:
         except Exception:
             logger.exception("Ghost cleanup failed for tenant=%s", tid)
 
+    if _oauth_base_url:
+        try:
+            from . import oauth_store
+
+            purged = oauth_store.purge_expired(DB_PATH)
+            if purged:
+                logger.info("OAuth store purged %d expired code/token row(s)", purged)
+        except Exception:
+            logger.warning("OAuth store purge failed (non-fatal)", exc_info=True)
+
     logger.info("Maintenance/GC cycle complete")
 
 
