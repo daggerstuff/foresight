@@ -2814,25 +2814,39 @@ def manage_context_blocks(
     content: str | None = None,
 ) -> str:
     """
-    Manage Foresight context blocks (guidance, preferences, context).
+    List, read, or update the user's standing context blocks (guidance,
+    preferences, project context).
+
+    Call this when the user asks to list, show, view, read, or recall their
+    context blocks, saved preferences, or standing guidance.
+
+    Actions:
+        list: show every block and its content — call with {"action": "list"}
+        get: read one block (add "label")
+        update: replace a block's content ("label" + "content")
+        reset: restore a block to its default
+        clear: empty a block
 
     Args:
         options: Action and parameters (list, get, update, reset, clear)
         user_id: Optional user ID override
-        action: Flat parameter for action (optional, fallback if options not provided)
-        label: Flat parameter for block label (optional, fallback if options not provided)
+        action: Operation to perform: list, get, update, reset, or clear
+        label: Block label for get/update/reset/clear
         block_name: Alias for label (optional)
         block_type: Alias for label (optional)
         name: Alias for label (optional)
         block: Alias for label (optional)
         block_id: Alias for label (optional)
         key: Alias for label (optional)
-        content: Flat parameter for block content (optional, fallback if options not provided)
+        content: New block content for update
     """
     resolved_label = label or block_name or block_type or name or block or block_id or key
     if options is None:
         if action is None:
-            return "Error: either 'options' or 'action' must be provided."
+            return (
+                "Error: either 'options' or 'action' must be provided. "
+                "Use action='list' to list all blocks."
+            )
         options = ContextBlockAction(action=action, label=resolved_label, content=content)
     elif not options.label and resolved_label:
         options.label = resolved_label
