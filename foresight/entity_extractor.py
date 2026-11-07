@@ -31,10 +31,19 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, cast
 
+from foresight.llm_providers.openai import chat_completions_url
+
 logger = logging.getLogger("foresight_entity_extractor")
+
+# Reasoning models (e.g. NIM minimax-m3.1-flash) spend most of the budget on
+# reasoning_content before emitting the JSON payload; observed wall times are
+# 50-115s for a 4096-token extraction. A shorter read timeout silently degrades
+# to rule-based extraction, so keep this generous.
+_LLM_TIMEOUT_SECONDS = 180.0
 
 # Optional httpx dependency for external API calls
 try:
@@ -241,7 +250,7 @@ Output (raw JSON only, no markdown):
         self,
         api_key: str | None = None,
         model: str | None = None,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         temperature: float = 0.1,
         provider: str | None = None,
         base_url: str | None = None,
@@ -254,7 +263,9 @@ Output (raw JSON only, no markdown):
                      ANTHROPIC_API_KEY / OPENAI_API_KEY env vars if not provided.
             model: Model to use for LLM extraction. Falls back to
                    FORESIGHT_LLM_MODEL env var, then provider default.
-            max_tokens: Max tokens for LLM response.
+            max_tokens: Max tokens for LLM response. The default leaves room for
+                the full entity/relationship array; a smaller budget truncates
+                the JSON mid-document.
             temperature: Sampling temperature (low = more deterministic).
             provider: LLM provider ("anthropic" or "openai"). Reads
                       FORESIGHT_LLM_PROVIDER env var if not provided.
@@ -432,7 +443,7 @@ Output (raw JSON only, no markdown):
         """Extract entities via Anthropic Messages API."""
         if httpx is None:
             raise RuntimeError("httpx is not installed")
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -450,6 +461,8 @@ Output (raw JSON only, no markdown):
             response.raise_for_status()
 
         data = response.json()
+        if data.get("stop_reason") == "max_tokens":
+            logger.warning("Entity extraction hit max_tokens=%d; response truncated", self.max_tokens)
         json_text: str = data["content"][0]["text"]
         return self._parse_llm_response(json_text, content)
 
@@ -457,8 +470,8 @@ Output (raw JSON only, no markdown):
         """Extract entities via OpenAI-compatible API (NVIDIA NIM, Azure, etc.)."""
         if httpx is None:
             raise RuntimeError("httpx is not installed")
-        api_url = self.base_url or "https://api.openai.com/v1/chat/completions"
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        api_url = chat_completions_url(self.base_url)
+        async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 api_url,
                 headers={
@@ -475,8 +488,67 @@ Output (raw JSON only, no markdown):
             response.raise_for_status()
 
         data = response.json()
-        json_text: str = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            logger.warning("Entity extraction hit max_tokens=%d; response truncated", self.max_tokens)
+        json_text: str = choice["message"]["content"]
         return self._parse_llm_response(json_text, content)
+
+    @staticmethod
+    def _structural_chars(text: str) -> Iterator[tuple[int, str]]:
+        """Yield ``(index, char)`` pairs for characters outside JSON strings."""
+        in_string = False
+        escaped = False
+        for i, ch in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            yield i, ch
+
+    @classmethod
+    def _salvage_json(cls, text: str) -> dict[str, Any] | None:
+        """Recover the complete elements of a JSON document cut off mid-stream.
+
+        Scans ``text`` for the last point where a container element closed
+        while the outer object was still open, then closes the remaining
+        containers. Returns ``None`` when nothing salvageable is found.
+        """
+        start = text.find("{")
+        if start < 0:
+            return None
+        text = text[start:]
+
+        stack: list[str] = []
+        best: dict[str, Any] | None = None
+        for i, ch in cls._structural_chars(text):
+            if ch in "{[":
+                stack.append(ch)
+                continue
+            if ch not in "}]":
+                continue
+            if not stack:
+                return None
+            opener = stack.pop()
+            if (opener, ch) not in (("{", "}"), ("[", "]")):
+                return None
+            if not stack:
+                continue
+            closers = "".join("}" if o == "{" else "]" for o in reversed(stack))
+            try:
+                parsed = json.loads(text[: i + 1] + closers)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                best = parsed
+        return best
 
     def _parse_llm_response(self, json_text: str, content: str) -> ExtractionResult:
         """Parse LLM JSON response into ExtractionResult."""
@@ -484,7 +556,13 @@ Output (raw JSON only, no markdown):
         json_text = self._FENCE_END_RE.sub("", json_text)
         json_text = json_text.strip()
 
-        parsed = json.loads(json_text)
+        try:
+            parsed = json.loads(json_text)
+        except json.JSONDecodeError:
+            parsed = self._salvage_json(json_text)
+            if parsed is None:
+                raise
+            logger.warning("Entity extraction JSON was truncated; kept complete elements only")
 
         entities = [
             Entity(

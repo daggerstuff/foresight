@@ -21,6 +21,22 @@ DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
+def chat_completions_url(base_url: str) -> str:
+    """Resolve a configured base URL to a Chat Completions endpoint.
+
+    ``FORESIGHT_LLM_BASE_URL`` is documented as an OpenAI-compatible *base*
+    URL (``https://integrate.api.nvidia.com/v1``), so posting to it verbatim
+    hits the API root and returns 404. Accept either form: a full endpoint is
+    used as-is, a base URL gets ``/chat/completions`` appended.
+    """
+    url = base_url.strip().rstrip("/")
+    if not url:
+        return DEFAULT_API_URL
+    if url.endswith("/chat/completions"):
+        return url
+    return f"{url}/chat/completions"
+
+
 class OpenAIClient:
     provider: str = "openai"
 
@@ -37,7 +53,7 @@ class OpenAIClient:
             raise LLMError("model is required and must be a non-empty string")
         self._api_key = api_key
         self.model = model
-        self._api_url = base_url.strip() or DEFAULT_API_URL
+        self._api_url = chat_completions_url(base_url)
 
     @classmethod
     def from_env(cls) -> OpenAIClient:
@@ -100,4 +116,4 @@ class OpenAIClient:
         raise LLMError(f"OpenAI API returned no message content: {payload[:200]}")
 
 
-__all__ = ["DEFAULT_MODEL", "OpenAIClient"]
+__all__ = ["DEFAULT_MODEL", "OpenAIClient", "chat_completions_url"]

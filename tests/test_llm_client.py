@@ -26,7 +26,7 @@ from foresight.llm_client import (
     get_default_client,
 )
 from foresight.llm_providers.anthropic import AnthropicClient
-from foresight.llm_providers.openai import OpenAIClient
+from foresight.llm_providers.openai import OpenAIClient, chat_completions_url
 
 
 def _header_lookup(headers: Any, key: str) -> str:
@@ -218,6 +218,36 @@ def test_openai_client_complete_success() -> None:
     assert body["model"] == "gpt-test"
     assert body["max_tokens"] == 1024
     assert body["messages"] == [{"role": "user", "content": "summarize this"}]
+
+
+def test_openai_base_url_resolves_to_chat_completions() -> None:
+    """A provider base URL must not be posted to verbatim (NIM returns 404)."""
+    client = OpenAIClient(
+        api_key="test-key",
+        model="minimaxai/minimax-m3.1-flash",
+        base_url="https://integrate.api.nvidia.com/v1",
+    )
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    with patch("urllib.request.urlopen", return_value=_make_urlopen_response(payload)) as mock_urlopen:
+        client.complete("p")
+    assert mock_urlopen.call_args.args[0].full_url == ("https://integrate.api.nvidia.com/v1/chat/completions")
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("https://integrate.api.nvidia.com/v1", "https://integrate.api.nvidia.com/v1/chat/completions"),
+        ("https://integrate.api.nvidia.com/v1/", "https://integrate.api.nvidia.com/v1/chat/completions"),
+        (
+            "https://api.openai.com/v1/chat/completions",
+            "https://api.openai.com/v1/chat/completions",
+        ),
+        ("https://api.openai.com/v1/chat/completions/", "https://api.openai.com/v1/chat/completions"),
+        ("  ", "https://api.openai.com/v1/chat/completions"),
+    ],
+)
+def test_chat_completions_url_normalizes_base_urls(base_url: str, expected: str) -> None:
+    assert chat_completions_url(base_url) == expected
 
 
 def test_openai_client_rejects_empty_prompt() -> None:
