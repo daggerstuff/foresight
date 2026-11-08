@@ -5,6 +5,8 @@ overrides:
   body-parser: 1.20.6
   http-proxy-middleware: 2.0.10
   joi: 17.13.7
+  # qs: CVE-2026-82417 + CVE-2026-82562 (DoS), fixed in 6.16.0
+  qs: 6.16.2
   uuid: 11.1.1
   webpack-dev-server: 5.2.6
   webpack-dev-middleware: 7.4.6
