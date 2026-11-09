@@ -72,3 +72,11 @@ scripts/.temp/
 *.patch
 .replit
 replit.md
+
+# Provisioned review-bot / agent configs (environment tooling, not source)
+.coderabbit.yaml
+.cursor/
+.greptile/
+.pr_agent.toml
+.sourcery.yaml
+cubic.yaml
