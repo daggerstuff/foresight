@@ -123,6 +123,17 @@ class SearchBody(BaseModel):
         default=None,
         description="Per-request RRF signal-weight overrides (keyword, tfidf_cosine, vector, graph, temporal)",
     )
+    query_rewrite: bool | None = Field(
+        default=None,
+        description="Question-to-statement query rewriting (statement + content-core variants merged per signal). "
+        "None resolves via FORESIGHT_QUERY_REWRITE (on by default); False restores legacy behavior.",
+    )
+    max_rewrite_variants: int | None = Field(
+        default=None,
+        ge=1,
+        le=5,
+        description="Maximum query variants per search (original + rewrites)",
+    )
 
 
 class InjectBody(BaseModel):

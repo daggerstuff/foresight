@@ -44,6 +44,12 @@ from typing import Any, ClassVar
 
 from .backend.base import DatabaseBackend
 from .connection_pool import get_pool
+from .query_rewrite import (
+    llm_rewrite_enabled,
+    merge_variant_rankings,
+    query_rewrite_enabled,
+    rewrite_variants,
+)
 from .reranker import get_reranker, rerank_active, score_to_multiplier
 from .rrf_tuning import get_rrf_config
 
@@ -152,6 +158,12 @@ class HybridSearchOptions:
     # one or more signal names (keyword, tfidf_cosine, vector, graph, temporal)
     # to a non-negative float. Unknown keys raise ValueError.
     signal_weights: dict[str, float] | None = None
+    # Query rewriting: run question-form queries through statement-form /
+    # content-core variants (see query_rewrite.py) and merge per-signal
+    # rankings across variants. None resolves via FORESIGHT_QUERY_REWRITE
+    # (deterministic stage on by default); False restores legacy behavior.
+    query_rewrite: bool | None = None
+    max_rewrite_variants: int = 3
 
 
 VALID_SIGNAL_WEIGHT_KEYS = frozenset({"keyword", "tfidf_cosine", "vector", "graph", "temporal"})
@@ -533,18 +545,26 @@ class HybridRetriever:
         return cols
 
     def _cache_key(
-        self, query: str, user_id: str, tenant_id: str, weights: dict[str, float]
-    ) -> tuple[str, str, str, bool, tuple[tuple[str, float], ...]]:
+        self,
+        query: str,
+        user_id: str,
+        tenant_id: str,
+        weights: dict[str, float],
+        rewrite_signature: tuple[str, ...] = (),
+    ) -> tuple[str, str, str, bool, tuple[tuple[str, float], ...], tuple[str, ...]]:
         """Cache key includes the rerank-stage state and the effective signal
         weights, so cached results are only reused for searches run with the
         same ranking policy (a per-request `signal_weights` override must
-        never be served from a globally-weighted result)."""
+        never be served from a globally-weighted result). The rewrite
+        signature (normalized query variants) keeps rewritten and legacy
+        searches from sharing cache entries."""
         return (
             _normalize_query(query),
             user_id,
             tenant_id,
             rerank_active(),
             tuple(sorted(weights.items())),
+            tuple(rewrite_signature),
         )
 
     def _get_cached_result(self, cache_key: tuple) -> Any | None:
@@ -626,7 +646,25 @@ class HybridRetriever:
         has_filters = _filters_active(options)
         use_cache = fast_path_enabled and not options.explain and not has_filters
 
-        cache_key = self._cache_key(query, user_id, tenant_id, effective_weights)
+        # Query rewriting: question-form queries gain statement-form /
+        # content-core variants (query_rewrite.py). Each lexical signal runs
+        # every variant and merges per-variant rankings; the temporal signal
+        # is query-independent and still runs once.
+        rewrite_on = options.query_rewrite if options.query_rewrite is not None else query_rewrite_enabled()
+        if rewrite_on:
+            variant_cap = max(1, min(int(options.max_rewrite_variants or 1), 5))
+            variants = rewrite_variants(
+                query,
+                max_variants=variant_cap,
+                llm_assist=llm_rewrite_enabled(),
+                user_id=user_id,
+                tenant_id=tenant_id,
+            )
+        else:
+            variants = [query]
+        rewrite_signature = tuple(_normalize_query(v) for v in variants)
+
+        cache_key = self._cache_key(query, user_id, tenant_id, effective_weights, rewrite_signature)
 
         if use_cache:
             cached = self._get_cached_result(cache_key)
@@ -634,12 +672,16 @@ class HybridRetriever:
                 cached.signal_counts["fast_path"] = "cache"
                 return cached
 
-        keyword_ranking = self._run_keyword_search(query, user_id, tenant_id, search_limit) if use_keyword else {}
-        tfidf_cosine_ranking = (
-            self._run_tfidf_search(query, user_id, tenant_id, search_limit) if use_tfidf_cosine else {}
-        )
-        vector_ranking = self._run_vector_search(query, user_id, tenant_id, search_limit) if use_vector else {}
-        graph_ranking = self._run_graph_search(query, user_id, tenant_id, search_limit) if use_graph else {}
+        def _run_merged(run: Any) -> dict[str, int]:
+            per_variant = [run(v, user_id, tenant_id, search_limit) for v in variants]
+            if len(per_variant) == 1:
+                return per_variant[0]
+            return merge_variant_rankings(per_variant)
+
+        keyword_ranking = _run_merged(self._run_keyword_search) if use_keyword else {}
+        tfidf_cosine_ranking = _run_merged(self._run_tfidf_search) if use_tfidf_cosine else {}
+        vector_ranking = _run_merged(self._run_vector_search) if use_vector else {}
+        graph_ranking = _run_merged(self._run_graph_search) if use_graph else {}
         temporal_ranking = (
             self._run_temporal_search(user_id, tenant_id, search_limit, min_importance) if use_temporal else {}
         )
@@ -675,7 +717,14 @@ class HybridRetriever:
                 },
             )
             if options.explain:
-                result.score_details = self._build_score_details(result, options, rerank_on, None, effective_weights)
+                result.score_details = self._build_score_details(
+                    result,
+                    options,
+                    rerank_on,
+                    None,
+                    effective_weights,
+                    {"enabled": rewrite_on, "variants": list(variants)},
+                )
             if use_cache:
                 self._cache_result(cache_key, result)
             return result
@@ -722,14 +771,22 @@ class HybridRetriever:
             # re-apply it here to keep the filtered contract identical.
             results = results[:limit]
 
+        extra_signals: dict[str, int | str] = {}
+        if rerank_provider:
+            extra_signals["rerank"] = rerank_provider
+        if rewrite_on and len(variants) > 1:
+            extra_signals["query_rewrite"] = len(variants)
+        rewrite_info: dict[str, object] = {"enabled": rewrite_on, "variants": list(variants)}
         result = self._make_search_result(
             results,
             all_ids,
             rankings,
-            extra_signals={"rerank": rerank_provider} if rerank_provider else None,
+            extra_signals=extra_signals or None,
         )
         if options.explain:
-            result.score_details = self._build_score_details(result, options, rerank_on, rerank_provider, effective_weights)
+            result.score_details = self._build_score_details(
+                result, options, rerank_on, rerank_provider, effective_weights, rewrite_info
+            )
         if use_cache:
             self._cache_result(cache_key, result)
         return result
@@ -821,6 +878,7 @@ class HybridRetriever:
         rerank_on: bool,
         rerank_provider: str | None,
         weights: dict[str, float] | None = None,
+        rewrite_info: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """mem0-style explain output (PIX-4701): signal weights, the maximum
         achievable fused score for this query, the candidate-importance
@@ -847,6 +905,7 @@ class HybridRetriever:
             "per_signal_max": per_signal_max,
             "min_importance_threshold": options.min_importance,
             "rerank": {"enabled": rerank_on, "applied": rerank_provider is not None, "provider": rerank_provider},
+            "query_rewrite": rewrite_info or {"enabled": False, "variants": []},
         }
 
     def _keyword_search(

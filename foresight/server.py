@@ -307,6 +307,18 @@ class SearchOptions(BaseModel):
         default=None,
         description="Per-request RRF signal-weight overrides (keyword, tfidf_cosine, vector, graph, temporal)",
     )
+    query_rewrite: bool | None = Field(
+        default=None,
+        description="Question-to-statement query rewriting (statement + content-core "
+        "variants merged per signal). None resolves via FORESIGHT_QUERY_REWRITE "
+        "(on by default); False restores legacy single-query behavior.",
+    )
+    max_rewrite_variants: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Maximum query variants per search (original + rewrites)",
+    )
 
 
 class ContextBlockAction(BaseModel):
@@ -2534,6 +2546,8 @@ def search_memories(
                     tags=options.tags,
                     memory_type=options.memory_type,
                     signal_weights=options.signal_weights,
+                    query_rewrite=options.query_rewrite,
+                    max_rewrite_variants=options.max_rewrite_variants,
                 ),
             )
             if options.debug:
