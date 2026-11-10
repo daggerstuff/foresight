@@ -5,43 +5,32 @@ Desktop** — hooks, skills, and `.mcp.json` don't exist on claude.ai. On the
 web/mobile app the only option is a **custom MCP connector**, which gives you
 the Foresight tools but none of the automatic context injection or capture.
 
-## Requirements
+## You already have a public endpoint
 
-claude.ai connectors need a **public HTTPS URL**. `127.0.0.1:8764` is
-localhost-only, so expose the server first, and keep auth enabled — never
-expose Foresight unauthenticated.
+Foresight is exposed publicly via Cloudflare Tunnel with full OAuth:
 
-### Option A: Tunnel (quickest)
+- **MCP URL:** `https://foresight.pixelated.love/mcp`
+- **Health:** `https://foresight.pixelated.love/health`
+- Served by the `foresight-oauth.service` systemd user unit (local upstream
+  `127.0.0.1:8765`, `FORESIGHT_REQUIRE_API_KEY=1`).
+- OAuth metadata is live:
+  `/.well-known/oauth-protected-resource` and
+  `/.well-known/oauth-authorization-server` (authorization code + PKCE,
+  dynamic client registration at `/register`).
 
-```bash
-# Cloudflare Tunnel (named tunnel or quick tunnel)
-cloudflared tunnel --url http://127.0.0.1:8764
+The fleet nodes (`billy`, `gnasty`) share the same brain through the common
+Neon Postgres backend — this public endpoint fronts the same store.
 
-# or ngrok
-ngrok http 8764
-```
-
-This gives you `https://<something>.trycloudflare.com` (or your ngrok URL).
-The MCP endpoint is `<url>/mcp`.
-
-> Quick tunnels are ephemeral — the URL changes each run. For anything
-> semi-permanent, use a named Cloudflare Tunnel or deploy Foresight properly.
-
-### Option B: Deploy
-
-Run `foresight-server --host 0.0.0.0 --port 8764` behind your own HTTPS
-reverse proxy (Caddy/nginx/ALB) with a real domain.
-
-## Add the connector
+## Add the connector (web & mobile)
 
 1. claude.ai → **Settings → Connectors → Add custom connector**
-   (on mobile: profile → Settings → Connectors).
-2. URL: `https://<your-host>/mcp`
-3. If prompted for auth, use your Foresight API key as a Bearer token
-   (claude.ai connector auth support varies by client — if it can't send
-   headers, terminate auth at your proxy/tunnel instead, e.g. Cloudflare
-   Access or ngrok's auth, and keep `FORESIGHT_ALLOW_UNAUTHENTICATED` off
-   by having the proxy inject the `Authorization` header).
+   (mobile: profile → Settings → Connectors).
+2. URL: `https://foresight.pixelated.love/mcp`
+3. Complete the OAuth flow when prompted — approve access in the browser.
+   Claude registers itself via dynamic client registration; no API key goes
+   in the config.
+
+That's it — no tunnel or deploy step needed on the client side.
 
 ## What you get vs. the plugin
 
@@ -54,3 +43,10 @@ reverse proxy (Caddy/nginx/ALB) with a real domain.
 
 The agent can still call `inject_context` manually each session if you ask it
 to — it's just not automatic.
+
+## Self-hosting notes (other deployments)
+
+If you're setting this up on a different Foresight instance without a public
+endpoint, see the tunnel/deploy options below — or just reuse the pattern:
+`cloudflared` named tunnel → `foresight-oauth.service` env block
+(`FORESIGHT_OAUTH_BASE_URL`, static client vars) → `https://<domain>/mcp`.
