@@ -800,6 +800,17 @@ def get_graph_store(db_path: str | None = None, backend: DatabaseBackend | None 
         if _state["graph_store"] is None:
             if db_path is None:
                 db_path = DB_PATH or DB_URL
+            if backend is None and isinstance(db_path, str) and "://" in db_path:
+                # A DSN means Postgres; the SQLite DDL in GraphStore._init_db
+                # cannot run there. Reuse the process-wide backend when the
+                # server has already initialised one (lazy import avoids the
+                # server -> graph_store circular import).
+                try:
+                    from .server import _global_backend
+                except Exception:
+                    _global_backend = None
+                if _global_backend is not None:
+                    backend = _global_backend
             if db_path is None and backend is None:
                 raise RuntimeError("db_path or DB_PATH or backend required")
             _state["graph_store"] = GraphStore(db_path, backend=backend)

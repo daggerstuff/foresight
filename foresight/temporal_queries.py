@@ -193,7 +193,7 @@ class TemporalQueryBuilder:
                 AND category = ?{ns_frag}
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
-            """
+            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
             base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, category, *ns_params, limit]
         else:
             sql = f"""
@@ -206,7 +206,7 @@ class TemporalQueryBuilder:
                 AND importance >= ?{ns_frag}
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
-            """
+            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
             base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, *ns_params, limit]
 
         try:
@@ -311,7 +311,7 @@ class TemporalQueryBuilder:
             AND COALESCE(m.valid_from, m.created_at) <= ?
             AND (m.valid_until IS NULL OR m.valid_until > ?)
             AND m.importance > ?{ns_frag}
-        """
+        """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
         base_params = [
             target_iso,
             user_id,
@@ -403,7 +403,7 @@ class TemporalQueryBuilder:
                 AND category = ?{ns_frag}
                 ORDER BY created_at DESC
                 LIMIT ?
-            """
+            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
             base_params = [user_id, tenant_id, trend, category, *ns_params, limit]
         else:
             sql = f"""
@@ -415,7 +415,7 @@ class TemporalQueryBuilder:
                 AND strength_trend = ?{ns_frag}
                 ORDER BY created_at DESC
                 LIMIT ?
-            """
+            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
             base_params = [user_id, tenant_id, trend, *ns_params, limit]
 
         try:

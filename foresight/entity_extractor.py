@@ -33,7 +33,7 @@ import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast, get_args
 
 from foresight.llm_providers.openai import chat_completions_url
 
@@ -58,6 +58,10 @@ EntityType = Literal["person", "place", "concept", "event", "emotion", "object"]
 RelationshipType = Literal[
     "mentions", "located_at", "experienced", "caused", "relates_to", "contradicts", "supports", "part_of", "created"
 ]
+
+_VALID_RELATIONSHIP_TYPES = frozenset(get_args(RelationshipType))
+# The schema CHECK constraint additionally permits 'cluster'.
+_VALID_ENTITY_TYPES = frozenset(get_args(EntityType)) | {"cluster"}
 
 
 @dataclass
@@ -568,7 +572,7 @@ Output (raw JSON only, no markdown):
             Entity(
                 id=self._generate_entity_id(e["name"], e["type"]),
                 name=e["name"],
-                entity_type=cast(EntityType, e["type"]),
+                entity_type=cast(EntityType, e["type"] if e["type"] in _VALID_ENTITY_TYPES else "concept"),
                 description=e.get("description"),
                 properties=e.get("properties", {}),
                 confidence=1.0,
@@ -586,7 +590,10 @@ Output (raw JSON only, no markdown):
                 Relationship(
                     source_entity_id=src_id,
                     target_entity_id=tgt_id,
-                    relationship_type=cast(RelationshipType, r["type"]),
+                    relationship_type=cast(
+                        RelationshipType,
+                        r["type"] if r["type"] in _VALID_RELATIONSHIP_TYPES else "relates_to",
+                    ),
                     confidence=r.get("confidence", 1.0),
                 )
             )

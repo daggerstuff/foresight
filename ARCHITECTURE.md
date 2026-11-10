@@ -50,11 +50,18 @@ agents.
 - **Derived memory** — `reflect.py`: `reflect` synthesizes cited answers from
   hybrid retrieval (LLM with a deterministic extractive fallback), caches
   repeated questions as mental models (`mental_models` table), and hosts
-  evidence-linked observations (`observations` table).
+  evidence-linked observations (`observations` table, injected as a
+  budgeted `[Patterns]` lane). `profile_export.py` renders the synthesized
+  profile plus the derived layer as an HMAC-signed portable document
+  (`export_profile` / `GET /profile/export`).
 - **Relationships** — `memory_relationships.py` + `graph_store.py` link memories
   to each other (ghost nodes, entity links).
 - **Multi-tenancy** — `auth.py` + `tenant_middleware.py`; every store and query
-  is scoped by `tenant_id` + `user_id`.
+  is scoped by `tenant_id` + `user_id`. Optional `agent_id`/`project`
+  namespace lanes (migration v25) scope memories, context blocks, mental
+  models, and observations; unscoped callers keep legacy behavior and see all
+  lanes, while namespaced callers see their own lane plus the shared
+  `'default'` lane.
 - **Encryption** — `encryption.py`: optional AES-256-GCM at-rest layer with key
   rotation (`FORESIGHT_ENCRYPTION_KEY`).
 - **Resilience** — `circuit_breaker.py`, `connection_pool.py` (Postgres pool

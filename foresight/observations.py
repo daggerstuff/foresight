@@ -178,7 +178,7 @@ def _find_observation(
 ) -> dict | None:
     frag, params = _ns_clause(agent_id, project)
     row = _fetch_one(
-        "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND pattern_key = ? "
+        "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND pattern_key = ? "  # nosec B608 - values parameterized; frag is a hardcoded literal
         f"AND status != 'archived'{frag} ORDER BY version DESC LIMIT 1",
         (tenant_id, user_id, pattern_key, *params),
     )
@@ -339,13 +339,13 @@ def list_observations(
     frag, ns_params = _ns_clause(agent_id, project)
     if status == "active":
         rows = _fetch_all(
-            "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status IN ('active','refined') "
+            "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status IN ('active','refined') "  # nosec B608 - values parameterized; frag is a hardcoded literal
             f"{frag} ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
             (tenant_id, user_id, *ns_params, limit),
         )
     else:
         rows = _fetch_all(
-            "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status = ? "
+            "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status = ? "  # nosec B608 - values parameterized; frag is a hardcoded literal
             f"{frag} ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
             (tenant_id, user_id, status, *ns_params, limit),
         )

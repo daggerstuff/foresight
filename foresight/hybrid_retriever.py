@@ -1023,7 +1023,7 @@ class HybridRetriever:
 
         def _count() -> int:
             rows = self._fetch_rows(
-                f"SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",
+                f"SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
                 (user_id, tenant_id, *ns_params),
             )
             return rows[0]["cnt"] if rows else 0
@@ -1035,7 +1035,7 @@ class HybridRetriever:
             return cached
 
         rows = self._fetch_rows(
-            f"SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",
+            f"SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
             (user_id, tenant_id, *ns_params),
         )
 
@@ -1357,7 +1357,7 @@ class HybridRetriever:
             AND is_ghost = 0{ns_frag}
             ORDER BY created_at DESC
             LIMIT ?
-        """,
+        """,  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
             (user_id, tenant_id, min_importance, *ns_params, limit),
         )
 

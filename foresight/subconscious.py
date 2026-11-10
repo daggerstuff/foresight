@@ -424,7 +424,7 @@ class ContextBlockAgent:
                 )"""
                 ns_params = [self.project or "default", self.agent_id or "default", self.project or "default"]
             rows = conn.execute(
-                "SELECT label, content, updated_at, agent_id, project, visibility "
+                "SELECT label, content, updated_at, agent_id, project, visibility "  # nosec B608 - values parameterized; ns_where is a hardcoded literal
                 "FROM context_blocks WHERE tenant_id = ? AND user_id = ?" + ns_where,
                 (self.tenant_id, self.user_id, *ns_params),
             ).fetchall()
