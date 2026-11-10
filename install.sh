@@ -525,6 +525,12 @@ except Exception:
     pass
 " 2>/dev/null && _ok "Configured Claude Code MCP endpoint in ~/.claude.json" || true
   fi
+
+  # Plugin install: hooks, skill, and Desktop config (idempotent).
+  if [ -f "$SCRIPT_DIR/plugins/claude/install.sh" ]; then
+    bash "$SCRIPT_DIR/plugins/claude/install.sh" --claude-code >/dev/null 2>&1 \
+      && _ok "Installed Claude plugin (hooks + skill)" || true
+  fi
 fi
 
 # ── 10. First Memory Onboarding ──────────────────────────────────────────────

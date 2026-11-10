@@ -1,0 +1,12 @@
+{
+  "name": "foresight",
+  "version": "1.0.0",
+  "description": "Persistent memory for Claude via the Foresight MCP server — context injection, in-flight capture, and cross-session recall.",
+  "author": {
+    "name": "daggerstuff"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/daggerstuff/foresight",
+  "repository": "https://github.com/daggerstuff/foresight",
+  "keywords": ["memory", "mcp", "context", "persistence"]
+}
