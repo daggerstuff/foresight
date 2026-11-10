@@ -96,6 +96,7 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `search_memories`            | Hybrid semantic vector search + keyword rank fusion                  | `query`, `use_hybrid`, `signal_weights`, `limit`  |
 | `reflect`                    | Memory-backed answer with verifiable citations (LLM + fallback)      | `question`, `max_memories=8`, `include_archived`  |
 | `manage_mental_models`       | List, refresh, or delete cached reflections (mental models)          | `action="list"\|"refresh"\|"delete"`, `model_id`   |
+| `curate_observations`        | Distill recurring patterns into evidence-linked observations          | `category`, `limit=200`                            |
 | `manage_context_blocks`      | Standing guidance, user preferences, and pending tasks               | `action="get"\|"update"`, `label`, `content`      |
 | `query_memories_temporal`    | Time-window, trend, decay, and point-in-time (bitemporal) queries    | `window="week"\|"month"`, `as_of`, `category`     |
 | `capture_in_flight_memory`   | Immediate mid-session storage of decisions, fixes, and preferences   | `content`, `category`, `importance`             |

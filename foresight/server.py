@@ -2797,6 +2797,47 @@ def manage_mental_models(
         return _tool_error("mental_models", str(exc))
 
 
+@mcp.tool(output_schema=None)
+def curate_observations(
+    user_id: str | None = None,
+    category: str | None = None,
+    limit: int = 200,
+) -> str:
+    """
+    Run observation curation: scan recent memories and distill recurring
+    patterns into evidence-linked observations.
+
+    This is the observation curation path — it reads the caller's recent
+    latest-truth memories (optionally narrowed to one ``category``), runs
+    the enhanced synthesizer's contradiction/trend detection plus recurring
+    category clustering, and upserts ``observations`` rows. Refinement
+    unions supporting memory IDs and bumps ``version``; evidence is never
+    dropped. Active observations surface in ``inject_context`` under the
+    Patterns section, ranked by confidence * recency.
+
+    Args:
+        user_id: Optional user ID override.
+        category: Optional category filter for the memory scan.
+        limit: Maximum memories to scan (default 200).
+
+    Returns:
+        JSON: ``{"memories_scanned", "candidates", "observations_created",
+        "observations_refined", "observations", "latency_ms"}``
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+
+    from .observations import curate_observations as _curate
+
+    try:
+        result = _curate(user_id=uid, tenant_id=tenant_id, category=category, limit=limit)
+    except Exception as exc:
+        logger.exception("curate_observations failed")
+        return _tool_error("observations", str(exc))
+
+    return _tool_response(ok=True, action="curate", **result)
+
+
 # =============================================================================
 # Memory Versioning Tools
 # =============================================================================
@@ -4562,6 +4603,7 @@ def inject_context(
             "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
             "memories": [m.to_dict() for m in memories],
             "context_blocks": blocks_by_point,
+            "patterns": _active_observations(uid, tenant_id),
         }
         if budgeted is not None:
             payload["budget"] = budgeted.to_dict()
@@ -4647,6 +4689,17 @@ def _auto_capture_in_flight(
 _auto_capture_triggered = _auto_capture_in_flight
 
 
+def _active_observations(uid: str, tenant_id: str, limit: int = 3) -> list[dict]:
+    """Top active observations ranked by confidence * recency (best-effort)."""
+    try:
+        from .observations import list_observations
+
+        return list_observations(user_id=uid, tenant_id=tenant_id, limit=limit)
+    except Exception:
+        logger.debug("observation lookup failed", exc_info=True)
+        return []
+
+
 def _format_injection_output(
     memories: list[HybridResult],
     uid: str,
@@ -4691,6 +4744,19 @@ def _format_injection_output(
                 lines.append("")
             lines.append("[Context Blocks]")
             lines.extend(sub_lines)
+
+    # Derived layer: evidence-linked observations (recurring patterns) under
+    # a distinct Patterns section, ranked by confidence * recency.
+    observations = _active_observations(uid, tenant_id)
+    if observations:
+        if lines:
+            lines.append("")
+        lines.append("[Patterns]")
+        for obs in observations:
+            lines.append(
+                f"- {obs['observation_text']} (evidence: {obs['evidence_count']}, "
+                f"confidence: {obs['confidence']:.2f}, version: {obs['version']})"
+            )
 
     # Return empty string when nothing is relevant — cleaner than a noisy
     # "0 memories surfaced" message that clutters the LLM's context.
@@ -4738,6 +4804,21 @@ def _format_injection_output_budgeted(
     if sub_lines:
         lane_items[Lane.BLOCKS].append(
             LaneItem(id="block_signals", content="\n".join(sub_lines), score=0.5, lane=Lane.BLOCKS)
+        )
+
+    # Observations share the blocks lane so they stay inside the existing
+    # injection budget; ids keep the Patterns provenance distinct.
+    for obs in _active_observations(uid, tenant_id):
+        lane_items[Lane.BLOCKS].append(
+            LaneItem(
+                id=f"pattern:{obs['id']}",
+                content=(
+                    f"{obs['observation_text']} (evidence: {obs['evidence_count']}, "
+                    f"confidence: {obs['confidence']:.2f}, version: {obs['version']})"
+                ),
+                score=obs["confidence"],
+                lane=Lane.BLOCKS,
+            )
         )
 
     return format_budgeted_payload(lane_items, budget, header="[Relevant Context]")

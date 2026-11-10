@@ -83,6 +83,8 @@ class TestOpenApi:
             "/memories/{memory_id}",
             "/search",
             "/reflect",
+            "/mental-models",
+            "/observations/curate",
             "/inject",
             "/documents",
             "/documents/{document_id}",
@@ -96,6 +98,8 @@ class TestOpenApi:
             "UpdateMemoryBody",
             "SearchBody",
             "ReflectBody",
+            "MentalModelBody",
+            "CurateObservationsBody",
             "InjectBody",
             "TemporalQueryBody",
             "ReprocessBody",
@@ -300,6 +304,21 @@ class TestOtherEndpoints:
 
     def test_reflect_requires_credentials(self, client: TestClient) -> None:
         resp = client.post("/reflect", json={"question": "anything"})
+        assert resp.status_code == 401
+
+    def test_curate_observations_endpoint(self, client: TestClient, api_key: str) -> None:
+        _store_memory(client, api_key, "rest obs pattern one", category="restcat")
+        _store_memory(client, api_key, "rest obs pattern two", category="restcat")
+        resp = client.post("/observations/curate", json={"category": "restcat"}, headers=_headers(api_key))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["action"] == "curate"
+        assert body["observations_created"] >= 1
+        assert body["observations"][0]["evidence_count"] >= 2
+
+    def test_curate_observations_requires_credentials(self, client: TestClient) -> None:
+        resp = client.post("/observations/curate", json={})
         assert resp.status_code == 401
 
     def test_inject_returns_formatted(self, client: TestClient, api_key: str) -> None:

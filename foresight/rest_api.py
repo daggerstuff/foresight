@@ -157,6 +157,15 @@ class MentalModelBody(BaseModel):
     limit: int = Field(default=50, ge=1, le=250, description="Maximum models to return for list")
 
 
+class CurateObservationsBody(BaseModel):
+    """Body for ``POST /observations/curate`` — mirrors ``curate_observations``."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    category: str | None = Field(default=None, description="Optional category filter for the memory scan")
+    limit: int = Field(default=200, ge=1, le=1000, description="Maximum memories to scan")
+
+
 class InjectBody(BaseModel):
     """Body for ``POST /inject`` — mirrors ``inject_context``."""
 
@@ -745,6 +754,37 @@ async def _handle_manage_mental_models(request: Request) -> Response:
     return _tool_json(result)
 
 
+async def _handle_curate_observations(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    body, err = await _validated_body(request, CurateObservationsBody)
+    if err:
+        return err
+
+    from .server import curate_observations
+
+    set_current_user_id(user_id or DEFAULT_USER_ID)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            curate_observations,
+            user_id=user_id,
+            category=body.category,
+            limit=body.limit,
+        )
+    finally:
+        reset_tenant_context()
+    return _tool_json(result)
+
+
 async def _handle_inject(request: Request) -> Response:
     user, auth_err = _authenticate(request)
     if auth_err:
@@ -977,6 +1017,7 @@ def _openapi_spec() -> dict[str, Any]:
         InjectBody,
         ReflectBody,
         MentalModelBody,
+        CurateObservationsBody,
         TemporalQueryBody,
         ReprocessBody,
         CreateDocumentBody,
@@ -1121,6 +1162,14 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/observations/curate": {
+                "post": {
+                    "summary": "Curate evidence-linked observations from recent memories",
+                    "operationId": "curateObservations",
+                    "requestBody": _body("CurateObservationsBody"),
+                    "responses": _ok(),
+                }
+            },
             "/inject": {
                 "post": {
                     "summary": "Inject context for a conversation",
@@ -1205,6 +1254,7 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/search", ["POST"], "rest_search", _handle_search),
     ("/reflect", ["POST"], "rest_reflect", _handle_reflect),
     ("/mental-models", ["POST"], "rest_manage_mental_models", _handle_manage_mental_models),
+    ("/observations/curate", ["POST"], "rest_curate_observations", _handle_curate_observations),
     ("/inject", ["POST"], "rest_inject", _handle_inject),
     ("/documents", ["POST"], "rest_create_document", _handle_create_document),
     ("/documents/ingest", ["POST"], "rest_ingest_document_file", _handle_ingest_document_file),

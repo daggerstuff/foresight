@@ -613,6 +613,31 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_mental_models_lookup ON mental_models(tenant_id, user_id, question_key, namespace_agent_id)",
         "CREATE INDEX IF NOT EXISTS idx_mental_models_expiry ON mental_models(expires_at)",
     ],
+    24: [
+        # Derived layer: evidence-linked observations. Each row is a recurring
+        # pattern/trend/contradiction distilled from memories, anchored to the
+        # supporting memory IDs that evidence it. Refinement unions evidence
+        # and bumps version rather than overwriting. pattern_key is the
+        # dedupe identity for upserts (not in the minimal spec column list —
+        # required so a follow-up curation run can find and refine the row).
+        """CREATE TABLE IF NOT EXISTS observations (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL DEFAULT 'default',
+            pattern_key TEXT NOT NULL DEFAULT '',
+            observation_text TEXT NOT NULL,
+            category TEXT,
+            confidence REAL NOT NULL DEFAULT 0.5,
+            supporting_memory_ids TEXT NOT NULL DEFAULT '[]',
+            evidence_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            first_seen_at TEXT NOT NULL,
+            last_refined_at TEXT,
+            version INTEGER NOT NULL DEFAULT 1
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_observations_scope ON observations(tenant_id, user_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_observations_pattern ON observations(tenant_id, user_id, pattern_key)",
+    ],
 }
 
 

@@ -646,6 +646,14 @@ self-hosted/privacy positioning is uncontested.
   models citing a superseded/archived/deleted memory are marked stale and
   self-heal on next hit. Managed via `manage_mental_models` /
   `POST /mental-models`.
+- **#3 evidence-linked observations** — shipped. `curate_observations`
+  scans recent memories (tenant/user/category scoped), runs the enhanced
+  synthesizer's contradiction/trend detection plus recurring-category
+  clustering, and upserts `observations` rows that always carry their
+  supporting memory IDs. Refinement unions evidence and bumps `version`;
+  active observations inject under a distinct Patterns section ranked by
+  confidence * recency, inside the existing injection budget. REST:
+  `POST /observations/curate`.
 
 ---
 
