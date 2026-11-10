@@ -103,6 +103,7 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `process_session_transcript` | End-of-session auto-distillation and decision extraction             | `session_id`, `messages`                          |
 | `reprocess_raw_events`       | Rebuild derived memories from the append-only raw layer (idempotent) | `window_start`, `window_end`                      |
 | `get_system_status`          | Health telemetry, cache statistics, and memory counts                | `include_trends=True`                             |
+| `export_profile`             | Signed portable profile export (profile + mental models + observations) | `format="json"\|"markdown"`, `agent_id`, `project` |
 
 **Namespace lanes:** `manage_memories`, `search_memories`, `inject_context`,
 `reflect`, `manage_mental_models`, `curate_observations`,
@@ -157,6 +158,9 @@ uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
 # Run real-database proof benchmarks
 foresight prove
 ```
+
+Retrieval benchmarks against LongMemEval/LoCoMo — methodology, commands,
+and published results — live in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## 🚀 Deployment & Operational Runbooks
 

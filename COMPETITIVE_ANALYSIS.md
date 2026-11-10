@@ -665,6 +665,16 @@ self-hosted/privacy positioning is uncontested.
   `inject_context`, `reflect`, `manage_mental_models`,
   `curate_observations`, `manage_context_blocks`, and
   `query_memories_temporal`, plus matching REST body fields.
+- **#9 portable profile** — shipped. `export_profile` (MCP) and
+  `GET /profile/export` render `profile_synthesizer` output plus mental
+  models and active observations as a versioned document
+  (`{version, exported_at, tenant_id, user_id, profile, ...}`),
+  HMAC-SHA256-signed with a key derived from
+  `FORESIGHT_PROFILE_SIGNING_KEY` or `FORESIGHT_ENCRYPTION_KEY`.
+  Offline verification via `foresight.profile_export.verify_document`.
+- **#10 published benchmarks** — shipped. `BENCHMARKS.md` documents the
+  LongMemEval/LoCoMo methodology (`foresight/benchmarks.py`), reproducible
+  commands, and the first smoke-run results.
 
 ---
 

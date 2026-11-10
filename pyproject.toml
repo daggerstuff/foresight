@@ -153,7 +153,8 @@ ignore = ["E501", "UP017", "PLR2004", "PLC0415", "PLR0917", "PLW0603"]
 max-args = 10
 
 [tool.ruff.lint.per-file-ignores]
-"foresight/server.py" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "ARG001"]
+"foresight/server.py" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "ARG001", "A002"]
+"foresight/profile_export.py" = ["A002"]
 "foresight/llm_client.py" = ["PLR0913"]
 "foresight/tenant_middleware.py" = ["PLR0912"]
 "foresight/memory_maintenance.py" = ["PLR0912", "PLR0915"]

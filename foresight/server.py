@@ -6516,6 +6516,46 @@ def synthesize_profile(
     return json.dumps(profile, indent=2, ensure_ascii=False)
 
 
+@mcp.tool(output_schema=None)
+def export_profile(
+    user_id: str | None = None,
+    format: Literal["json", "markdown"] = "json",
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> str:
+    """
+    Export the user profile as a portable, HMAC-signed document.
+
+    The artifact is a versioned document containing the synthesized
+    profile (static + dynamic layers) plus the derived layer — cached
+    mental models and active observations — so it reflects everything
+    Foresight knows about the user. The payload is signed with a key
+    derived from ``FORESIGHT_PROFILE_SIGNING_KEY`` or
+    ``FORESIGHT_ENCRYPTION_KEY``; verify offline with
+    ``foresight.profile_export.verify_document``.
+
+    Args:
+        user_id: Optional user ID override.
+        format: ``json`` (signed envelope) or ``markdown`` (readable doc).
+        agent_id: Optional agent namespace lane to scope the export.
+        project: Optional project namespace lane to scope the export.
+
+    Returns:
+        JSON envelope ``{"document": {...}, "signature": ..., "signature_alg": ...}``
+        or a Markdown document with a signature footer.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+
+    from .profile_export import export_profile as _export
+
+    try:
+        return _export(uid, tenant_id, format=format, agent_id=agent_id, project=project)
+    except Exception as exc:
+        logger.exception("export_profile failed")
+        return _tool_error("export_profile", str(exc))
+
+
 # =============================================================================
 # Entity and Graph Tools
 # =============================================================================

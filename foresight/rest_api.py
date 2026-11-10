@@ -981,6 +981,40 @@ async def _handle_profile(request: Request) -> Response:
     return _tool_json(result)
 
 
+async def _handle_profile_export(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    fmt = request.query_params.get("format", "json")
+    if fmt not in ("json", "markdown"):
+        return _error(400, "format must be 'json' or 'markdown'")
+    agent_id = request.query_params.get("agent_id") or None
+    project = request.query_params.get("project") or None
+
+    from .server import export_profile
+
+    set_current_user_id(user_id or DEFAULT_USER_ID)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            export_profile,
+            user_id=user_id,
+            format=fmt,
+            agent_id=agent_id,
+            project=project,
+        )
+    finally:
+        reset_tenant_context()
+    return _tool_json(result)
+
+
 async def _handle_reprocess_raw_events(request: Request) -> Response:
     user, auth_err = _authenticate(request)
     if auth_err:
@@ -1232,6 +1266,25 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/profile/export": {
+                "get": {
+                    "summary": "Export the user profile as a signed portable document",
+                    "description": "Versioned document with the synthesized profile plus "
+                    "mental models and active observations, HMAC-signed for offline "
+                    "verification via foresight.profile_export.verify_document.",
+                    "operationId": "exportProfile",
+                    "parameters": [
+                        {
+                            "name": "format",
+                            "in": "query",
+                            "schema": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                        },
+                        {"name": "agent_id", "in": "query", "schema": {"type": "string"}},
+                        {"name": "project", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": _ok(),
+                }
+            },
             "/admin/raw-events/reprocess": {
                 "post": {
                     "summary": "Rebuild derived memories from the append-only raw-events layer",
@@ -1280,6 +1333,7 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/documents/ingest", ["POST"], "rest_ingest_document_file", _handle_ingest_document_file),
     ("/documents/{document_id}", ["GET"], "rest_get_document", _handle_get_document),
     ("/profile", ["GET"], "rest_profile", _handle_profile),
+    ("/profile/export", ["GET"], "rest_profile_export", _handle_profile_export),
     ("/admin/raw-events/reprocess", ["POST"], "rest_reprocess_raw_events", _handle_reprocess_raw_events),
 )
 
