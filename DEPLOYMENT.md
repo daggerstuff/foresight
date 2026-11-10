@@ -220,8 +220,9 @@ bash scripts/rollout_fleet.sh --apply
 #### Fleet Node Matrix
 
 - **`local`**: `localhost` (Development workstation)
-- **`billy`**: `40.160.6.46` (Dedicated inference & task execution host)
-- **`gnasty`**: `167.233.25.111` (Secondary agent execution & staging node)
+- **`daphne`**: `40.160.4.49` (`vivi@daphne`, agent execution host)
+- **`jerry`**: `9.205.154.128` (`vivi@jerry`, agent execution host)
+- **`hermes`**: `35.202.60.18` (`chad@hermes`, agent execution host)
 
 The fleet rollout script ensures:
 

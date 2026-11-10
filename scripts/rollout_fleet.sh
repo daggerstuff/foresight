@@ -5,12 +5,13 @@
 # Default: DRY-RUN (prints what would happen, executes nothing).
 # Pass --apply to actually restart the MCP service on each host.
 #
-# Hosts:
-#   local  -> this machine (localhost)
-#   billy  -> 40.160.6.46
-#   gnasty -> 167.233.25.111
+# Hosts (ssh config aliases in ~/.ssh/config):
+#   local   -> this machine (localhost)
+#   daphne  -> 40.160.4.49  (user vivi)
+#   jerry   -> 9.205.154.128 (user vivi)
+#   hermes  -> 35.202.60.18  (user chad)
 #
-# Each host: restart foresight-mcp service.
+# Each host: restart foresight.service (and foresight-oauth.service when present).
 # Requires FORESIGHT_DB_URL to be set on every host (Postgres-only storage).
 #
 set -euo pipefail
@@ -25,11 +26,12 @@ for arg in "$@"; do
   esac
 done
 
-# name:host:user
+# name:ssh-alias:user
 HOSTS=(
   "local:localhost:$(whoami)"
-  "billy:40.160.6.46:billy"
-  "gnasty:167.233.25.111:gnasty"
+  "daphne:daphne:vivi"
+  "jerry:jerry:vivi"
+  "hermes:hermes:chad"
 )
 
 for entry in "${HOSTS[@]}"; do
@@ -37,15 +39,16 @@ for entry in "${HOSTS[@]}"; do
   echo "==> [$name] ${user}@${host}"
 
   if [ "$APPLY" -eq 0 ]; then
-    echo "    [dry-run] would: 'systemctl --user restart foresight-mcp'"
+    echo "    [dry-run] would: 'systemctl --user restart foresight.service (+ foresight-oauth.service if active)'"
     continue
   fi
 
+  RESTART_CMD='systemctl --user restart foresight.service; systemctl --user try-restart foresight-oauth.service 2>/dev/null || true'
   if [ "$host" = "localhost" ]; then
-    systemctl --user restart foresight-mcp
+    bash -c "$RESTART_CMD"
   else
-    ssh -o StrictHostKeyChecking=accept-new "${user}@${host}" \
-      "systemctl --user restart foresight-mcp"
+    ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "${user}@${host}" "$RESTART_CMD" \
+      || echo "    ssh/restart failed for $name"
   fi
   echo "    done"
 done
