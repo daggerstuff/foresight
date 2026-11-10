@@ -638,6 +638,55 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_observations_scope ON observations(tenant_id, user_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_observations_pattern ON observations(tenant_id, user_id, pattern_key)",
     ],
+    25: [
+        # Namespace dimension: optional agent_id / project lanes on every
+        # scoped table. NULL/'default' is the shared legacy lane — unscoped
+        # callers see everything (byte-identical default behavior), while a
+        # caller passing agent_id/project sees its own lane plus 'default'.
+        # context_blocks additionally gains visibility: 'private' blocks are
+        # lane-scoped, 'shared' blocks inject for every agent in the same
+        # (tenant_id, project).
+        "ALTER TABLE memories ADD COLUMN agent_id TEXT",
+        "ALTER TABLE memories ADD COLUMN project TEXT",
+        "ALTER TABLE context_blocks ADD COLUMN agent_id TEXT",
+        "ALTER TABLE context_blocks ADD COLUMN project TEXT",
+        "ALTER TABLE context_blocks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'",
+        "ALTER TABLE mental_models ADD COLUMN project TEXT",
+        "ALTER TABLE observations ADD COLUMN agent_id TEXT",
+        "ALTER TABLE observations ADD COLUMN project TEXT",
+        "UPDATE memories SET agent_id = 'default' WHERE agent_id IS NULL",
+        "UPDATE memories SET project = 'default' WHERE project IS NULL",
+        "UPDATE context_blocks SET agent_id = 'default' WHERE agent_id IS NULL",
+        "UPDATE context_blocks SET project = 'default' WHERE project IS NULL",
+        "UPDATE mental_models SET project = 'default' WHERE project IS NULL",
+        "UPDATE observations SET agent_id = 'default' WHERE agent_id IS NULL",
+        "UPDATE observations SET project = 'default' WHERE project IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(tenant_id, user_id, agent_id, project)",
+        "CREATE INDEX IF NOT EXISTS idx_observations_namespace ON observations(tenant_id, user_id, agent_id, project)",
+        # context_blocks: widen the PK to include the namespace lanes so two
+        # agents/projects can hold same-named blocks without clobbering.
+        """CREATE TABLE context_blocks_v25 (
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            content TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            agent_id TEXT NOT NULL DEFAULT 'default',
+            project TEXT NOT NULL DEFAULT 'default',
+            visibility TEXT NOT NULL DEFAULT 'private',
+            PRIMARY KEY (tenant_id, user_id, label, agent_id, project)
+        )""",
+        """INSERT INTO context_blocks_v25
+            (tenant_id, user_id, label, content, updated_at, agent_id, project, visibility)
+            SELECT tenant_id, user_id, label, content, updated_at,
+                   COALESCE(agent_id, 'default'), COALESCE(project, 'default'),
+                   COALESCE(visibility, 'private')
+            FROM context_blocks""",
+        "DROP TABLE context_blocks",
+        "ALTER TABLE context_blocks_v25 RENAME TO context_blocks",
+        "CREATE INDEX IF NOT EXISTS idx_context_blocks_lookup ON context_blocks(tenant_id, user_id, updated_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_context_blocks_namespace ON context_blocks(tenant_id, user_id, agent_id, project, visibility)",
+    ],
 }
 
 

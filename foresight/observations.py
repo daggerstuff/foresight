@@ -156,33 +156,64 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     return candidates
 
 
-def _find_observation(pattern_key: str, *, user_id: str, tenant_id: str) -> dict | None:
+def _ns_clause(agent_id: str | None, project: str | None, prefix: str = "") -> tuple[str, list]:
+    """Namespace filter: caller's lane plus the shared 'default' lane."""
+    frag, params = "", []
+    if agent_id:
+        frag += f" AND ({prefix}agent_id = ? OR {prefix}agent_id IS NULL OR {prefix}agent_id = 'default')"
+        params.append(agent_id)
+    if project:
+        frag += f" AND ({prefix}project = ? OR {prefix}project IS NULL OR {prefix}project = 'default')"
+        params.append(project)
+    return frag, params
+
+
+def _find_observation(
+    pattern_key: str,
+    *,
+    user_id: str,
+    tenant_id: str,
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> dict | None:
+    frag, params = _ns_clause(agent_id, project)
     row = _fetch_one(
         "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND pattern_key = ? "
-        "AND status != 'archived' ORDER BY version DESC LIMIT 1",
-        (tenant_id, user_id, pattern_key),
+        f"AND status != 'archived'{frag} ORDER BY version DESC LIMIT 1",
+        (tenant_id, user_id, pattern_key, *params),
     )
     return _observation_row(row) if row else None
 
 
-def _upsert_observation(candidate: dict[str, Any], *, user_id: str, tenant_id: str) -> dict[str, Any]:
+def _upsert_observation(
+    candidate: dict[str, Any],
+    *,
+    user_id: str,
+    tenant_id: str,
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> dict[str, Any]:
     """Insert or refine an observation. Evidence is unioned, never dropped."""
     now = _now_iso()
-    existing = _find_observation(candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id)
+    existing = _find_observation(
+        candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project
+    )
 
     if existing is None:
         obs_id = uuid.uuid4().hex[:16]
         supporting = list(dict.fromkeys(candidate["supporting_memory_ids"]))
         _execute(
             """INSERT INTO observations
-            (id, tenant_id, user_id, pattern_key, observation_text, category,
+            (id, tenant_id, user_id, agent_id, project, pattern_key, observation_text, category,
              confidence, supporting_memory_ids, evidence_count, status,
              first_seen_at, last_refined_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)""",
             (
                 obs_id,
                 tenant_id,
                 user_id,
+                agent_id or "default",
+                project or "default",
                 candidate["pattern_key"],
                 candidate["observation_text"],
                 candidate.get("category"),
@@ -231,6 +262,8 @@ def curate_observations(
     tenant_id: str,
     category: str | None = None,
     limit: int = 200,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Scan recent memories and upsert evidence-linked observations.
 
@@ -245,6 +278,9 @@ def curate_observations(
         "FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 AND is_latest = 1"
     )
     params: list[Any] = [user_id, tenant_id]
+    ns_frag, ns_params = _ns_clause(agent_id, project)
+    sql += ns_frag
+    params.extend(ns_params)
     if category:
         sql += " AND category = ?"
         params.append(category)
@@ -257,8 +293,10 @@ def curate_observations(
     created = refined = 0
     observations: list[dict[str, Any]] = []
     for candidate in candidates:
-        before = _find_observation(candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id)
-        obs = _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id)
+        before = _find_observation(
+            candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project
+        )
+        obs = _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project)
         observations.append(obs)
         if before is None:
             created += 1
@@ -294,19 +332,22 @@ def list_observations(
     tenant_id: str,
     status: str = "active",
     limit: int = 50,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """List observations for a scope, ranked by confidence * recency."""
+    frag, ns_params = _ns_clause(agent_id, project)
     if status == "active":
         rows = _fetch_all(
             "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status IN ('active','refined') "
-            "ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
-            (tenant_id, user_id, limit),
+            f"{frag} ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
+            (tenant_id, user_id, *ns_params, limit),
         )
     else:
         rows = _fetch_all(
             "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status = ? "
-            "ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
-            (tenant_id, user_id, status, limit),
+            f"{frag} ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
+            (tenant_id, user_id, status, *ns_params, limit),
         )
     observations = [_observation_row(r) for r in rows]
     now = datetime.now(timezone.utc)

@@ -76,6 +76,8 @@ class StoreMemoryBody(BaseModel):
         default=None, description="Memory taxonomy type: episodic, semantic, or procedural"
     )
     auto_tag: bool = Field(default=False, description="When true, derive topical tags from content deterministically")
+    agent_id: str | None = Field(default=None, description="Namespace lane for this memory")
+    project: str | None = Field(default=None, description="Project namespace lane for this memory")
 
 
 class UpdateMemoryBody(BaseModel):
@@ -134,6 +136,8 @@ class SearchBody(BaseModel):
         le=5,
         description="Maximum query variants per search (original + rewrites)",
     )
+    agent_id: str | None = Field(default=None, description="Namespace lane filter (own lane + shared 'default')")
+    project: str | None = Field(default=None, description="Project namespace lane filter (own lane + shared 'default')")
 
 
 class ReflectBody(BaseModel):
@@ -144,6 +148,8 @@ class ReflectBody(BaseModel):
     question: str = Field(..., description="Question or topic to reflect on")
     max_memories: int = Field(default=8, ge=1, le=50, description="Maximum memories to consider")
     include_archived: bool = Field(default=False, description="Include archived memories")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    project: str | None = Field(default=None, description="Optional project namespace lane")
 
 
 class MentalModelBody(BaseModel):
@@ -164,6 +170,8 @@ class CurateObservationsBody(BaseModel):
 
     category: str | None = Field(default=None, description="Optional category filter for the memory scan")
     limit: int = Field(default=200, ge=1, le=1000, description="Maximum memories to scan")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    project: str | None = Field(default=None, description="Optional project namespace lane")
 
 
 class InjectBody(BaseModel):
@@ -176,6 +184,8 @@ class InjectBody(BaseModel):
     min_relevance: float = Field(default=0.01, description="Minimum relevance score threshold")
     include_details: bool = Field(default=False, description="Return structured details instead of text")
     max_chars: int | None = Field(default=None, description="Character budget for the payload")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    project: str | None = Field(default=None, description="Optional project namespace lane")
 
 
 class TemporalQueryBody(BaseModel):
@@ -434,6 +444,8 @@ async def _handle_store_memory(request: Request) -> Response:
             expires_at=body.expires_at,
             memory_type=body.memory_type,
             auto_tag=body.auto_tag,
+            agent_id=body.agent_id,
+            project=body.project,
         )
     finally:
         reset_tenant_context()
@@ -463,6 +475,8 @@ def _store_one(user_id: str | None, tenant_id: str, body: StoreMemoryBody) -> st
             expires_at=body.expires_at,
             memory_type=body.memory_type,
             auto_tag=body.auto_tag,
+            agent_id=body.agent_id,
+            project=body.project,
         )
     finally:
         reset_tenant_context()
@@ -715,6 +729,8 @@ async def _handle_reflect(request: Request) -> Response:
             user_id=user_id,
             max_memories=body.max_memories,
             include_archived=body.include_archived,
+            agent_id=body.agent_id,
+            project=body.project,
         )
     finally:
         reset_tenant_context()
@@ -779,6 +795,8 @@ async def _handle_curate_observations(request: Request) -> Response:
             user_id=user_id,
             category=body.category,
             limit=body.limit,
+            agent_id=body.agent_id,
+            project=body.project,
         )
     finally:
         reset_tenant_context()
@@ -813,6 +831,8 @@ async def _handle_inject(request: Request) -> Response:
             min_relevance=body.min_relevance,
             include_details=body.include_details,
             max_chars=body.max_chars,
+            agent_id=body.agent_id,
+            project=body.project,
         )
     finally:
         reset_tenant_context()

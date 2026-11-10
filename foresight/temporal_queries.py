@@ -152,6 +152,18 @@ class TemporalQueryBuilder:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=amount * hours_by_unit[unit])
         return cutoff.isoformat()
 
+    @staticmethod
+    def _ns_frag(agent_id: str | None, project: str | None, prefix: str = "") -> tuple[str, list]:
+        """Namespace lane filter (own lane + shared 'default' lane)."""
+        frag, params = "", []
+        if agent_id:
+            frag += f" AND ({prefix}agent_id = ? OR {prefix}agent_id IS NULL OR {prefix}agent_id = 'default')"
+            params.append(agent_id)
+        if project:
+            frag += f" AND ({prefix}project = ? OR {prefix}project IS NULL OR {prefix}project = 'default')"
+            params.append(project)
+        return frag, params
+
     def get_memories_from_window(
         self,
         user_id: str,
@@ -160,14 +172,17 @@ class TemporalQueryBuilder:
         limit: int = 50,
         min_importance: float = 0.1,
         category: str | None = None,
+        agent_id: str | None = None,
+        project: str | None = None,
     ) -> list[TemporalQueryResult]:
         """Get memories from a time window."""
         tenant_id = get_current_account_id()
         window_hours = self._get_window_hours(window)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        ns_frag, ns_params = self._ns_frag(agent_id, project)
 
         if category:
-            sql = """
+            sql = f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
@@ -175,24 +190,24 @@ class TemporalQueryBuilder:
                 WHERE user_id = ? AND tenant_id = ?
                 AND created_at >= ?
                 AND importance >= ?
-                AND category = ?
+                AND category = ?{ns_frag}
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
             """
-            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, category, limit]
+            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, category, *ns_params, limit]
         else:
-            sql = """
+            sql = f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
                 WHERE user_id = ? AND tenant_id = ?
                 AND created_at >= ?
-                AND importance >= ?
+                AND importance >= ?{ns_frag}
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
             """
-            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, limit]
+            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, *ns_params, limit]
 
         try:
             rows = self._fetch_rows(sql, base_params)
@@ -245,7 +260,13 @@ class TemporalQueryBuilder:
         ]
 
     def get_memories_as_of_time(
-        self, user_id: str, target_date: datetime, category: str | None = None, min_importance: float = 0.1
+        self,
+        user_id: str,
+        target_date: datetime,
+        category: str | None = None,
+        min_importance: float = 0.1,
+        agent_id: str | None = None,
+        project: str | None = None,
     ) -> list[TemporalQueryResult]:
         """Get memories as of a specific time (point-in-time state reconstruction).
 
@@ -266,12 +287,13 @@ class TemporalQueryBuilder:
         """
         tenant_id = get_current_account_id()
         target_iso = target_date.isoformat()
+        ns_frag, ns_params = self._ns_frag(agent_id, project, prefix="m.")
 
         # The version subquery selects the content snapshot that was live at
         # target_iso: the first snapshot recorded after it (snapshots are
         # written *before* a change overwrites the row content, so a
         # snapshot at time S > T holds the content valid up to S, i.e. at T).
-        sql = """
+        sql = f"""
             SELECT
                 m.id, m.content, m.importance, m.strength_trend,
                 m.activation_count, m.created_at, m.accessed_at, m.category,
@@ -288,9 +310,18 @@ class TemporalQueryBuilder:
             AND m.created_at <= ?
             AND COALESCE(m.valid_from, m.created_at) <= ?
             AND (m.valid_until IS NULL OR m.valid_until > ?)
-            AND m.importance > ?
+            AND m.importance > ?{ns_frag}
         """
-        base_params = [target_iso, user_id, tenant_id, target_iso, target_iso, target_iso, min_importance]
+        base_params = [
+            target_iso,
+            user_id,
+            tenant_id,
+            target_iso,
+            target_iso,
+            target_iso,
+            min_importance,
+            *ns_params,
+        ]
         if category:
             sql += " AND m.category = ?"
             base_params.append(category)
@@ -350,35 +381,42 @@ class TemporalQueryBuilder:
         return results
 
     def get_memories_by_trend(
-        self, user_id: str, trend: str, limit: int = 50, category: str | None = None
+        self,
+        user_id: str,
+        trend: str,
+        limit: int = 50,
+        category: str | None = None,
+        agent_id: str | None = None,
+        project: str | None = None,
     ) -> list[TemporalQueryResult]:
         """Get memories by trend."""
         tenant_id = get_current_account_id()
+        ns_frag, ns_params = self._ns_frag(agent_id, project)
         if category:
-            sql = """
+            sql = f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
                 WHERE user_id = ? AND tenant_id = ?
                 AND strength_trend = ?
-                AND category = ?
+                AND category = ?{ns_frag}
                 ORDER BY created_at DESC
                 LIMIT ?
             """
-            base_params = [user_id, tenant_id, trend, category, limit]
+            base_params = [user_id, tenant_id, trend, category, *ns_params, limit]
         else:
-            sql = """
+            sql = f"""
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
                 WHERE user_id = ? AND tenant_id = ?
-                AND strength_trend = ?
+                AND strength_trend = ?{ns_frag}
                 ORDER BY created_at DESC
                 LIMIT ?
             """
-            base_params = [user_id, tenant_id, trend, limit]
+            base_params = [user_id, tenant_id, trend, *ns_params, limit]
 
         try:
             rows = self._fetch_rows(sql, base_params)

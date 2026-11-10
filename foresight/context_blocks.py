@@ -67,9 +67,14 @@ def list_context_block_schemas() -> list[dict]:
     return [schema.to_dict() for schema in registry.list_schemas()]
 
 
-def get_context_block_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
+def get_context_block_agent(
+    user_id: str,
+    tenant_id: str = "default",
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> ContextBlockAgent:
     """Return the Foresight-native context block agent facade."""
-    return _get_context_block_agent(user_id, tenant_id)
+    return _get_context_block_agent(user_id, tenant_id, agent_id=agent_id, project=project)
 
 
 def list_context_blocks(user_id: str, tenant_id: str = "default") -> list[dict]:

@@ -164,9 +164,34 @@ class HybridSearchOptions:
     # (deterministic stage on by default); False restores legacy behavior.
     query_rewrite: bool | None = None
     max_rewrite_variants: int = 3
+    # Phase-4 namespace lanes: when set, retrieval is constrained to memories
+    # in the caller's agent/project lane plus the shared 'default' lane.
+    # None = unscoped (legacy behavior, sees every lane).
+    agent_id: str | None = None
+    project: str | None = None
 
 
 VALID_SIGNAL_WEIGHT_KEYS = frozenset({"keyword", "tfidf_cosine", "vector", "graph", "temporal"})
+
+
+def _namespace_frag(options: HybridSearchOptions | None, alias: str = "") -> tuple[str, list]:
+    """SQL fragment + params constraining rows to the caller's namespace lanes.
+
+    A caller passing ``agent_id``/``project`` sees rows in its own lane plus
+    the shared ``'default'`` lane (and NULLs for pre-migration safety). With
+    no namespace args the fragment is empty — byte-identical legacy behavior.
+    """
+    if options is None:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    frag, params = "", []
+    if options.agent_id:
+        frag += f" AND ({prefix}agent_id = ? OR {prefix}agent_id IS NULL OR {prefix}agent_id = 'default')"
+        params.append(options.agent_id)
+    if options.project:
+        frag += f" AND ({prefix}project = ? OR {prefix}project IS NULL OR {prefix}project = 'default')"
+        params.append(options.project)
+    return frag, params
 
 
 def validate_signal_weights(weights: dict[str, float]) -> None:
@@ -550,11 +575,13 @@ class HybridRetriever:
         tenant_id: str,
         weights: dict[str, float],
         rewrite_signature: tuple[str, ...] = (),
-    ) -> tuple[str, str, str, bool, tuple[tuple[str, float], ...], tuple[str, ...]]:
-        """Cache key includes the rerank-stage state and the effective signal
-        weights, so cached results are only reused for searches run with the
-        same ranking policy (a per-request `signal_weights` override must
-        never be served from a globally-weighted result). The rewrite
+        namespace: tuple[str | None, str | None] = (None, None),
+    ) -> tuple:
+        """Cache key includes the rerank-stage state, the effective signal
+        weights, and the namespace lane, so cached results are only reused
+        for searches run with the same ranking policy and scope (a
+        per-request `signal_weights` override or agent/project lane must
+        never be served from a differently-scoped result). The rewrite
         signature (normalized query variants) keeps rewritten and legacy
         searches from sharing cache entries."""
         return (
@@ -564,6 +591,7 @@ class HybridRetriever:
             rerank_active(),
             tuple(sorted(weights.items())),
             tuple(rewrite_signature),
+            namespace,
         )
 
     def _get_cached_result(self, cache_key: tuple) -> Any | None:
@@ -663,7 +691,14 @@ class HybridRetriever:
             variants = [query]
         rewrite_signature = tuple(_normalize_query(v) for v in variants)
 
-        cache_key = self._cache_key(query, user_id, tenant_id, effective_weights, rewrite_signature)
+        cache_key = self._cache_key(
+            query,
+            user_id,
+            tenant_id,
+            effective_weights,
+            rewrite_signature,
+            namespace=(options.agent_id, options.project),
+        )
 
         if use_cache:
             cached = self._get_cached_result(cache_key)
@@ -672,7 +707,7 @@ class HybridRetriever:
                 return cached
 
         def _run_merged(run: Any) -> dict[str, int]:
-            per_variant = [run(v, user_id, tenant_id, search_limit) for v in variants]
+            per_variant = [run(v, user_id, tenant_id, search_limit, options) for v in variants]
             if len(per_variant) == 1:
                 return per_variant[0]
             return merge_variant_rankings(per_variant)
@@ -682,7 +717,7 @@ class HybridRetriever:
         vector_ranking = _run_merged(self._run_vector_search) if use_vector else {}
         graph_ranking = _run_merged(self._run_graph_search) if use_graph else {}
         temporal_ranking = (
-            self._run_temporal_search(user_id, tenant_id, search_limit, min_importance) if use_temporal else {}
+            self._run_temporal_search(user_id, tenant_id, search_limit, min_importance, options) if use_temporal else {}
         )
 
         rankings = Rankings(
@@ -753,7 +788,7 @@ class HybridRetriever:
         fetch_window = build_limit * 4 if has_filters else build_limit
         fetch_window = min(fetch_window, len(merged))
         top_ids = [mid for mid, _ in merged[:fetch_window]]
-        memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id)
+        memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id, options)
         if has_filters:
             now_iso = datetime.now(timezone.utc).isoformat()
             memories = {mid: row for mid, row in memories.items() if _row_matches_filters(row, options, now_iso)}
@@ -846,7 +881,7 @@ class HybridRetriever:
             | set(rankings.temporal)
         )
         top_ids = [mid for mid, _ in merged[: options.limit]]
-        memories = self._fetch_memories_for_top_ids(top_ids, user_id, options.tenant_id)
+        memories = self._fetch_memories_for_top_ids(top_ids, user_id, options.tenant_id, options)
         results = self._build_results(merged, memories, options.limit, rankings)
         return self._make_search_result(results, all_ids, rankings, extra_signals={"fast_path": "early_termination"})
 
@@ -920,6 +955,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
+        options: HybridSearchOptions | None = None,
     ) -> dict[str, int]:
         """
         Keyword search with simple tf-idf-like scoring.
@@ -934,6 +970,7 @@ class HybridRetriever:
         escaped_terms = [_escape_like(t) for t in terms]
 
         like_clauses = " OR ".join(["content LIKE ? ESCAPE '!'" for _ in terms])
+        ns_frag, ns_params = _namespace_frag(options)
         params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
         rows = self._fetch_rows(
@@ -942,10 +979,11 @@ class HybridRetriever:
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND ({like_clauses})
+            {ns_frag}
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
         """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
-            [*params, limit],
+            [*params, *ns_params, limit],
         )
 
         # Score by term frequency
@@ -966,11 +1004,12 @@ class HybridRetriever:
         self,
         user_id: str,
         tenant_id: str,
+        options: HybridSearchOptions | None = None,
     ) -> dict:
         """
         Build (or return cached) TF-IDF corpus data for a user/tenant scope.
 
-        Cache key: (user_id, tenant_id).
+        Cache key: (user_id, tenant_id, namespace lane).
         Cache is invalidated when the memory count changes, which covers
         inserts and deletes without requiring explicit invalidation calls.
 
@@ -979,23 +1018,25 @@ class HybridRetriever:
             "docs"      - {memory_id: list[str]}  (tokenized)
             "doc_count" - int
         """
-        cache_key = (user_id, tenant_id)
+        ns_frag, ns_params = _namespace_frag(options)
+        cache_key = (user_id, tenant_id, options.agent_id if options else None, options.project if options else None)
+
+        def _count() -> int:
+            rows = self._fetch_rows(
+                f"SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",
+                (user_id, tenant_id, *ns_params),
+            )
+            return rows[0]["cnt"] if rows else 0
 
         with self._tfidf_cache_lock:
             cached = self._tfidf_cache.get(cache_key)
 
-        if cached is not None:
-            count_rows = self._fetch_rows(
-                "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-                (user_id, tenant_id),
-            )
-            current_count = count_rows[0]["cnt"] if count_rows else 0
-            if cached["doc_count"] == current_count:
-                return cached
+        if cached is not None and cached["doc_count"] == _count():
+            return cached
 
         rows = self._fetch_rows(
-            "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-            (user_id, tenant_id),
+            f"SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",
+            (user_id, tenant_id, *ns_params),
         )
 
         docs: dict[str, list[str]] = {row["id"]: row["content"].lower().split() for row in rows}
@@ -1008,11 +1049,7 @@ class HybridRetriever:
 
         idf: dict[str, float] = {term: math.log(n_docs / df) if df > 0 else 0.0 for term, df in doc_freq.items()}
 
-        count_rows2 = self._fetch_rows(
-            "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-            (user_id, tenant_id),
-        )
-        current_count = count_rows2[0]["cnt"] if count_rows2 else 0
+        current_count = _count()
 
         entry = {"idf": idf, "docs": docs, "doc_count": current_count}
         with self._tfidf_cache_lock:
@@ -1027,7 +1064,8 @@ class HybridRetriever:
         on the next query rather than waiting for the count-based check.
         """
         with self._tfidf_cache_lock:
-            self._tfidf_cache.pop((user_id, tenant_id), None)
+            for key in [k for k in self._tfidf_cache if k[0] == user_id and k[1] == tenant_id]:
+                self._tfidf_cache.pop(key, None)
 
     @staticmethod
     def _tfidf_vector(tokens: list[str], idf: dict[str, float]) -> dict[str, float]:
@@ -1057,6 +1095,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
+        options: HybridSearchOptions | None = None,
     ) -> dict[str, int]:
         """
         Semantic search using TF-IDF cosine similarity.
@@ -1071,7 +1110,7 @@ class HybridRetriever:
         if not terms:
             return {}
 
-        corpus = self._build_tfidf_cache(user_id, tenant_id)
+        corpus = self._build_tfidf_cache(user_id, tenant_id, options)
         docs = corpus["docs"]
         idf = corpus["idf"]
 
@@ -1097,9 +1136,10 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
+        options: HybridSearchOptions | None = None,
     ) -> dict[str, int]:
         """Backward-compatible entrypoint for semantic search alias."""
-        return self._tfidf_cosine_search(query, user_id, tenant_id, limit)
+        return self._tfidf_cosine_search(query, user_id, tenant_id, limit, options=options)
 
     def _graph_search(
         self,
@@ -1107,6 +1147,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
+        options: HybridSearchOptions | None = None,
     ) -> tuple[dict[str, int], dict[str, int], dict[str, float]]:
         """
         Graph-based search: find entities matching query, traverse to
@@ -1177,6 +1218,7 @@ class HybridRetriever:
         entity_conf_col = (
             ", COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf" if has_confidence else ", 1.0 as avg_entity_conf"
         )
+        ns_frag, ns_params = _namespace_frag(options, alias="m")
         rows = self._fetch_rows(
             f"""
             SELECT
@@ -1185,7 +1227,7 @@ class HybridRetriever:
                 COALESCE(AVG(er.confidence * er.decay_factor), 1.0) as avg_edge_quality{relevance_col}
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id
-                AND m.tenant_id = ? AND m.user_id = ? AND m.is_ghost = 0
+                AND m.tenant_id = ? AND m.user_id = ? AND m.is_ghost = 0{ns_frag}
             LEFT JOIN memory_entities me ON me.id = mel.entity_id
                 AND me.user_id = ?
             LEFT JOIN entity_relationships er ON (
@@ -1200,7 +1242,7 @@ class HybridRetriever:
                 avg_edge_quality DESC
             LIMIT ?
         """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
-            [tenant_id, user_id, user_id, user_id, *entity_ids, user_id, limit],
+            [tenant_id, user_id, *ns_params, user_id, user_id, *entity_ids, user_id, limit],
         )
 
         if not rows:
@@ -1290,6 +1332,7 @@ class HybridRetriever:
         tenant_id: str,
         limit: int,
         min_importance: float,
+        options: HybridSearchOptions | None = None,
     ) -> dict[str, int]:
         """
         Temporal search: rank memories by recency, importance, and decay state.
@@ -1302,19 +1345,20 @@ class HybridRetriever:
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
+        ns_frag, ns_params = _namespace_frag(options)
         rows = self._fetch_rows(
-            """
+            f"""
             SELECT id, importance, current_strength, created_at,
                    activation_count, COALESCE(strength_trend, 'stable') as strength_trend,
                    last_retrieved_at, category
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND importance >= ?
-            AND is_ghost = 0
+            AND is_ghost = 0{ns_frag}
             ORDER BY created_at DESC
             LIMIT ?
         """,
-            (user_id, tenant_id, min_importance, limit),
+            (user_id, tenant_id, min_importance, *ns_params, limit),
         )
 
         if not rows:
@@ -1418,12 +1462,14 @@ class HybridRetriever:
         memory_ids: list[str],
         user_id: str,
         tenant_id: str,
+        options: HybridSearchOptions | None = None,
     ) -> dict[str, dict]:
         """Fetch memory data for given IDs."""
         if not memory_ids:
             return {}
 
         placeholders = ",".join("?" * len(memory_ids))
+        ns_frag, ns_params = _namespace_frag(options)
         rows = self._fetch_rows(
             f"""
             SELECT id, content, category, importance,
@@ -1431,9 +1477,9 @@ class HybridRetriever:
                    is_latest, inferred, superseded_by
             FROM memories
             WHERE id IN ({placeholders})
-            AND user_id = ? AND tenant_id = ?
+            AND user_id = ? AND tenant_id = ?{ns_frag}
         """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
-            [*memory_ids, user_id, tenant_id],
+            [*memory_ids, user_id, tenant_id, *ns_params],
         )
 
         return {
@@ -1451,15 +1497,21 @@ class HybridRetriever:
             for row in rows
         }
 
-    def _run_keyword_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+    def _run_keyword_search(
+        self, query: str, user_id: str, tenant_id: str, limit: int, options: HybridSearchOptions | None = None
+    ) -> dict[str, int]:
         """Run keyword search and return ranking dict."""
-        return self._keyword_search(query, user_id, tenant_id, limit * 3)
+        return self._keyword_search(query, user_id, tenant_id, limit * 3, options=options)
 
-    def _run_tfidf_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+    def _run_tfidf_search(
+        self, query: str, user_id: str, tenant_id: str, limit: int, options: HybridSearchOptions | None = None
+    ) -> dict[str, int]:
         """Run TF-IDF search and return ranking dict."""
-        return self._tfidf_cosine_search(query, user_id, tenant_id, limit * 3)
+        return self._tfidf_cosine_search(query, user_id, tenant_id, limit * 3, options=options)
 
-    def _run_vector_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+    def _run_vector_search(
+        self, query: str, user_id: str, tenant_id: str, limit: int, _options: HybridSearchOptions | None = None
+    ) -> dict[str, int]:
         """Run embedding cosine search and return {memory_id: rank}.
 
         Degrades to an empty ranking (never raises) when the embedding
@@ -1521,16 +1573,30 @@ class HybridRetriever:
         self._vector_store = store
         return store
 
-    def _run_graph_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+    def _run_graph_search(
+        self,
+        query: str,
+        user_id: str,
+        tenant_id: str,
+        limit: int,
+        options: HybridSearchOptions | None = None,
+    ) -> dict[str, int]:
         """Run graph search and return ranking dict with entity metadata side-channel."""
-        rankings, hits, conf = self._graph_search(query, user_id, tenant_id, limit * 3)
+        rankings, hits, conf = self._graph_search(query, user_id, tenant_id, limit * 3, options=options)
         self._entity_hits = hits
         self._entity_confidence = conf
         return rankings
 
-    def _run_temporal_search(self, user_id: str, tenant_id: str, limit: int, min_importance: float) -> dict[str, int]:
+    def _run_temporal_search(
+        self,
+        user_id: str,
+        tenant_id: str,
+        limit: int,
+        min_importance: float,
+        options: HybridSearchOptions | None = None,
+    ) -> dict[str, int]:
         """Run temporal search and return ranking dict."""
-        return self._temporal_search(user_id, tenant_id, limit * 3, min_importance)
+        return self._temporal_search(user_id, tenant_id, limit * 3, min_importance, options=options)
 
     def _build_results(
         self,
@@ -1665,12 +1731,13 @@ class HybridRetriever:
         top_ids: list[str],
         user_id: str,
         tenant_id: str,
+        options: HybridSearchOptions | None = None,
     ) -> dict[str, dict]:
         """Fetch memory data for top IDs using a temporary connection."""
         if not top_ids:
             return {}
 
-        return self._fetch_memories(top_ids, user_id, tenant_id)
+        return self._fetch_memories(top_ids, user_id, tenant_id, options)
 
 
 # Global instance management (thread-safe)

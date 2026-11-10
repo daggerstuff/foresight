@@ -250,6 +250,14 @@ class MemoryOptions(BaseModel):
         default=False,
         description="When true, derive salient topical tags from content deterministically (zero egress).",
     )
+    agent_id: str | None = Field(
+        default=None,
+        description="Namespace lane this memory belongs to (default: shared 'default' lane)",
+    )
+    project: str | None = Field(
+        default=None,
+        description="Project namespace lane this memory belongs to (default: shared 'default' lane)",
+    )
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -319,6 +327,14 @@ class SearchOptions(BaseModel):
         le=5,
         description="Maximum query variants per search (original + rewrites)",
     )
+    agent_id: str | None = Field(
+        default=None,
+        description="Namespace lane: restrict retrieval to this agent plus the shared 'default' lane",
+    )
+    project: str | None = Field(
+        default=None,
+        description="Namespace lane: restrict retrieval to this project plus the shared 'default' lane",
+    )
 
 
 class ContextBlockAction(BaseModel):
@@ -329,6 +345,12 @@ class ContextBlockAction(BaseModel):
         default=None, description="Block label (e.g. guidance, preferences, project_context, pending_items)"
     )
     content: str | None = Field(default=None, description="New content for update action")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    project: str | None = Field(default=None, description="Optional project namespace lane")
+    visibility: Literal["private", "shared"] | None = Field(
+        default=None,
+        description="Block visibility for update: 'private' (own agent lane) or 'shared' (all agents in the project lane)",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -409,6 +431,8 @@ class TemporalWindow(BaseModel):
         description="ISO-8601 instant for bitemporal point-in-time reconstruction "
         "(state of memory as it was true at that instant). Takes precedence over window/trend.",
     )
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane filter")
+    project: str | None = Field(default=None, description="Optional project namespace lane filter")
 
 
 class SystemStatusOptions(BaseModel):
@@ -667,6 +691,8 @@ def _build_filter_fragments(
     tags: list[str] | None,
     memory_type: str | None,
     column_prefix: str = "",
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> tuple[str, list]:
     """Build (sql_fragment, params) for memory-column filters.
 
@@ -706,6 +732,15 @@ def _build_filter_fragments(
                 tag_clauses.append(f"{col('tags')} LIKE ? ESCAPE '!'")
                 params.append(f'%"{_like_escape(tag)}"%')
             clauses.append("(" + " OR ".join(tag_clauses) + ")")
+
+    # Namespace lanes: a caller passing agent_id/project sees its own lane
+    # plus the shared 'default' lane (and NULLs for pre-migration rows).
+    if agent_id:
+        clauses.append(f"({col('agent_id')} = ? OR {col('agent_id')} IS NULL OR {col('agent_id')} = 'default')")
+        params.append(agent_id)
+    if project:
+        clauses.append(f"({col('project')} = ? OR {col('project')} IS NULL OR {col('project')} = 'default')")
+        params.append(project)
 
     if not clauses:
         return "", []
@@ -1829,8 +1864,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     insert_sql = (
         "INSERT INTO memories (id, user_id, tenant_id, bank_id, category, scope, retention, "
         "content, content_hash, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags, is_sensitive, sensitivity_reason, expires_at, memory_type) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "created_at, updated_at, tags, is_sensitive, sensitivity_reason, expires_at, memory_type, agent_id, project) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     insert_params = (
         memory_id,
@@ -1853,6 +1888,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         sensitivity_reason,
         expires_at,
         opts.memory_type or "semantic",
+        opts.agent_id or "default",
+        opts.project or "default",
     )
     if _supports_execute_returning(conn):
         conn.execute_returning(insert_sql, insert_params).fetchone()
@@ -2155,6 +2192,8 @@ def manage_memories(
     expires_at: str | float | int | None = None,
     memory_type: Literal["episodic", "semantic", "procedural"] | None = None,
     auto_tag: bool | None = None,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """
     Manage memory lifecycle: store, update, delete, or archive.
@@ -2180,6 +2219,8 @@ def manage_memories(
         expires_at: Flat parameter for per-memory expiration (ISO-8601 or epoch seconds)
         memory_type: Flat parameter for memory taxonomy type
         auto_tag: Flat parameter to derive topical tags deterministically
+        agent_id: Flat namespace lane for store (default: shared 'default' lane)
+        project: Flat project namespace lane for store
     """
     flat_store_kwargs: dict[str, Any] = {}
     if category is not None:
@@ -2202,6 +2243,10 @@ def manage_memories(
         flat_store_kwargs["memory_type"] = memory_type
     if auto_tag is not None:
         flat_store_kwargs["auto_tag"] = auto_tag
+    if agent_id is not None:
+        flat_store_kwargs["agent_id"] = agent_id
+    if project is not None:
+        flat_store_kwargs["project"] = project
     if relation_type is not None:
         flat_store_kwargs["relation_type"] = relation_type
     if related_memory_id is not None:
@@ -2365,6 +2410,8 @@ def search_memories(
     tags: list[str] | None = None,
     memory_type: str | None = None,
     signal_weights: dict[str, float] | None = None,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """
     Unified search and retrieval for memories.
@@ -2393,6 +2440,8 @@ def search_memories(
         tags: Flat filter to memories carrying any of these tags
         memory_type: Flat filter by memory_type
         signal_weights: Flat per-request signal weight overrides for hybrid retrieval
+        agent_id: Flat namespace lane filter (own lane + shared 'default')
+        project: Flat project namespace lane filter (own lane + shared 'default')
     """
     if options is None:
         kwargs = {}
@@ -2436,6 +2485,10 @@ def search_memories(
             kwargs["memory_type"] = memory_type
         if signal_weights is not None:
             kwargs["signal_weights"] = signal_weights
+        if agent_id is not None:
+            kwargs["agent_id"] = agent_id
+        if project is not None:
+            kwargs["project"] = project
         options = SearchOptions(**kwargs)
 
     uid = user_id or USER_ID
@@ -2583,6 +2636,8 @@ def search_memories(
                     signal_weights=options.signal_weights,
                     query_rewrite=options.query_rewrite,
                     max_rewrite_variants=options.max_rewrite_variants,
+                    agent_id=options.agent_id,
+                    project=options.project,
                 ),
             )
             if options.debug:
@@ -2604,7 +2659,7 @@ def search_memories(
 
     # 3. Fallback to basic list/keyword search
     conn = get_db_connection()
-    frag, fparams = _build_filter_fragments(*filters)
+    frag, fparams = _build_filter_fragments(*filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(timezone.utc).isoformat()
     expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
     if options.query:
@@ -2652,6 +2707,8 @@ def reflect(
     user_id: str | None = None,
     max_memories: int = 8,
     include_archived: bool = False,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """
     Reflect on a question using memory-backed reasoning with citations.
@@ -2666,6 +2723,8 @@ def reflect(
         user_id: Optional user ID override.
         max_memories: Maximum memories to consider for synthesis (default 8).
         include_archived: Include archived/ghost memories in retrieval.
+        agent_id: Optional agent namespace lane for retrieval and mental-model cache.
+        project: Optional project namespace lane for retrieval.
 
     Returns:
         JSON: ``{"answer", "citations": [{memory_id, content_excerpt,
@@ -2682,7 +2741,9 @@ def reflect(
     # reflection (zero retrieval cost) until TTL expiry, supersession of a
     # cited memory, or archival marks it stale.
     try:
-        model = reflect_mod.lookup_mental_model(reflect_mod.question_key(question), user_id=uid, tenant_id=tenant_id)
+        model = reflect_mod.lookup_mental_model(
+            reflect_mod.question_key(question), user_id=uid, tenant_id=tenant_id, agent_id=agent_id
+        )
     except Exception:
         model = None
     if model is not None and not model.get("stale"):
@@ -2713,13 +2774,17 @@ def reflect(
             tenant_id=tenant_id,
             max_memories=max_memories,
             include_archived=include_archived,
+            agent_id=agent_id,
+            project=project,
         )
     except Exception as exc:
         logger.exception("reflect failed")
         return _tool_error("reflect", str(exc))
 
     try:
-        payload["mental_model_id"] = reflect_mod.store_mental_model(question, payload, user_id=uid, tenant_id=tenant_id)
+        payload["mental_model_id"] = reflect_mod.store_mental_model(
+            question, payload, user_id=uid, tenant_id=tenant_id, agent_id=agent_id
+        )
     except Exception:
         logger.debug("mental model store failed; serving uncached reflect", exc_info=True)
 
@@ -2802,6 +2867,8 @@ def curate_observations(
     user_id: str | None = None,
     category: str | None = None,
     limit: int = 200,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """
     Run observation curation: scan recent memories and distill recurring
@@ -2819,6 +2886,8 @@ def curate_observations(
         user_id: Optional user ID override.
         category: Optional category filter for the memory scan.
         limit: Maximum memories to scan (default 200).
+        agent_id: Optional agent namespace lane for the memory scan and observation store.
+        project: Optional project namespace lane (same semantics).
 
     Returns:
         JSON: ``{"memories_scanned", "candidates", "observations_created",
@@ -2830,7 +2899,9 @@ def curate_observations(
     from .observations import curate_observations as _curate
 
     try:
-        result = _curate(user_id=uid, tenant_id=tenant_id, category=category, limit=limit)
+        result = _curate(
+            user_id=uid, tenant_id=tenant_id, category=category, limit=limit, agent_id=agent_id, project=project
+        )
     except Exception as exc:
         logger.exception("curate_observations failed")
         return _tool_error("observations", str(exc))
@@ -3029,12 +3100,12 @@ def _handle_context_block_get(agent, label: str) -> str:
     return _tool_error("get", f"Block '{label}' not found.", label=label)
 
 
-def _handle_context_block_update(agent, label: str, content: str | None) -> str:
+def _handle_context_block_update(agent, label: str, content: str | None, visibility: str | None = None) -> str:
     """Helper for context block update action."""
     if content is None:
         return _tool_error("update", "'content' is required for update.", label=label)
     try:
-        agent.update_block(label, content)
+        agent.update_block(label, content, visibility=visibility)
     except ValueError as exc:
         return _tool_error("update", str(exc), label=label)
     return _tool_response(ok=True, action="update", label=label, message=f"Updated block '{label}'")
@@ -3053,6 +3124,9 @@ def manage_context_blocks(
     block_id: str | None = None,
     key: str | None = None,
     content: str | None = None,
+    agent_id: str | None = None,
+    project: str | None = None,
+    visibility: Literal["private", "shared"] | None = None,
 ) -> str:
     """
     List, read, or update the user's standing context blocks (guidance,
@@ -3080,18 +3154,32 @@ def manage_context_blocks(
         block_id: Alias for label (optional)
         key: Alias for label (optional)
         content: New block content for update
+        agent_id: Optional agent namespace lane (private blocks are lane-scoped)
+        project: Optional project namespace lane (shared blocks span it)
+        visibility: 'private' or 'shared' for update action
     """
     resolved_label = label or block_name or block_type or name or block or block_id or key
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided. Use action='list' to list all blocks."
-        options = ContextBlockAction(action=action, label=resolved_label, content=content)
-    elif not options.label and resolved_label:
-        options.label = resolved_label
+        options = ContextBlockAction(
+            action=action,
+            label=resolved_label,
+            content=content,
+            agent_id=agent_id,
+            project=project,
+            visibility=visibility,
+        )
+    else:
+        if not options.label and resolved_label:
+            options.label = resolved_label
+        options.agent_id = options.agent_id or agent_id
+        options.project = options.project or project
+        options.visibility = options.visibility or visibility
 
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
-    agent = get_context_block_agent(uid, tenant_id)
+    agent = get_context_block_agent(uid, tenant_id, options.agent_id, options.project)
 
     if options.action == "list":
         res = _handle_context_block_list(agent)
@@ -3100,7 +3188,7 @@ def manage_context_blocks(
     elif options.action == "get":
         res = _handle_context_block_get(agent, options.label)
     elif options.action == "update":
-        res = _handle_context_block_update(agent, options.label, options.content)
+        res = _handle_context_block_update(agent, options.label, options.content, options.visibility)
     elif options.action in ("reset", "clear"):
         try:
             if options.action == "reset":
@@ -4450,6 +4538,8 @@ def inject_context(
     min_relevance: float = 0.01,
     include_details: bool = False,
     max_chars: int | None = None,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """Surface relevant memories and context blocks for the current conversation.
 
@@ -4487,6 +4577,10 @@ def inject_context(
             priority (static > dynamic > memories > blocks > safety).
             Items that don't fit are progressively summarized or stubbed.
             Default None = unbounded (legacy behavior).
+        agent_id: Optional agent namespace lane — restricts memories,
+            mental models, observations, and context blocks to this lane
+            plus the shared 'default' lane.
+        project: Optional project namespace lane (same semantics).
 
     Returns:
         Formatted string with relevant memories and context block signals.
@@ -4506,7 +4600,7 @@ def inject_context(
         tenant_id=tenant_id,
         query=conversation_text,
         max_memories=max_memories,
-        extra=f"{include_details}:{max_chars}:{min_relevance}",
+        extra=f"{include_details}:{max_chars}:{min_relevance}:{agent_id or ''}:{project or ''}",
     )
     cached_val = cache.get(cache_key)
     if cached_val is not None:
@@ -4535,6 +4629,8 @@ def inject_context(
             use_semantic=None,
             use_graph=True,
             use_temporal=True,
+            agent_id=agent_id,
+            project=project,
         ),
     )
     latency_ms = (time.perf_counter() - t0) * 1000
@@ -4588,22 +4684,28 @@ def inject_context(
     budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else None
 
     if budget is not None and budget.is_bounded:
-        budgeted = _format_injection_output_budgeted(memories, uid, tenant_id, terms, budget)
+        budgeted = _format_injection_output_budgeted(
+            memories, uid, tenant_id, terms, budget, agent_id=agent_id, project=project
+        )
     else:
         budgeted = None
 
     if not include_details:
         res_output = (
-            budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
+            budgeted.formatted
+            if budgeted is not None
+            else _format_injection_output(memories, uid, tenant_id, terms, agent_id=agent_id, project=project)
         )
     else:
-        blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
-        legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms)
+        blocks_by_point = _format_context_blocks_by_injection_point(
+            uid, tenant_id, terms, agent_id=agent_id, project=project
+        )
+        legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms, agent_id=agent_id, project=project)
         payload: dict[str, Any] = {
             "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
             "memories": [m.to_dict() for m in memories],
             "context_blocks": blocks_by_point,
-            "patterns": _active_observations(uid, tenant_id),
+            "patterns": _active_observations(uid, tenant_id, agent_id=agent_id, project=project),
         }
         if budgeted is not None:
             payload["budget"] = budgeted.to_dict()
@@ -4689,12 +4791,18 @@ def _auto_capture_in_flight(
 _auto_capture_triggered = _auto_capture_in_flight
 
 
-def _active_observations(uid: str, tenant_id: str, limit: int = 3) -> list[dict]:
+def _active_observations(
+    uid: str,
+    tenant_id: str,
+    limit: int = 3,
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> list[dict]:
     """Top active observations ranked by confidence * recency (best-effort)."""
     try:
         from .observations import list_observations
 
-        return list_observations(user_id=uid, tenant_id=tenant_id, limit=limit)
+        return list_observations(user_id=uid, tenant_id=tenant_id, limit=limit, agent_id=agent_id, project=project)
     except Exception:
         logger.debug("observation lookup failed", exc_info=True)
         return []
@@ -4705,6 +4813,8 @@ def _format_injection_output(
     uid: str,
     tenant_id: str,
     terms: list[str],
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """Format memories and context block signals into a human-readable string.
 
@@ -4725,7 +4835,7 @@ def _format_injection_output(
     # A preference set days ago is still relevant even if its words aren't in
     # today's query.
     try:
-        all_blocks = get_context_block_agent(uid, tenant_id).get_all_blocks()
+        all_blocks = get_context_block_agent(uid, tenant_id, agent_id, project).get_all_blocks()
         if all_blocks:
             if lines:
                 lines.append("")
@@ -4747,7 +4857,7 @@ def _format_injection_output(
 
     # Derived layer: evidence-linked observations (recurring patterns) under
     # a distinct Patterns section, ranked by confidence * recency.
-    observations = _active_observations(uid, tenant_id)
+    observations = _active_observations(uid, tenant_id, agent_id=agent_id, project=project)
     if observations:
         if lines:
             lines.append("")
@@ -4769,17 +4879,20 @@ def _format_injection_output_budgeted(
     tenant_id: str,
     terms: list[str],
     budget: InjectionBudget,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> BudgetResult:
     lane_items: dict[Lane, list[LaneItem]] = {lane: [] for lane in Lane}
 
-    user_prefs = get_context_block_agent(uid, tenant_id).state.get_block(USER_PREFERENCES)
+    block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
+    user_prefs = block_agent.state.get_block(USER_PREFERENCES)
     if user_prefs and not user_prefs.is_empty():
         lane_items[Lane.STATIC].append(
             LaneItem(id="user_preferences", content=user_prefs.content, score=0.9, lane=Lane.STATIC)
         )
 
-    project_ctx = get_context_block_agent(uid, tenant_id).state.get_block("project_context")
-    pending = get_context_block_agent(uid, tenant_id).state.get_block(PENDING_ITEMS)
+    project_ctx = block_agent.state.get_block("project_context")
+    pending = block_agent.state.get_block(PENDING_ITEMS)
     if project_ctx and not project_ctx.is_empty():
         lane_items[Lane.DYNAMIC].append(
             LaneItem(id="project_context", content=project_ctx.content, score=0.8, lane=Lane.DYNAMIC)
@@ -4800,7 +4913,7 @@ def _format_injection_output_budgeted(
             )
         )
 
-    sub_lines = _context_block_notes_for_terms(uid, terms)
+    sub_lines = _context_block_notes_for_terms(uid, terms, agent_id=agent_id, project=project)
     if sub_lines:
         lane_items[Lane.BLOCKS].append(
             LaneItem(id="block_signals", content="\n".join(sub_lines), score=0.5, lane=Lane.BLOCKS)
@@ -4808,7 +4921,7 @@ def _format_injection_output_budgeted(
 
     # Observations share the blocks lane so they stay inside the existing
     # injection budget; ids keep the Patterns provenance distinct.
-    for obs in _active_observations(uid, tenant_id):
+    for obs in _active_observations(uid, tenant_id, agent_id=agent_id, project=project):
         lane_items[Lane.BLOCKS].append(
             LaneItem(
                 id=f"pattern:{obs['id']}",
@@ -4828,6 +4941,8 @@ def _format_context_blocks_by_injection_point(
     uid: str,
     tenant_id: str,
     terms: list[str],
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> dict[str, list[dict]]:
     """Group matching context block entries by their schema's InjectionPoint.
 
@@ -4836,7 +4951,7 @@ def _format_context_blocks_by_injection_point(
 
     Each entry contains: label, content, matched_terms.
     """
-    agent = get_context_block_agent(uid, tenant_id)
+    agent = get_context_block_agent(uid, tenant_id, agent_id, project)
     registry = initialize_default_blocks()
     relevant_labels = [USER_PREFERENCES, SESSION_PATTERNS, PENDING_ITEMS]
 
@@ -4873,6 +4988,8 @@ def _format_context_blocks_by_injection_point(
 def _context_block_notes_for_terms(
     uid: str,
     terms: list[str],
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> list[str]:
     """Check context blocks for content relevant to the search terms.
 
@@ -4880,7 +4997,7 @@ def _context_block_notes_for_terms(
     grouped by InjectionPoint (PRE_PROMPT first, then POST_PROMPT, then WHISPER_ONLY).
     """
     tenant_id = get_current_account_id()
-    grouped = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
+    grouped = _format_context_blocks_by_injection_point(uid, tenant_id, terms, agent_id=agent_id, project=project)
 
     lines: list[str] = []
     for point_value, entries in grouped.items():
@@ -5880,6 +5997,8 @@ def query_memories_temporal(
     category: str | None = None,
     limit: int | None = None,
     as_of: str | None = None,
+    agent_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """
     Query memories based on temporal signals (window, trend, or point-in-time).
@@ -5907,6 +6026,10 @@ def query_memories_temporal(
             kwargs["limit"] = limit
         if as_of is not None:
             kwargs["as_of"] = as_of
+        if agent_id is not None:
+            kwargs["agent_id"] = agent_id
+        if project is not None:
+            kwargs["project"] = project
         options = TemporalWindow(**kwargs)
 
     uid = user_id or USER_ID
@@ -5918,14 +6041,27 @@ def query_memories_temporal(
             target_date=_parse_as_of(options.as_of),
             category=options.category,
             min_importance=0.1,
+            agent_id=options.agent_id,
+            project=options.project,
         )
     elif options.trend:
         results = builder.get_memories_by_trend(
-            user_id=uid, trend=options.trend, limit=options.limit, category=options.category
+            user_id=uid,
+            trend=options.trend,
+            limit=options.limit,
+            category=options.category,
+            agent_id=options.agent_id,
+            project=options.project,
         )
     else:
         results = builder.get_memories_from_window(
-            user_id=uid, window=options.window, limit=options.limit, min_importance=0.1, category=options.category
+            user_id=uid,
+            window=options.window,
+            limit=options.limit,
+            min_importance=0.1,
+            category=options.category,
+            agent_id=options.agent_id,
+            project=options.project,
         )
 
     return json.dumps(

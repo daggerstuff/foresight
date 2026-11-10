@@ -654,6 +654,17 @@ self-hosted/privacy positioning is uncontested.
   active observations inject under a distinct Patterns section ranked by
   confidence * recency, inside the existing injection budget. REST:
   `POST /observations/curate`.
+- **#4 namespace dimension** — shipped. Optional `agent_id`/`project`
+  lanes on `memories`, `context_blocks`, `mental_models`, and
+  `observations` (migration v25, existing rows backfilled to `'default'`).
+  A caller passing a lane sees its own rows plus the shared `'default'`
+  lane; unscoped callers see everything (byte-identical legacy behavior).
+  `context_blocks` gained `visibility`: `'private'` blocks are lane-scoped,
+  `'shared'` blocks inject for every agent in the same project lane.
+  Namespace args are threaded through `manage_memories`, `search_memories`,
+  `inject_context`, `reflect`, `manage_mental_models`,
+  `curate_observations`, `manage_context_blocks`, and
+  `query_memories_temporal`, plus matching REST body fields.
 
 ---
 

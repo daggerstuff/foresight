@@ -104,6 +104,14 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `reprocess_raw_events`       | Rebuild derived memories from the append-only raw layer (idempotent) | `window_start`, `window_end`                      |
 | `get_system_status`          | Health telemetry, cache statistics, and memory counts                | `include_trends=True`                             |
 
+**Namespace lanes:** `manage_memories`, `search_memories`, `inject_context`,
+`reflect`, `manage_mental_models`, `curate_observations`,
+`manage_context_blocks`, and `query_memories_temporal` accept optional
+`agent_id`/`project` arguments. A caller passing a lane sees its own rows
+plus the shared `'default'` lane; omitting them preserves legacy
+see-everything behavior. Context blocks also accept `visibility`
+(`"private"` = own agent lane, `"shared"` = every agent in the project lane).
+
 ---
 
 ## ⚙️ Environment Configuration

@@ -341,15 +341,30 @@ class ContextBlockAgent:
     - Provides whisper injections for Claude Code prompts
     """
 
-    def __init__(self, user_id: str = "default", tenant_id: str = "default"):
+    def __init__(
+        self,
+        user_id: str = "default",
+        tenant_id: str = "default",
+        agent_id: str | None = None,
+        project: str | None = None,
+    ):
         """Initialize the context block agent.
 
         Args:
             user_id: User identifier for memory storage
             tenant_id: Tenant identifier for memory isolation
+            agent_id: Optional agent namespace lane (None = unscoped/legacy:
+                sees every lane's blocks)
+            project: Optional project namespace lane
         """
         self.user_id = user_id
         self.tenant_id = tenant_id
+        self.agent_id = agent_id
+        self.project = project
+        # True when the caller opted into a namespace lane — only then are
+        # persisted blocks filtered by agent/project/visibility.
+        self._ns_scoped = agent_id is not None or project is not None
+        self._visibilities: dict[str, str] = {}
         self._lock = threading.RLock()
         self.state = ContextBlockState(user_id=user_id, tenant_id=tenant_id)
         self.state.initialize_defaults()
@@ -375,7 +390,10 @@ class ContextBlockAgent:
                     label TEXT NOT NULL,
                     content TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    PRIMARY KEY (tenant_id, user_id, label)
+                    agent_id TEXT NOT NULL DEFAULT 'default',
+                    project TEXT NOT NULL DEFAULT 'default',
+                    visibility TEXT NOT NULL DEFAULT 'private',
+                    PRIMARY KEY (tenant_id, user_id, label, agent_id, project)
                 )"""
             )
             conn.execute(
@@ -391,15 +409,31 @@ class ContextBlockAgent:
         self._ensure_storage()
         conn = self._connect()
         try:
+            ns_where = ""
+            ns_params: list = []
+            if self._ns_scoped:
+                # Private blocks: caller's agent lane + project lane (the
+                # 'default'/NULL lanes are shared with everyone). Shared
+                # blocks: visible to every agent in the caller's project lane.
+                ns_where = """ AND (
+                    (visibility = 'shared'
+                     AND (project = ? OR project IS NULL OR project = 'default'))
+                    OR (visibility != 'shared'
+                        AND (agent_id = ? OR agent_id IS NULL OR agent_id = 'default')
+                        AND (project = ? OR project IS NULL OR project = 'default'))
+                )"""
+                ns_params = [self.project or "default", self.agent_id or "default", self.project or "default"]
             rows = conn.execute(
-                "SELECT label, content, updated_at FROM context_blocks WHERE tenant_id = ? AND user_id = ?",
-                (self.tenant_id, self.user_id),
+                "SELECT label, content, updated_at, agent_id, project, visibility "
+                "FROM context_blocks WHERE tenant_id = ? AND user_id = ?" + ns_where,
+                (self.tenant_id, self.user_id, *ns_params),
             ).fetchall()
         finally:
             conn.close()
 
         for row in rows:
             label = row["label"]
+            self._visibilities[label] = row["visibility"] or "private"
             block = self.state.get_block(label)
             updated_at = datetime.fromisoformat(row["updated_at"])
             if updated_at.tzinfo is None:
@@ -420,20 +454,25 @@ class ContextBlockAgent:
                     )
 
     def _persist_block(self, label: str) -> None:
-        """Persist one block for the current user and tenant."""
+        """Persist one block for the current user, tenant, and namespace lane."""
         self._ensure_storage()
         block = self.state.get_block(label)
         if block is None:
             return
         updated_at = (block.updated_at or datetime.now(timezone.utc)).isoformat()
+        visibility = self._visibilities.get(label, "private")
+        agent_id = self.agent_id or "default"
+        project = self.project or "default"
         conn = self._connect()
         try:
             conn.execute(
-                """INSERT INTO context_blocks (tenant_id, user_id, label, content, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(tenant_id, user_id, label)
-                DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at""",
-                (self.tenant_id, self.user_id, label, block.content, updated_at),
+                """INSERT INTO context_blocks
+                (tenant_id, user_id, label, content, updated_at, agent_id, project, visibility)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, user_id, label, agent_id, project)
+                DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at,
+                    visibility = excluded.visibility""",
+                (self.tenant_id, self.user_id, label, block.content, updated_at, agent_id, project, visibility),
             )
             conn.commit()
         finally:
@@ -1016,12 +1055,18 @@ class ContextBlockAgent:
         with self._lock:
             self.state.register_schema(schema)
 
-    def update_block(self, label: str, content: str) -> None:
-        """Update any context block and persist the change."""
+    def update_block(self, label: str, content: str, visibility: str | None = None) -> None:
+        """Update any context block and persist the change.
+
+        ``visibility`` ('private'|'shared') controls cross-agent visibility
+        within the same project lane; omitted keeps the stored value.
+        """
         if label == GUIDANCE:
             self.update_guidance(content)
             return
         with self._lock:
+            if visibility in ("private", "shared"):
+                self._visibilities[label] = visibility
             self.state.update_block(label, content)
             self._persist_block(label)
         logger.info("Updated block %s", label)
@@ -1071,8 +1116,8 @@ SubconsciousState = ContextBlockState
 SubconsciousAgent = ContextBlockAgent
 
 
-# Global instances keyed by user and tenant for isolation
-_context_block_agents: dict[tuple[str, str], ContextBlockAgent] = {}
+# Global instances keyed by user, tenant, and namespace lane for isolation
+_context_block_agents: dict[tuple[str, str, str, str], ContextBlockAgent] = {}
 _CONTEXT_BLOCK_AGENTS_LOCK = threading.Lock()
 
 
@@ -1082,13 +1127,18 @@ def _normalize_tenant_id(tenant_id: str | None) -> str:
     return normalized or "default"
 
 
-def get_context_block_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
-    """Get or create the context block agent instance for one user+tenant."""
-    key = (user_id, _normalize_tenant_id(tenant_id))
+def get_context_block_agent(
+    user_id: str,
+    tenant_id: str = "default",
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> ContextBlockAgent:
+    """Get or create the context block agent instance for one user+tenant+lane."""
+    key = (user_id, _normalize_tenant_id(tenant_id), agent_id or "", project or "")
     with _CONTEXT_BLOCK_AGENTS_LOCK:
         agent = _context_block_agents.get(key)
         if agent is None:
-            agent = ContextBlockAgent(user_id=user_id, tenant_id=key[1])
+            agent = ContextBlockAgent(user_id=user_id, tenant_id=key[1], agent_id=agent_id, project=project)
             _context_block_agents[key] = agent
         return agent
 
