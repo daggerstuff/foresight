@@ -328,11 +328,18 @@ def store_mental_model(
     citations_json = json.dumps(result.get("citations", []))
     # namespace_agent_id is nullable and NULLs never satisfy a UNIQUE/ON
     # CONFLICT match, so upsert is done as lookup-then-update-or-insert.
-    existing = _fetch_one(
-        "SELECT id FROM mental_models WHERE tenant_id = ? AND user_id = ? AND question_key = ? "
-        "AND (namespace_agent_id IS NULL AND ? IS NULL OR namespace_agent_id = ?)",
-        (tenant_id, user_id, qkey, agent_id, agent_id),
-    )
+    if agent_id is None:
+        existing = _fetch_one(
+            "SELECT id FROM mental_models WHERE tenant_id = ? AND user_id = ? AND question_key = ? "
+            "AND namespace_agent_id IS NULL",
+            (tenant_id, user_id, qkey),
+        )
+    else:
+        existing = _fetch_one(
+            "SELECT id FROM mental_models WHERE tenant_id = ? AND user_id = ? AND question_key = ? "
+            "AND namespace_agent_id = ?",
+            (tenant_id, user_id, qkey, agent_id),
+        )
     if existing:
         _execute(
             "UPDATE mental_models SET question_text = ?, answer = ?, citations_json = ?, "

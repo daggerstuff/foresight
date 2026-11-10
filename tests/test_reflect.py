@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from foresight.server import manage_memories, reflect
+from foresight.server import USER_ID, manage_memories, reflect
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 
@@ -101,3 +101,108 @@ def test_reflect_records_telemetry(monkeypatch, tmp_path):
         assert summary["reflect_cache_misses"] >= 1
     finally:
         telemetry._GLOBAL_TELEMETRY_STORE = None
+
+
+# ====== Phase 2: mental models ======
+
+
+def test_reflect_second_identical_question_is_cached():
+    _store(f"cached reflection target ({datetime.now(timezone.utc).isoformat()})")
+
+    first = _reflect("What is the cached reflection target?")
+    assert first["cached"] is False
+    assert first["mental_model_id"]
+
+    second = _reflect("what is the cached reflection target")  # case differs; key normalizes
+    assert second["cached"] is True
+    assert second["tokens_used"] == 0
+    assert second["mental_model_id"] == first["mental_model_id"]
+    assert second["answer"] == first["answer"]
+
+
+def test_reflect_cache_hit_costs_zero_retrieval(monkeypatch):
+    from foresight.hybrid_retriever import get_hybrid_retriever
+
+    retriever = get_hybrid_retriever()
+    _store(f"zero cost probe ({datetime.now(timezone.utc).isoformat()})")
+    _reflect("zero cost probe")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("retrieval ran on a cache hit")
+
+    monkeypatch.setattr(retriever, "search", _boom)
+    payload = _reflect("zero cost probe")
+    assert payload["cached"] is True
+
+
+def test_mental_models_are_tenant_scoped():
+    _store(f"scoped model memory ({datetime.now(timezone.utc).isoformat()})")
+    _reflect("scoped model memory")
+
+    other = _reflect("scoped model memory", user_id="_other_user_")
+    assert other["cached"] is False
+
+
+def test_manage_mental_models_list_refresh_delete():
+    from foresight.server import manage_mental_models
+
+    _store(f"managed model memory ({datetime.now(timezone.utc).isoformat()})")
+    first = _reflect("managed model memory")
+    model_id = first["mental_model_id"]
+
+    listed = json.loads(manage_mental_models(action="list"))
+    assert listed["ok"] is True
+    assert any(m["id"] == model_id for m in listed["models"])
+
+    refreshed = json.loads(manage_mental_models(action="refresh", model_id=model_id))
+    assert refreshed["ok"] is True
+    assert refreshed["model"]["question_key"]
+
+    deleted = json.loads(manage_mental_models(action="delete", model_id=model_id))
+    assert deleted["ok"] is True
+
+    gone = json.loads(manage_mental_models(action="refresh", model_id=model_id))
+    assert gone["ok"] is False
+
+
+def test_stale_mental_model_self_heals(monkeypatch):
+    from foresight import reflect as reflect_mod
+
+    _store(f"self heal memory ({datetime.now(timezone.utc).isoformat()})")
+    first = _reflect("self heal memory")
+    assert first["citations"], first
+    assert first["mental_model_id"]
+
+    # Simulate supersession invalidation marking the model stale.
+    reflect_mod.mark_mental_models_stale(
+        [c["memory_id"] for c in first["citations"]], user_id=USER_ID, tenant_id="_test_"
+    )
+
+    second = _reflect("self heal memory")
+    assert second["cached"] is False
+    model = reflect_mod.lookup_mental_model(
+        reflect_mod.question_key("self heal memory"), user_id=USER_ID, tenant_id="_test_"
+    )
+    assert model is not None
+    assert model["stale"] is False
+
+
+def test_supersede_invalidates_dependent_mental_model(monkeypatch):
+    monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
+    old = _store("I go to the gym every morning before work")
+    _reflect("Do I go to the gym every morning?")
+
+    # Storing the contradicting memory triggers truth-resolution supersede,
+    # which must mark dependent mental models stale.
+    _store("I stopped going to the gym every morning")
+
+    from foresight import reflect as reflect_mod
+
+    models = reflect_mod.list_mental_models(user_id=USER_ID, tenant_id="_test_")
+    assert models
+    model = next(m for m in models if old in [c.get("memory_id") for c in m["citations"]])
+    assert model["stale"] is True
+
+    # Next reflect on the same question recomputes instead of serving stale receipts.
+    again = _reflect("Do I go to the gym every morning?")
+    assert again["cached"] is False

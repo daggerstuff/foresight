@@ -189,6 +189,17 @@ class MemoryGC:
 
                 stats.expired_memories_deleted += deleted
 
+            # Mental models share the same expires_at sweep semantics —
+            # expired reflections are dropped rather than served stale.
+            try:
+                conn.execute(
+                    "DELETE FROM mental_models WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?",
+                    (tenant_id, expiry_cutoff),
+                )
+                conn.commit()
+            except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
+                pass
+
             conn.commit()
 
             # ------------------------------------------------------------------
@@ -351,7 +362,7 @@ def tombstone_raw_events(
     sql = f"""
         UPDATE raw_events
         SET tombstone = 1, content = NULL, metadata = '{{}}'
-        WHERE {' AND '.join(clauses)}
+        WHERE {" AND ".join(clauses)}
     """
 
     try:

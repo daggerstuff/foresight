@@ -375,6 +375,15 @@ class CurationRunAction(BaseModel):
     limit: int = Field(default=20, description="Maximum number of runs to return for list")
 
 
+class MentalModelAction(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    action: Literal["list", "refresh", "delete"] = Field(description="Action to perform")
+    model_id: str | None = Field(default=None, description="Mental model ID for refresh/delete")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    limit: int = Field(default=50, ge=1, le=250, description="Maximum models to return for list")
+
+
 class EntityQueryType(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -1870,6 +1879,15 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             create_supersede_edges(memory_id, supersede_matches, uid, tenant_id)
         except Exception as exc:
             logger.warning(f"Failed to create supersede edges for {memory_id}: {exc}")
+    if supersede_matches:
+        try:
+            from . import reflect as reflect_mod
+
+            reflect_mod.mark_mental_models_stale(
+                [m.superseded_memory_id for m in supersede_matches], user_id=uid, tenant_id=tenant_id
+            )
+        except Exception as exc:
+            logger.debug("mental model invalidation failed: %s", exc)
     # Create memory relationship if specified
     if opts.relation_type and opts.related_memory_id:
         store = get_memory_relationship_store()
@@ -2050,6 +2068,12 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     conn.close()
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
+    try:
+        from . import reflect as reflect_mod
+
+        reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
+    except Exception as exc:
+        logger.debug("mental model invalidation failed: %s", exc)
 
     # ── POST_DELETE hook ───────────────────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_DELETE, hook_ctx)
@@ -2100,6 +2124,12 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
         conn.execute(archive_sql, archive_params)
     conn.commit()
     conn.close()
+    try:
+        from . import reflect as reflect_mod
+
+        reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
+    except Exception as exc:
+        logger.debug("mental model invalidation failed: %s", exc)
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
@@ -2645,11 +2675,39 @@ def reflect(
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
-    from .reflect import reflect as _reflect_core
+    from . import reflect as reflect_mod
     from .telemetry import get_telemetry_store
 
+    # Mental-model cache: identical normalized questions reuse the stored
+    # reflection (zero retrieval cost) until TTL expiry, supersession of a
+    # cited memory, or archival marks it stale.
     try:
-        payload = _reflect_core(
+        model = reflect_mod.lookup_mental_model(reflect_mod.question_key(question), user_id=uid, tenant_id=tenant_id)
+    except Exception:
+        model = None
+    if model is not None and not model.get("stale"):
+        if reflect_mod.mental_model_citations_valid(model, user_id=uid, tenant_id=tenant_id):
+            reflect_mod.touch_mental_model(model["id"])
+            payload = {
+                "answer": model["answer"],
+                "citations": model["citations"],
+                "memories_considered": len(model["citations"]),
+                "memories_used": len(model["citations"]),
+                "tokens_used": 0,
+                "cached": True,
+                "cached_at": model["created_at"],
+                "mental_model_id": model["id"],
+                "synthesized_by": "mental_model",
+                "latency_ms": 0.0,
+            }
+            get_telemetry_store().record_reflect(cached=True, answer_chars=len(model["answer"]), latency_ms=0.0)
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        # Citations no longer resolve — drop the stale model and recompute.
+        with contextlib.suppress(Exception):
+            reflect_mod.delete_mental_model(model["id"], user_id=uid, tenant_id=tenant_id)
+
+    try:
+        payload = reflect_mod.reflect(
             question,
             user_id=uid,
             tenant_id=tenant_id,
@@ -2660,12 +2718,83 @@ def reflect(
         logger.exception("reflect failed")
         return _tool_error("reflect", str(exc))
 
+    try:
+        payload["mental_model_id"] = reflect_mod.store_mental_model(question, payload, user_id=uid, tenant_id=tenant_id)
+    except Exception:
+        logger.debug("mental model store failed; serving uncached reflect", exc_info=True)
+
     get_telemetry_store().record_reflect(
-        cached=bool(payload.get("cached", False)),
+        cached=False,
         answer_chars=len(str(payload.get("answer", ""))),
         latency_ms=float(payload.get("latency_ms", 0.0)),
     )
     return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(output_schema=None)
+def manage_mental_models(
+    options: MentalModelAction | None = None,
+    user_id: str | None = None,
+    action: Literal["list", "refresh", "delete"] | None = None,
+    model_id: str | None = None,
+    agent_id: str | None = None,
+    limit: int = 50,
+) -> str:
+    """
+    Manage cached mental models produced by ``reflect``.
+
+    Mental models memoize reflections keyed by normalized question so
+    repeated questions skip retrieval entirely. Stale models (a cited
+    memory was superseded or archived) self-heal on the next reflect hit;
+    ``refresh`` forces recomputation now.
+
+    Args:
+        options: Action model (action, model_id, agent_id, limit)
+        user_id: Optional user ID override
+        action: Flat action parameter (fallback if options not provided)
+        model_id: Flat model ID for refresh/delete
+        agent_id: Flat agent namespace lane
+        limit: Flat list limit
+
+    Returns:
+        JSON envelope with ``ok``, ``action``, and action-specific payload.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+
+    if options is None:
+        if action is None:
+            return _tool_error("mental_models", "either 'options' or 'action' must be provided")
+        try:
+            options = MentalModelAction(action=action, model_id=model_id, agent_id=agent_id, limit=limit)
+        except Exception as exc:
+            return _tool_error("mental_models", f"invalid arguments: {exc}")
+
+    from . import reflect as reflect_mod
+
+    try:
+        if options.action == "list":
+            models = reflect_mod.list_mental_models(
+                user_id=uid, tenant_id=tenant_id, agent_id=options.agent_id, limit=options.limit
+            )
+            return _tool_response(ok=True, action="list", models=models, count=len(models))
+
+        if not options.model_id:
+            return _tool_error("mental_models", f"model_id is required for '{options.action}'")
+
+        if options.action == "refresh":
+            model = reflect_mod.refresh_mental_model(options.model_id, user_id=uid, tenant_id=tenant_id)
+            if model is None:
+                return _tool_error("mental_models", f"mental model {options.model_id} not found")
+            return _tool_response(ok=True, action="refresh", model=model)
+
+        deleted = reflect_mod.delete_mental_model(options.model_id, user_id=uid, tenant_id=tenant_id)
+        if not deleted:
+            return _tool_error("mental_models", f"mental model {options.model_id} not found")
+        return _tool_response(ok=True, action="delete", model_id=options.model_id)
+    except Exception as exc:
+        logger.exception("manage_mental_models failed")
+        return _tool_error("mental_models", str(exc))
 
 
 # =============================================================================

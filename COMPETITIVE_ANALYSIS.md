@@ -639,6 +639,13 @@ self-hosted/privacy positioning is uncontested.
   configured, deterministic extractive fallback otherwise), and returns
   verifiable citations (`memory_id`, excerpt, score, why_relevant). Exposed
   as MCP tool and `POST /reflect`.
+- **#2 mental models** — shipped. Repeated questions are memoized in the
+  `mental_models` table keyed by normalized question text; cache hits skip
+  retrieval entirely (`cached: true`, zero tokens). TTL via
+  `FORESIGHT_MENTAL_MODEL_TTL` (default 30d), expiry swept by memory GC, and
+  models citing a superseded/archived/deleted memory are marked stale and
+  self-heal on next hit. Managed via `manage_mental_models` /
+  `POST /mental-models`.
 
 ---
 

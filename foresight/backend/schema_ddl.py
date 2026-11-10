@@ -588,6 +588,31 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE memory_provenance ADD COLUMN IF NOT EXISTS created_at TEXT NOT NULL DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS idx_raw_events_session ON raw_events(tenant_id, user_id, session_id, position)",
     ],
+    23: [
+        # Derived layer: mental models cache reflect() answers keyed by a
+        # normalized question. citations_json holds the memory receipts so
+        # stale models can be invalidated when a cited memory is superseded
+        # or archived. expires_at participates in the existing decay/GC
+        # sweep; stale=1 marks models awaiting lazy recompute. namespace_agent_id
+        # reserves the Phase-4 agent lane (NULL = unscoped).
+        """CREATE TABLE IF NOT EXISTS mental_models (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL DEFAULT 'default',
+            namespace_agent_id TEXT,
+            question_key TEXT NOT NULL,
+            question_text TEXT NOT NULL,
+            answer TEXT NOT NULL DEFAULT '',
+            citations_json TEXT NOT NULL DEFAULT '[]',
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            last_hit_at TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            stale INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_mental_models_lookup ON mental_models(tenant_id, user_id, question_key, namespace_agent_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mental_models_expiry ON mental_models(expires_at)",
+    ],
 }
 
 
