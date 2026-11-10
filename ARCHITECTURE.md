@@ -47,6 +47,10 @@ agents.
   `subconscious.py` (context blocks: preferences, pending items, patterns).
 - **Retrieval** — `hybrid_retriever.py` fuses keyword, TF-IDF, vector, and graph
   signals; `semantic_search.py` and `clustering.py` support it.
+- **Derived memory** — `reflect.py`: `reflect` synthesizes cited answers from
+  hybrid retrieval (LLM with a deterministic extractive fallback), caches
+  repeated questions as mental models (`mental_models` table), and hosts
+  evidence-linked observations (`observations` table).
 - **Relationships** — `memory_relationships.py` + `graph_store.py` link memories
   to each other (ghost nodes, entity links).
 - **Multi-tenancy** — `auth.py` + `tenant_middleware.py`; every store and query

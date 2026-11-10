@@ -370,5 +370,281 @@ neither competitor can occupy without cannibalizing its cloud revenue.
 
 ---
 
-_Companion source: `agent-memory-feature-report.md` (competitor feature
-inventory, citations, benchmark methodology)._
+# Part II — The wider landscape (2026-11-10)
+
+Sections 0–5 compared Foresight against mem0 and Supermemory. This part widens
+the net to the rest of the AI-memory field — **Zep/Graphiti, Hindsight
+(Vectorize), Letta, LangMem, and Cognee** (Membase as honorable mention) — and
+records what each does that Foresight does not, plus new product directions.
+
+**Status note on Part I:** several Tier-1/Tier-2 gaps have since shipped —
+real embedder providers (`local-hash`, `fastembed`, OpenAI;
+`semantic_search.py:84`), pgvector + HNSW (`schema_ddl.py:491-504`), a
+fastembed cross-encoder reranker (`reranker.py`, `FORESIGHT_RERANK_ENABLED`),
+truth-resolution columns (`is_latest`, `inferred`, `superseded_by`,
+`review_status`; `schema_ddl.py:473-484`), a REST API (`rest_api.py`), and
+bitemporal validity intervals (`valid_from`/`valid_to`, `schema_ddl.py:530-548`).
+The remaining structural gaps are below.
+
+---
+
+## 6. The five additional competitors
+
+### 6.1 Zep / Graphiti — bi-temporal facts done as a first-class query axis
+
+Zep's engine (Graphiti, Apache-2.0) is a **bi-temporal knowledge graph**: every
+fact carries `valid_from`/`valid_to` (when it was true in the world) plus
+`observed`/`recorded` timestamps (provenance). Contradictions invalidate the
+old fact rather than deleting it, so "what is true now?" and "what was true on
+date X?" are both first-class queries. Its third layer, **Observations**, is the
+interesting part: patterns consolidated from many episodes ("escalations
+followed each of the last three IdP changes"), each carrying its supporting
+evidence.
+
+**vs Foresight:** Foresight now has `valid_from`/`valid_to` and `query_memories_temporal`
+as_of queries, plus typed edges and an entity graph — the substrate is
+comparable. What Zep has that Foresight lacks is (a) the **Observations layer**
+as a distinct, evidence-linked memory type, and (b) contradiction-driven
+*automatic* invalidation wired into retrieval (Foresight has `is_latest`
+penalties; verify the write path actually closes validity windows, not just
+flags).
+
+### 6.2 Hindsight (Vectorize) — the most interesting memory *type system*
+
+Hindsight (MIT, ~60k stars, launched Oct 2025) organizes memory into typed
+channels that map loosely to cognition:
+
+| Type                  | Meaning                                                        |
+| --------------------- | -------------------------------------------------------------- |
+| World facts           | Objective claims told to the bank ("Alice works at Google")    |
+| Experience facts      | The bank's _own_ actions ("I recommended Python to Bob")       |
+| Observations          | Consolidated beliefs from many facts, evidence-linked, refined-not-overwritten |
+| Mental models         | Pre-computed answers for recurring questions, served instantly |
+| Knowledge pages       | Living documents the bank maintains about itself/domains       |
+
+Retrieval (`recall`) runs four parallel strategies — semantic, BM25, graph,
+temporal — fused by **rank** (RRF, same as Foresight), then a cross-encoder
+rerank, then **cut to a token budget, not top-k**. A `reflect` operation runs
+an autonomous reasoning loop and returns a synthesized answer rather than a
+fact list. It also ships open-weight memory-specific models (decision, rerank,
+embedding) and configurable **disposition traits** (skepticism, literalism,
+empathy) that influence belief formation.
+
+**vs Foresight:** the retrieval stack is now nearly identical in shape
+(hybrid RRF + reranker + injection budget). The gaps are the **epistemic
+distinction** (world vs experience facts — Foresight memories don't record
+who/what is the subject of a claim), **mental models / knowledge pages**
+(cached synthesized answers), the **`reflect` operation**, and **disposition
+traits** — where Foresight has a surprise asset: it already computes empathy
+metrics and runs crisis detection (`memory_components.py`, `crisis_detection.py`),
+so a disposition layer is closer than it looks.
+
+### 6.3 Letta — the agent edits its own memory, with budgets
+
+Letta (MemGPT lineage) treats memory as **context the agent manages itself**:
+
+- **Memory blocks**: labeled, described, char-budgeted sections always pinned in
+  context (persona, human, custom). Agents rewrite them via tools; the block's
+  `description` field teaches the agent when and how to use it.
+- **Archival memory**: agent-immutable long-term store, searchable via tools.
+- **Recall memory**: full conversation history searchable on demand — distinct
+  from curated facts.
+- **Sleep-time agents**: background agents that consolidate and rewrite memory
+  while the primary agent is idle.
+- **Shared blocks**: multiple agents can attach to the same block; update once,
+  visible everywhere.
+
+**vs Foresight:** `manage_context_blocks` + `capture_in_flight_memory` cover the
+mechanics, and `reflection_engine`/curation runs cover background consolidation.
+Gaps: context blocks have **no description field or per-block char budget**
+(the schema stores label+content only), there is **no recall-vs-archival
+distinction** exposed as separate tools (raw events exist but aren't a
+first-class `conversation_search`), and **no shared blocks across agents** —
+Foresight scopes strictly by `tenant_id`+`user_id` with no `agent_id`/project
+dimension at all (`schema_ddl.py` has no such column).
+
+### 6.4 LangMem — procedural memory and prompt optimization
+
+LangMem (LangChain, MIT) is a library, not a service, but its memory taxonomy
+is the cleanest articulation of a gap Foresight shares with everyone:
+
+- **Semantic** — facts/preferences (Foresight ✓)
+- **Episodic** — past interactions as few-shot learning examples (partial: raw
+  events + session transcripts exist, but aren't surfaced as reusable
+  "what worked last time" exemplars)
+- **Procedural** — _rules that change agent behavior_, distilled into the
+  system prompt; LangMem pairs this with a **prompt-optimization loop** that
+  evaluates and refines instructions over time.
+
+**vs Foresight:** Foresight's `session_patterns` context block is the seed of
+procedural memory, but nothing closes the loop: patterns are stored, not
+_evaluated_, and there is no mechanism that turns "the agent keeps making the
+same mistake" into an enforced prompt rule with a measured effect. This is the
+least-crowded whitespace in the whole landscape — nobody self-hosted does
+procedural memory well.
+
+### 6.5 Cognee — graph pipelines, ontology grounding, `memify`
+
+Cognee (Apache-2.0 core) runs an ECL pipeline (`add` → `cognify` → `memify`)
+with two ideas worth stealing:
+
+- **Ontology grounding**: an optional RDF/OWL vocabulary validates extracted
+  entities — `annotate` mode tags `ontology_valid`, `strict` mode drops
+  ungrounded entities. Cheap precision lever on entity extraction.
+- **`memify`**: a post-ingestion refinement pass that prunes stale nodes,
+  strengthens frequently-traversed edges, reweights by usage signals, and adds
+  derived facts — essentially curation runs pointed at the graph rather than
+  just memories.
+- Also: **code as a graph** (symbol/dependency extraction) and a delightfully
+  simple four-verb API (`remember`/`recall`/`improve`/`forget`).
+
+**vs Foresight:** `graph_edge_decay` + curation runs are close to `memify`;
+the missing piece is **usage-signal edge reweighting** (Foresight decays by
+time, not by retrieval traffic) and **ontology/domain-vocabulary grounding**
+for the entity extractor.
+
+**Honorable mention — Membase:** one memory shared across an app, its AI
+features, and coding tools via MCP; profile-centric. Validates demand for a
+first-class, exportable **user profile** artifact — which Foresight has
+(`synthesize_profile`) but doesn't expose as a portable document.
+
+---
+
+## 7. What the field converged on (and where Foresight stands)
+
+Across all seven systems the architecture has converged:
+
+1. **Keep everything, resolve truth asynchronously** — ADD-only writes,
+   supersede/validity windows, reversible consolidation. Foresight is aligned
+   and, with curation runs, ahead on the human-in-the-loop variant.
+2. **Hybrid retrieval + cross-encoder rerank + token budget** — now table
+   stakes; Foresight has shipped all three.
+3. **A derived "belief" layer above raw facts** — Zep Observations, Hindsight
+   observations/mental models, Cognee derived facts. Everyone is building
+   this; Foresight's context blocks are adjacent but not evidence-linked.
+4. **Background consolidation** — sleep-time agents, dreaming, memify,
+   background managers. Foresight has the machinery (reflection engine,
+   curation runs) but not the productized persona.
+5. **Epistemic typing** — who said it, whether it's inferred, whether it's the
+   agent's own action. Only Hindsight and (partially) Foresight's
+   `inferred` flag bother.
+
+Foresight's remaining structural deficits versus the whole field: **no
+`agent_id`/project/namespace dimension** (blocks multi-agent and team use —
+the most common enterprise ask), **no procedural memory loop**, **no portable
+profile artifact**, and **no published benchmark numbers**.
+
+---
+
+## 8. New spins — concrete proposals
+
+Ordered by (user value × fit with existing subsystems). Each names the
+competitor idea it generalizes.
+
+### Tier A — high value, mostly assembly of existing parts
+
+1. **`reflect` tool — memory-backed reasoning, not just retrieval.**
+   A tool that takes a question, runs retrieval + synthesis, and returns an
+   answer *with citations to the memories used*. `inject_context` returns a
+   raw slice; `reflect` returns a conclusion. This is Hindsight's reflect and
+   Zep's graph-query UX in one tool, and it demos Foresight's unique depth
+   (decay + validity + relationships) better than raw search ever will.
+   *Files:* new tool in `server.py`, reuse `enhanced_synthesizer.py`.
+
+2. **Mental models / FAQ cache.** Detect repeated `reflect`/`inject` query
+   patterns; cache the synthesized answer as a first-class memory type with
+   its own decay curve. Doubles as a token-economics win — telemetry already
+   tracks saved tokens, and cached reflections are the cheapest possible
+   injection. *Generalizes Hindsight mental models + knowledge pages.*
+
+3. **Evidence-linked observations.** Extend context blocks (or a new
+   `observations` table) so consolidated patterns carry `supporting_memory_ids`
+   + a proof count, and are *refined* on new evidence rather than overwritten —
+   Hindsight's model, built on Foresight's existing curation synthesis.
+   Lets `inject_context` say "the agent has escalated 3 of the last 4 times
+   this came up" with receipts.
+
+4. **Namespace dimension: `agent_id` / `project`.** Add optional scoping
+   columns so multiple agents (or a user + their sub-agents) can share a
+   tenant while keeping private lanes — plus _shared_ context blocks visible
+   to all agents in a project (Letta's shared blocks). This is the single
+   biggest market-expansion move: it converts Foresight from "one user's
+   memory" to "a team's memory," which is what Membase/Zep/mem0-Platform all
+   sell. Schema touch is contained (nullable columns + scoping predicates).
+
+### Tier B — differentiation
+
+5. **Procedural memory loop.** A curation-run type that distills recurring
+   corrections/failed approaches into candidate prompt rules, A/B-measures
+   them via the existing `eval_harness.py`, and promotes winners into a
+   `procedural_rules` context block. This is LangMem's procedural memory +
+   prompt optimization, self-hosted, with measurement — a capability no
+   competitor offers end-to-end. *Highest novelty; highest effort.*
+
+6. **World vs. experience facts.** Tag memories with epistemic source
+   (`subject=user|agent|world`) at extraction time. Cheap schema + prompt
+   change; enables trust weighting ("the agent _believes_ it recommended X"
+   vs "the user _said* X") and better crisis/safety handling. *Generalizes
+   Hindsight's fact typing; synergizes with `crisis_detection.py`.*
+
+7. **Sleep-time agent persona.** Productize consolidation as a named,
+   schedulable agent (`foresight sleep` / cron-driven curation profile) with
+   its own narrow toolset — review sessions, consolidate observations, prune,
+   write reflections. Letta's sleep-time agents + Zep's dreaming, but
+   self-hosted and auditable via the existing audit trail. Mostly a
+   packaging/UX exercise over `manage_curation_runs`.
+
+8. **Ontology grounding for entity extraction.** Optional per-tenant
+   vocabulary (start as a simple YAML/JSON schema of entity types + relations,
+   RDF/OWL later) that validates/canonicalizes `entity_extractor.py` output —
+   Cognee's annotate/strict modes. Improves graph quality and gives enterprise
+   users a governance hook. *Cheap precision win.*
+
+9. **Portable profile artifact.** Export `synthesize_profile` output as a
+   signed, versioned document (Markdown/JSON) the user can inspect, diff, and
+   carry across deployments — Membase's profile-as-product, but open. Also
+   doubles as a GDPR-style data-portability answer, strengthening the
+   privacy moat.
+
+### Tier C — credibility
+
+10. **Publish benchmarks.** Run `eval_harness.py`/`proof_benchmark.py` against
+    LongMemEval + LoCoMo on the self-hosted build; publish accuracy, tokens/
+    query, and latency at fixed retrieval budget with a declared judge. Only
+    Hindsight and Zep publish numbers; mem0's are Platform-gated; Supermemory
+    publishes none. This is still the cheapest credibility unlock available.
+
+---
+
+## 9. Recommended sequencing
+
+- **Now:** #1 `reflect` (demo-able, differentiating), #4 namespace dimension
+  (unlocks teams), #10 benchmarks (credibility).
+- **Next:** #2 mental models, #3 evidence-linked observations, #9 portable
+  profile.
+- **Later:** #5 procedural loop (needs eval infra maturity), #6 epistemic
+  typing, #7 sleep-time persona, #8 ontology grounding.
+
+The through-line: the field has commoditized *retrieval* (everyone has
+hybrid+rerank+budget now, including Foresight). The open frontier is the
+**derived layer** — observations, mental models, procedural rules, and
+reflective answers — where Foresight's decay model, curation runs, eval
+harness, and audit trail are already the right foundation, and where the
+self-hosted/privacy positioning is uncontested.
+
+## 10. Derived-layer implementation status
+
+- **#1 `reflect`** — shipped. `reflect(question)` runs hybrid retrieval with
+  query rewriting, synthesizes an answer (LLM when `FORESIGHT_LLM_*` is
+  configured, deterministic extractive fallback otherwise), and returns
+  verifiable citations (`memory_id`, excerpt, score, why_relevant). Exposed
+  as MCP tool and `POST /reflect`.
+
+---
+
+_Companion source: `agent-memory-feature-report.md` (mem0/Supermemory feature
+inventory). Part II sources: getzep.com docs + Graphiti paper (arXiv
+2501.13956), hindsight.vectorize.io docs + vectorize-io/hindsight repo,
+Letta docs (memory blocks/archival/recall), langchain-ai/langmem repo +
+docs, Cognee docs (ECL/cognify/memify/ontologies). Vendor benchmark numbers
+remain unverified vendor claims._

@@ -136,6 +136,16 @@ class SearchBody(BaseModel):
     )
 
 
+class ReflectBody(BaseModel):
+    """Body for ``POST /reflect`` — mirrors the ``reflect`` MCP tool."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    question: str = Field(..., description="Question or topic to reflect on")
+    max_memories: int = Field(default=8, ge=1, le=50, description="Maximum memories to consider")
+    include_archived: bool = Field(default=False, description="Include archived memories")
+
+
 class InjectBody(BaseModel):
     """Body for ``POST /inject`` — mirrors ``inject_context``."""
 
@@ -659,6 +669,38 @@ async def _handle_search(request: Request) -> Response:
     return _tool_json(result)
 
 
+async def _handle_reflect(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    body, err = await _validated_body(request, ReflectBody)
+    if err:
+        return err
+
+    from .server import reflect
+
+    set_current_user_id(user_id or DEFAULT_USER_ID)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            reflect,
+            question=body.question,
+            user_id=user_id,
+            max_memories=body.max_memories,
+            include_archived=body.include_archived,
+        )
+    finally:
+        reset_tenant_context()
+    return _tool_json(result)
+
+
 async def _handle_inject(request: Request) -> Response:
     user, auth_err = _authenticate(request)
     if auth_err:
@@ -889,6 +931,7 @@ def _openapi_spec() -> dict[str, Any]:
         UpdateMemoryBody,
         SearchBody,
         InjectBody,
+        ReflectBody,
         TemporalQueryBody,
         ReprocessBody,
         CreateDocumentBody,
@@ -1017,6 +1060,14 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/reflect": {
+                "post": {
+                    "summary": "Reflect on a question with memory-backed citations",
+                    "operationId": "reflect",
+                    "requestBody": _body("ReflectBody"),
+                    "responses": _ok(),
+                }
+            },
             "/inject": {
                 "post": {
                     "summary": "Inject context for a conversation",
@@ -1099,6 +1150,7 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/memories/{memory_id}", ["PATCH"], "rest_patch_memory", _handle_patch_memory),
     ("/memories/{memory_id}", ["DELETE"], "rest_delete_memory", _handle_delete_memory),
     ("/search", ["POST"], "rest_search", _handle_search),
+    ("/reflect", ["POST"], "rest_reflect", _handle_reflect),
     ("/inject", ["POST"], "rest_inject", _handle_inject),
     ("/documents", ["POST"], "rest_create_document", _handle_create_document),
     ("/documents/ingest", ["POST"], "rest_ingest_document_file", _handle_ingest_document_file),

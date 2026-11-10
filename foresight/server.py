@@ -482,7 +482,9 @@ class MaintenanceAction(BaseModel):
     stale_importance_threshold: float = Field(default=0.1, description="Archive memories below this importance")
     batch_size: int = Field(default=200, description="Max memories to process per mode")
     max_runtime_seconds: float = Field(default=300, description="Wall-clock budget in seconds")
-    reprocess_window_start: str | None = Field(default=None, description="ISO-8601 start of reprocess window (inclusive)")
+    reprocess_window_start: str | None = Field(
+        default=None, description="ISO-8601 start of reprocess window (inclusive)"
+    )
     reprocess_window_end: str | None = Field(default=None, description="ISO-8601 end of reprocess window (inclusive)")
 
 
@@ -1533,6 +1535,7 @@ if not logger.handlers:
 if _oauth_base_url:
     logger.info("OAuth provider enabled (base_url=%s)", _oauth_base_url)
 
+
 def _seed_static_oauth_client() -> None:
     """Seed the statically configured external-connector OAuth client if absent.
 
@@ -1586,6 +1589,7 @@ def _seed_static_oauth_client() -> None:
         asyncio.run(_seed())
     except Exception as exc:
         logger.warning("Static OAuth client seed skipped: %s", exc)
+
 
 RowLike = Mapping[str, Any]
 
@@ -1644,6 +1648,7 @@ async def health_endpoint(_request: Request) -> JSONResponse:
     payload = _health_status_dict()
     code = 200 if payload.get("status") in {"ok", "degraded"} else 503
     return JSONResponse(payload, status_code=code)
+
 
 if _oauth_base_url:
 
@@ -2611,6 +2616,58 @@ def search_memories(
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
 
 
+@mcp.tool(output_schema=None)
+def reflect(
+    question: str,
+    user_id: str | None = None,
+    max_memories: int = 8,
+    include_archived: bool = False,
+) -> str:
+    """
+    Reflect on a question using memory-backed reasoning with citations.
+
+    Runs hybrid retrieval over the caller's memories, then synthesizes a
+    concise answer (LLM when configured, deterministic extractive summary
+    otherwise). Every factual claim is anchored to the memory IDs it was
+    drawn from, so callers can verify receipts instead of trusting prose.
+
+    Args:
+        question: The question or topic to reflect on.
+        user_id: Optional user ID override.
+        max_memories: Maximum memories to consider for synthesis (default 8).
+        include_archived: Include archived/ghost memories in retrieval.
+
+    Returns:
+        JSON: ``{"answer", "citations": [{memory_id, content_excerpt,
+        score, why_relevant}], "memories_considered", "memories_used",
+        "tokens_used", "cached", "synthesized_by", "latency_ms"}``
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+
+    from .reflect import reflect as _reflect_core
+    from .telemetry import get_telemetry_store
+
+    try:
+        payload = _reflect_core(
+            question,
+            user_id=uid,
+            tenant_id=tenant_id,
+            max_memories=max_memories,
+            include_archived=include_archived,
+        )
+    except Exception as exc:
+        logger.exception("reflect failed")
+        return _tool_error("reflect", str(exc))
+
+    get_telemetry_store().record_reflect(
+        cached=bool(payload.get("cached", False)),
+        answer_chars=len(str(payload.get("answer", ""))),
+        latency_ms=float(payload.get("latency_ms", 0.0)),
+    )
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 # =============================================================================
 # Memory Versioning Tools
 # =============================================================================
@@ -2857,10 +2914,7 @@ def manage_context_blocks(
     resolved_label = label or block_name or block_type or name or block or block_id or key
     if options is None:
         if action is None:
-            return (
-                "Error: either 'options' or 'action' must be provided. "
-                "Use action='list' to list all blocks."
-            )
+            return "Error: either 'options' or 'action' must be provided. Use action='list' to list all blocks."
         options = ContextBlockAction(action=action, label=resolved_label, content=content)
     elif not options.label and resolved_label:
         options.label = resolved_label

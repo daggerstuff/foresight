@@ -82,6 +82,7 @@ class TestOpenApi:
             "/memories/temporal",
             "/memories/{memory_id}",
             "/search",
+            "/reflect",
             "/inject",
             "/documents",
             "/documents/{document_id}",
@@ -94,6 +95,7 @@ class TestOpenApi:
             "StoreMemoryBody",
             "UpdateMemoryBody",
             "SearchBody",
+            "ReflectBody",
             "InjectBody",
             "TemporalQueryBody",
             "ReprocessBody",
@@ -277,6 +279,28 @@ class TestOtherEndpoints:
     def test_batch_rejects_empty_items_422(self, client: TestClient, api_key: str) -> None:
         resp = client.post("/memories/batch", json={"items": []}, headers=_headers(api_key))
         assert resp.status_code == 422
+
+    def test_reflect_returns_citations(self, client: TestClient, api_key: str) -> None:
+        _store_memory(client, api_key, "The deploy window for payments is Tuesday nights")
+        resp = client.post(
+            "/reflect",
+            json={"question": "When is the payments deploy window?"},
+            headers=_headers(api_key),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["answer"]
+        assert isinstance(body["citations"], list)
+        assert body["cached"] is False
+        assert body["tokens_used"] > 0
+
+    def test_reflect_missing_question_422(self, client: TestClient, api_key: str) -> None:
+        resp = client.post("/reflect", json={}, headers=_headers(api_key))
+        assert resp.status_code == 422
+
+    def test_reflect_requires_credentials(self, client: TestClient) -> None:
+        resp = client.post("/reflect", json={"question": "anything"})
+        assert resp.status_code == 401
 
     def test_inject_returns_formatted(self, client: TestClient, api_key: str) -> None:
         resp = client.post(

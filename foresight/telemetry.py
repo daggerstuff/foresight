@@ -49,6 +49,9 @@ class TelemetryData:
     total_cost_saved_usd: float = 0.0
     recent_latencies_ms: list[float] = field(default_factory=list)
     surfaces: dict[str, dict[str, Any]] = field(default_factory=dict)
+    reflect_calls: int = 0
+    reflect_cache_hits: int = 0
+    reflect_cache_misses: int = 0
 
 
 class TelemetryStore:
@@ -76,6 +79,9 @@ class TelemetryStore:
                         total_cost_saved_usd=raw.get("total_cost_saved_usd", 0.0),
                         recent_latencies_ms=raw.get("recent_latencies_ms", []),
                         surfaces=raw.get("surfaces", {}),
+                        reflect_calls=raw.get("reflect_calls", 0),
+                        reflect_cache_hits=raw.get("reflect_cache_hits", 0),
+                        reflect_cache_misses=raw.get("reflect_cache_misses", 0),
                     )
         except Exception as e:
             logger.warning("Failed to load telemetry file: %s", e)
@@ -138,6 +144,21 @@ class TelemetryStore:
 
             self._save_locked()
 
+    def record_reflect(self, *, cached: bool, answer_chars: int, latency_ms: float) -> None:
+        """Record a reflect call for cache-economics tracking (Phase 2+).
+
+        Also feeds the generic injection counters so reflect shows up in
+        per-surface token/latency stats like every other surface.
+        """
+        with self._lock:
+            self._data.reflect_calls += 1
+            if cached:
+                self._data.reflect_cache_hits += 1
+            else:
+                self._data.reflect_cache_misses += 1
+            self._save_locked()
+        self.record_injection(surface="reflect", injected_chars=answer_chars, latency_ms=latency_ms)
+
     def get_summary(self) -> dict[str, Any]:
         """Return structured telemetry dashboard data."""
         with self._lock:
@@ -167,6 +188,9 @@ class TelemetryStore:
                 "latency_p95_ms": round(p95, 1),
                 "latency_avg_ms": round(avg_lat, 1),
                 "surfaces": self._data.surfaces,
+                "reflect_calls": self._data.reflect_calls,
+                "reflect_cache_hits": self._data.reflect_cache_hits,
+                "reflect_cache_misses": self._data.reflect_cache_misses,
             }
 
 
