@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from foresight.backend.base import DatabaseBackend
 
 
-
 import re as _re
 
 
@@ -53,4 +52,3 @@ def _add_column_if_missing(backend: DatabaseBackend, table: str, column: str, de
     """Add a column to a table only if it does not already exist."""
     if not backend.column_exists(table, column):
         backend.execute(f"ALTER TABLE {_safe_identifier(table)} ADD COLUMN {_safe_identifier(column)} {definition}")
-

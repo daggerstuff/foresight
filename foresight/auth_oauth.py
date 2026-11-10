@@ -67,6 +67,7 @@ AUTH_CODE_TTL = 600  # seconds
 # credential-pattern matches (B105/B106) on the string "token".
 OAUTH_SCHEME = "Bearer"
 
+
 class ForesightOAuthProvider(OAuthProvider):
     """OAuth 2.1 authorization server with DCR and durable (Postgres) storage.
 
@@ -243,8 +244,12 @@ class ForesightOAuthProvider(OAuthProvider):
                 now,
             )
             token_query = "SELECT token, kind, token_json, expires_at FROM oauth_tokens"
-            self._load_table(conn, token_query, AccessToken, self._access_tokens, "token", "token_json", now, kind_key="access")
-            self._load_table(conn, token_query, RefreshToken, self._refresh_tokens, "token", "token_json", now, kind_key="refresh")
+            self._load_table(
+                conn, token_query, AccessToken, self._access_tokens, "token", "token_json", now, kind_key="access"
+            )
+            self._load_table(
+                conn, token_query, RefreshToken, self._refresh_tokens, "token", "token_json", now, kind_key="refresh"
+            )
         except Exception as exc:
             logger.warning("OAuth store reload failed (continuing memory-only): %s", exc)
         finally:

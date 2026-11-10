@@ -174,8 +174,7 @@ def validate_signal_weights(weights: dict[str, float]) -> None:
     unknown = set(weights.keys()) - VALID_SIGNAL_WEIGHT_KEYS
     if unknown:
         raise ValueError(
-            f"Invalid signal_weight keys: {sorted(unknown)}. "
-            f"Valid keys: {sorted(VALID_SIGNAL_WEIGHT_KEYS)}"
+            f"Invalid signal_weight keys: {sorted(unknown)}. Valid keys: {sorted(VALID_SIGNAL_WEIGHT_KEYS)}"
         )
 
 
@@ -730,7 +729,12 @@ class HybridRetriever:
             return result
 
         merged = self._reciprocal_rank_fusion(
-            keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking, vector_ranking, weights=effective_weights
+            keyword_ranking,
+            tfidf_cosine_ranking,
+            graph_ranking,
+            temporal_ranking,
+            vector_ranking,
+            weights=effective_weights,
         )
 
         early: HybridSearchResult | None = None
@@ -899,7 +903,9 @@ class HybridRetriever:
             if isinstance(count, int) and count > 0 and weight > 0:
                 per_signal_max[weight_key] = round(weight * best_rank_contribution, 6)
         return {
-            "weights": {k: effective_weights.get(k, 0.0) for k in ("keyword", "semantic", "vector", "graph", "temporal")},
+            "weights": {
+                k: effective_weights.get(k, 0.0) for k in ("keyword", "semantic", "vector", "graph", "temporal")
+            },
             "rrf_k": self.rrf_k,
             "max_possible_score": round(sum(per_signal_max.values()), 6),
             "per_signal_max": per_signal_max,

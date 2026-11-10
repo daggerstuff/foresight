@@ -17,12 +17,20 @@ logger = logging.getLogger(__name__)
 MIGRATION_VERSION = 1
 
 
-
 ALLOWED_TABLES = {
-    "entities", "relationships", "memories", "memory_embeddings",
-    "memory_links", "clusters", "memory_decay", "memory_versions",
-    "memory_entities", "entity_relationships", "memory_entity_links"
+    "entities",
+    "relationships",
+    "memories",
+    "memory_embeddings",
+    "memory_links",
+    "clusters",
+    "memory_decay",
+    "memory_versions",
+    "memory_entities",
+    "entity_relationships",
+    "memory_entity_links",
 }
+
 
 def _safe_table(name: str) -> str:
     if name not in ALLOWED_TABLES:
@@ -42,5 +50,6 @@ def migrate(backend: DatabaseBackend) -> None:
     for table in ("memory_entities", "entity_relationships", "memory_entity_links"):
         if not backend.table_exists(table):
             continue
-        backend.execute(f"CREATE INDEX IF NOT EXISTS idx_{_safe_table(table)}_tenant ON {_safe_table(table)}(tenant_id)")
-
+        backend.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{_safe_table(table)}_tenant ON {_safe_table(table)}(tenant_id)"
+        )

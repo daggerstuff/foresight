@@ -87,14 +87,17 @@ fallback by design — see `get_db_connection()` at `server.py:536`, which raise
 
 ```python
 import sqlite3
-from foresight.backend import SqliteBackend   # <-- class no longer exists in Postgres-only backend
+from foresight.backend import SqliteBackend  # <-- class no longer exists in Postgres-only backend
+
 ...
+
+
 @pytest.fixture(autouse=True)
 def setup_test_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_memory.db"
-    monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))   # <-- SQLite path; ignored by Postgres backend
+    monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))  # <-- SQLite path; ignored by Postgres backend
     ...
-    from foresight.server import init_db   # <-- now Postgres-based
+    from foresight.server import init_db  # <-- now Postgres-based
 ```
 
 `SqliteBackend` does not exist in the current backend module → `ImportError` /

@@ -202,13 +202,14 @@ def purge_expired(db_path: str | None) -> int:
     conn = pool.acquire()
     removed = 0
     try:
-        removed += conn.execute(
-            "DELETE FROM oauth_auth_codes WHERE expires_at < ?", (now,)
-        ).rowcount or 0
-        removed += conn.execute(
-            "DELETE FROM oauth_tokens WHERE expires_at IS NOT NULL AND expires_at < ?",
-            (now,),
-        ).rowcount or 0
+        removed += conn.execute("DELETE FROM oauth_auth_codes WHERE expires_at < ?", (now,)).rowcount or 0
+        removed += (
+            conn.execute(
+                "DELETE FROM oauth_tokens WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (now,),
+            ).rowcount
+            or 0
+        )
         conn.commit()
     finally:
         pool.release(conn)

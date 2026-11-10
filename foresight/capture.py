@@ -504,9 +504,7 @@ class CapturePipeline:
         # contract via ON CONFLICT.  Placeholders are SQLite-style; the Postgres
         # adapter translates them to %s automatically.
         cols = "id, tenant_id, user_id, session_id, role, content, position, captured_at, source, metadata, tombstone"
-        placeholders = ", ".join(
-            f"({','.join('?' for _ in range(len(rows[0]) + 1))})" for _ in rows
-        )
+        placeholders = ", ".join(f"({','.join('?' for _ in range(len(rows[0]) + 1))})" for _ in rows)
         params: list[Any] = []
         for row in rows:
             params.extend(row)
@@ -574,16 +572,12 @@ class CapturePipeline:
         # can be reprocessed later even if classification/extraction skips it.
         # During reprocess the IDs are supplied and must not be rewritten.
         if raw_event_ids is None:
-            raw_event_ids = self._persist_raw_events(
-                session_id, messages, user_id, tid, "capture:transcript", now
-            )
+            raw_event_ids = self._persist_raw_events(session_id, messages, user_id, tid, "capture:transcript", now)
         raw_event_ids = raw_event_ids or []
 
         # PIX-4722: verbatim (no-inference) fast path.
         if infer is False:
-            return self._run_verbatim(
-                session_id, messages, user_id, tid, now, instructions, raw_event_ids
-            )
+            return self._run_verbatim(session_id, messages, user_id, tid, now, instructions, raw_event_ids)
 
         # Phase 1: Classify
         skip, reason = self.classifier.should_skip(messages)
@@ -594,9 +588,7 @@ class CapturePipeline:
             return stats
 
         # Phase 2: Extract
-        candidates = self.extractor.extract(
-            messages, instructions=instructions, raw_event_ids=raw_event_ids or []
-        )
+        candidates = self.extractor.extract(messages, instructions=instructions, raw_event_ids=raw_event_ids or [])
         stats.candidates_found = len(candidates)
 
         if not candidates:
@@ -811,9 +803,7 @@ class CapturePipeline:
     ) -> CaptureStats:
         """Handle the infer=False path, returning a fully-populated CaptureStats."""
         stats = CaptureStats()
-        stored, content, _mid = self._store_verbatim(
-            messages, user_id, tenant_id, now, instructions, raw_event_ids
-        )
+        stored, content, _mid = self._store_verbatim(messages, user_id, tenant_id, now, instructions, raw_event_ids)
         if stored:
             stats.candidates_found = 1
             stats.stored = 1
@@ -897,12 +887,8 @@ class CapturePipeline:
         now = datetime.now(timezone.utc).isoformat()
         # In-flight messages are not a real session transcript, but a stable
         # synthetic session id lets them participate in the raw layer deterministically.
-        synthetic_session_id = hashlib.sha256(
-            json.dumps(messages, sort_keys=True).encode()
-        ).hexdigest()[:16]
-        raw_event_ids = self._persist_raw_events(
-            synthetic_session_id, messages, user_id, tid, "capture:in_flight", now
-        )
+        synthetic_session_id = hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()[:16]
+        raw_event_ids = self._persist_raw_events(synthetic_session_id, messages, user_id, tid, "capture:in_flight", now)
 
         candidates = self.extractor.extract(messages, raw_event_ids=raw_event_ids)
         if not candidates:

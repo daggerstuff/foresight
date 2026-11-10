@@ -302,12 +302,8 @@ class TestTemporalReconstruction:
             _store_memory(conn, new_id, "I hate therapy.", "_test_user_", "_test_", new_created)
             detect_and_mark_supersessions(conn, new_id, "I hate therapy.", "_test_user_", "_test_")
 
-            older = conn.execute(
-                "SELECT id, valid_from, valid_until FROM memories WHERE id = ?", (old_id,)
-            ).fetchone()
-            newer = conn.execute(
-                "SELECT id, valid_from FROM memories WHERE id = ?", (new_id,)
-            ).fetchone()
+            older = conn.execute("SELECT id, valid_from, valid_until FROM memories WHERE id = ?", (old_id,)).fetchone()
+            newer = conn.execute("SELECT id, valid_from FROM memories WHERE id = ?", (new_id,)).fetchone()
 
         assert older["valid_until"]
         assert newer["valid_from"]
@@ -341,9 +337,7 @@ class TestTemporalReconstruction:
             _store_memory(conn, new_id, "I hate therapy.", "_test_user_", "_test_", _iso_ago(minutes=1))
             detect_and_mark_supersessions(conn, new_id, "I hate therapy.", "_test_user_", "_test_")
 
-            newer = conn.execute(
-                "SELECT id, valid_from FROM memories WHERE id = ?", (new_id,)
-            ).fetchone()
+            newer = conn.execute("SELECT id, valid_from FROM memories WHERE id = ?", (new_id,)).fetchone()
 
         set_current_account_id("_test_")
         try:
@@ -521,12 +515,8 @@ class TestTombstoneInvariants:
         )
 
         with _conn(ml_db) as conn:
-            raw_id = conn.execute(
-                "SELECT id FROM raw_events WHERE session_id = ? LIMIT 1", ("s3",)
-            ).fetchone()["id"]
-            before = conn.execute(
-                "SELECT content, tombstone FROM raw_events WHERE id = ?", (raw_id,)
-            ).fetchone()
+            raw_id = conn.execute("SELECT id FROM raw_events WHERE session_id = ? LIMIT 1", ("s3",)).fetchone()["id"]
+            before = conn.execute("SELECT content, tombstone FROM raw_events WHERE id = ?", (raw_id,)).fetchone()
             assert before["content"]
             assert before["tombstone"] == 0
 

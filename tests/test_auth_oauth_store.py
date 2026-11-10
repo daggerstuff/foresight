@@ -77,6 +77,7 @@ async def _issue_and_exchange(provider: ForesightOAuthProvider, client):
 
 # --- Startup rehydration -------------------------------------------------
 
+
 async def test_client_rehydrated_on_restart(db_path):
     provider = _make_provider(db_path)
     client = _make_client()
@@ -124,6 +125,7 @@ async def test_auth_code_rehydrated_on_restart(db_path):
 
 # --- Cache-miss fallback (store consulted on a memory miss) --------------
 
+
 async def test_cache_miss_falls_back_to_store(db_path):
     provider = _make_provider(db_path)
     client = _make_client()
@@ -163,6 +165,7 @@ async def test_full_flow_survives_restart(db_path):
 
 
 # --- Degradation / isolation ---------------------------------------------
+
 
 async def test_memory_only_does_not_touch_store(tmp_path):
     """The memory-only sentinel must not probe or write to any store."""

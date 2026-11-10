@@ -161,8 +161,7 @@ def detect_and_mark_supersessions(
         # the same timestamp for both sides keeps the intervals contiguous
         # so point-in-time queries never see a gap.
         conn.execute(
-            "UPDATE memories SET valid_from = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ? AND valid_from IS NULL",
+            "UPDATE memories SET valid_from = ? WHERE id = ? AND user_id = ? AND tenant_id = ? AND valid_from IS NULL",
             (now_iso, new_memory_id, uid, tenant_id),
         )
         conn.commit()

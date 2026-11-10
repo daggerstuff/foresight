@@ -213,9 +213,7 @@ class TestCapturePersistence:
         pool = get_pool(db_path)
         conn = pool.acquire()
         try:
-            return conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE tenant_id = ?", (tenant_id,)
-            ).fetchone()[0]
+            return conn.execute("SELECT COUNT(*) FROM memories WHERE tenant_id = ?", (tenant_id,)).fetchone()[0]
         finally:
             pool.release(conn)
 
@@ -273,8 +271,28 @@ class TestTombstone:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    "raw_old", tenant_id, user_id, "sess_gc", "user", "old content", 0, old_ts, "test", "{}", 0,
-                    "raw_recent", tenant_id, user_id, "sess_gc", "user", "recent content", 1, recent_ts, "test", "{}", 0,
+                    "raw_old",
+                    tenant_id,
+                    user_id,
+                    "sess_gc",
+                    "user",
+                    "old content",
+                    0,
+                    old_ts,
+                    "test",
+                    "{}",
+                    0,
+                    "raw_recent",
+                    tenant_id,
+                    user_id,
+                    "sess_gc",
+                    "user",
+                    "recent content",
+                    1,
+                    recent_ts,
+                    "test",
+                    "{}",
+                    0,
                 ),
             )
             conn.commit()
@@ -286,8 +304,7 @@ class TestTombstone:
         assert stats.raw_events_tombstoned == 1
 
         rows_by_id = {
-            row["id"]: row
-            for row in _get_raw_event_rows(pipeline.db_path, tenant_id=tenant_id, session_id="sess_gc")
+            row["id"]: row for row in _get_raw_event_rows(pipeline.db_path, tenant_id=tenant_id, session_id="sess_gc")
         }
         assert len(rows_by_id) == 2
         assert rows_by_id["raw_old"]["tombstone"] == 1

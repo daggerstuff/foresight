@@ -916,9 +916,7 @@ class EvalHarness:
         snapshot_at = now + timedelta(hours=-72)
         snapshot_iso = snapshot_at.isoformat()
         old_content = "User's therapist is Dr. Smith at the downtown clinic."
-        version_id = hashlib.sha256(
-            f"temp_therapist|{snapshot_iso}".encode()
-        ).hexdigest()[:16]
+        version_id = hashlib.sha256(f"temp_therapist|{snapshot_iso}".encode()).hexdigest()[:16]
         conn.execute(
             "INSERT OR IGNORE INTO memory_versions "
             "(id, memory_id, tenant_id, content, version, created_at) "
@@ -927,8 +925,7 @@ class EvalHarness:
         )
         new_content = "User's therapist is Dr. Jones at the uptown clinic."
         conn.execute(
-            "UPDATE memories SET content = ?, content_hash = ? "
-            "WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            "UPDATE memories SET content = ?, content_hash = ? WHERE id = ? AND tenant_id = ? AND user_id = ?",
             (
                 new_content,
                 hashlib.sha256(new_content.encode()).hexdigest(),
@@ -1177,8 +1174,7 @@ class EvalHarness:
             expected_id = next(iter(scenario.expected_memory_ids))
             conn = self._get_connection()
             cursor = conn.execute(
-                "SELECT COUNT(*) FROM memory_provenance "
-                "WHERE memory_id = ? AND tenant_id = ?",
+                "SELECT COUNT(*) FROM memory_provenance WHERE memory_id = ? AND tenant_id = ?",
                 (expected_id, self.tenant_id),
             )
             provenance_count = cursor.fetchone()[0]
@@ -1192,10 +1188,7 @@ class EvalHarness:
         passed = (
             len(found_expected) >= scenario.min_expected
             and contains_ok
-            and (
-                scenario.expected_provenance_count is None
-                or provenance_count >= scenario.expected_provenance_count
-            )
+            and (scenario.expected_provenance_count is None or provenance_count >= scenario.expected_provenance_count)
         )
 
         missing = list(scenario.expected_memory_ids - found_set)
@@ -1206,9 +1199,7 @@ class EvalHarness:
             "as_of_offset_hours": scenario.as_of_offset_hours,
             "as_of_iso": as_of.isoformat(),
             "result_count": len(rows),
-            "provenance_count": provenance_count
-            if scenario.expected_provenance_count is not None
-            else None,
+            "provenance_count": provenance_count if scenario.expected_provenance_count is not None else None,
         }
 
         return ScenarioResult(
@@ -1407,8 +1398,7 @@ def run_eval(
             if regression < -max_regression_pct:
                 _error_out(
                     json_output,
-                    f"Pass-rate regression {-regression:.1f}% exceeds "
-                    f"allowed {max_regression_pct:.1f}%",
+                    f"Pass-rate regression {-regression:.1f}% exceeds allowed {max_regression_pct:.1f}%",
                 )
 
         return report

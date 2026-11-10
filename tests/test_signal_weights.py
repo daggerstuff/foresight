@@ -83,7 +83,7 @@ def _create_test_db() -> str:
     )
     recent_miss = (
         "mem_recent_miss",
-    "I went out for lunch and forgot to bring my umbrella",
+        "I went out for lunch and forgot to bring my umbrella",
         now - timedelta(hours=1),
     )
 
@@ -145,9 +145,7 @@ class TestPerRequestSignalWeights:
             ),
         )
         assert default_result.total_candidates == explicit_result.total_candidates
-        assert [r.memory_id for r in default_result.results] == [
-            r.memory_id for r in explicit_result.results
-        ]
+        assert [r.memory_id for r in default_result.results] == [r.memory_id for r in explicit_result.results]
 
     def test_weights_change_fusion_ordering(self, swapped_db):
         """Boosting temporal over keyword makes the recent memory rank first."""
@@ -250,9 +248,7 @@ class TestPerRequestSignalWeights:
         keyword = {"a": 1}
         temporal = {"b": 1, "a": 2}
 
-        default_fusion = retriever._reciprocal_rank_fusion(
-            keyword, {}, {}, temporal, {}
-        )
+        default_fusion = retriever._reciprocal_rank_fusion(keyword, {}, {}, temporal, {})
         weighted_fusion = retriever._reciprocal_rank_fusion(
             keyword, {}, {}, temporal, {}, weights={"keyword": 0.0, "temporal": 100.0}
         )
