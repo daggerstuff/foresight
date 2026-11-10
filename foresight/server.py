@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .auth import AuthMiddleware, get_auth_manager
+from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
 from .auth_oauth import ForesightOAuthProvider
 from .backend import RedisCompanion, create_backend
 from .backend.backend_migrations import (
@@ -165,8 +165,15 @@ from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sy
 from .telemetry import get_telemetry_store
 from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
-from .tenant_context import get_current_account_id, get_current_user_id, set_current_tenant_id
-from .tenant_middleware import TenantMiddleware
+from .tenant_context import (
+    get_current_account_id,
+    get_current_user_id,
+    reset_tenant_context,
+    set_current_account_id,
+    set_current_tenant_id,
+    set_current_user_id,
+)
+from .tenant_middleware import TenantMiddleware, _sanitize_id
 
 # WebSocket imports
 from .websocket.server import WebSocketServer
@@ -1539,6 +1546,7 @@ FORESIGHT_SERVER_INSTRUCTIONS = """Foresight provides persistent memory, continu
 # Determine auth mode: OAuth provider when FORESIGHT_OAUTH_BASE_URL is set,
 # otherwise fall back to the legacy API-key AuthMiddleware.
 _oauth_base_url = os.environ.get("FORESIGHT_OAUTH_BASE_URL")
+_oauth_provider = None
 if _oauth_base_url:
     _oauth_provider = ForesightOAuthProvider(
         base_url=_oauth_base_url,
@@ -8395,6 +8403,91 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
 """
 
 
+async def _ui_gate(request: Any) -> tuple[dict[str, str] | None, JSONResponse | None]:
+    """Authenticate + resolve identity for ``/ui/api/*`` data routes.
+
+    Mirrors the REST surface (``rest_api._authenticate`` / ``_resolve_identity``)
+    but additionally accepts OAuth access tokens issued by ``_oauth_provider``,
+    so browser-based connectors can drive the UI endpoints too. When auth is
+    disabled (``FORESIGHT_ALLOW_UNAUTHENTICATED``) requests proceed with the
+    default identity, matching ``AuthMiddleware``.
+
+    Returns ``(identity, error)`` — identity is ``{"user_id", "tenant_id"}``.
+    """
+    identity = {
+        "user_id": _sanitize_id(request.headers.get("x-user-id")) or USER_ID,
+        "tenant_id": _sanitize_id(request.headers.get("x-tenant-id"))
+        or _sanitize_id(request.headers.get("x-account-id"))
+        or get_current_account_id(),
+    }
+
+    if not _should_require_api_key():
+        return identity, None
+
+    token = request.headers.get("x-api-key") or ""
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        scheme, _, bearer = auth_header.partition(" ")
+        if scheme.lower() == "bearer" and bearer.strip():
+            token = bearer.strip()
+    if not token:
+        return None, JSONResponse(
+            {
+                "ok": False,
+                "error": {
+                    "message": "Authentication required: provide Authorization: Bearer <token> or X-API-Key header"
+                },
+            },
+            status_code=401,
+        )
+
+    manager = get_auth_manager()
+    user = manager.authenticate_api_key(token) or manager.validate_session(token)
+    if user is not None:
+        if not manager.validate_user_tenant_access(user, identity["tenant_id"]):
+            return None, JSONResponse(
+                {"ok": False, "error": {"message": f"Tenant access denied for tenant '{identity['tenant_id']}'"}},
+                status_code=403,
+            )
+        return identity, None
+
+    # OAuth access tokens (issued to browser/connector clients) authenticate
+    # the request but carry no per-user mapping yet — identity comes from the
+    # X-User-Id header, same trust model as MCP tool arguments.
+    if _oauth_provider is not None:
+        try:
+            access_token = await _oauth_provider.load_access_token(token)
+        except Exception:
+            access_token = None
+        if access_token is not None:
+            return identity, None
+
+    return None, JSONResponse(
+        {"ok": False, "error": {"message": "Invalid or expired credentials"}},
+        status_code=401,
+    )
+
+
+def _ui_protected(fn):
+    """Decorator: gate a ``/ui/api/*`` handler behind ``_ui_gate`` and scope identity."""
+    import functools
+
+    @functools.wraps(fn)
+    async def wrapper(request: Any) -> Any:
+        identity, err = await _ui_gate(request)
+        if err is not None:
+            return err
+        assert identity is not None
+        set_current_user_id(identity["user_id"])
+        set_current_account_id(identity["tenant_id"])
+        try:
+            return await fn(request)
+        finally:
+            reset_tenant_context()
+
+    return wrapper
+
+
 @mcp.custom_route("/ui/dashboard", methods=["GET"])
 async def ui_dashboard_endpoint(request: Any) -> Any:
     """Serve the modern interactive Foresight MCP UI Dashboard."""
@@ -8417,6 +8510,7 @@ async def ui_api_status(request: Any) -> Any:
 
 
 @mcp.custom_route("/ui/api/memories", methods=["GET"])
+@_ui_protected
 async def ui_api_memories(request: Any) -> Any:
     """API endpoint for UI memory search."""
     from starlette.responses import JSONResponse
@@ -8433,11 +8527,17 @@ async def ui_api_memories(request: Any) -> Any:
     else:
         res = search_memories(options=SearchOptions(query_type="list", limit=limit))
 
-    items = json.loads(res) if isinstance(res, str) else (res or [])
-    return JSONResponse({"items": items if isinstance(items, list) else []})
+    try:
+        items = json.loads(res) if isinstance(res, str) else (res or [])
+    except Exception:
+        items = []
+    if not isinstance(items, list):
+        items = []
+    return JSONResponse({"items": items})
 
 
 @mcp.custom_route("/ui/api/context-blocks", methods=["GET"])
+@_ui_protected
 async def ui_api_context_blocks(request: Any) -> Any:
     """API endpoint for UI context blocks."""
     from starlette.responses import JSONResponse
@@ -8451,6 +8551,7 @@ async def ui_api_context_blocks(request: Any) -> Any:
 
 
 @mcp.custom_route("/ui/api/inject", methods=["POST"])
+@_ui_protected
 async def ui_api_inject(request: Any) -> Any:
     """API endpoint for testing context injection live in UI."""
     from starlette.responses import JSONResponse
@@ -8467,7 +8568,7 @@ async def ui_api_inject(request: Any) -> Any:
     if messages and isinstance(messages, list):
         import threading
 
-        uid = USER_ID
+        uid = get_current_user_id()
         tid = get_current_account_id()
         threading.Thread(
             target=_auto_capture_in_flight,
@@ -8482,6 +8583,7 @@ async def ui_api_inject(request: Any) -> Any:
 
 
 @mcp.custom_route("/ui/api/capture", methods=["POST"])
+@_ui_protected
 async def ui_api_capture(request: Any) -> Any:
     """API endpoint for in-flight memory capture during ongoing sessions."""
     from starlette.responses import JSONResponse
@@ -8490,7 +8592,8 @@ async def ui_api_capture(request: Any) -> Any:
         body = await request.json()
         text = body.get("text", "")
         messages = body.get("messages", [])
-        user_id = body.get("user_id") or USER_ID
+        raw_uid = body.get("user_id")
+        user_id = (_sanitize_id(raw_uid) if isinstance(raw_uid, str) else None) or get_current_user_id()
         tenant_id = get_current_account_id()
 
         import threading
@@ -8507,6 +8610,7 @@ async def ui_api_capture(request: Any) -> Any:
 
 
 @mcp.custom_route("/ui/api/maintenance", methods=["POST"])
+@_ui_protected
 async def ui_api_maintenance(request: Any) -> Any:
     """API endpoint for triggering background maintenance and auto-distillation."""
     from starlette.responses import JSONResponse
@@ -8523,6 +8627,7 @@ async def ui_api_maintenance(request: Any) -> Any:
 
 
 @mcp.custom_route("/ui/api/benchmark", methods=["GET", "POST"])
+@_ui_protected
 async def ui_api_benchmark(request: Any) -> Any:
     """API endpoint for running the Foresight Production Value & Proof Benchmark Suite."""
     from starlette.responses import JSONResponse
@@ -8538,6 +8643,7 @@ async def ui_api_benchmark(request: Any) -> Any:
 
 
 @mcp.custom_route("/ui/api/telemetry", methods=["GET"])
+@_ui_protected
 async def ui_api_telemetry(request: Any) -> Any:
     """API endpoint for telemetry metrics and lifetime token savings."""
     from starlette.responses import JSONResponse

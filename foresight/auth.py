@@ -415,6 +415,64 @@ class AuthManager:
         finally:
             pool.release(conn)
 
+    _USER_COLUMNS = (
+        "user_id, username, email, role, is_active, created_at, last_login, password_hash, api_key, tenant_access"
+    )
+
+    @staticmethod
+    def _row_to_user(row) -> User:
+        return User(
+            user_id=row["user_id"],
+            username=row["username"],
+            email=row["email"],
+            role=Role(row["role"]),
+            is_active=bool(row["is_active"]),
+            created_at=_parse_db_timestamp(row["created_at"]) or _utcnow(),
+            last_login=_parse_db_timestamp(row["last_login"]),
+            password_hash=row["password_hash"],
+            api_key=row["api_key"],
+            tenant_access=json.loads(row["tenant_access"]) if row["tenant_access"] else [],
+        )
+
+    def get_user_by_username(self, username: str) -> User | None:
+        """Fetch a user by username (active or not)."""
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            cursor = conn.execute(
+                f"SELECT {self._USER_COLUMNS} FROM users WHERE username = ?",  # nosec B608 - fixed column list
+                (username,),
+            )
+            row = cursor.fetchone()
+            return self._row_to_user(row) if row else None
+        finally:
+            pool.release(conn)
+
+    def list_users(self) -> list[User]:
+        """List all users (provisioning/audit view; does not expose secrets)."""
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            cursor = conn.execute(f"SELECT {self._USER_COLUMNS} FROM users ORDER BY username")  # nosec B608 - fixed column list
+            return [self._row_to_user(row) for row in cursor.fetchall()]
+        finally:
+            pool.release(conn)
+
+    def rotate_api_key(self, username: str) -> str | None:
+        """Issue a new API key for a user; returns the new key or None."""
+        new_key = secrets.token_urlsafe(32)
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            cursor = conn.execute(
+                "UPDATE users SET api_key = ? WHERE username = ?",
+                (new_key, username),
+            )
+            conn.commit()
+            return new_key if cursor.rowcount else None
+        finally:
+            pool.release(conn)
+
     def validate_user_tenant_access(self, user: User, tenant_id: str) -> bool:
         """Check if a user has access to a specific tenant."""
         _validate_tenant_id(tenant_id)

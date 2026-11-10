@@ -42,7 +42,52 @@ bash plugins/claude/install.sh --url http://host:8764/mcp
 bash plugins/claude/install.sh --dry-run       # preview changes
 ```
 
-Environment overrides: `FORESIGHT_MCP_URL` sets the default endpoint.
+Environment overrides: `FORESIGHT_MCP_URL`, `FORESIGHT_API_KEY`,
+`FORESIGHT_IDENTITY`.
+
+## Multi-user / remote server setup
+
+Point any number of users at a shared Foresight deployment (e.g.
+`https://foresight.example.com`) — each gets their own memory lane while
+sharing context blocks:
+
+**On the server** (once per user):
+
+```bash
+foresight user create --username alice --email alice@example.com
+# prints a one-time API key
+foresight user list            # audit view, never prints keys
+foresight user rotate-key --username alice
+```
+
+**On each user's machine:**
+
+```bash
+bash plugins/claude/install.sh \
+  --url https://foresight.example.com/mcp \
+  --api-key <their-key> \
+  --identity alice            # or alice@acme for account scoping
+```
+
+The installer writes:
+
+- `~/.config/foresight/credentials.env` (chmod 600) — read by the hooks for
+  `Authorization: Bearer` + `X-User-Id` on every call.
+- `~/.claude/settings.json` `env` — feeds `${FORESIGHT_API_KEY}` expansion in
+  the MCP `headers` block, so the key never sits in `~/.claude.json`.
+- `claude_desktop_config.json` gets a literal `Authorization` header (that
+  file doesn't support env expansion — it's user-local, mode 600 recommended).
+
+**How identity works:** `X-User-Id` / `user_id` tool args select the memory
+lane; `FORESIGHT_IDENTITY=user@account` splits user vs. account/tenant.
+Context blocks remain shared across users by default.
+
+**Auth coverage:** the same API key works on `/mcp` (the OAuth provider
+accepts API keys as bearer tokens), the REST API (`/memories`, `/inject`,
+`/session/transcript`, …), and the `/ui/api/*` endpoints the hooks use —
+which are now auth-gated when `FORESIGHT_REQUIRE_API_KEY`/`_OAUTH_BASE_URL`
+is set (previously open). claude.ai web/mobile users can instead add a custom
+connector and complete OAuth — see `CONNECTOR.md`.
 
 ## Install as a real Claude Code plugin
 

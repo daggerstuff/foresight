@@ -7,7 +7,13 @@
 #   bash plugins/claude/install.sh --desktop       # Claude Desktop only
 #   bash plugins/claude/install.sh --stdio         # Desktop: stdio transport instead of HTTP
 #   bash plugins/claude/install.sh --url URL       # override MCP endpoint (default http://127.0.0.1:8764)
+#   bash plugins/claude/install.sh --api-key KEY   # Bearer token for remote/authenticated servers
+#   bash plugins/claude/install.sh --identity ID   # memory lane, e.g. "alice" or "alice@acme" (default: $USER)
 #   bash plugins/claude/install.sh --dry-run       # show what would change
+#
+# Env equivalents: FORESIGHT_MCP_URL, FORESIGHT_API_KEY, FORESIGHT_IDENTITY.
+# Credentials are stored in ~/.config/foresight/credentials.env (chmod 600)
+# for the hooks, and in ~/.claude/settings.json env for MCP header expansion.
 #
 # Requirements: python3, curl (optional health check). Foresight server should be
 # running (install.sh / foresight.service) unless you use --stdio for Desktop.
@@ -23,6 +29,8 @@ DO_CLAUDE_CODE=0
 DO_DESKTOP=0
 DESKTOP_STDIO=0
 DRY_RUN=0
+API_KEY="${FORESIGHT_API_KEY:-}"
+IDENTITY="${FORESIGHT_IDENTITY:-${FORESIGHT_USER_ID:-${USER:-}}}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,6 +38,10 @@ while [ $# -gt 0 ]; do
     --desktop)     DO_DESKTOP=1 ;;
     --stdio)       DO_DESKTOP=1; DESKTOP_STDIO=1 ;;
     --dry-run)     DRY_RUN=1 ;;
+    --api-key)     shift; API_KEY="${1:?--api-key requires a value}" ;;
+    --api-key=*)   API_KEY="${1#--api-key=}" ;;
+    --identity)    shift; IDENTITY="${1:?--identity requires a value}" ;;
+    --identity=*)  IDENTITY="${1#--identity=}" ;;
     --url)
       shift
       [ $# -gt 0 ] || { echo "--url requires a value" >&2; exit 2; }
@@ -74,6 +86,59 @@ if [ "$DESKTOP_STDIO" -eq 0 ] || [ "$DO_CLAUDE_CODE" -eq 1 ]; then
     _warn "Foresight server not reachable at ${HEALTH_URL}"
     _info "Start it first:  bash install.sh   (or: foresight-server --port 8764)"
     _info "Config will still be written; tools activate once the server is up."
+  fi
+fi
+
+# ── Credentials ──────────────────────────────────────────────────────────────
+
+REMOTE_HOST=0
+case "$FORESIGHT_URL" in
+  http://127.0.0.1*|http://localhost*|https://127.0.0.1*|https://localhost*) ;;
+  *) REMOTE_HOST=1 ;;
+esac
+
+if [ "$REMOTE_HOST" -eq 1 ] && [ -z "$API_KEY" ]; then
+  _warn "Remote endpoint detected but no API key — the server will likely reject requests."
+  _info "Re-run with:  --api-key <key>   (provision via: foresight user create)"
+fi
+
+# ~/.config/foresight/credentials.env — read by foresight-hook.sh (chmod 600).
+CREDS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/foresight"
+CREDS_FILE="$CREDS_DIR/credentials.env"
+if [ -n "$API_KEY" ] || [ -n "$IDENTITY" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf "  [dry-run] write %s (FORESIGHT_API_KEY, FORESIGHT_IDENTITY)\n" "$CREDS_FILE"
+  else
+    mkdir -p "$CREDS_DIR"
+    touch "$CREDS_FILE"
+    chmod 600 "$CREDS_FILE"
+    CREDS_FILE="$CREDS_FILE" API_KEY="$API_KEY" IDENTITY="$IDENTITY" python3 - <<'PY'
+import os, pathlib, re
+
+p = pathlib.Path(os.environ["CREDS_FILE"])
+updates = {}
+if os.environ.get("API_KEY"):
+    updates["FORESIGHT_API_KEY"] = os.environ["API_KEY"]
+if os.environ.get("IDENTITY"):
+    updates["FORESIGHT_IDENTITY"] = os.environ["IDENTITY"]
+
+lines = []
+seen = set()
+if p.exists():
+    for line in p.read_text().splitlines():
+        m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if m and m.group(1) in updates:
+            lines.append(f"{m.group(1)}={updates[m.group(1)]}")
+            seen.add(m.group(1))
+        else:
+            lines.append(line)
+for k, v in updates.items():
+    if k not in seen:
+        lines.append(f"{k}={v}")
+p.write_text("\n".join(lines).rstrip() + "\n")
+os.chmod(p, 0o600)
+PY
+    _ok "Wrote credentials to $CREDS_FILE"
   fi
 fi
 
@@ -144,7 +209,11 @@ if p.exists():
         sys.exit(f"cannot parse {p}: {e}")
 
 mcp = data.setdefault("mcpServers", {})
-mcp["foresight"] = {"type": "http", "url": os.environ["MCP_URL"]}
+entry = {"type": "http", "url": os.environ["MCP_URL"]}
+# ${FORESIGHT_API_KEY} expands from the Claude Code process env, which we
+# populate via ~/.claude/settings.json "env" below (or the user's shell).
+entry["headers"] = {"Authorization": "Bearer ${FORESIGHT_API_KEY}"}
+mcp["foresight"] = entry
 p.write_text(json.dumps(data, indent=2) + "\n")
 PY
       _ok "Registered foresight MCP server in ~/.claude.json"
@@ -156,7 +225,7 @@ PY
     if [ "$DRY_RUN" -eq 1 ]; then
       printf "  [dry-run] merge foresight hooks into %s\n" "$SETTINGS"
     else
-      SETTINGS="$SETTINGS" HOOK_CMD="$HOOK_CMD" python3 - <<'PY'
+      SETTINGS="$SETTINGS" HOOK_CMD="$HOOK_CMD" API_KEY="$API_KEY" IDENTITY="$IDENTITY" python3 - <<'PY'
 import json, os, pathlib, sys
 
 p = pathlib.Path(os.environ["SETTINGS"])
@@ -166,6 +235,13 @@ if p.exists():
         data = json.loads(p.read_text())
     except Exception as e:
         sys.exit(f"cannot parse {p}: {e}")
+
+# Feed ${FORESIGHT_API_KEY} expansion in ~/.claude.json mcp headers.
+env = data.setdefault("env", {})
+if os.environ.get("API_KEY"):
+    env["FORESIGHT_API_KEY"] = os.environ["API_KEY"]
+if os.environ.get("IDENTITY"):
+    env["FORESIGHT_IDENTITY"] = os.environ["IDENTITY"]
 
 cmd_prefix = os.environ["HOOK_CMD"]
 hooks = data.setdefault("hooks", {})
@@ -216,7 +292,7 @@ if [ "$DO_DESKTOP" -eq 1 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
       printf "  [dry-run] merge mcpServers.foresight into %s\n" "$DESKTOP_CONFIG"
     else
-      DESKTOP_CONFIG="$DESKTOP_CONFIG" MCP_URL="$MCP_URL" DESKTOP_STDIO="$DESKTOP_STDIO" python3 - <<'PY'
+      DESKTOP_CONFIG="$DESKTOP_CONFIG" MCP_URL="$MCP_URL" DESKTOP_STDIO="$DESKTOP_STDIO" API_KEY="$API_KEY" python3 - <<'PY'
 import json, os, pathlib, sys
 
 p = pathlib.Path(os.environ["DESKTOP_CONFIG"])
@@ -235,7 +311,11 @@ if os.environ.get("DESKTOP_STDIO") == "1":
         entry["env"] = env
     mcp["foresight"] = entry
 else:
-    mcp["foresight"] = {"type": "http", "url": os.environ["MCP_URL"]}
+    entry = {"type": "http", "url": os.environ["MCP_URL"]}
+    api_key = os.environ.get("API_KEY", "")
+    if api_key:
+        entry["headers"] = {"Authorization": f"Bearer {api_key}"}
+    mcp["foresight"] = entry
 
 p.parent.mkdir(parents=True, exist_ok=True)
 p.write_text(json.dumps(data, indent=2) + "\n")

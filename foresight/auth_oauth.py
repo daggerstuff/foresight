@@ -613,20 +613,44 @@ class ForesightOAuthProvider(OAuthProvider):
         if at is None:
             # Issued by a previous process: fall back to the durable store.
             at = self._store_access_token(token)
-            if at is None:
-                return None
-            # Check expiry before caching
+            if at is not None:
+                # Check expiry before caching
+                if at.expires_at is not None and time.time() > at.expires_at:
+                    self._delete_token(token)
+                    return None
+                self._access_tokens[token] = at
+                return at
+        else:
+            # Check expiry
             if at.expires_at is not None and time.time() > at.expires_at:
+                self._access_tokens.pop(token, None)
                 self._delete_token(token)
                 return None
-            self._access_tokens[token] = at
             return at
-        # Check expiry
-        if at.expires_at is not None and time.time() > at.expires_at:
-            self._access_tokens.pop(token, None)
-            self._delete_token(token)
+
+        # Fall through: not an OAuth token — try a Foresight API key so that
+        # provisioned users (``foresight user create``) can drive MCP, REST,
+        # and /ui/api endpoints with a single credential. The synthetic token
+        # carries the user's id as `subject` for future identity mapping.
+        try:
+            from .auth import get_auth_manager
+
+            user = get_auth_manager().authenticate_api_key(token)
+        except Exception:
+            user = None
+        if user is None:
             return None
-        return at
+        synthetic = AccessToken(
+            token=token,
+            client_id="foresight-api-key",
+            scopes=[],
+            expires_at=None,
+            resource=None,
+            subject=user.user_id,
+            claims={"username": user.username},
+        )
+        self._access_tokens[token] = synthetic
+        return synthetic
 
     async def load_refresh_token(
         self,

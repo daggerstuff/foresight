@@ -43,6 +43,7 @@ uv run foresight doctor
 | :------------------------------------- | :---------- | :----------------------------------------------------------------------------------------- | :---------------------------- |
 | `FORESIGHT_DB_URL`                     | **Yes**     | PostgreSQL connection DSN (`postgresql://` or `postgres://` with `sslmode=require`).       | _(none — must set)_           |
 | `FORESIGHT_IDENTITY`                   | **Yes**     | Primary logical agent identity (`user` or `user@account`). Propagated to memories.         | `$USER@default`               |
+| `FORESIGHT_USER_ID`                    | _Optional_  | Single-user identity override; takes precedence over `$USER` when `FORESIGHT_IDENTITY` is unset. | `$(whoami)`                  |
 | `FORESIGHT_BANK_ID`                    | Recommended | Tenant/bank namespace for cross-tenant isolation and memory domains.                       | `default`                     |
 | `FORESIGHT_ENCRYPTION_KEY`             | Recommended | 32-byte symmetric master key (hex or base64) for AES-256-GCM envelope encryption.          | _(none — optional plaintext)_ |
 | `FORESIGHT_REDIS_URL`                  | _Optional_  | Canonical Redis companion cache URL (`redis://[:pw]@host:port[/db]`).                      | `""` (in-process cache)       |

@@ -2,7 +2,10 @@
   "mcpServers": {
     "foresight": {
       "type": "http",
-      "url": "http://127.0.0.1:8764/mcp"
+      "url": "http://127.0.0.1:8764/mcp",
+      "headers": {
+        "Authorization": "Bearer ${FORESIGHT_API_KEY}"
+      }
     }
   }
 }

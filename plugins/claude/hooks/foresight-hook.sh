@@ -33,6 +33,43 @@ cache_ttl_hours = float(os.environ.get("FORESIGHT_CACHE_TTL_HOURS") or 72)
 cache_max_bytes = int(os.environ.get("FORESIGHT_CACHE_MAX_BYTES") or (2 * 1024 * 1024))
 
 
+# -- Credentials -------------------------------------------------------------
+# Resolution order: environment -> ~/.config/foresight/credentials.env
+# (written by plugins/claude/install.sh; KEY=VALUE, chmod 600).
+_creds = {}
+_creds_path = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "foresight", "credentials.env",
+)
+try:
+    with open(_creds_path, "r", encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                _creds[_k.strip()] = _v.strip().strip('"').strip("'")
+except Exception:
+    pass
+
+api_key = os.environ.get("FORESIGHT_API_KEY") or _creds.get("FORESIGHT_API_KEY", "")
+_identity = (
+    os.environ.get("FORESIGHT_IDENTITY")
+    or _creds.get("FORESIGHT_IDENTITY", "")
+    or os.environ.get("FORESIGHT_USER_ID")
+    or _creds.get("FORESIGHT_USER_ID", "")
+)
+user_lane = _identity.split("@", 1)[0] if _identity else ""
+
+
+def _headers():
+    h = {"Content-Type": "application/json"}
+    if api_key:
+        h["Authorization"] = f"Bearer {api_key}"
+    if user_lane:
+        h["X-User-Id"] = user_lane
+    return h
+
+
 def _msg_text(m):
     if not isinstance(m, dict):
         return ""
@@ -172,7 +209,7 @@ if action == "capture":
                 req = urllib.request.Request(
                     f"{foresight_url}/ui/api/capture",
                     data=json.dumps({"text": text, "session_id": session_id}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
+                    headers=_headers(),
                     method="POST",
                 )
                 urllib.request.urlopen(req, timeout=5.0)
@@ -201,7 +238,7 @@ elif "prompt" in event_name.lower() or action == "prompt":
             req = urllib.request.Request(
                 f"{foresight_url}/ui/api/capture",
                 data=json.dumps({"text": prompt_text, "messages": messages, "session_id": session_id}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=_headers(),
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=3.0)
@@ -223,7 +260,7 @@ elif "prompt" in event_name.lower() or action == "prompt":
         req = urllib.request.Request(
             f"{foresight_url}/ui/api/inject",
             data=json.dumps({"text": prompt_text}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=12.0) as resp:
@@ -262,38 +299,25 @@ elif "precompact" in event_name.lower() or action == "precompact":
             req = urllib.request.Request(
                 f"{foresight_url}/ui/api/capture",
                 data=json.dumps({"text": capture_text, "messages": messages[-40:], "session_id": session_id}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=_headers(),
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=5.0)
         except Exception:
             pass
         try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "process_session_transcript",
-                    "arguments": {
-                        "session_id": session_id,
-                        "messages": messages[-20:],
-                    },
-                    "_meta": {
-                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                        "io.modelcontextprotocol/clientCapabilities": {},
-                    },
-                },
-            }
+            # REST transcript route — works with API-key auth on local and
+            # remote (OAuth-fronted) deployments alike.
+            transcript_messages = messages[-20:]
+            if not transcript_messages and tail:
+                transcript_messages = [{"role": "assistant", "content": t} for t in tail[-20:]]
             req = urllib.request.Request(
-                f"{foresight_url}/mcp",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "MCP-Protocol-Version": "2026-07-28",
-                    "Mcp-Method": "tools/call",
-                    "Mcp-Name": "process_session_transcript",
-                },
+                f"{foresight_url}/session/transcript",
+                data=json.dumps({
+                    "session_id": session_id,
+                    "messages": transcript_messages,
+                }).encode("utf-8"),
+                headers=_headers(),
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=12.0)
@@ -341,7 +365,7 @@ elif "postcompact" in event_name.lower() or action == "postcompact":
         req = urllib.request.Request(
             f"{foresight_url}/ui/api/inject",
             data=json.dumps({"text": query}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=_headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=12.0) as resp:
@@ -378,31 +402,16 @@ elif "stop" in event_name.lower() or "end" in event_name.lower() or action in ("
     tail = _transcript_tail(hook_input)
     if mode == "direct" and (messages or tail):
         try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "process_session_transcript",
-                    "arguments": {
-                        "session_id": session_id,
-                        "messages": (messages or tail)[-10:],
-                    },
-                    "_meta": {
-                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                        "io.modelcontextprotocol/clientCapabilities": {},
-                    },
-                },
-            }
+            transcript_messages = (messages or tail)[-10:]
+            if transcript_messages and isinstance(transcript_messages[0], str):
+                transcript_messages = [{"role": "assistant", "content": t} for t in transcript_messages]
             req = urllib.request.Request(
-                f"{foresight_url}/mcp",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "MCP-Protocol-Version": "2026-07-28",
-                    "Mcp-Method": "tools/call",
-                    "Mcp-Name": "process_session_transcript",
-                },
+                f"{foresight_url}/session/transcript",
+                data=json.dumps({
+                    "session_id": session_id,
+                    "messages": transcript_messages,
+                }).encode("utf-8"),
+                headers=_headers(),
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=12.0)

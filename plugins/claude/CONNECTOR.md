@@ -32,6 +32,11 @@ Neon Postgres backend — this public endpoint fronts the same store.
 
 That's it — no tunnel or deploy step needed on the client side.
 
+> **API-key alternative:** the OAuth provider also accepts Foresight API keys
+> (`foresight user create`) as `Authorization: Bearer` tokens on `/mcp`, REST,
+> and `/ui/api/*` — useful for CLI agents that can't complete a browser OAuth
+> flow. See the multi-user section in `README.md`.
+
 ## What you get vs. the plugin
 
 | Feature | Plugin (Code/Desktop) | Connector (web/mobile) |

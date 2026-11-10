@@ -30,6 +30,7 @@ from .commands import (
     rrf,
     security,
     system,
+    users,
 )
 from .utils import config as cfg, output as out
 
@@ -59,6 +60,7 @@ app.add_typer(blocks.app, name="blocks", help="Manage context blocks.")
 app.add_typer(curate.app, name="curate", help="Manage curation runs.")
 app.add_typer(benchmark.app, name="benchmark", help="Run Production Value & Proof Benchmark Suite.")
 app.add_typer(security.app, name="security", help="Manage security, sensitivity policies, and AES-256-GCM encryption.")
+app.add_typer(users.app, name="user", help="Provision users and API keys for remote/multi-user access.")
 app.add_typer(eval_cmd.app, name="eval", help="Run evaluation harness (PIX-3953).")
 app.add_typer(
     system.app,

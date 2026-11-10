@@ -65,7 +65,9 @@ DB_PATH = os.environ.get("FORESIGHT_DB_PATH", None)
 REDIS_URL = os.environ.get("FORESIGHT_REDIS_URL", "")
 
 # Identity defaults (used when FORESIGHT_IDENTITY not set)
-DEFAULT_USER_ID = os.environ.get("USER", "user")
+# FORESIGHT_USER_ID is the single-user override honored by deployments that
+# pin one identity per process (e.g. the OAuth-facing systemd unit).
+DEFAULT_USER_ID = os.environ.get("FORESIGHT_USER_ID") or os.environ.get("USER", "user")
 DEFAULT_ACCOUNT_ID = "default"
 DEFAULT_WORKSPACE_ID = "default"
 

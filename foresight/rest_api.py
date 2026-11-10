@@ -261,6 +261,19 @@ class IngestDocumentFileBody(BaseModel):
     metadata: dict[str, Any] | None = Field(default=None, description="Optional JSON-serializable metadata")
 
 
+class ProcessTranscriptBody(BaseModel):
+    """Body for ``POST /session/transcript`` — mirrors ``process_session_transcript``."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    session_id: str = Field(..., description="Unique session identifier")
+    messages: list[dict[str, Any]] = Field(..., description="Conversation messages [{role, content}]")
+    project_path: str | None = Field(default=None, description="Optional project path for context")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    infer: bool = Field(default=True, description="False stores the transcript verbatim")
+    instructions: str | None = Field(default=None, description="Advisory extraction guidance")
+
+
 class BatchStoreBody(BaseModel):
     """Body for ``POST /memories/batch`` — N independent stores."""
 
@@ -846,6 +859,40 @@ async def _handle_inject(request: Request) -> Response:
     return JSONResponse({"formatted": str(result)})
 
 
+async def _handle_session_transcript(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    body, err = await _validated_body(request, ProcessTranscriptBody)
+    if err:
+        return err
+
+    from .server import process_session_transcript
+
+    set_current_user_id(user_id or DEFAULT_USER_ID)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            process_session_transcript,
+            session_id=body.session_id,
+            messages=body.messages,
+            project_path=body.project_path,
+            user_id=body.user_id or user_id,
+            infer=body.infer,
+            instructions=body.instructions,
+        )
+    finally:
+        reset_tenant_context()
+    return _tool_json(result)
+
+
 async def _handle_create_document(request: Request) -> Response:
     user, auth_err = _authenticate(request)
     if auth_err:
@@ -1069,6 +1116,7 @@ def _openapi_spec() -> dict[str, Any]:
         UpdateMemoryBody,
         SearchBody,
         InjectBody,
+        ProcessTranscriptBody,
         ReflectBody,
         MentalModelBody,
         CurateObservationsBody,
@@ -1232,6 +1280,14 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/session/transcript": {
+                "post": {
+                    "summary": "Process a session transcript and extract memories",
+                    "operationId": "processSessionTranscript",
+                    "requestBody": _body("ProcessTranscriptBody"),
+                    "responses": _ok(),
+                }
+            },
             "/documents": {
                 "post": {
                     "summary": "Ingest a text document and chunk it",
@@ -1329,6 +1385,7 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/mental-models", ["POST"], "rest_manage_mental_models", _handle_manage_mental_models),
     ("/observations/curate", ["POST"], "rest_curate_observations", _handle_curate_observations),
     ("/inject", ["POST"], "rest_inject", _handle_inject),
+    ("/session/transcript", ["POST"], "rest_session_transcript", _handle_session_transcript),
     ("/documents", ["POST"], "rest_create_document", _handle_create_document),
     ("/documents/ingest", ["POST"], "rest_ingest_document_file", _handle_ingest_document_file),
     ("/documents/{document_id}", ["GET"], "rest_get_document", _handle_get_document),
