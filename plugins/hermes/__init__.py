@@ -59,7 +59,11 @@ class _Client:
         self.user_id = user_id
 
     def request(self, method: str, path: str, body: dict | None = None, timeout: float = 8.0) -> Any:
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            # Cloudflare bot rules (error 1010) ban the default Python-urllib UA.
+            "User-Agent": "hermes-foresight/1.0",
+        }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         if self.user_id:
