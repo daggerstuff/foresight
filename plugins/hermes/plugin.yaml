@@ -1,0 +1,5 @@
+name: foresight
+version: 1.0.0
+description: "Foresight — persistent memory via the Foresight REST API (shared brain across the fleet)."
+config_keys:
+  - memory.foresight  # url persisted by the dashboard; secrets via env vars
