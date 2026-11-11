@@ -2076,6 +2076,90 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     return f"Updated memory {options.memory_id}"
 
 
+def _delete_memory_dependents(conn, memory_id: str) -> None:
+    """Remove rows referencing a memory that is being deleted.
+
+    The schema has no FK cascades, so every dependent table must be cleaned
+    explicitly — otherwise decay events, versions, embeddings, links, and
+    relationships are orphaned (this is how 150k dead decay_events rows
+    accumulated). document_chunks keep their row; only the memory pointer is
+    nulled since the chunk belongs to its document.
+    """
+    for table in (
+        "memory_decay_events",
+        "memory_versions",
+        "memory_embeddings",
+        "memory_entity_links",
+    ):
+        conn.execute(f"DELETE FROM {table} WHERE memory_id = ?", (memory_id,))  # nosec B608 - table names are hardcoded literals
+    conn.execute(
+        "DELETE FROM memory_relationships WHERE source_memory_id = ? OR target_memory_id = ?",
+        (memory_id, memory_id),
+    )
+    conn.execute("UPDATE document_chunks SET memory_id = NULL WHERE memory_id = ?", (memory_id,))
+    conn.execute("UPDATE memories SET related_memory_id = NULL WHERE related_memory_id = ?", (memory_id,))
+    conn.execute("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?", (memory_id,))
+
+
+def _purge_orphaned_memory_dependents(conn, user_id: str | None = None, tenant_id: str | None = None) -> dict[str, int]:
+    """Delete dependent rows whose memory_id no longer exists in memories.
+
+    Batch counterpart to ``_delete_memory_dependents`` for paths that delete
+    memories by predicate rather than by ID. Scoping by user/tenant keeps the
+    anti-join cheap on large tables.
+    """
+
+    def _scope(alias: str, include_user: bool = True) -> tuple[str, list]:
+        parts: list[str] = []
+        params: list = []
+        if include_user and user_id is not None:
+            parts.append(f"{alias}.user_id = ?")
+            params.append(user_id)
+        if tenant_id is not None:
+            parts.append(f"{alias}.tenant_id = ?")
+            params.append(tenant_id)
+        return (" AND " + " AND ".join(parts)) if parts else "", params
+
+    stats: dict[str, int] = {}
+    # memory_versions has no user_id column — tenant scope only.
+    for table, include_user in (
+        ("memory_decay_events", True),
+        ("memory_versions", False),
+        ("memory_embeddings", True),
+        ("memory_entity_links", True),
+    ):
+        scope, params = _scope("d", include_user)
+        res = conn.execute(
+            f"DELETE FROM {table} d WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id){scope}",  # nosec B608 - table names are hardcoded literals
+            tuple(params),
+        )
+        stats[table] = getattr(res, "rowcount", 0) or 0
+    scope, params = _scope("r")
+    res = conn.execute(
+        "DELETE FROM memory_relationships r WHERE "
+        "(NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.source_memory_id)"
+        " OR NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.target_memory_id))" + scope,
+        tuple(params),
+    )
+    stats["memory_relationships"] = getattr(res, "rowcount", 0) or 0
+    scope, params = _scope("d")
+    res = conn.execute(
+        "UPDATE document_chunks d SET memory_id = NULL WHERE d.memory_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id)" + scope,
+        tuple(params),
+    )
+    stats["document_chunks"] = getattr(res, "rowcount", 0) or 0
+    for col in ("related_memory_id", "superseded_by"):
+        scope, params = _scope("d")
+        res = conn.execute(
+            f"UPDATE memories d SET {col} = NULL WHERE d.{col} IS NOT NULL "  # nosec B608 - column names are hardcoded literals
+            f"AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.{col})" + scope,
+            tuple(params),
+        )
+        stats[f"memories.{col}"] = getattr(res, "rowcount", 0) or 0
+    return stats
+
+
 def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> str:
     """Helper to handle memory deletion."""
     if not memory_id:
@@ -2108,6 +2192,7 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
             return f"Memory {memory_id} not found."
         conn.execute(delete_sql, delete_params)
 
+    _delete_memory_dependents(conn, memory_id)
     get_event_bus_with_stream().publish(memory_deleted(memory_id=memory_id, actor=uid))
     conn.commit()
     conn.close()
@@ -3737,6 +3822,7 @@ def _delete_existing_curation_outputs(uid: str, tenant_id: str, bank_id: str, ru
             "DELETE FROM memories WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND tags LIKE ?",
             (uid, tenant_id, bank_id, f'%"curation_run:{run_id}"%'),
         )
+        _purge_orphaned_memory_dependents(conn, user_id=uid, tenant_id=tenant_id)
         conn.commit()
     finally:
         conn.close()

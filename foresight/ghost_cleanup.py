@@ -132,6 +132,30 @@ class GhostMemoryCleanup:
             conn.commit()
             stats.ghost_memories_deleted = deleted
 
+            # Clean dependents orphaned by the ghost deletes (no FK cascade).
+            for tbl in ("memory_decay_events", "memory_versions"):
+                try:
+                    cursor = conn.execute(
+                        f"DELETE FROM {tbl} WHERE memory_id NOT IN (SELECT id FROM memories)",  # nosec B608 - table names are hardcoded literals
+                    )
+                    if cursor.rowcount:
+                        logger.info(f"Cleaned {cursor.rowcount} orphaned {tbl} rows")
+                except Exception as e:
+                    logger.debug(f"Orphan cleanup skipped for {tbl}: {e}")
+            try:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM memory_relationships
+                    WHERE source_memory_id NOT IN (SELECT id FROM memories)
+                       OR target_memory_id NOT IN (SELECT id FROM memories)
+                    """,
+                )
+                if cursor.rowcount:
+                    logger.info(f"Cleaned {cursor.rowcount} orphaned memory_relationships rows")
+            except Exception as e:
+                logger.debug(f"Orphan cleanup skipped for memory_relationships: {e}")
+            conn.commit()
+
             # Also clean up orphaned entity links
             cursor = conn.execute(
                 """

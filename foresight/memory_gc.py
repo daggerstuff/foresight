@@ -59,6 +59,7 @@ class GCStats:
     maintenance_events_pruned: int = 0
     orphan_links_cleaned: int = 0
     orphan_embeddings_cleaned: int = 0
+    orphan_dependents_cleaned: int = 0
     raw_events_tombstoned: int = 0
     gc_duration_seconds: float = 0.0
     bytes_freed: int = 0
@@ -297,6 +298,38 @@ class MemoryGC:
             stats.orphan_embeddings_cleaned = cursor.rowcount
             conn.commit()
 
+            # 4c: Remaining dependents — decay events, versions, relationships,
+            # chunk memory pointers, and intra-memories self-references.
+            for tbl in ("memory_decay_events", "memory_versions"):
+                try:
+                    cursor = conn.execute(
+                        f"DELETE FROM {tbl} WHERE memory_id NOT IN (SELECT id FROM memories)",  # nosec B608 - table names are hardcoded literals
+                    )
+                    stats.orphan_dependents_cleaned += cursor.rowcount or 0
+                except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
+                    pass
+            try:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM memory_relationships
+                    WHERE source_memory_id NOT IN (SELECT id FROM memories)
+                       OR target_memory_id NOT IN (SELECT id FROM memories)
+                    """,
+                )
+                stats.orphan_dependents_cleaned += cursor.rowcount or 0
+                conn.execute(
+                    "UPDATE document_chunks SET memory_id = NULL "
+                    "WHERE memory_id IS NOT NULL AND memory_id NOT IN (SELECT id FROM memories)"
+                )
+                for col in ("related_memory_id", "superseded_by"):
+                    conn.execute(
+                        f"UPDATE memories SET {col} = NULL WHERE {col} IS NOT NULL "  # nosec B608 - column names are hardcoded literals
+                        f"AND {col} NOT IN (SELECT id FROM memories)"
+                    )
+                conn.commit()
+            except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
+                pass
+
         finally:
             pool.release(conn)
 
@@ -309,6 +342,7 @@ class MemoryGC:
             f"{stats.maintenance_events_pruned} maintenance events, "
             f"{stats.orphan_links_cleaned} orphan links, "
             f"{stats.orphan_embeddings_cleaned} orphan embeddings, "
+            f"{stats.orphan_dependents_cleaned} orphan dependents, "
             f"{stats.raw_events_tombstoned} raw events tombstoned "
             f"in {stats.gc_duration_seconds:.2f}s"
         )
