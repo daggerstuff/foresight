@@ -127,3 +127,61 @@ def rotate_key(
 
     console.print(f"[bold green]✓[/] Rotated API key for [bold]{username}[/]")
     console.print(f"  api_key:  [bold yellow]{new_key}[/]")
+
+
+def _print_lane_stats(stats: dict[str, int], verb: str, src: str, dst: str, dry_run: bool) -> None:
+    if out.get_settings().mode in ("agent", "json"):
+        out.print_json({"ok": True, "dry_run": dry_run, "from": src, "to": dst, "stats": stats})
+        return
+    label = "Would copy" if dry_run else "Copied"
+    if verb == "move":
+        label = "Would move" if dry_run else "Moved"
+    console.print(f"[bold green]✓[/] {label} lane [bold]{src}[/] → [bold]{dst}[/]")
+    for table, n in sorted(stats.items()):
+        if table.endswith("_skipped"):
+            continue
+        skipped = stats.get(f"{table}_skipped", 0)
+        suffix = f" (+{skipped} already present)" if skipped else ""
+        console.print(f"  {table}: {n}{suffix}")
+
+
+@app.command(name="copy")
+def copy_lane(
+    src: str = typer.Argument(..., help="Source identity lane (user_id)"),
+    dst: str = typer.Argument(..., help="Destination identity lane (user_id)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be copied without writing"),
+):
+    """Copy all memories from one identity lane to another (IDs remapped, idempotent)."""
+    _init_backend()
+    from foresight.user_lanes import copy_user_lane
+
+    try:
+        stats = copy_user_lane(src, dst, dry_run=dry_run)
+    except ValueError as exc:
+        out.error(str(exc))
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        out.error(f"Copy failed (rolled back, nothing written): {exc}")
+        raise typer.Exit(1) from None
+    _print_lane_stats(stats, "copy", src, dst, dry_run)
+
+
+@app.command(name="move")
+def move_lane(
+    src: str = typer.Argument(..., help="Source identity lane (user_id)"),
+    dst: str = typer.Argument(..., help="Destination identity lane (user_id)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would move without writing"),
+):
+    """Move all memories from one identity lane to another (IDs unchanged)."""
+    _init_backend()
+    from foresight.user_lanes import move_user_lane
+
+    try:
+        stats = move_user_lane(src, dst, dry_run=dry_run)
+    except ValueError as exc:
+        out.error(str(exc))
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        out.error(f"Move failed (rolled back, nothing written): {exc}")
+        raise typer.Exit(1) from None
+    _print_lane_stats(stats, "move", src, dst, dry_run)
