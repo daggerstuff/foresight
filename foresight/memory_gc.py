@@ -19,6 +19,7 @@ from psycopg import errors as psycopg_errors
 
 from .config import DB_PATH, DB_URL, raw_retention_window_days
 from .connection_pool import get_pool
+from .dependent_cleanup import purge_dead_synthesized_from_ids
 
 logger = logging.getLogger("foresight_memory_gc")
 
@@ -326,6 +327,10 @@ class MemoryGC:
                         f"UPDATE memories SET {col} = NULL WHERE {col} IS NOT NULL "  # nosec B608 - column names are hardcoded literals
                         f"AND {col} NOT IN (SELECT id FROM memories)"
                     )
+                try:
+                    stats.orphan_dependents_cleaned += purge_dead_synthesized_from_ids(conn) or 0
+                except Exception as e:
+                    logger.debug(f"synthesized_from sweep skipped: {e}")
                 conn.commit()
             except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
                 pass

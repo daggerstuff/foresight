@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
+from .dependent_cleanup import purge_dead_synthesized_from_ids
 
 logger = logging.getLogger("foresight_ghost_cleanup")
 
@@ -154,6 +155,12 @@ class GhostMemoryCleanup:
                     logger.info(f"Cleaned {cursor.rowcount} orphaned memory_relationships rows")
             except Exception as e:
                 logger.debug(f"Orphan cleanup skipped for memory_relationships: {e}")
+            try:
+                purged = purge_dead_synthesized_from_ids(conn)
+                if purged:
+                    logger.info(f"Cleaned dead synthesized_from IDs in {purged} memories")
+            except Exception as e:
+                logger.debug(f"Orphan cleanup skipped for synthesized_from: {e}")
             conn.commit()
 
             # Also clean up orphaned entity links

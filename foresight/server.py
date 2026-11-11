@@ -72,6 +72,7 @@ from .context_blocks import (
 from .context_cache import get_context_cache
 from .crisis_detection import get_crisis_service
 from .decay_model import DecayConfigOptions, get_decay_model
+from .dependent_cleanup import purge_dead_synthesized_from_ids
 from .document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
     DocumentCreateOptions,
@@ -2099,6 +2100,7 @@ def _delete_memory_dependents(conn, memory_id: str) -> None:
     conn.execute("UPDATE document_chunks SET memory_id = NULL WHERE memory_id = ?", (memory_id,))
     conn.execute("UPDATE memories SET related_memory_id = NULL WHERE related_memory_id = ?", (memory_id,))
     conn.execute("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?", (memory_id,))
+    purge_dead_synthesized_from_ids(conn)
 
 
 def _purge_orphaned_memory_dependents(conn, user_id: str | None = None, tenant_id: str | None = None) -> dict[str, int]:
@@ -2157,6 +2159,7 @@ def _purge_orphaned_memory_dependents(conn, user_id: str | None = None, tenant_i
             tuple(params),
         )
         stats[f"memories.{col}"] = getattr(res, "rowcount", 0) or 0
+    stats["memories.synthesized_from"] = purge_dead_synthesized_from_ids(conn, user_id, tenant_id)
     return stats
 
 

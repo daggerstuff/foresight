@@ -165,6 +165,7 @@ max-args = 10
 "foresight/entity_extractor.py" = ["ARG002"]
 "foresight/subconscious.py" = ["PLR0912"]
 "foresight/user_lanes.py" = ["PLR0912", "PLR0915"]
+"foresight/ghost_cleanup.py" = ["PLR0912", "PLR0915"]
 "foresight/stream_producer.py" = ["ARG002"]
 "foresight/proof_benchmark.py" = ["E402", "ARG001"]
 "foresight/consumer_group.py" = ["E402"]
