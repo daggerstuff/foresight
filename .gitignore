@@ -15,9 +15,11 @@ dist/
 
 # Environments
 .env
+.env.*
+.envrc
 .venv/
 env/
-.venv/
+.DS_Store
 
 # Database
 *.db
@@ -76,6 +78,12 @@ replit.md
 # Provisioned review-bot / agent configs (environment tooling, not source)
 .coderabbit.yaml
 .cursor/
+.claude/
+.codex/
+.gemini/
+.opencode/
+.superpowers/
+.squad/
 .greptile/
 .pr_agent.toml
 .sourcery.yaml
