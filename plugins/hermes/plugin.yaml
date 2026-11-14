@@ -1,5 +1,13 @@
 name: foresight
-version: 1.0.0
-description: "Foresight — persistent memory via the Foresight REST API (shared brain across the fleet)."
+version: 2.0.0
+description: "Foresight — persistent shared brain with hands-off proactive recall, automatic distillation, and rich memory tools."
+category: memory
+author: Pixelated
+hooks:
+  - on_session_end
+  - on_pre_compress
+  - on_session_switch
+  - on_delegation
+  - on_memory_write
 config_keys:
-  - memory.foresight  # url persisted by the dashboard; secrets via env vars
+  - memory.foresight

@@ -1,38 +1,71 @@
 #!/usr/bin/env bash
-# Install the Foresight memory provider for Hermes Agent.
+# Install / deploy the Foresight memory provider for Hermes Agent.
 #
 # Hermes discovers memory providers in $HERMES_HOME/plugins/<name>/ — a dir
 # with __init__.py that calls register_memory_provider(). This script links
-# (or copies) this directory there and prints the env vars to configure.
+# (or copies) this directory there, and can also deploy directly to a remote host.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 DEST="$HERMES_HOME/plugins/foresight"
+REMOTE=""
+MODE="link"
+DRY=0
 
 usage() {
   cat <<EOF
-Usage: bash plugins/hermes/install.sh [--hermes-home DIR] [--copy] [--dry-run]
+Usage: bash plugins/hermes/install.sh [options]
 
+Options:
   --hermes-home DIR   Hermes home (default: \$HERMES_HOME or ~/.hermes)
-  --copy              copy files instead of symlinking (default: symlink)
-  --dry-run           show what would be done
+  --copy              Copy files instead of symlinking (default: symlink)
+  --remote HOST       Deploy via SSH to remote host (e.g. hermes, daphne)
+  --dry-run           Show what would be done without modifying anything
+  -h, --help          Show this help message
+
+Examples:
+  bash plugins/hermes/install.sh                     # Local symlink install
+  bash plugins/hermes/install.sh --copy              # Local copy install
+  bash plugins/hermes/install.sh --remote hermes     # Deploy to fleet host 'hermes'
 EOF
 }
 
-MODE=link
-DRY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --hermes-home) HERMES_HOME="$2"; shift 2 ;;
-    --copy) MODE=copy; shift ;;
+    --copy) MODE="copy"; shift ;;
+    --remote) REMOTE="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "unknown arg: $1" >&2; usage; exit 1 ;;
+    *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
   esac
 done
+
 DEST="$HERMES_HOME/plugins/foresight"
 
+# Remote deployment via SSH
+if [[ -n "$REMOTE" ]]; then
+  echo "==> Deploying Foresight memory provider to remote host: $REMOTE"
+  if [[ $DRY -eq 1 ]]; then
+    echo "  [dry-run] Would sync $SRC -> $REMOTE:~/.hermes/plugins/foresight/"
+    exit 0
+  fi
+
+  ssh "$REMOTE" "mkdir -p ~/.hermes/plugins/foresight"
+  rsync -avz --delete \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    "$SRC/" "$REMOTE:~/.hermes/plugins/foresight/"
+
+  echo "  ✓ Files synced to $REMOTE:~/.hermes/plugins/foresight/"
+  echo "  Verifying on $REMOTE..."
+  ssh "$REMOTE" "if command -v hermes &>/dev/null; then hermes memory status; elif [ -x ~/.hermes/hermes-agent/.hermes/bin/hermes ]; then ~/.hermes/hermes-agent/.hermes/bin/hermes memory status; fi" || true
+  echo "  ✓ Deployment to $REMOTE complete!"
+  exit 0
+fi
+
+# Local installation
 if [[ $DRY -eq 1 ]]; then
   echo "would install $SRC -> $DEST ($MODE)"
   exit 0
@@ -54,10 +87,15 @@ echo "Installed Foresight memory provider: $DEST"
 cat <<EOF
 
 Next steps:
-  1. Select it as the memory provider (hermes memory setup, or set the
-     provider in $HERMES_HOME/config.yaml).
-  2. If the Foresight server requires auth, export in the agent's env:
-       FORESIGHT_API_KEY=<key>   # from 'foresight user create' on the server
-       FORESIGHT_USER_ID=chad    # identity lane (optional; server default applies)
-       FORESIGHT_URL=http://127.0.0.1:8764   # optional; localhost default
+  1. Select it as the memory provider:
+       hermes memory setup foresight
+     or verify with:
+       hermes memory status
+  2. Test CLI commands:
+       hermes foresight status
+       hermes foresight test
+  3. Ensure credentials in ~/.hermes/.env or environment:
+       FORESIGHT_URL=https://foresight.pixelated.love
+       FORESIGHT_API_KEY=<your-key>
+       FORESIGHT_USER_ID=<identity-lane>
 EOF
