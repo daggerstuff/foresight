@@ -20,6 +20,7 @@ images first, then ingest the images.
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -86,7 +87,7 @@ def _extract_pdf_text(path: Path) -> str:
 
 def _extract_ocr_text(path: Path) -> str:
     try:
-        import pytesseract
+        pytesseract = importlib.import_module("pytesseract")
         from PIL import Image
     except ImportError as exc:  # pragma: no cover - dependency optional
         raise DocumentIngestionError(
