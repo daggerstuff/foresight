@@ -47,9 +47,9 @@ import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -492,8 +492,11 @@ class ForesightBackend:
             self._db_path = resolved
 
         for mod in (config_module, conn_pool_module):
-            original = mod.DB_PATH
-            mod.DB_PATH = self._db_path
+            # These modules are patched dynamically, so their DB_PATH binding is
+            # not statically known; cast to Any for this one statement group.
+            target = cast(Any, mod)
+            original = target.DB_PATH
+            target.DB_PATH = self._db_path
             self._patches.append((mod, "DB_PATH", original))
 
         set_current_user_id(self.user_id)
@@ -521,7 +524,7 @@ class ForesightBackend:
         import hashlib
 
         conn = self._connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         count = 0
         try:
             for session in sessions:
@@ -670,7 +673,9 @@ class BenchmarkReport:
     n_abstention: int
     overall: dict[str, Any]
     per_category: list[CategoryStats]
-    latency: dict[str, float]
+    # Percentiles are None when no sample produced a timing (e.g. an all-
+    # abstention run), matching `SampleResult.latency_ms` and `_fmt`'s "n/a".
+    latency: dict[str, float | None]
     results: list[SampleResult]
 
     def to_dict(self) -> dict[str, Any]:
@@ -919,7 +924,7 @@ def _build_report(
         seed=seed,
         git_sha=_git_sha(),
         embedding_provider=os.environ.get("FORESIGHT_EMBEDDING_PROVIDER", "auto"),
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         n_samples=len(results),
         n_abstention=len(abstention),
         overall=overall,

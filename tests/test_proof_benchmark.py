@@ -8,8 +8,16 @@ from foresight.proof_benchmark import (
     ScenarioProofResult,
 )
 
+# Every surface Foresight claims to support should appear in the readiness map.
+MIN_SUPPORTED_SURFACES = 7
+
+# Floor the token-compression scenario must clear on a real corpus.
+MIN_EXPECTED_TOKEN_REDUCTION_PCT = 75.0
+
 
 def test_scenario_proof_result_dataclass():
+    improvement_factor = 10.0
+    latency_ms = 4.2
     res = ScenarioProofResult(
         scenario_id="test_01",
         name="Test Continuity",
@@ -18,14 +26,14 @@ def test_scenario_proof_result_dataclass():
         passed=True,
         amnesia_score=0.0,
         foresight_score=1.0,
-        improvement_factor=10.0,
-        latency_ms=4.2,
+        improvement_factor=improvement_factor,
+        latency_ms=latency_ms,
         details={"key": "val"},
         key_takeaway="Proved continuity",
     )
     assert res.passed is True
-    assert res.improvement_factor == 10.0
-    assert res.latency_ms == 4.2
+    assert res.improvement_factor == improvement_factor
+    assert res.latency_ms == latency_ms
 
 
 def test_production_proof_report_methods():
@@ -56,6 +64,10 @@ def test_production_proof_report_methods():
         ),
     ]
 
+    composite_production_score = 98.5
+    token_reduction_pct = 92.5
+    avg_tokens_saved_per_turn = 3200
+    monthly_token_cost_savings_usd = 42.24
     report = ProductionProofReport(
         timestamp="2026-08-22T20:00:00Z",
         total_scenarios=2,
@@ -66,22 +78,22 @@ def test_production_proof_report_methods():
         amnesia_avg_score=0.0,
         foresight_avg_score=1.0,
         overall_lift_pct=10000.0,
-        composite_production_score=98.5,
+        composite_production_score=composite_production_score,
         estimated_hours_saved_monthly=8.5,
         token_efficiency_ratio=3.8,
-        token_reduction_pct=92.5,
-        avg_tokens_saved_per_turn=3200,
-        estimated_monthly_token_cost_savings_usd=42.24,
+        token_reduction_pct=token_reduction_pct,
+        avg_tokens_saved_per_turn=avg_tokens_saved_per_turn,
+        estimated_monthly_token_cost_savings_usd=monthly_token_cost_savings_usd,
         scenarios=scenarios,
         surface_readiness={"OpenCode": True, "Claude Code": True},
     )
 
     d = report.to_dict()
-    assert d["composite_production_score"] == 98.5
-    assert d["token_reduction_pct"] == 92.5
-    assert d["avg_tokens_saved_per_turn"] == 3200
-    assert d["estimated_monthly_token_cost_savings_usd"] == 42.24
-    assert len(d["scenarios"]) == 2
+    assert d["composite_production_score"] == composite_production_score
+    assert d["token_reduction_pct"] == token_reduction_pct
+    assert d["avg_tokens_saved_per_turn"] == avg_tokens_saved_per_turn
+    assert d["estimated_monthly_token_cost_savings_usd"] == monthly_token_cost_savings_usd
+    assert len(d["scenarios"]) == len(scenarios)
 
     text = report.format_text()
     assert "FORESIGHT PRODUCTION VALUE & PROOF BENCHMARK" in text
@@ -94,7 +106,7 @@ def test_surface_readiness_check():
     runner = ProofBenchmarkRunner()
     surfaces = runner._check_surface_readiness()
     assert isinstance(surfaces, dict)
-    assert len(surfaces) >= 7
+    assert len(surfaces) >= MIN_SUPPORTED_SURFACES
 
 
 def test_token_savings_scenario():
@@ -105,6 +117,6 @@ def test_token_savings_scenario():
     scenario = runner._test_token_savings_and_context_compression()
     assert scenario.passed is True
     assert scenario.dimension == "Cost & Efficiency"
-    assert scenario.details["token_reduction_pct"] >= 75.0
+    assert scenario.details["token_reduction_pct"] >= MIN_EXPECTED_TOKEN_REDUCTION_PCT
     assert scenario.details["tokens_saved_per_turn"] > 0
     assert scenario.details["baseline_tokens"] > scenario.details["foresight_injected_tokens"]

@@ -22,7 +22,7 @@ mid-migration crash is recovered cleanly on the next call.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .base import DatabaseBackend
 from .postgres_backend import _translate_sql
@@ -112,7 +112,7 @@ def _applied_versions(backend: DatabaseBackend) -> set[int]:
 
 def _applied_at_iso() -> str:
     """Return the current UTC timestamp in ISO 8601."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def ensure_pgvector_extension(backend: DatabaseBackend) -> bool:

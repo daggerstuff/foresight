@@ -18,24 +18,30 @@ class TestVectorClock:
     def test_increment(self):
         """Test incrementing clock."""
         clock = VectorClock()
+        increments = 0
         clock.increment("node-1")
-        assert clock.clock["node-1"] == 1
+        increments += 1
+        assert clock.clock["node-1"] == increments
 
         clock.increment("node-1")
-        assert clock.clock["node-1"] == 2
+        increments += 1
+        assert clock.clock["node-1"] == increments
 
     def test_merge(self):
         """Test merging two clocks."""
+        left = {"a": 1, "b": 2}
+        right = {"b": 3, "c": 1}
+
         clock1 = VectorClock()
-        clock1.clock = {"a": 1, "b": 2}
+        clock1.clock = dict(left)
 
         clock2 = VectorClock()
-        clock2.clock = {"b": 3, "c": 1}
+        clock2.clock = dict(right)
 
         clock1.merge(clock2)
-        assert clock1.clock["a"] == 1
-        assert clock1.clock["b"] == 3  # max(2, 3)
-        assert clock1.clock["c"] == 1
+        assert clock1.clock["a"] == left["a"]
+        assert clock1.clock["b"] == max(left["b"], right["b"])
+        assert clock1.clock["c"] == right["c"]
 
     def test_happens_before(self):
         """Test happens-before relationship."""
@@ -64,11 +70,12 @@ class TestVectorClock:
         clock1 = VectorClock()
         clock1.clock = {"a": 1, "b": 2}
 
+        copied_value = 999
         clock2 = clock1.copy()
-        clock2.clock["a"] = 999
+        clock2.clock["a"] = copied_value
 
         assert clock1.clock["a"] == 1
-        assert clock2.clock["a"] == 999
+        assert clock2.clock["a"] == copied_value
 
 
 class TestLWWRegister:
@@ -122,14 +129,15 @@ class TestLWWRegister:
 
     def test_to_from_dict(self):
         """Test serialization."""
+        timestamp = 123.0
         register1 = LWWRegister()
-        register1.set("test", "node-1", timestamp=123.0)
+        register1.set("test", "node-1", timestamp=timestamp)
 
         data = register1.to_dict()
         register2 = LWWRegister.from_dict(data)
 
         assert register2.get() == "test"
-        assert register2.timestamp == 123.0
+        assert register2.timestamp == timestamp
 
 
 class TestORSet:
@@ -206,20 +214,21 @@ class TestLWWMap:
 
     def test_merge(self):
         """Test merging two maps."""
+        first_entries = {"a": 1, "b": 2}
+        second_entries = {"c": 3, "d": 4}
+
         map1 = LWWMap()
-        map1.set("a", 1)
-        map1.set("b", 2)
+        for key, value in first_entries.items():
+            map1.set(key, value)
 
         map2 = LWWMap()
-        map2.set("c", 3)
-        map2.set("d", 4)
+        for key, value in second_entries.items():
+            map2.set(key, value)
 
         map1.merge(map2)
 
-        assert map1.get("a") == 1
-        assert map1.get("b") == 2
-        assert map1.get("c") == 3
-        assert map1.get("d") == 4
+        for key, value in {**first_entries, **second_entries}.items():
+            assert map1.get(key) == value
 
     def test_merge_conflict(self):
         """Test merge with conflicting updates."""
@@ -281,16 +290,17 @@ class TestSplitBrain:
         orset2 = ORSet()
 
         # Concurrent adds
-        orset1.add("a")
-        orset2.add("b")
+        added_elements = ("a", "b")
+        orset1.add(added_elements[0])
+        orset2.add(added_elements[1])
 
         # Merge
         orset1.merge(orset2)
         orset2.merge(orset1)
 
         # Both should have both elements
-        assert len(orset1._adds) == 2
-        assert len(orset2._adds) == 2
+        assert len(orset1._adds) == len(added_elements)
+        assert len(orset2._adds) == len(added_elements)
 
 
 if __name__ == "__main__":

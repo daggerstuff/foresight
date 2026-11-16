@@ -15,7 +15,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .block_registry import (
@@ -30,6 +30,13 @@ from .memory_components import MemoryCrisisTagger, SocraticGate
 
 logger = logging.getLogger("foresight_context_blocks")
 
+# Default cap on the number of items appended to a context block.
+DEFAULT_MAX_BLOCK_ITEMS = 10
+
+# One extracted fact must not dominate a block, so every snippet is windowed to
+# this many characters before it is appended.
+SNIPPET_MAX_CHARS = 200
+
 # Memory block labels
 CORE_DIRECTIVES = "core_directives"
 GUIDANCE = "guidance"
@@ -43,7 +50,8 @@ TOOL_GUIDELINES = "tool_guidelines"
 DEFAULT_MEMORY_BLOCKS = {
     CORE_DIRECTIVES: """ROLE: Foresight Curator — background continuity and curation layer for Foresight.
 
-WHAT I AM: A background curator that watches Foresight sessions, reads the codebase, and builds memory over time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
+WHAT I AM: A background curator that watches Foresight sessions, reads the codebase, and builds memory over \
+time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
 
 OBSERVE (from transcripts):
 - User corrections to Claude's output → preferences
@@ -64,13 +72,17 @@ COMMUNICATION STYLE:
 - Warm but not effusive — a trusted colleague, not a cheerleader
 - No praise, no philosophical tangents
 
-DEFAULT STATE: Present but not intrusive. Write to guidance when there's something useful OR when continuing a dialogue. Empty guidance is fine.
+DEFAULT STATE: Present but not intrusive. Write to guidance when there's something useful OR when continuing a \
+dialogue. Empty guidance is fine.
 """,
     GUIDANCE: "(No active guidance. Write here when there's something genuinely useful for the next session.)",
     PENDING_ITEMS: "(No pending items. Populated when sessions end mid-task or user mentions follow-ups.)",
     PROJECT_CONTEXT: "(No project context yet. Populated as sessions reveal codebase details.)",
     SESSION_PATTERNS: "(No patterns observed yet. Populated after multiple sessions.)",
-    USER_PREFERENCES: "(No user preferences yet. Populated as sessions reveal coding style, tool choices, and communication preferences.)",
+    USER_PREFERENCES: (
+        "(No user preferences yet. Populated as sessions reveal "
+        "coding style, tool choices, and communication preferences.)"
+    ),
     SELF_IMPROVEMENT: """MEMORY ARCHITECTURE EVOLUTION:
 
 When to create new blocks:
@@ -149,13 +161,13 @@ class MemoryBlock:
     def __post_init__(self):
         self.chars_current = len(self.content)
         if not self.updated_at:
-            self.updated_at = datetime.now(timezone.utc)
+            self.updated_at = datetime.now(UTC)
 
     def update(self, new_content: str) -> None:
         """Update content and recalculate char count."""
         self.content = new_content
         self.chars_current = len(self.content)
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API usage."""
@@ -289,12 +301,12 @@ class ContextBlockState:
                 char_limit=schema.char_limit if hasattr(schema, "char_limit") else 5000,
             )
 
-    def append_to_block(self, label: str, content: str, max_items: int = 10) -> None:
+    def append_to_block(self, label: str, content: str, max_items: int = DEFAULT_MAX_BLOCK_ITEMS) -> None:
         """Append content to a block (for pending items, preferences, etc.)."""
         block = self.get_block(label)
         if block:
             # Don't append if block is empty/default.
-            if max_items != 10:
+            if max_items != DEFAULT_MAX_BLOCK_ITEMS:
                 logger.debug("append_to_block max_items is reserved for future trimming: %s", max_items)
             new_content = content.strip() if block.is_empty() else f"{block.content}\n{content.strip()}"
             self.update_block(label, new_content)
@@ -305,7 +317,7 @@ class ContextBlockState:
         if not guidance or guidance.is_empty():
             return ""
 
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         return f"""<foresight_message from="Foresight Curator" timestamp="{timestamp}">
 {guidance.content}
 </foresight_message>"""
@@ -437,7 +449,7 @@ class ContextBlockAgent:
             block = self.state.get_block(label)
             updated_at = datetime.fromisoformat(row["updated_at"])
             if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=timezone.utc)
+                updated_at = updated_at.replace(tzinfo=UTC)
             if block:
                 block.content = row["content"]
                 block.chars_current = len(row["content"])
@@ -459,7 +471,7 @@ class ContextBlockAgent:
         block = self.state.get_block(label)
         if block is None:
             return
-        updated_at = (block.updated_at or datetime.now(timezone.utc)).isoformat()
+        updated_at = (block.updated_at or datetime.now(UTC)).isoformat()
         visibility = self._visibilities.get(label, "private")
         agent_id = self.agent_id or "default"
         project = self.project or "default"
@@ -532,7 +544,7 @@ class ContextBlockAgent:
                 touched_labels.add(pattern_label)
 
             self.state.session_count += 1
-            self.state.last_sync = datetime.now(timezone.utc)
+            self.state.last_sync = datetime.now(UTC)
             for label in touched_labels:
                 self._persist_block(label)
         logger.info("Processed transcript for session %s", session_id)
@@ -721,11 +733,11 @@ class ContextBlockAgent:
     def _extract_sentence_around(content: str, phrase: str) -> str:
         """Extract the sentence containing *phrase* from *content*.
 
-        Falls back to a 200-char window if no sentence boundary is found.
+        Falls back to SNIPPET_MAX_CHARS if no sentence boundary is found.
         """
         pos = content.lower().find(phrase)
         if pos == -1:
-            return content.strip().replace("\n", " ")[:200]
+            return content.strip().replace("\n", " ")[:SNIPPET_MAX_CHARS]
         # Find sentence boundaries around the match
         start = content.rfind(".", 0, pos)
         if start == -1:
@@ -736,7 +748,7 @@ class ContextBlockAgent:
             end = content.find("\n", pos)
         end = len(content) if end == -1 else end
         sentence = content[start:end].strip().replace("\n", " ")
-        return sentence[:200]
+        return sentence[:SNIPPET_MAX_CHARS]
 
     # Strong verbs: imply a codebase action. They no longer match alone — a
     # technical-object token (see has_technical_object below) is also required,
@@ -981,22 +993,22 @@ class ContextBlockAgent:
         and tags the source session so entries are traceable back to the session
         that produced them.
         """
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        snippet = content.strip().replace("\n", " ")[:200]
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+        snippet = content.strip().replace("\n", " ")[:SNIPPET_MAX_CHARS]
         self.state.append_to_block(PROJECT_CONTEXT, f"- [{timestamp}] (session: {session_id}) {snippet}")
         logger.info(f"Extracted project_context from session {session_id}: {content[:50]}...")
         return PROJECT_CONTEXT
 
     def _extract_preference(self, content: str) -> str:
         """Extract user preference from message content."""
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
         self.state.append_to_block(USER_PREFERENCES, f"- [{timestamp}] {content.strip()}")
         logger.info(f"Extracted preference: {content[:50]}...")
         return USER_PREFERENCES
 
     def _extract_pending_item(self, content: str, session_id: str) -> str:
         """Extract TODO/pending item from content."""
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
         self.state.append_to_block(PENDING_ITEMS, f"- [{timestamp}] {content.strip()} (session: {session_id})")
         logger.info(f"Extracted pending item: {content[:50]}...")
         return PENDING_ITEMS
@@ -1009,7 +1021,7 @@ class ContextBlockAgent:
         - Common tools: tools used repeatedly (workflow patterns)
         - Recurring errors: error types that appear multiple times
         """
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
         patterns = []
 
         hot_files = self.state.get_hot_files(min_count=2)

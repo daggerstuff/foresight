@@ -380,12 +380,13 @@ def doctor(
 
     # Schema version
     try:
-        from foresight.server import _global_backend
+        from foresight.server import get_backend
 
-        if _global_backend is None:
+        backend = get_backend()
+        if backend is None:
             check("Schema version", True, "backend not initialized")
-        elif hasattr(_global_backend, "fetch"):
-            row = _global_backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
+        elif hasattr(backend, "fetch"):
+            row = backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
             if row:
                 version = row[0][0] if isinstance(row[0], (list, tuple)) else row[0].get("version", "?")
                 check("Schema version", True, f"v{version}")
@@ -477,9 +478,11 @@ def stats(
     if telemetry:
         out.panel(
             f"[bold cyan]Lifetime Turns Augmented:[/] {telemetry.get('total_turns_augmented', 0):,}\n"
-            f"[bold green]Prompt Tokens Saved:[/]     {telemetry.get('total_tokens_saved', 0):,} tokens ({telemetry.get('token_reduction_pct', 88.5):.1f}% reduction)\n"
+            f"[bold green]Prompt Tokens Saved:[/]     {telemetry.get('total_tokens_saved', 0):,} tokens "
+            f"({telemetry.get('token_reduction_pct', 88.5):.1f}% reduction)\n"
             f"[bold yellow]Est. API Cost Saved:[/]     ${telemetry.get('total_cost_saved_usd', 0.0):.2f}\n"
-            f"[bold magenta]In-Memory Cache Hit Rate:[/] {cache_stats.get('hit_rate_pct', 0.0):.1f}% ({cache_stats.get('total_hits', 0)} hits / {cache_stats.get('total_lookups', 0)} lookups)",
+            f"[bold magenta]In-Memory Cache Hit Rate:[/] {cache_stats.get('hit_rate_pct', 0.0):.1f}% "
+            f"({cache_stats.get('total_hits', 0)} hits / {cache_stats.get('total_lookups', 0)} lookups)",
             title="⚡ Foresight Lifetime Telemetry & Economics",
         )
 
@@ -599,7 +602,8 @@ def config(
     if key and value:
         if key == "db_url":
             out.warn(
-                "db_url is read-only in config; set the FORESIGHT_DB_URL environment variable to configure the database."
+                "db_url is read-only in config; set the FORESIGHT_DB_URL "
+                "environment variable to configure the database."
             )
             return
         setattr(c, key, value)

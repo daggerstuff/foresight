@@ -8,7 +8,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 # =============================================================================
@@ -151,8 +151,8 @@ class MemoryBlock:
 
     schema: MemoryBlockSchema
     content: str = ""
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: int = 0
 
     def update_content(self, new_content: str) -> None:
@@ -168,7 +168,7 @@ class MemoryBlock:
             # Synthesize would require LLM - for now just replace
             self.content = new_content
 
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
         self.version += 1
 
     def is_empty(self) -> bool:
@@ -268,7 +268,8 @@ DEFAULT_BLOCK_SCHEMAS = [
         description="Role definition and operating principles",
         content="""ROLE: Foresight Curator — background continuity and curation layer for Foresight.
 
-WHAT I AM: A background curator that watches Foresight sessions, reads the codebase, and builds memory over time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
+WHAT I AM: A background curator that watches Foresight sessions, reads the codebase, and builds memory over \
+time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
 
 OBSERVE (from transcripts):
 - User corrections to Claude's output → preferences
@@ -289,7 +290,8 @@ COMMUNICATION STYLE:
 - Warm but not effusive — a trusted colleague, not a cheerleader
 - No praise, no philosophical tangents
 
-DEFAULT STATE: Present but not intrusive. Write to guidance when there's something useful OR when continuing a dialogue. Empty guidance is fine.
+DEFAULT STATE: Present but not intrusive. Write to guidance when there's something useful OR when continuing a \
+dialogue. Empty guidance is fine.
 """,
         retention_policy=RetentionPolicy.PERMANENT,
         merge_strategy=MergeStrategy.REPLACE,
@@ -335,7 +337,10 @@ DEFAULT STATE: Present but not intrusive. Write to guidance when there's somethi
     MemoryBlockSchema(
         label="user_preferences",
         description="Coding style, tool choices, communication preferences",
-        content="(No user preferences yet. Populated as sessions reveal coding style, tool choices, and communication preferences.)",
+        content=(
+            "(No user preferences yet. Populated as sessions reveal "
+            "coding style, tool choices, and communication preferences.)"
+        ),
         retention_policy=RetentionPolicy.LONG_TERM,
         merge_strategy=MergeStrategy.APPEND,
         injection_point=InjectionPoint.PRE_PROMPT,

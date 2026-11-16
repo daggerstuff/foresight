@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import foresight.event_bus as event_bus_module
 from foresight.event_bus import Event, EventType, get_event_bus, reset_event_bus
@@ -15,7 +15,7 @@ def _make_event() -> Event:
     return Event(
         id="evt-stream",
         event_type=EventType.MEMORY_STORED,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         actor="tester",
         entity_id="memory-1",
         payload={"value": "hello"},

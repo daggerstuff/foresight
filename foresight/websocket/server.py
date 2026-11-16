@@ -17,17 +17,22 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 import websockets
+from websockets.asyncio.server import Server as WebsocketsServer
 
 from foresight.event_bus import EventType
 
 from .subscriptions import get_subscription_manager
 
 logger = logging.getLogger("foresight_websocket")
+
+# Connection health defaults: ping every interval, drop after the timeout.
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
+DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90.0
 
 
 class ConnectionState(StrEnum):
@@ -46,8 +51,8 @@ class Connection:
     id: str
     send: Callable[[str], Any]
     close: Callable[[], Any]
-    connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    connected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
     state: ConnectionState = ConnectionState.CONNECTING
     user_id: str | None = None
     tenant_id: str | None = None
@@ -77,8 +82,8 @@ class WebSocketHandler:
     def __init__(
         self,
         auth_callback: Callable[[str], tuple[str, str] | None] | None = None,
-        heartbeat_interval: float = 30.0,
-        heartbeat_timeout: float = 90.0,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
     ):
         self._connections: dict[str, Connection] = {}
         self._auth_callback = auth_callback
@@ -107,13 +112,15 @@ class WebSocketHandler:
             Tuple of (connection_id, welcome_message)
         """
         conn_id = connection_id or str(uuid.uuid4())
-        is_reconnect = connection_id in self._connections
+        # Narrow once: a reconnect is "the id is present in the connection map",
+        # which mypy cannot derive from the membership test alone.
+        existing = self._connections.get(connection_id) if connection_id is not None else None
 
-        if is_reconnect:
+        if existing is not None:
             # Restore existing connection
-            conn = self._connections[connection_id]
+            conn = existing
             conn.state = ConnectionState.CONNECTED
-            conn.last_heartbeat = datetime.now(timezone.utc)
+            conn.last_heartbeat = datetime.now(UTC)
             logger.info("Reconnected connection: %s", connection_id)
 
             # Replay missed events from buffer
@@ -131,16 +138,16 @@ class WebSocketHandler:
                                 "type": "event_replay",
                                 "event_type": ev.get("event_type"),
                                 "payload": ev,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "timestamp": datetime.now(UTC).isoformat(),
                             }
                         )
                     except Exception as e:
                         logger.error("Failed to replay event to %s: %s", connection_id, e)
                         break
 
-            return connection_id, {
+            return conn_id, {
                 "type": "reconnected",
-                "connection_id": connection_id,
+                "connection_id": conn_id,
                 "message": "Reconnected to previous session",
                 "last_event_id": conn.last_event_id,
             }
@@ -233,10 +240,10 @@ class WebSocketHandler:
         if action == "ping":
             connection = self._connections.get(connection_id)
             if connection:
-                connection.last_heartbeat = datetime.now(timezone.utc)
+                connection.last_heartbeat = datetime.now(UTC)
             return {
                 "type": "pong",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "connection_id": connection_id,
             }
 
@@ -281,7 +288,7 @@ class WebSocketHandler:
     async def cleanup_stale_connections(self, timeout_seconds: int = 300) -> list[str]:
         """Remove connections that haven't sent heartbeat."""
         removed = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for conn_id, conn in list(self._connections.items()):
             if conn.state == ConnectionState.DISCONNECTED:
@@ -313,7 +320,7 @@ class WebSocketHandler:
 
     def get_stats(self) -> dict[str, Any]:
         """Get connection statistics."""
-        states = {}
+        states: dict[str, int] = {}
         for conn in self._connections.values():
             state = conn.state.value
             states[state] = states.get(state, 0) + 1
@@ -356,8 +363,8 @@ class WebSocketServer:
         self,
         event_bus=None,
         auth_callback: Callable[[str], tuple[str, str] | None] | None = None,
-        heartbeat_interval: float = 30.0,
-        heartbeat_timeout: float = 90.0,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
     ):
         """Initialize WebSocket server.
 
@@ -379,7 +386,7 @@ class WebSocketServer:
         self._running = False
         self._task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
-        self._ws_server = None
+        self._ws_server: WebsocketsServer | None = None
         self._stop_event: asyncio.Event | None = None
 
     async def start(self, host: str = "127.0.0.1", port: int = 8765) -> None:
@@ -478,7 +485,7 @@ class WebSocketServer:
                 if not self._running:
                     break
 
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 for conn_id, conn in list(self.handler._connections.items()):
                     if conn.state in (ConnectionState.DISCONNECTED,):
                         continue
@@ -559,7 +566,7 @@ class WebSocketServer:
             "type": "event",
             "event_type": event_type,
             "payload": payload,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # Parse event_type back to an EventType enum for subscription matching

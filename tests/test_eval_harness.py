@@ -13,12 +13,18 @@ from types import SimpleNamespace
 
 from foresight.eval_harness import (
     FIXTURE_MEMORIES,
+    PII_MATCH_PREVIEW_CHARS,
     SCENARIOS,
     EvalHarness,
     EvalReport,
     ScenarioResult,
     scan_for_pii,
 )
+
+# seed_fixtures is the floor every scenario relies on; more is fine, less is a
+# broken fixture set.
+MIN_SEEDED_ENTITIES = 5
+MIN_SEEDED_LINKS = 5
 
 # =============================================================================
 # PII Scanner
@@ -61,7 +67,7 @@ class TestPiiScanner:
     def test_matches_are_truncated(self):
         findings = scan_for_pii("email is verylongemailaddress@example.com for testing")
         if findings:
-            assert len(findings[0]["match"]) <= 20
+            assert len(findings[0]["match"]) <= PII_MATCH_PREVIEW_CHARS
 
 
 # =============================================================================
@@ -130,9 +136,9 @@ class TestHarnessSeeding:
             harness.seed_fixtures()
             conn = harness._get_connection()
             row = conn.execute("SELECT COUNT(*) as cnt FROM memory_entities").fetchone()
-            assert row["cnt"] >= 5, f"Expected >=5 entities, got {row['cnt']}"
+            assert row["cnt"] >= MIN_SEEDED_ENTITIES, f"Expected >= {MIN_SEEDED_ENTITIES} entities, got {row['cnt']}"
             row = conn.execute("SELECT COUNT(*) as cnt FROM memory_entity_links").fetchone()
-            assert row["cnt"] >= 5, f"Expected >=5 links, got {row['cnt']}"
+            assert row["cnt"] >= MIN_SEEDED_LINKS, f"Expected >= {MIN_SEEDED_LINKS} links, got {row['cnt']}"
         finally:
             harness.close()
 
@@ -290,6 +296,7 @@ class TestReportFormatting:
 
 class TestScenarioResult:
     def test_creation(self):
+        payload_size = 500
         result = ScenarioResult(
             scenario_id="test_scenario",
             query="test query",
@@ -297,7 +304,7 @@ class TestScenarioResult:
             metrics={"total_candidates": 10},
             found_memory_ids=["mem1", "mem2"],
             missing_expected=[],
-            injection_payload_size=500,
+            injection_payload_size=payload_size,
             latency_ms=12.34,
             signal_counts={"keyword": 2, "tfidf_cosine": 1},
             fast_path=None,
@@ -305,7 +312,7 @@ class TestScenarioResult:
         )
         assert result.passed
         assert result.scenario_id == "test_scenario"
-        assert result.injection_payload_size == 500
+        assert result.injection_payload_size == payload_size
 
 
 # =============================================================================

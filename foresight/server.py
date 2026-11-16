@@ -23,7 +23,7 @@ import uuid
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -31,7 +31,7 @@ from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
 from mcp.types import TextContent
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -120,6 +120,7 @@ from .injection_budget import (
 from .llm_client import TenantLLMClient
 from .llm_errors import LLMError, LLMNotConfiguredError
 from .memory_components import (
+    MIN_MEMORIES_FOR_SYNTHESIS,
     MemoryCrisisTagger,
     MemoryLinker,
     MemorySynthesizer,
@@ -186,11 +187,27 @@ DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
 # Last injection tracking for system status visibility (PIX-3955)
 _last_injection_stats: dict[str, Any] = {}
 
-# Global database backend (set during main() startup, PIX-3994)
-_global_backend: Any = None
 
-# Global Redis companion (set during main() startup, PIX-3995)
-_redis_companion: RedisCompanion | None = None
+class _BackendHolder:
+    """Process-wide slot for the database backend (set during main() startup, PIX-3994)."""
+
+    instance: Any = None
+
+
+def get_backend() -> Any:
+    """Return the active database backend, or ``None`` before startup."""
+    return _BackendHolder.instance
+
+
+class _RedisCompanionHolder:
+    """Process-wide slot for the Redis companion (set during main() startup, PIX-3995)."""
+
+    instance: RedisCompanion | None = None
+
+
+def get_redis_companion() -> RedisCompanion | None:
+    """Return the active Redis companion, or ``None`` when Redis is disabled."""
+    return _RedisCompanionHolder.instance
 
 
 # Global narrative cache instance for metrics (lazy initialization)
@@ -230,7 +247,10 @@ class MemoryOptions(BaseModel):
     )
     relation_type: str | None = Field(
         default=None,
-        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
+        description=(
+            "Optional typed relationship to another memory. Allowed: "
+            "updates, extends, derives, contradicts, supports, related"
+        ),
     )
     related_memory_id: str | None = Field(
         default=None, description="ID of the memory this one relates to (paired with relation_type)"
@@ -248,7 +268,10 @@ class MemoryOptions(BaseModel):
     )
     expires_at: str | float | int | None = Field(
         default=None,
-        description="Optional expiration (ISO-8601 string or epoch seconds). Expired memories are excluded from retrieval and GC'd.",
+        description=(
+            "Optional expiration (ISO-8601 string or epoch seconds). "
+            "Expired memories are excluded from retrieval and GC'd."
+        ),
     )
     memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
         default=None,
@@ -285,11 +308,18 @@ class MemoryUpdateOptions(BaseModel):
     )
     relation_type: str | None = Field(
         default=None,
-        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
+        description=(
+            "Optional typed relationship to another memory. Allowed: "
+            "updates, extends, derives, contradicts, supports, related"
+        ),
     )
     related_memory_id: str | None = Field(
         default=None, description="ID of the memory this one relates to (paired with relation_type)"
     )
+
+
+DEFAULT_CASCADE_DEPTH = 2
+DEFAULT_CASCADE_LIMIT = 100
 
 
 class SearchOptions(BaseModel):
@@ -303,8 +333,8 @@ class SearchOptions(BaseModel):
     min_importance: float = Field(default=0.1, description="Minimum importance threshold")
     use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
     use_cascade: bool = Field(default=False, description="Enable cascade search across related entities")
-    cascade_depth: int = Field(default=2, description="Maximum depth for cascade traversal")
-    cascade_limit: int = Field(default=100, description="Maximum results per cascade level")
+    cascade_depth: int = Field(default=DEFAULT_CASCADE_DEPTH, description="Maximum depth for cascade traversal")
+    cascade_limit: int = Field(default=DEFAULT_CASCADE_LIMIT, description="Maximum results per cascade level")
     debug: bool = Field(
         default=False,
         description="Return structured trace with timing and signal metadata instead of formatted results",
@@ -357,7 +387,9 @@ class ContextBlockAction(BaseModel):
     project: str | None = Field(default=None, description="Optional project namespace lane")
     visibility: Literal["private", "shared"] | None = Field(
         default=None,
-        description="Block visibility for update: 'private' (own agent lane) or 'shared' (all agents in the project lane)",
+        description=(
+            "Block visibility for update: 'private' (own agent lane) or 'shared' (all agents in the project lane)"
+        ),
     )
 
     @model_validator(mode="before")
@@ -556,7 +588,7 @@ def _normalize_expires_at(value: str | float | int | None) -> str | None:
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+            return datetime.fromtimestamp(value, tz=UTC).isoformat()
         except (ValueError, OSError, OverflowError):
             return None
     if isinstance(value, str):
@@ -567,7 +599,7 @@ def _normalize_expires_at(value: str | float | int | None) -> str | None:
             return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
         except ValueError:
             with contextlib.suppress(ValueError):
-                return datetime.fromtimestamp(float(text), tz=timezone.utc).isoformat()
+                return datetime.fromtimestamp(float(text), tz=UTC).isoformat()
             return None
     return None
 
@@ -902,7 +934,10 @@ class PostgresPooledConnection(PooledConnection):
             match = re.search(r"PRAGMA\s+table_info\s*\(\s*([\'\"]?\w+[\'\"]?)\s*\)", sql, re.IGNORECASE)
             if match:
                 table_name = match.group(1).strip("'\"")
-                pg_sql = "SELECT 0 as cid, column_name as name, 'TEXT' as type, 0 as notnull, NULL as dflt_value, 0 as pk FROM information_schema.columns WHERE table_name = %s"
+                pg_sql = (
+                    "SELECT 0 as cid, column_name as name, 'TEXT' as type, 0 as notnull, NULL "
+                    "as dflt_value, 0 as pk FROM information_schema.columns WHERE table_name = %s"
+                )
                 self._last_result = self._execute_with_retry(pg_sql, (table_name,))
                 self._rowcount = self._last_result.rowcount
                 return self
@@ -1010,19 +1045,20 @@ def get_db_connection(db_path: str | None = None):
         A connection-like object with ``execute()``, ``fetchone()``,
         ``fetchall()``, ``commit()``, and ``close()``.
     """
-    if _global_backend is None:
+    backend = get_backend()
+    if backend is None:
         raise RuntimeError(
             "Database backend not initialized. Call _initialize_backend() first "
             "(requires FORESIGHT_DB_URL). Foresight is Postgres-only; no SQLite fallback."
         )
-    if _global_backend.backend_type != "postgresql":
+    if backend.backend_type != "postgresql":
         raise RuntimeError(
-            f"Database backend is '{_global_backend.backend_type}', expected 'postgresql'. "
+            f"Database backend is '{backend.backend_type}', expected 'postgresql'. "
             "Foresight is Postgres-only; no SQLite fallback."
         )
     _log = logging.getLogger("foresight.db")
     _log.debug("get_db_connection: using PostgresBackend pool")
-    pool = _global_backend._pool
+    pool = backend._pool
     conn = pool.getconn()
     return PostgresPooledConnection(conn, pool)
 
@@ -1038,7 +1074,7 @@ def _seed_default_tenant(conn) -> None:
         VALUES (?, 'Default tenant', ?, ?, ?, '{}')
         ON CONFLICT (id) DO NOTHING
         """,
-        (DEFAULT_TENANT_ID, DEFAULT_RATE_LIMIT, DEFAULT_BURST_LIMIT, datetime.now(timezone.utc).isoformat()),
+        (DEFAULT_TENANT_ID, DEFAULT_RATE_LIMIT, DEFAULT_BURST_LIMIT, datetime.now(UTC).isoformat()),
     )
 
 
@@ -1083,7 +1119,7 @@ def init_db(backend=None):
                     version,
                     backend.backend_type,
                 )
-                backend.set_version(version, datetime.now(timezone.utc).isoformat())
+                backend.set_version(version, datetime.now(UTC).isoformat())
                 continue
 
             if version == PGVECTOR_MIGRATION and not ensure_pgvector_extension(backend):
@@ -1091,7 +1127,7 @@ def init_db(backend=None):
                     "Schema v%s: pgvector unavailable, skipping ANN statements (version recorded)",
                     version,
                 )
-                backend.set_version(version, datetime.now(timezone.utc).isoformat())
+                backend.set_version(version, datetime.now(UTC).isoformat())
                 continue
 
             for stmt in _SCHEMA_MIGRATIONS[version]:
@@ -1106,7 +1142,7 @@ def init_db(backend=None):
                     ):
                         continue
                     raise
-            backend.set_version(version, datetime.now(timezone.utc).isoformat())
+            backend.set_version(version, datetime.now(UTC).isoformat())
 
         # Ensure the built-in default tenant always exists so tenant switches are stable.
         # Use ON CONFLICT DO NOTHING (works on both SQLite 3.24+ and PostgreSQL)
@@ -1121,7 +1157,7 @@ def init_db(backend=None):
                 DEFAULT_TENANT_ID,
                 DEFAULT_RATE_LIMIT,
                 DEFAULT_BURST_LIMIT,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 
@@ -1150,21 +1186,20 @@ def _initialize_backend() -> None:
     If the URL is set but the connection fails, the server aborts with a
     clear error message.  If the URL is unset, a ``RuntimeError`` is raised.
 
-    Idempotent: if ``_global_backend`` is already set, this is a no-op.
+    Idempotent: if a backend is already installed, this is a no-op.
     """
-    global _global_backend
-    if _global_backend is not None:
+    if get_backend() is not None:
         return
     if not os.environ.get("FORESIGHT_DB_URL"):
         raise RuntimeError(
-            "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. "
-            "SQLite-as-primary is no longer supported.\n"
-            "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=verify-full&channel_binding=require'"
+            "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. SQLite-as-primary is no longer "
+            "supported.\nExample: export "
+            "FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=verify-full&channel_binding=require'"
         )
     try:
         backend = create_backend()
         backend.connect()
-        _global_backend = backend
+        _BackendHolder.instance = backend
         logger.info("Database backend initialised (type=%s)", type(backend).__name__)
     except Exception:
         logger.exception(
@@ -1179,16 +1214,15 @@ def _initialize_redis() -> None:
     """Create and connect the global RedisCompanion (PIX-3995).
 
     If ``REDIS_URL`` is set, creates a ``RedisCompanion`` and eagerly
-    connects.  The companion is stored as ``_redis_companion`` and
+    connects.  The companion is stored in ``_RedisCompanionHolder`` and
     gracefully degrades if Redis is unreachable.
     """
-    global _redis_companion
     if not REDIS_URL:
         logger.debug("No REDIS_URL set; RedisCompanion disabled")
         return
     companion = RedisCompanion(REDIS_URL)
     _run_async(companion._ensure_connected())  # eager connect
-    _redis_companion = companion
+    _RedisCompanionHolder.instance = companion
 
 
 # Initialize database on module load - deferred to runtime in main()
@@ -1283,7 +1317,7 @@ def create_version_snapshot(memory_id: str, data: dict) -> str:
             tenant_id,
             data["content"],
             version,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             tags_json,
             emo_json,
             met_json,
@@ -1350,7 +1384,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
             version_row["emotional_context"],
             version_row["metrics"],
             new_version,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             memory_id,
             uid,
             tenant_id,
@@ -1532,17 +1566,21 @@ class InputValidationMiddleware(_Middleware):
         return await call_next(context)
 
 
-FORESIGHT_SERVER_INSTRUCTIONS = """Foresight provides persistent memory, continuity context blocks, and background curation for AI agents.
+FORESIGHT_SERVER_INSTRUCTIONS = """Foresight provides persistent memory, continuity context blocks, and \
+background curation for AI agents.
 
 ### Guidelines for AI Agents:
-1. Context Continuity: At session start or when switching topics, call `inject_context` or `manage_context_blocks` to load active guidance, user preferences, and relevant memory items into context.
+1. Context Continuity: At session start or when switching topics, call `inject_context` or \
+`manage_context_blocks` to load active guidance, user preferences, and relevant memory items into context.
 2. Memory Scopes & Retention:
    - `session`: Ephemeral working memory for the immediate task/session.
    - `arc`: Medium-term project milestone or ongoing objective.
    - `fact`: Durable facts and verified project knowledge.
    - `trait`: Enduring user habits, communication preferences, and core principles.
-3. Proactive Capture: Store key user preferences, architectural decisions, and explicit user feedback using `manage_memories(action="store", ...)`.
-4. Curation: Use `manage_curation_runs` to inspect and review memory consolidation or archiving proposals without loss of durable context."""
+3. Proactive Capture: Store key user preferences, architectural decisions, and explicit user feedback using \
+`manage_memories(action="store", ...)`.
+4. Curation: Use `manage_curation_runs` to inspect and review memory consolidation or archiving proposals \
+without loss of durable context."""
 
 # Determine auth mode: OAuth provider when FORESIGHT_OAUTH_BASE_URL is set,
 # otherwise fall back to the legacy API-key AuthMiddleware.
@@ -1610,6 +1648,10 @@ def _seed_static_oauth_client() -> None:
     """
     if not _oauth_base_url:
         return
+    if _oauth_provider is None:
+        # No provider was constructed (missing OAuth configuration); nothing to
+        # seed. Guarded separately so the calls below have a concrete provider.
+        return
     static_client_id = os.environ.get("FORESIGHT_OAUTH_STATIC_CLIENT_ID")
     static_redirect_uri = os.environ.get("FORESIGHT_OAUTH_STATIC_REDIRECT_URI")
     if not (static_client_id and static_redirect_uri):
@@ -1629,7 +1671,7 @@ def _seed_static_oauth_client() -> None:
                         "FORESIGHT_OAUTH_STATIC_CLIENT_NAME",
                         "External MCP Connector",
                     ),
-                    redirect_uris=[static_redirect_uri],
+                    redirect_uris=[AnyUrl(static_redirect_uri)],
                     grant_types=["authorization_code", "refresh_token"],
                     response_types=["code"],
                     token_endpoint_auth_method="none",
@@ -1715,10 +1757,13 @@ if _oauth_base_url:
         treat a 404 there as "not a valid MCP server" before ever reaching the
         authorization flow. Serve the same document at both paths.
         """
+        base_url = _oauth_base_url
+        if base_url is None:  # the route is only registered when it is set
+            raise RuntimeError("OAuth base URL is not configured")
         return JSONResponse(
             {
-                "resource": f"{_oauth_base_url.rstrip('/')}/mcp",
-                "authorization_servers": [_oauth_base_url.rstrip("/") + "/"],
+                "resource": f"{base_url.rstrip('/')}/mcp",
+                "authorization_servers": [base_url.rstrip("/") + "/"],
                 "scopes_supported": [],
                 "bearer_methods_supported": ["header"],
             }
@@ -1742,15 +1787,15 @@ def _cleanup_background_systems() -> None:
             _SERVER_STATE["sync_manager"] = None
 
     # Close database backend
-    global _global_backend
-    if _global_backend is not None:
+    backend = get_backend()
+    if backend is not None:
         try:
-            _global_backend.close()
+            backend.close()
             logger.info("Database backend closed")
         except Exception as e:
             logger.error(f"Error closing database backend: {e}")
         finally:
-            _global_backend = None
+            _BackendHolder.instance = None
 
     # Release all pooled connections
     try:
@@ -1809,7 +1854,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
         conn.close()
         return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
-    memory_id = hashlib.sha256(f"{content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+    memory_id = hashlib.sha256(f"{content}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16]
     content_h = _content_hash(content)
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
@@ -1822,7 +1867,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
             "WHERE id = ? AND user_id = ? AND tenant_id = ?"
         )
-        update_params = (datetime.now(timezone.utc).isoformat(), existing["id"], uid, tenant_id)
+        update_params = (datetime.now(UTC).isoformat(), existing["id"], uid, tenant_id)
         if _supports_execute_returning(conn):
             conn.execute_returning(update_sql, update_params).fetchone()
         else:
@@ -1890,8 +1935,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         json.dumps(opts.metrics) if opts.metrics else None,
         opts.importance,
         1,
-        datetime.now(timezone.utc).isoformat(),
-        datetime.now(timezone.utc).isoformat(),
+        datetime.now(UTC).isoformat(),
+        datetime.now(UTC).isoformat(),
         json.dumps(memory.tags),
         1 if is_sensitive_bit else 0,
         sensitivity_reason,
@@ -2032,7 +2077,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         conn.close()
         return "No updates provided."
     updates_list.append("updated_at = ?")
-    values.append(datetime.now(timezone.utc).isoformat())
+    values.append(datetime.now(UTC).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
     update_sql = f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
     if _supports_execute_returning(conn):
@@ -2269,6 +2314,7 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
 @mcp.tool(output_schema=None)
 def manage_memories(
     options: MemoryAction | None = None,
+    *,
     user_id: str | None = None,
     action: Literal["store", "update", "delete", "archive"] | None = None,
     memory_id: str | None = None,
@@ -2469,7 +2515,10 @@ def _trace_retrieval(
         response_bytes=0,
     )
     logger.debug(
-        "search_memories trace: query=%r user=%s tenant=%s latency_ms=%.2f results=%d candidates=%d fast_path=%s signals=%s",
+        (
+            "search_memories trace: query=%r user=%s tenant=%s "
+            "latency_ms=%.2f results=%d candidates=%d fast_path=%s signals=%s"
+        ),
         query,
         uid,
         tenant_id,
@@ -2485,6 +2534,7 @@ def _trace_retrieval(
 @mcp.tool(output_schema=None)
 def search_memories(
     options: SearchOptions | None = None,
+    *,
     user_id: str | None = None,
     query_type: Literal["id", "keyword", "list", "semantic"] | None = None,
     query: str | None = None,
@@ -2540,7 +2590,7 @@ def search_memories(
         project: Flat project namespace lane filter (own lane + shared 'default')
     """
     if options is None:
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if query_type is not None:
             kwargs["query_type"] = query_type
         if query is not None:
@@ -2644,7 +2694,7 @@ def search_memories(
         # post-filter over the returned IDs (may return fewer than limit).
         match_ids = [m.memory_id for m in result.matches]
         if match_ids:
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             conn = get_db_connection()
             placeholders = ",".join("?" * len(match_ids))
             rows = conn.execute(
@@ -2674,7 +2724,7 @@ def search_memories(
             return "Error: memory_id or query (as ID) required for id lookup."
         conn = get_db_connection()
         frag, fparams = _build_filter_fragments(*filters)
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         row = conn.execute(
             "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
             + frag
@@ -2696,16 +2746,16 @@ def search_memories(
 
         tags = json.loads(row["tags"])
         decrypted = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
-        result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
-        result += f"Content: {decrypted}\n"
-        result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
+        detail = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
+        detail += f"Content: {decrypted}\n"
+        detail += f"Tags: {', '.join(tags) if tags else 'none'}\n"
         if row["is_ghost"]:
-            result += "[GHOST NODE - Content archived]"
+            detail += "[GHOST NODE - Content archived]"
 
         # ── POST_RETRIEVE hook (ID lookup) ─────────────────────────────
         hook_ctx.memory_id = mid
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-        return result
+        return detail
 
     # 2. Hybrid search if enabled and query provided
     if options.use_hybrid and options.query:
@@ -2740,13 +2790,14 @@ def search_memories(
                 return json.dumps(trace.to_dict(), indent=2)
             if hybrid_result.results:
                 results = []
-                for r in hybrid_result.results:
-                    signals = ", ".join(r.source_signals) if r.source_signals else "hybrid"
+                for hit in hybrid_result.results:
+                    signals = ", ".join(hit.source_signals) if hit.source_signals else "hybrid"
                     results.append(
-                        f"- [{r.memory_id}] {r.content[:100]}... (score={r.combined_score:.3f}, signals={signals})"
+                        f"- [{hit.memory_id}] {hit.content[:100]}... "
+                        f"(score={hit.combined_score:.3f}, signals={signals})"
                     )
                 # Reinforce surfaced memories (closes decay loop).
-                _auto_reinforce_batch([r.memory_id for r in hybrid_result.results], uid, tenant_id)
+                _auto_reinforce_batch([hit.memory_id for hit in hybrid_result.results], uid, tenant_id)
                 # ── POST_RETRIEVE hook (hybrid search) ─────────────────
                 get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
@@ -2756,7 +2807,7 @@ def search_memories(
     # 3. Fallback to basic list/keyword search
     conn = get_db_connection()
     frag, fparams = _build_filter_fragments(*filters, agent_id=options.agent_id, project=options.project)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
@@ -2787,7 +2838,8 @@ def search_memories(
     from .encryption import decrypt_if_encrypted
 
     results = [
-        f"- [{r['id']}] ({r['scope']}/{r['retention']}) {decrypt_if_encrypted(r['content'], tenant_id=tenant_id, user_id=uid)[:80]}..."
+        f"- [{r['id']}] ({r['scope']}/{r['retention']}) "
+        f"{decrypt_if_encrypted(r['content'], tenant_id=tenant_id, user_id=uid)[:80]}..."
         for r in rows
     ]
     # Reinforce surfaced memories (closes decay loop).
@@ -3032,17 +3084,20 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
         return f"Version {options.to_version} not found for memory {options.memory_id}."
 
     version_id = hashlib.sha256(
-        f"{options.memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()
+        f"{options.memory_id}{row['version']}{datetime.now(UTC).isoformat()}".encode()
     ).hexdigest()[:16]
     conn.execute(
-        "INSERT INTO memory_versions (id, memory_id, tenant_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "INSERT INTO memory_versions (id, memory_id, tenant_id, content, version, created_at, "
+            "tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ),
         (
             version_id,
             options.memory_id,
             tenant_id,
             row["content"],
             row["version"] or 1,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             row["tags"],
             row["emotional_context"],
             row["metrics"],
@@ -3051,14 +3106,17 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     )
     new_version = options.to_version + 1
     conn.execute(
-        "UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (
+            "UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = "
+            "?, version = ?, updated_at = ? WHERE id = ? AND user_id = ? AND tenant_id = ?"
+        ),
         (
             version_row["content"],
             version_row["tags"],
             version_row["emotional_context"],
             version_row["metrics"],
             new_version,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             options.memory_id,
             uid,
             tenant_id,
@@ -3210,6 +3268,7 @@ def _handle_context_block_update(agent, label: str, content: str | None, visibil
 @mcp.tool(output_schema=None)
 def manage_context_blocks(
     options: ContextBlockAction | None = None,
+    *,
     user_id: str | None = None,
     action: Literal["list", "get", "update", "reset", "clear"] | None = None,
     label: str | None = None,
@@ -3327,7 +3386,7 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
     Returns the number of new memories stored.
     """
     stored = 0
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     block_map = [
         (USER_PREFERENCES, "preference"),
         (PENDING_ITEMS, "pending"),
@@ -3844,7 +3903,7 @@ def _promote_in_place_curation(
 ) -> dict[str, Any]:
     """Atomically archive original source rows and promote staged rows into the source bank."""
     archive_bank_id = _curation_archive_bank(run_id, source_bank_id)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         if cancel_event and cancel_event.is_set():
@@ -3893,7 +3952,7 @@ def _restore_in_place_curation(
     staged_ids: list[str],
 ) -> None:
     """Restore source/staging banks if cancellation lands after promotion."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         conn.execute("BEGIN")
@@ -3935,7 +3994,7 @@ def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 
 
 def _build_synthesis_snapshot(rows: list[RowLike], uid: str) -> dict[str, Any] | None:
     """Run the enhanced synthesizer when enough source memories exist."""
-    if len(rows) < 5:
+    if len(rows) < MIN_MEMORIES_FOR_SYNTHESIS:
         return None
     memories: list[MemoryObject] = []
     for row in rows:
@@ -4058,7 +4117,7 @@ def _make_curated_entries(
                 }
             )
     else:
-        rebuilt_lines = []
+        rebuilt_lines: list[str] = []
         if synthesis and synthesis.get("insights"):
             rebuilt_lines.extend(f"- {insight['summary']}" for insight in synthesis["insights"][:5])
         elif reflection and reflection.get("insights"):
@@ -4087,7 +4146,7 @@ def _insert_curation_entries(
     cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """Persist curated output entries into the chosen bank."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     created_ids: list[str] = []
     try:
@@ -4135,7 +4194,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     cancel_event = _get_curation_cancel_event(run_id)
     set_current_tenant_id(tenant_id)
     queue = OperationQueue(DB_PATH)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     if not _claim_curation_run(run_id, tenant_id, now):
         return
     _publish_curation_status(run_id, "running", actor=uid, source_bank_id=payload["source_bank_id"])
@@ -4231,7 +4290,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
         }
         summary.update(promotion_summary)
         _raise_if_run_canceled(uid, tenant_id, run_id)
-        completed_at = datetime.now(timezone.utc).isoformat()
+        completed_at = datetime.now(UTC).isoformat()
         _update_curation_run(run_id, tenant_id, status="completed", summary=summary, ended_at=completed_at, error={})
         queue.remove(run_id, tenant_id=tenant_id)
         _publish_curation_status(
@@ -4243,7 +4302,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             output_mode=payload["output_mode"],
         )
     except CurationError:
-        ended_at = datetime.now(timezone.utc).isoformat()
+        ended_at = datetime.now(UTC).isoformat()
         row = _fetch_curation_run(uid, tenant_id, run_id)
         if row is None or row["status"] != "canceled":
             _update_curation_run(run_id, tenant_id, status="canceled", ended_at=ended_at)
@@ -4252,7 +4311,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             _update_curation_run(run_id, tenant_id, ended_at=ended_at)
         queue.remove(run_id, tenant_id=tenant_id)
     except Exception as exc:
-        failed_at = datetime.now(timezone.utc).isoformat()
+        failed_at = datetime.now(UTC).isoformat()
         error = {
             "type": exc.__class__.__name__,
             "message": str(exc),
@@ -4285,6 +4344,7 @@ def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
 @mcp.tool(output_schema=None)
 def manage_curation_runs(
     options: CurationRunAction | None = None,
+    *,
     user_id: str | None = None,
     action: Literal["create", "get", "list", "cancel", "archive"] | None = None,
     run_id: str | None = None,
@@ -4353,7 +4413,7 @@ def manage_curation_runs(
             output_bank_id = _curation_run_output_bank(
                 run_id, source_bank_id, options.output_mode, options.output_bank_id
             )
-            created_at = datetime.now(timezone.utc).isoformat()
+            created_at = datetime.now(UTC).isoformat()
             conn = get_db_connection()
             conn.execute(
                 """INSERT INTO curation_runs
@@ -4436,7 +4496,7 @@ def manage_curation_runs(
                     run=_row_to_curation_run(row),
                 )
             else:
-                ended_at = datetime.now(timezone.utc).isoformat()
+                ended_at = datetime.now(UTC).isoformat()
                 _get_curation_cancel_event(options.run_id).set()
                 _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
                 OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
@@ -4454,7 +4514,7 @@ def manage_curation_runs(
                     run=_row_to_curation_run(row),
                 )
             else:
-                archived_at = datetime.now(timezone.utc).isoformat()
+                archived_at = datetime.now(UTC).isoformat()
                 _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
                 res = _tool_response(
                     ok=True,
@@ -4580,10 +4640,13 @@ _STOP_WORDS = frozenset(
 )
 
 
+MIN_TERM_CHARS = 4
+
+
 def _extract_terms(text: str) -> list[str]:
     """Extract key terms from text by splitting, lowering, and filtering stop words and short tokens."""
     words = text.lower().split()
-    return [w for w in words if len(w) > 3 and w not in _STOP_WORDS]
+    return [w for w in words if len(w) >= MIN_TERM_CHARS and w not in _STOP_WORDS]
 
 
 class _MemoryLike(Protocol):
@@ -4617,7 +4680,7 @@ def _score_memory_relevance(
     try:
         created = datetime.fromisoformat(created_str)
         if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+            created = created.replace(tzinfo=UTC)
         age_hours = max((now - created).total_seconds() / 3600, 0)
     except (ValueError, TypeError):
         age_hours = 0
@@ -4737,7 +4800,7 @@ def inject_context(
     # Track last injection for system status visibility (PIX-3955)
     _last_injection_stats.update(
         {
-            "last_run_at": datetime.now(timezone.utc).isoformat(),
+            "last_run_at": datetime.now(UTC).isoformat(),
             "query_length": len(conversation_text),
             "latency_ms": round(latency_ms, 2),
             "memories_fetched": len(hybrid_result.results),
@@ -4905,6 +4968,10 @@ def _active_observations(
         return []
 
 
+MEMORY_SNIPPET_CHARS = 120
+CONTEXT_BLOCK_SNIPPET_CHARS = 200
+
+
 def _format_injection_output(
     memories: list[HybridResult],
     uid: str,
@@ -4923,8 +4990,8 @@ def _format_injection_output(
     if memories:
         lines.append(f"[Relevant Context - {len(memories)} memories surfaced]")
         for mem in memories:
-            snippet = (mem.content or "")[:120]
-            if len(mem.content or "") > 120:
+            snippet = (mem.content or "")[:MEMORY_SNIPPET_CHARS]
+            if len(mem.content or "") > MEMORY_SNIPPET_CHARS:
                 snippet += "..."
             lines.append(f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}")
 
@@ -4941,7 +5008,9 @@ def _format_injection_output(
                 label = block.get("label", "")
                 content = (block.get("content") or "").strip()
                 if content:
-                    snippet = content[:200] + ("..." if len(content) > 200 else "")
+                    snippet = content[:CONTEXT_BLOCK_SNIPPET_CHARS] + (
+                        "..." if len(content) > CONTEXT_BLOCK_SNIPPET_CHARS else ""
+                    )
                     lines.append(f"  [{label}] {snippet}")
     except Exception:
         # Fall back to term-matched block signals if full block fetch fails
@@ -5111,6 +5180,7 @@ def _context_block_notes_for_terms(
 
 def get_relevant_memories(
     query: str,
+    *,
     user_id: str | None = None,
     limit: int = 5,
     min_relevance: float = 0.01,
@@ -5268,6 +5338,9 @@ def _fetch_high_confidence_memories(
         conn.close()
 
 
+SESSION_MEMORY_TOP_UP_THRESHOLD = 10
+
+
 def generate_recovery_payload(
     session_id: str,
     user_id: str | None = None,
@@ -5315,7 +5388,7 @@ def generate_recovery_payload(
     session_rows = _fetch_session_memories_raw(uid, tenant_id, limit=20)
 
     project_rows: list[RowLike] = []
-    if len(session_rows) < 10:
+    if len(session_rows) < SESSION_MEMORY_TOP_UP_THRESHOLD:
         project_rows = _fetch_high_confidence_memories(uid, tenant_id, min_importance=0.5, limit=20)
 
     seen_contents: set[str] = set()
@@ -5556,11 +5629,12 @@ def _run_decay_sweep() -> int:
     ``current_strength``, ``strength_trend``, and ``last_decay_at``.
     Returns the number of rows updated.
     """
-    if _global_backend is None:
+    backend = get_backend()
+    if backend is None:
         logger.debug("Decay sweep skipped: no backend initialised")
         return 0
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     sql = """
         WITH decay_calc AS (
@@ -5597,7 +5671,7 @@ def _run_decay_sweep() -> int:
     """
 
     try:
-        with _global_backend.connection() as conn:
+        with backend.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (now_iso, now_iso))
                 updated = cur.rowcount
@@ -5730,13 +5804,14 @@ def _start_sync_thread() -> None:
 
 def _run_scheduled_maintenance_gc() -> None:
     """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
-    if _global_backend is None:
+    backend = get_backend()
+    if backend is None:
         logger.warning("Maintenance/GC skipped: no backend initialised")
         return
 
     pairs: list[tuple[str, str, str]] = []
     try:
-        with _global_backend.connection() as conn, conn.cursor() as cur:
+        with backend.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT DISTINCT user_id, tenant_id, COALESCE(bank_id, 'default') AS bank_id "
                 "FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL"
@@ -5755,7 +5830,7 @@ def _run_scheduled_maintenance_gc() -> None:
 
     ghost_tenants: set[str] = set()
     try:
-        with _global_backend.connection() as conn, conn.cursor() as cur:
+        with backend.connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
             for row in cur.fetchall():
                 row_dict = dict(row) if not isinstance(row, dict) else row
@@ -5908,10 +5983,11 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
     # Eagerly initialise services with the backend so lazy singletons
     # already have it when tool handlers call get_*() without args.
-    if _global_backend is not None:
-        get_hybrid_retriever(backend=_global_backend)
-        get_graph_store(backend=_global_backend)
-        get_temporal_query_builder(backend=_global_backend)
+    backend = get_backend()
+    if backend is not None:
+        get_hybrid_retriever(backend=backend)
+        get_graph_store(backend=backend)
+        get_temporal_query_builder(backend=backend)
 
     _resume_pending_curation_runs()
     _start_decay_sweep_thread()
@@ -6081,7 +6157,7 @@ def _parse_as_of(value: str) -> datetime:
     except ValueError as exc:
         raise ValueError(f"Invalid as_of {value!r}: expected an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -6112,7 +6188,7 @@ def query_memories_temporal(
             Takes precedence over window and trend.
     """
     if options is None:
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if window is not None:
             kwargs["window"] = window
         if trend is not None:
@@ -6199,7 +6275,7 @@ def get_system_status(
     """
     uid = user_id or USER_ID
     if options is None:
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if include_trends is not None:
             kwargs["include_trends"] = include_trends
         if timeframe is not None:
@@ -6277,7 +6353,10 @@ def get_system_status(
     # Category breakdown (PIX-3955)
     try:
         category_rows = conn.execute(
-            "SELECT category, COUNT(*) AS category_count FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY category",
+            (
+                "SELECT category, COUNT(*) AS category_count FROM memories "
+                "WHERE user_id = ? AND tenant_id = ? GROUP BY category"
+            ),
             (uid, tenant_id),
         ).fetchall()
         by_category = {row["category"]: row["category_count"] for row in category_rows}
@@ -6285,7 +6364,7 @@ def get_system_status(
         by_category = {}
 
     conn.close()
-    result = {
+    result: dict[str, Any] = {
         "status": "healthy",
         "memory_count": count,
         "by_scope": {row["scope"]: row["scope_count"] for row in scope_counts},
@@ -6456,6 +6535,7 @@ def memory_status(
 
 def store_memory(
     content: str,
+    *,
     user_id: str | None = None,
     category: str = "fact",
     scope: str = "session",
@@ -7226,9 +7306,14 @@ def traverse_memory_graph(
 # =============================================================================
 
 
+# The review queue is one page by default and cannot be paged past: it is a
+# triage surface, not a browse surface.
+INFERRED_LIST_MAX_LIMIT = 50
+
+
 def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
     """List inferred memories pending review, supporting-parent count first."""
-    capped = max(1, min(limit if limit is not None else 50, 50))
+    capped = max(1, min(limit if limit is not None else INFERRED_LIST_MAX_LIMIT, INFERRED_LIST_MAX_LIMIT))
     conn = get_db_connection()
     try:
         rows = conn.execute(
@@ -7270,7 +7355,7 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
 
 def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
     """Promote an inferred memory to a stated fact (clears the ranking penalty)."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -7301,7 +7386,7 @@ def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
 
 def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: str | None) -> str:
     """Soft-forget a rejected inferred memory (recoverable via undo)."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -7334,7 +7419,7 @@ def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: s
 
 def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
     """Reverse approve/decline and return the memory to the review queue."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -7346,7 +7431,8 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
         if row["review_status"] is None and row["is_ghost"] != 1:
             return _tool_error("undo", f"memory {memory_id} has no review action to undo.", memory_id=memory_id)
         conn.execute(
-            "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, review_reason = NULL, updated_at = ? "
+            "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, "
+            "review_reason = NULL, updated_at = ? "
             "WHERE id = ? AND user_id = ? AND tenant_id = ?",
             (now, memory_id, uid, tenant_id),
         )
@@ -7518,8 +7604,8 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     ).fetchall()
     conn.close()
 
-    if len(rows) < 5:
-        return "Need at least 5 memories for synthesis."
+    if len(rows) < MIN_MEMORIES_FOR_SYNTHESIS:
+        return f"Need at least {MIN_MEMORIES_FOR_SYNTHESIS} memories for synthesis."
 
     memories = []
     for r in rows:
@@ -7949,7 +8035,7 @@ def session_catchup_prompt(query: str = "", user_id: str | None = None) -> str:
     uid = user_id or USER_ID
     snapshot = get_context_snapshot(user_id=uid)
     msg = query if query else "current session context and user goals"
-    injected = inject_context(user_message=msg, user_id=uid)
+    injected = inject_context(conversation_text=msg, user_id=uid)
 
     return f"""# Foresight Continuity & Context Catch-Up
 
@@ -7973,7 +8059,10 @@ def curate_review_prompt(run_id: str | None = None, user_id: str | None = None) 
     if run_id:
         run_res = manage_curation_runs(CurationRunAction(action="get", run_id=run_id), user_id=uid)
     else:
-        run_res = manage_curation_runs(CurationRunAction(action="list", status="staged"), user_id=uid)
+        # CurationRunAction has no status filter (and its model_config is
+        # extra="ignore"), so listing is unfiltered — the review prompt shows
+        # every run for the user rather than only staged ones.
+        run_res = manage_curation_runs(CurationRunAction(action="list"), user_id=uid)
 
     inferred_res = _handle_inferred_list(uid, get_current_account_id(), 20)
 
@@ -8272,7 +8361,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div id="tab-memories" class="tab-content active">
     <div class="search-bar">
-      <input type="text" id="memory-search" placeholder="Search memories by keyword, entity, or tag..." onkeydown="if(event.key==='Enter') searchMemories()">
+      <input type="text" id="memory-search" placeholder="Search memories by keyword, entity, or tag..." \
+onkeydown="if(event.key==='Enter') searchMemories()">
       <button class="btn" onclick="searchMemories()">Search</button>
     </div>
     <div id="memories-list" class="card-list">Loading memories...</div>
@@ -8284,11 +8374,15 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div id="tab-simulator" class="tab-content">
     <div class="search-bar">
-      <input type="text" id="sim-prompt" placeholder="Simulate user message (e.g. 'What is our tech stack and formatting preferences?')" onkeydown="if(event.key==='Enter') simulateInject()">
+      <input type="text" id="sim-prompt" placeholder="Simulate user message (e.g. 'What is our tech stack and \
+formatting preferences?')" onkeydown="if(event.key==='Enter') simulateInject()">
       <button class="btn" onclick="simulateInject()">Simulate Auto-Inject</button>
     </div>
     <div id="sim-result">
-      <pre style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;border-radius:8px;border:1px solid var(--border);">Type a simulated message above to preview the exact context injected into the LLM system prompt.</pre>
+      <pre \
+style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;\
+border-radius:8px;border:1px solid var(--border);">Type a simulated message above to preview the exact context \
+injected into the LLM system prompt.</pre>
     </div>
   </div>
 
@@ -8296,13 +8390,15 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div>
         <h3 style="margin:0 0 4px 0;font-size:18px;">Empirical Production Proof & Continuity Benchmark</h3>
-        <p style="margin:0;color:var(--text-muted);font-size:13px;">Demonstrates mathematical proof of cross-session retention, turn self-noting, and multi-surface readiness.</p>
+        <p style="margin:0;color:var(--text-muted);font-size:13px;">Demonstrates mathematical proof of \
+cross-session retention, turn self-noting, and multi-surface readiness.</p>
       </div>
       <button class="btn" id="btn-run-bench" onclick="runBenchmark()">Run Proof Benchmark</button>
     </div>
     <div id="benchmark-result">
       <div class="item-card" style="text-align:center;padding:32px;color:var(--text-muted);">
-        Click <strong>Run Proof Benchmark</strong> to execute the full evaluation suite across all 8 proof dimensions and multi-surface integrations.
+        Click <strong>Run Proof Benchmark</strong> to execute the full evaluation suite across all 8 proof \
+dimensions and multi-surface integrations.
       </div>
     </div>
   </div>
@@ -8330,7 +8426,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
       try {
         const res = await fetch('/ui/api/maintenance', { method: 'POST' });
         const data = await res.json();
-        alert('Optimization & context distillation complete! Distilled: ' + (data.distillation?.distilled_blocks?.join(', ') || 'none needed'));
+        alert('Optimization & context distillation complete! Distilled: ' + \
+(data.distillation?.distilled_blocks?.join(', ') || 'none needed'));
         await refreshAll();
       } catch (e) {
         alert('Optimization error: ' + e);
@@ -8342,7 +8439,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
     async function simulateInject() {
       const text = document.getElementById('sim-prompt').value;
       const resContainer = document.getElementById('sim-result');
-      resContainer.innerHTML = '<pre style="padding:16px;border-radius:8px;">Running hybrid retrieval & lane budgeting...</pre>';
+      resContainer.innerHTML = '<pre style="padding:16px;border-radius:8px;">Running hybrid retrieval & lane \
+budgeting...</pre>';
       try {
         const res = await fetch('/ui/api/inject', {
           method: 'POST',
@@ -8350,9 +8448,12 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
           body: JSON.stringify({ text })
         });
         const data = await res.json();
-        resContainer.innerHTML = `<pre style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;border-radius:8px;border:1px solid var(--border);">${data.formatted || '(No context triggered)'}</pre>`;
+        resContainer.innerHTML = `<pre \
+style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;\
+border-radius:8px;border:1px solid var(--border);">${data.formatted || '(No context triggered)'}</pre>`;
       } catch (e) {
-        resContainer.innerHTML = '<pre style="color:var(--error);padding:16px;">Failed to simulate injection: ' + e + '</pre>';
+        resContainer.innerHTML = \
+'<pre style="color:var(--error);padding:16px;">Failed to simulate injection: ' + e + '</pre>';
       }
     }
 
@@ -8362,7 +8463,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
         document.getElementById('stat-memories').innerText = data.memory_count ?? '0';
         document.getElementById('stat-db').innerText = data.database ? 'PostgreSQL' : 'Active';
-        document.getElementById('stat-uptime').innerText = data.uptime_seconds ? Math.round(data.uptime_seconds) + 's' : 'Online';
+        document.getElementById('stat-uptime').innerText = data.uptime_seconds ? \
+Math.round(data.uptime_seconds) + 's' : 'Online';
         document.getElementById('stat-tenant').innerText = data.tenant_id ?? 'default';
         document.getElementById('raw-status').innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -8390,7 +8492,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
           return `
             <div class="item-card">
               <div class="item-header">
-                <div><span class="tag tag-${cat}">${cat}</span> <span style="color:var(--text-muted);margin-left:8px;">${id.slice(0, 16)}</span></div>
+                <div><span class="tag tag-${cat}">${cat}</span> <span \
+style="color:var(--text-muted);margin-left:8px;">${id.slice(0, 16)}</span></div>
                 <span style="color:var(--text-muted);font-size:12px;">scope: ${scope}</span>
               </div>
               <div style="font-size:14px;color:var(--text);">${content}</div>
@@ -8419,7 +8522,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
               <span class="tag tag-guidance">${b.label || 'block'}</span>
               <span style="color:var(--text-muted);font-size:12px;">${b.updated_at || ''}</span>
             </div>
-            <pre style="white-space:pre-wrap;font-family:inherit;background:transparent;border:none;padding:0;color:var(--text);font-size:14px;">${b.content || '(empty)'}</pre>
+            <pre \
+style="white-space:pre-wrap;font-family:inherit;background:transparent;border:none;padding:0;color:var(--text);\
+font-size:14px;">${b.content || '(empty)'}</pre>
           </div>
         `).join('');
       } catch (e) {
@@ -8432,7 +8537,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
       const btn = document.getElementById('btn-run-bench');
       btn.disabled = true;
       btn.textContent = 'Running Benchmark Suite...';
-      resultDiv.innerHTML = '<div class="item-card" style="text-align:center;padding:32px;color:var(--primary);">Running 8 real-world proof scenarios across memory retention, turn self-noting, and multi-surface integrations...</div>';
+      resultDiv.innerHTML = '<div class="item-card" \
+style="text-align:center;padding:32px;color:var(--primary);">Running 8 real-world proof scenarios across memory \
+retention, turn self-noting, and multi-surface integrations...</div>';
       try {
         const res = await fetch('/ui/api/benchmark', { method: 'POST' });
         const rep = await res.json();
@@ -8446,7 +8553,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
             <div class="stat-card">
               <div class="stat-label">Scenarios Passed</div>
-              <div class="stat-value" style="color:var(--accent);">${rep.passed_scenarios}/${rep.total_scenarios} (${Math.round(rep.success_rate_pct || 0)}%)</div>
+              <div class="stat-value" \
+style="color:var(--accent);">${rep.passed_scenarios}/${rep.total_scenarios} (${Math.round(rep.success_rate_pct \
+|| 0)}%)</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Foresight Lift</div>
@@ -8454,11 +8563,15 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
             <div class="stat-card">
               <div class="stat-label">Token Reduction</div>
-              <div class="stat-value" style="color:var(--success);font-size:20px;">${rep.token_reduction_pct ? rep.token_reduction_pct.toFixed(1) : 92.5}%</div>
+              <div class="stat-value" style="color:var(--success);font-size:20px;">${rep.token_reduction_pct ? \
+rep.token_reduction_pct.toFixed(1) : 92.5}%</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Est. Value Saved</div>
-              <div class="stat-value" style="color:var(--secondary);font-size:20px;">~${rep.estimated_hours_saved_monthly || 0}h / ~$${rep.estimated_monthly_token_cost_savings_usd ? rep.estimated_monthly_token_cost_savings_usd.toFixed(2) : '42.24'}/mo</div>
+              <div class="stat-value" \
+style="color:var(--secondary);font-size:20px;">~${rep.estimated_hours_saved_monthly || 0}h / \
+~$${rep.estimated_monthly_token_cost_savings_usd ? rep.estimated_monthly_token_cost_savings_usd.toFixed(2) : \
+'42.24'}/mo</div>
             </div>
           </div>
           <div class="card-list">
@@ -8472,7 +8585,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
                   </div>
                   <span style="color:var(--text-muted);font-size:12px;">${s.latency_ms}ms</span>
                 </div>
-                <div style="font-size:13px;color:var(--text);margin:6px 0;"><strong>Amnesia:</strong> ${Math.round(s.amnesia_score * 100)}% → <strong>Foresight:</strong> <span style="color:var(--success);font-weight:600;">${Math.round(s.foresight_score * 100)}%</span> (${s.improvement_factor}x)</div>
+                <div style="font-size:13px;color:var(--text);margin:6px 0;"><strong>Amnesia:</strong> \
+${Math.round(s.amnesia_score * 100)}% → <strong>Foresight:</strong> <span style="color:var(--success);\
+font-weight:600;">${Math.round(s.foresight_score * 100)}%</span> (${s.improvement_factor}x)</div>
                 <div style="font-size:13px;color:var(--accent);">${s.key_takeaway || s.description}</div>
               </div>
             `).join('')}
@@ -8481,7 +8596,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
       } catch (e) {
         btn.disabled = false;
         btn.textContent = 'Run Proof Benchmark';
-        resultDiv.innerHTML = '<div class="item-card" style="color:var(--error);">Failed to run benchmark: ' + e + '</div>';
+        resultDiv.innerHTML = \
+'<div class="item-card" style="color:var(--error);">Failed to run benchmark: ' + e + '</div>';
       }
     }
 

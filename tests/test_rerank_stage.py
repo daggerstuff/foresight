@@ -5,7 +5,7 @@ Covers:
 - The rerank gate (``foresight.reranker``): env flag parsing, bounded
   score->multiplier mapping, cached/no-op reranker resolution.
 - The ``FastEmbedReranker`` wrapper against a stubbed fastembed package:
-  dict-item ordering, float passthrough, empty docs, model propagation.
+  float passthrough, empty docs, model propagation.
 - The retriever rerank stage: promotion of an under-ranked candidate,
   field/signal_counts population, no-op when disabled or unavailable,
   early-termination suppression, and rerank-state cache-key isolation.
@@ -22,7 +22,7 @@ import sqlite3
 import sys
 import tempfile
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -73,10 +73,18 @@ _WORK_MEMORIES = [
 ]
 
 
+# Keyword candidates: the three work memories below plus create_test_db()'s
+# mem_5, whose content also contains "work".
+KEYWORD_CANDIDATE_COUNT = len(_WORK_MEMORIES) + 1
+
+# Float64 sigmoid saturation is only approached, never reached exactly.
+SATURATION_TOLERANCE = 0.01
+
+
 def _install_work_memories(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for mid, content, minutes_ago in _WORK_MEMORIES:
             ts = (now - timedelta(minutes=minutes_ago)).isoformat()
             conn.execute(
@@ -160,11 +168,15 @@ class TestRerankGate:
         # inclusive: [0.5, 1.5].
         high = reranker_module.score_to_multiplier(500.0)
         low = reranker_module.score_to_multiplier(-500.0)
-        assert 1.49 < high <= 1.5
-        assert 0.5 <= low < 0.51
+        assert high == pytest.approx(reranker_module.MULTIPLIER_CEIL, abs=SATURATION_TOLERANCE)
+        assert low == pytest.approx(reranker_module.MULTIPLIER_FLOOR, abs=SATURATION_TOLERANCE)
         assert low < high
         # Moderate scores stay strictly inside the band.
-        assert reranker_module.MULTIPLIER_FLOOR < reranker_module.score_to_multiplier(3.0) < 1.5
+        assert (
+            reranker_module.MULTIPLIER_FLOOR
+            < reranker_module.score_to_multiplier(3.0)
+            < reranker_module.MULTIPLIER_CEIL
+        )
 
     def test_multiplier_monotonic_in_score(self):
         low = reranker_module.score_to_multiplier(-3.0)
@@ -196,18 +208,19 @@ class TestRerankGate:
 # =============================================================================
 
 
-class _StubCrossEncoder:
-    """Minimal fastembed CrossEncoder double with a deterministic score map."""
+class _StubTextCrossEncoder:
+    """Minimal fastembed TextCrossEncoder double with a deterministic score map.
+
+    Mirrors the real API (fastembed >= 0.9): ``rerank`` yields one float per
+    document, in document order. There is no dict-returning mode to emulate.
+    """
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
-        self.return_dicts = False
         self.calls: list[tuple[str, list[str]]] = []
 
     def rerank(self, query: str, documents: list[str]) -> list:
         self.calls.append((query, list(documents)))
-        if self.return_dicts:
-            return [{"index": i, "score": float(len(documents) - i)} for i in range(len(documents))]
         return [float(i) for i in range(len(documents))]
 
 
@@ -215,7 +228,7 @@ def _install_fastembed_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     fastembed = types.ModuleType("fastembed")
     rerank_pkg = types.ModuleType("fastembed.rerank")
     cross_mod = types.ModuleType("fastembed.rerank.cross_encoder")
-    cross_mod.CrossEncoder = _StubCrossEncoder
+    cross_mod.TextCrossEncoder = _StubTextCrossEncoder
     fastembed.rerank = rerank_pkg
     rerank_pkg.cross_encoder = cross_mod
     monkeypatch.setitem(sys.modules, "fastembed", fastembed)
@@ -235,14 +248,6 @@ class TestFastEmbedReranker:
         _install_fastembed_stub(monkeypatch)
         reranker = reranker_module.FastEmbedReranker()
         assert reranker.rerank("q", ["a", "bb", "ccc"]) == [0.0, 1.0, 2.0]
-
-    def test_dict_items_restored_to_document_order(self, monkeypatch):
-        _install_fastembed_stub(monkeypatch)
-        reranker = reranker_module.FastEmbedReranker()
-        reranker._encoder.return_dicts = True
-        # The stub emits {"index": i, "score": n - i}; scores must come back
-        # aligned with document order (index 0 first), not score order.
-        assert reranker.rerank("q", ["a", "bb", "ccc"]) == [3.0, 2.0, 1.0]
 
     def test_empty_documents_short_circuits_without_calling_encoder(self, monkeypatch):
         _install_fastembed_stub(monkeypatch)
@@ -298,8 +303,8 @@ class TestRetrieverRerankStage:
         fake = FakeReranker(scores={BOOST_CONTENT: BOOST_SCORE})
         reranked = _search(work_db, monkeypatch, rerank_on=True, reranker=fake)
         assert [r.memory_id for r in reranked.results] == ["mem_work3", "mem_5"]
-        assert reranked.total_candidates == 4
-        assert reranked.signal_counts["keyword"] == 4
+        assert reranked.total_candidates == KEYWORD_CANDIDATE_COUNT
+        assert reranked.signal_counts["keyword"] == KEYWORD_CANDIDATE_COUNT
 
         top = reranked.results[0]
         assert top.rerank_score == pytest.approx(BOOST_SCORE)
@@ -368,7 +373,7 @@ class TestExplainScoreDetails:
         details = result.score_details
         assert details is not None
         assert details["weights"] == {"keyword": 1.0, "semantic": 0.7, "vector": 0.9, "graph": 0.8, "temporal": 0.8}
-        assert details["rrf_k"] == 60.0
+        assert details["rrf_k"] == HybridRetriever.RRF_K
         assert details["min_importance_threshold"] == pytest.approx(0.1)
         assert details["rerank"] == {"enabled": False, "applied": False, "provider": None}
         # Only the keyword signal contributed candidates, so only its weight

@@ -11,7 +11,7 @@ Decay model:
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
@@ -74,7 +74,7 @@ class GraphEdgeDecay:
             Decay factor between 0 and 1
         """
         last = datetime.fromisoformat(last_accessed.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         hours_elapsed = (now - last).total_seconds() / 3600
 
         # Exponential decay: 0.5 ^ (hours / half_life)
@@ -225,7 +225,7 @@ class GraphEdgeDecay:
                 SET last_accessed = ?
                 WHERE id = ? AND tenant_id = ?
                 """,
-                (datetime.now(timezone.utc).isoformat(), edge_id, tenant_id),
+                (datetime.now(UTC).isoformat(), edge_id, tenant_id),
             )
             conn.commit()
         finally:

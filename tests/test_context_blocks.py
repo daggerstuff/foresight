@@ -393,7 +393,7 @@ def test_bridge_capture_memories_to_blocks(agent):
         ("decision", "Migrated from Flask to FastAPI"),
     ]
     count = _bridge_capture_memories_to_blocks(agent, stored_items)
-    assert count == 4
+    assert count == len(stored_items)
 
     pref = agent.state.get_block(USER_PREFERENCES)
     assert "I prefer pnpm over npm" in pref.content

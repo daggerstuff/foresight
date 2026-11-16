@@ -22,7 +22,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -44,7 +44,7 @@ KEYWORD_ONLY: dict[str, object] = {
 
 def _make_db() -> str:
     _, path = tempfile.mkstemp(suffix=".db")
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = sqlite3.connect(path)
     conn.execute(
         """

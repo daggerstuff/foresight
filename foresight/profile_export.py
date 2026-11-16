@@ -13,7 +13,7 @@ import hmac
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger("foresight_profile_export")
@@ -76,7 +76,7 @@ def build_profile_document(
 
     document: dict[str, Any] = {
         "version": PROFILE_VERSION,
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "tenant_id": tenant_id,
         "user_id": user_id,
         "agent_id": agent_id,

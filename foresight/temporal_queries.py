@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from .config import DB_PATH, DB_URL
@@ -23,6 +23,12 @@ if True:  # TYPE_CHECKING-compatible import guard for backend protocol
     from .backend.base import DatabaseBackend
 
 logger = logging.getLogger("foresight_temporal_queries")
+
+# Daily buckets needed before an overall trend is computed.
+MIN_DAYS_FOR_TREND = 3
+
+# Importance delta between halves that counts as improving or declining.
+TREND_DELTA_THRESHOLD = 0.1
 
 
 def _is_missing_tenant_column_error(error: Exception) -> bool:
@@ -130,15 +136,16 @@ class TemporalQueryBuilder:
         return "strftime('%Y-%m-%d', created_at)"
 
     def _timeframe_cutoff(self, timeframe: str) -> str:
-        parts = timeframe.strip().lower().split()
-        if len(parts) != 2:
-            raise ValueError(f"Invalid timeframe: {timeframe!r}. Expected format like '30 days'.")
         try:
-            amount = int(parts[0])
+            amount_text, unit_text = timeframe.strip().lower().split()
         except ValueError as exc:
-            raise ValueError(f"Invalid timeframe amount: {parts[0]!r}") from exc
+            raise ValueError(f"Invalid timeframe: {timeframe!r}. Expected format like '30 days'.") from exc
+        try:
+            amount = int(amount_text)
+        except ValueError as exc:
+            raise ValueError(f"Invalid timeframe amount: {amount_text!r}") from exc
 
-        unit = parts[1].rstrip("s")
+        unit = unit_text.rstrip("s")
         hours_by_unit = {
             "hour": 1,
             "day": 24,
@@ -147,9 +154,9 @@ class TemporalQueryBuilder:
             "year": 8760,
         }
         if unit not in hours_by_unit:
-            raise ValueError(f"Invalid timeframe unit: {parts[1]!r}")
+            raise ValueError(f"Invalid timeframe unit: {unit_text!r}")
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=amount * hours_by_unit[unit])
+        cutoff = datetime.now(UTC) - timedelta(hours=amount * hours_by_unit[unit])
         return cutoff.isoformat()
 
     @staticmethod
@@ -178,7 +185,7 @@ class TemporalQueryBuilder:
         """Get memories from a time window."""
         tenant_id = get_current_account_id()
         window_hours = self._get_window_hours(window)
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
         ns_frag, ns_params = self._ns_frag(agent_id, project)
 
         if category:
@@ -602,7 +609,7 @@ class TemporalQueryBuilder:
 
     def _calculate_overall_trend(self, daily_stats: list[dict]) -> str:
         """Calculate overall trend from daily stats."""
-        if len(daily_stats) < 3:
+        if len(daily_stats) < MIN_DAYS_FOR_TREND:
             return "insufficient_data"
 
         # Simple trend: compare first half avg to second half avg
@@ -615,9 +622,9 @@ class TemporalQueryBuilder:
 
         delta = second_avg - first_avg
 
-        if delta > 0.1:
+        if delta > TREND_DELTA_THRESHOLD:
             return "improving"
-        if delta < -0.1:
+        if delta < -TREND_DELTA_THRESHOLD:
             return "declining"
         return "stable"
 
@@ -637,7 +644,7 @@ class TemporalQueryBuilder:
         )
 
         scores = {}
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for row in rows:
             memory_id = row["id"]
             created_at_str = row["created_at"]

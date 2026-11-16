@@ -17,7 +17,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,12 +58,12 @@ class ConsumerStats:
     records_processed: int = 0
     records_failed: int = 0
     last_offset: dict[int, int] = field(default_factory=dict)  # partition -> offset
-    start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    start_time: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def uptime(self) -> float:
         """Get uptime in seconds."""
-        return (datetime.now(timezone.utc) - self.start_time).total_seconds()
+        return (datetime.now(UTC) - self.start_time).total_seconds()
 
     @property
     def records_per_second(self) -> float:
@@ -252,7 +252,7 @@ class KafkaConsumerGroup:
                             offset=message.offset,
                             key=message.key,
                             value=message.value,
-                            timestamp=datetime.fromtimestamp(message.timestamp / 1000, tz=timezone.utc),
+                            timestamp=datetime.fromtimestamp(message.timestamp / 1000, tz=UTC),
                             headers={k: v.decode() for k, v in message.headers} if message.headers else {},
                         )
                         self._process_record(record)

@@ -13,7 +13,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
@@ -22,6 +22,9 @@ from .connection_pool import get_pool
 from .tenant_context import get_current_account_id
 
 logger = logging.getLogger(__name__)
+
+# Column count of a row from the current (tenant-scoped) events schema.
+EVENT_ROW_COLUMNS = 8
 
 # =============================================================================
 # Event Types
@@ -256,7 +259,8 @@ class SQLiteEventStore(EventStoreBase):
         conn = self._connect()
         try:
             conn.execute(
-                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, "
+                "metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.id,
                     tid,
@@ -320,7 +324,8 @@ class SQLiteEventStore(EventStoreBase):
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? "
+                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 (start.isoformat(), end.isoformat(), tid, limit, offset),
             ).fetchall()
         finally:
@@ -362,7 +367,7 @@ class SQLiteEventStore(EventStoreBase):
             Number of rows deleted.
         """
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
         conn = self._connect()
         try:
             if tenant_id:
@@ -387,7 +392,7 @@ class SQLiteEventStore(EventStoreBase):
         try:
             # row[1] is tenant_id (not stored in Event dataclass)
             # Handle both old (7 cols) and new (8 cols) schema
-            offset = 1 if len(row) >= 8 else 0  # tenant_id at row[1]
+            offset = 1 if len(row) >= EVENT_ROW_COLUMNS else 0  # tenant_id at row[1]
             return Event(
                 id=row[0],
                 event_type=EventType(row[1 + offset]),
@@ -503,13 +508,10 @@ class _EventBusSingleton:
         so that tests can monkeypatch event_bus.EventStore with a fake.
         """
         try:
-            from .server import _global_backend
+            from .server import get_backend
 
-            if (
-                EventStore is SQLiteEventStore
-                and _global_backend is not None
-                and _global_backend.backend_type == "postgresql"
-            ):
+            backend = get_backend()
+            if EventStore is SQLiteEventStore and backend is not None and backend.backend_type == "postgresql":
                 return PostgresEventStore()
         except (ImportError, AttributeError):
             pass
@@ -546,7 +548,7 @@ def _make_event(
     return Event(
         id=str(uuid.uuid4()),
         event_type=event_type,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         actor=actor,
         entity_id=entity_id,
         payload=payload,
@@ -740,7 +742,8 @@ class PostgresEventStore(EventStoreBase):
         conn = self._get_conn()
         try:
             conn.execute(
-                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, "
+                "metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.id,
                     tid,
@@ -804,7 +807,8 @@ class PostgresEventStore(EventStoreBase):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? "
+                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 (start.isoformat(), end.isoformat(), tid, limit, offset),
             ).fetchall()
         finally:
@@ -836,7 +840,7 @@ class PostgresEventStore(EventStoreBase):
 
     def purge_old_events(self, retention_days: int = 90, tenant_id: str | None = None) -> int:
         """Delete events older than retention_days. Returns count of deleted rows."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
         conn = self._get_conn()
         try:
             if tenant_id:

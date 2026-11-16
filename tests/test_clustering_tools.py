@@ -5,7 +5,17 @@ import tempfile
 
 import pytest
 
-from foresight.clustering import ClusterResult, _jaccard, _tokenize, cluster_memories
+from foresight.clustering import (
+    DEFAULT_MIN_CLUSTER_SIZE,
+    ClusterResult,
+    _jaccard,
+    _tokenize,
+    cluster_memories,
+)
+
+# seed_memories stores eight memories; clustering should still see at least the
+# six themed ones even if the unrelated filler is filtered out.
+MIN_PROCESSED_MEMORIES = 6
 
 
 def test_tokenize_basic() -> None:
@@ -93,7 +103,7 @@ class TestClusterMemories:
         ]
         result = cluster_memories(memories, min_similarity=0.1)
         assert len(result.cluster_entities) == 1
-        assert len(result.memory_links) == 2
+        assert len(result.memory_links) == len(memories)
 
     def test_unrelated_memories_no_cluster(self) -> None:
         """Unrelated memories should not cluster."""
@@ -127,7 +137,7 @@ class TestClusterMemories:
         assert "properties" in entity
         assert "member_ids" in entity["properties"]
         assert "size" in entity["properties"]
-        assert entity["properties"]["size"] == 2
+        assert entity["properties"]["size"] == len(memories)
 
     def test_memory_link_structure(self) -> None:
         """Memory link dicts should have the expected fields."""
@@ -136,7 +146,7 @@ class TestClusterMemories:
             {"id": "mem2", "content": "very worried and anxious daily", "user_id": "u1", "tenant_id": "t1"},
         ]
         result = cluster_memories(memories, min_similarity=0.1)
-        assert len(result.memory_links) == 2
+        assert len(result.memory_links) == len(memories)
         for link in result.memory_links:
             assert "memory_id" in link
             assert "entity_id" in link["entity_id"] or link.get("entity_id")
@@ -165,8 +175,9 @@ class TestClusterMemories:
                     "tenant_id": "t1",
                 }
             )
-        result = cluster_memories(memories, min_similarity=0.25, max_clusters=2)
-        assert len(result.cluster_entities) <= 2
+        max_clusters = 2
+        result = cluster_memories(memories, min_similarity=0.25, max_clusters=max_clusters)
+        assert len(result.cluster_entities) <= max_clusters
 
     def test_min_cluster_size(self) -> None:
         """min_cluster_size should filter out small clusters."""
@@ -325,7 +336,7 @@ class TestRunClusteringTool:
         data = json.loads(result)
         assert data["ok"] is True
         assert data["clusters_created"] >= 0  # May or may not cluster depending on content
-        assert data["memories_processed"] >= 6
+        assert data["memories_processed"] >= MIN_PROCESSED_MEMORIES
 
     @pytest.mark.usefixtures("seed_memories")
     def test_run_clustering_high_threshold(self) -> None:
@@ -368,7 +379,7 @@ class TestQueryClustersTool:
             assert "cluster_id" in cluster
             assert cluster["cluster_id"].startswith("cluster:")
             assert "member_count" in cluster
-            assert cluster["member_count"] >= 2
+            assert cluster["member_count"] >= DEFAULT_MIN_CLUSTER_SIZE
             assert "member_ids" in cluster
 
 
@@ -427,14 +438,14 @@ class TestUpsertClusterResults:
 
         result = ClusterResult(cluster_entities=cluster_entities, memory_links=memory_links)
         summary = _upsert_cluster_results(result, "test_user", "_test_")
-        assert summary["entity_count"] == 1
-        assert summary["link_count"] == 2
+        assert summary["entity_count"] == len(cluster_entities)
+        assert summary["link_count"] == len(memory_links)
 
         # Verify via graph store
         entities = store.get_entities_by_type("test_user", "cluster")
         assert len(entities) == 1
         assert entities[0].id == "cluster:test123abc"
-        assert entities[0].properties.get("size") == 3
+        assert entities[0].properties.get("size") == cluster_entities[0]["properties"]["size"]
 
     @pytest.mark.usefixtures("server_env")
     def test_upsert_then_memory_linking(self) -> None:

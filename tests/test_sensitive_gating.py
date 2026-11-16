@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from foresight.memory_maintenance import (
     MaintenanceConfig,
@@ -88,7 +88,8 @@ def _insert_memory(
     is_sensitive: int = 0,
 ) -> None:
     conn.execute(
-        "INSERT INTO memories (id, user_id, tenant_id, content, importance, strength_trend, is_ghost, is_sensitive, created_at) "
+        "INSERT INTO memories (id, user_id, tenant_id, content, importance, strength_trend, is_ghost, "
+        "is_sensitive, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
@@ -99,7 +100,7 @@ def _insert_memory(
             strength_trend,
             is_ghost,
             is_sensitive,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()

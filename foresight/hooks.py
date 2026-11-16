@@ -18,8 +18,9 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -35,29 +36,43 @@ from .connection_pool import get_pool
 from .event_bus import Event, EventType, get_event_bus
 from .tenant_context import get_current_account_id
 
-_shared_http_client: httpx.AsyncClient | None = None
-_client_lock = threading.Lock()
+
+class _SharedHttpClientSingleton:
+    """Process-wide slot holding the pooled HTTPX client."""
+
+    instance: httpx.AsyncClient | None = None
+    lock = threading.Lock()
+
+    @classmethod
+    def get(cls, timeout: float) -> httpx.AsyncClient:
+        client = cls.instance
+        if client is None or client.is_closed:
+            with cls.lock:
+                client = cls.instance
+                if client is None or client.is_closed:
+                    client = httpx.AsyncClient(
+                        limits=httpx.Limits(max_keepalive_connections=25, max_connections=100, keepalive_expiry=30.0),
+                        timeout=httpx.Timeout(timeout, connect=10.0),
+                    )
+                    cls.instance = client
+        return client
+
+    @classmethod
+    async def aclose(cls) -> None:
+        client = cls.instance
+        if client is not None and not client.is_closed:
+            await client.aclose()
+            cls.instance = None
 
 
 def get_shared_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
     """Get or create the shared connection-pooled HTTPX client."""
-    global _shared_http_client
-    if _shared_http_client is None or _shared_http_client.is_closed:
-        with _client_lock:
-            if _shared_http_client is None or _shared_http_client.is_closed:
-                _shared_http_client = httpx.AsyncClient(
-                    limits=httpx.Limits(max_keepalive_connections=25, max_connections=100, keepalive_expiry=30.0),
-                    timeout=httpx.Timeout(timeout, connect=10.0),
-                )
-    return _shared_http_client
+    return _SharedHttpClientSingleton.get(timeout)
 
 
 async def close_shared_http_client() -> None:
     """Close the shared HTTP client pool gracefully."""
-    global _shared_http_client
-    if _shared_http_client is not None and not _shared_http_client.is_closed:
-        await _shared_http_client.aclose()
-        _shared_http_client = None
+    await _SharedHttpClientSingleton.aclose()
 
 
 @dataclass
@@ -80,6 +95,9 @@ class HookRegistrationParams:
 
 
 logger = logging.getLogger("foresight_hooks")
+
+# Column count of a row from the current (tenant-scoped) hooks schema.
+HOOK_ROW_COLUMNS = 12
 
 
 # =============================================================================
@@ -124,7 +142,7 @@ class HookRegistration:
     timeout: int = 30
     metadata: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
@@ -240,7 +258,8 @@ class SQLiteHookRegistry(HookRegistryBase):
         conn.execute(
             """
         INSERT OR REPLACE INTO hooks
-        (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
+        (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, \
+metadata, enabled, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
@@ -296,7 +315,7 @@ class SQLiteHookRegistry(HookRegistryBase):
         # Columns: 0=id, 1=tenant_id, 2=name, 3=event_type, 4=hook_type,
         # 5=handler, 6=condition_name, 7=retry_count, 8=timeout,
         # 9=metadata, 10=enabled, 11=created_at
-        o = 1 if len(row) >= 12 else 0  # tenant_id at row[1]
+        o = 1 if len(row) >= HOOK_ROW_COLUMNS else 0  # tenant_id at row[1]
         return HookRegistration(
             id=row[0],
             name=row[1 + o],
@@ -308,7 +327,7 @@ class SQLiteHookRegistry(HookRegistryBase):
             timeout=row[7 + o],
             metadata=json.loads(row[8 + o]),
             enabled=bool(row[9 + o]),
-            created_at=datetime.fromisoformat(row[10 + o]) if len(row) > 10 + o else datetime.now(timezone.utc),
+            created_at=datetime.fromisoformat(row[10 + o]) if len(row) > 10 + o else datetime.now(UTC),
         )
 
 
@@ -357,9 +376,10 @@ class HookExecutor:
         so that tests can monkeypatch hooks.HookRegistry with a fake.
         """
         try:
-            from .server import _global_backend
+            from .server import get_backend
 
-            if _global_backend is not None and _global_backend.backend_type == "postgresql":
+            backend = get_backend()
+            if backend is not None and backend.backend_type == "postgresql":
                 return PostgresHookRegistry()
         except (ImportError, AttributeError):
             pass
@@ -405,10 +425,10 @@ class HookExecutor:
                     logger.error(f"Callable hook error: {e}")
 
         if event_type in self._async_handlers:
-            for handler in self._async_handlers[event_type]:
-                handler_name = getattr(handler, "__name__", "async_handler")
+            for async_handler in self._async_handlers[event_type]:
+                handler_name = getattr(async_handler, "__name__", "async_handler")
                 self._submit_coroutine(
-                    handler(event),
+                    async_handler(event),
                     description=f"In-memory async hook {handler_name}",
                 )
 
@@ -472,11 +492,11 @@ class HookExecutor:
         except RuntimeError:
             background_loop = self._ensure_background_loop()
             future = asyncio.run_coroutine_threadsafe(coroutine, background_loop)
-            future.add_done_callback(lambda done, desc=description: self._log_future_result(done, description=desc))
+            future.add_done_callback(partial(self._log_future_result, description=description))
             return
 
         task = loop.create_task(coroutine)
-        task.add_done_callback(lambda done, desc=description: self._log_future_result(done, description=desc))
+        task.add_done_callback(partial(self._log_future_result, description=description))
 
     def close(self) -> None:
         """Stop the background loop used for sync-triggered async hooks."""
@@ -1095,7 +1115,8 @@ class PostgresHookRegistry(HookRegistryBase):
             conn.execute(
                 """
             INSERT INTO hooks
-            (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
+            (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, \
+metadata, enabled, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,

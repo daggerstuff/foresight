@@ -19,7 +19,7 @@ import logging
 import os
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,27 @@ from .server import (
 )
 
 logger = logging.getLogger("foresight_proof_benchmark")
+
+# Scenario pass thresholds on the 0-1 foresight score. Most scenarios use the
+# standard bar; the ones whose baseline is already strong use the strict bar.
+PASS_THRESHOLD_STANDARD = 0.75
+PASS_THRESHOLD_STRICT = 0.80
+
+# proof_09 passes on token compression rather than a recall score.
+TOKEN_REDUCTION_PASS_PCT = 70.0
+
+# proof_11 passes on the share of out-of-domain queries that retrieve nothing.
+NOISE_REJECTION_PASS_RATE = 0.80
+# Any hit above this combined score counts as a false positive for an
+# out-of-domain query.
+NOISE_SCORE_FLOOR = 0.08
+
+# proof_07 latency SLA tiers (p50 milliseconds).
+LATENCY_FAST_MS = 50.0
+LATENCY_SLA_MS = 150.0
+
+# proof_02 scores recall within the top 5 results.
+RECALL_AT_K = 5
 
 
 @dataclass
@@ -106,14 +127,23 @@ class ProductionProofReport:
             "                   FORESIGHT PRODUCTION VALUE & PROOF BENCHMARK                 ",
             "================================================================================",
             f"Timestamp:              {self.timestamp}",
-            f"Scenarios Evaluated:    {self.passed_scenarios}/{self.total_scenarios} passed ({self.success_rate_pct:.1f}%)",
+            (
+                f"Scenarios Evaluated:    {self.passed_scenarios}/{self.total_scenarios} "
+                f"passed ({self.success_rate_pct:.1f}%)"
+            ),
             f"Average Latency:        {self.avg_latency_ms:.2f}ms (p95: {self.p95_latency_ms:.2f}ms)",
             f"Amnesia Baseline Score: {self.amnesia_avg_score * 100:.1f}%",
             f"Foresight Augmentation: {self.foresight_avg_score * 100:.1f}% (+{self.overall_lift_pct:.1f}% lift)",
             f"Composite Prod Score:   {self.composite_production_score:.1f}/100",
             f"Est. Monthly Time Saved:{self.estimated_hours_saved_monthly:.1f} hours/dev",
-            f"Context Token Reduction:{self.token_reduction_pct:.1f}% (~{self.avg_tokens_saved_per_turn:,} tokens saved/turn)",
-            f"Token Economics Impact: ~${self.estimated_monthly_token_cost_savings_usd:.2f}/dev/mo in API cost reduction",
+            (
+                f"Context Token Reduction:{self.token_reduction_pct:.1f}% "
+                f"(~{self.avg_tokens_saved_per_turn:,} tokens saved/turn)"
+            ),
+            (
+                f"Token Economics Impact: "
+                f"~${self.estimated_monthly_token_cost_savings_usd:.2f}/dev/mo in API cost reduction"
+            ),
             "--------------------------------------------------------------------------------",
             "                               PROOF DIMENSIONS                                 ",
             "--------------------------------------------------------------------------------",
@@ -123,7 +153,8 @@ class ProductionProofReport:
             status = "✓ PASS" if s.passed else "✗ FAIL"
             lines.append(f"[{status}] {s.name} ({s.dimension})")
             lines.append(
-                f"       Amnesia: {s.amnesia_score * 100:.1f}%  →  Foresight: {s.foresight_score * 100:.1f}% ({s.improvement_factor:.1f}x) [{s.latency_ms:.1f}ms]"
+                f"       Amnesia: {s.amnesia_score * 100:.1f}%  →  Foresight: "
+                f"{s.foresight_score * 100:.1f}% ({s.improvement_factor:.1f}x) [{s.latency_ms:.1f}ms]"
             )
             if s.key_takeaway:
                 lines.append(f"       Proof: {s.key_takeaway}")
@@ -198,7 +229,10 @@ class ProductionProofReport:
 
         for s in self.scenarios:
             status_text = "[bold green]✓ PASS[/]" if s.passed else "[bold red]✗ FAIL[/]"
-            comp_text = f"[red]{s.amnesia_score * 100:.1f}%[/] → [bold green]{s.foresight_score * 100:.1f}%[/] ([cyan]{s.improvement_factor:.1f}x[/])"
+            comp_text = (
+                f"[red]{s.amnesia_score * 100:.1f}%[/] → [bold "
+                f"green]{s.foresight_score * 100:.1f}%[/] ([cyan]{s.improvement_factor:.1f}x[/])"
+            )
             scenarios_table.add_row(
                 status_text,
                 s.dimension,
@@ -301,7 +335,7 @@ class ProofBenchmarkRunner:
         surfaces = self._check_surface_readiness()
 
         return ProductionProofReport(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             total_scenarios=total,
             passed_scenarios=passed,
             success_rate_pct=(passed / total) * 100.0 if total else 0.0,
@@ -412,13 +446,16 @@ class ProofBenchmarkRunner:
             name="Cross-Session Workflow Constraint Adherence",
             dimension="Continuity",
             description="Evaluates adherence across 6 distinct developer workflow constraints and toolchain policies.",
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"test_cases": total_queries, "recalled_hits": hits, "recall_rate": f_score},
-            key_takeaway=f"Recalled {hits}/{total_queries} distinct project constraints ({f_score * 100:.1f}%) across disjoint sessions without user re-explanation.",
+            key_takeaway=(
+                f"Recalled {hits}/{total_queries} distinct project constraints "
+                f"({f_score * 100:.1f}%) across disjoint sessions without user re-explanation."
+            ),
         )
 
     def _test_architecture_decision_continuity(self) -> ScenarioProofResult:
@@ -492,7 +529,7 @@ class ProofBenchmarkRunner:
                 }[key]
                 if target_check:
                     matched_rank = rank_idx
-                    if rank_idx <= 5:
+                    if rank_idx <= RECALL_AT_K:
                         recalled_count += 1
                     break
             if matched_rank:
@@ -511,14 +548,20 @@ class ProofBenchmarkRunner:
             scenario_id="proof_02_architecture_continuity",
             name="Architecture & Infrastructure Decision Memory",
             dimension="Knowledge Grounding",
-            description="Measures Mean Reciprocal Rank (MRR) and Recall@5 for technical architecture and infrastructure choices.",
-            passed=f_score >= 0.75,
+            description=(
+                "Measures Mean Reciprocal Rank (MRR) and Recall@5 for "
+                "technical architecture and infrastructure choices."
+            ),
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"mrr": mrr, "recall_at_5": recall_at_5, "evaluated_queries": len(arch_facts)},
-            key_takeaway=f"Achieved MRR of {mrr:.2f} and {recall_at_5 * 100:.1f}% Recall@5 across core infrastructure and database decisions.",
+            key_takeaway=(
+                f"Achieved MRR of {mrr:.2f} and {recall_at_5 * 100:.1f}% "
+                f"Recall@5 across core infrastructure and database decisions."
+            ),
         )
 
     def _test_technical_fact_recall(self) -> ScenarioProofResult:
@@ -528,7 +571,10 @@ class ProofBenchmarkRunner:
         pins = [
             (
                 "otel_pin",
-                "Pin opentelemetry-api to 1.43.0 and opentelemetry-instrumentation to 0.64b0 to prevent incompatibility with data-designer.",
+                (
+                    "Pin opentelemetry-api to 1.43.0 and opentelemetry-instrumentation "
+                    "to 0.64b0 to prevent incompatibility with data-designer."
+                ),
                 "What versions of opentelemetry must be pinned?",
             ),
             (
@@ -538,12 +584,18 @@ class ProofBenchmarkRunner:
             ),
             (
                 "astro_vercel_nft",
-                "Apply patch to @astrojs/vercel nft.js to exclude ai/.venv and ai/docs from serverless deployment bundle scan.",
+                (
+                    "Apply patch to @astrojs/vercel nft.js to exclude ai/.venv "
+                    "and ai/docs from serverless deployment bundle scan."
+                ),
                 "How do we prevent Astro Vercel NFT scanner from including virtualenvs?",
             ),
             (
                 "psycopg_pool",
-                "Set psycopg pool min_size=2 and max_size=10 with open_timeout=5.0 for Neon serverless connection stability.",
+                (
+                    "Set psycopg pool min_size=2 and max_size=10 with "
+                    "open_timeout=5.0 for Neon serverless connection stability."
+                ),
                 "What connection pool parameters are recommended for Neon Postgres?",
             ),
         ]
@@ -590,13 +642,16 @@ class ProofBenchmarkRunner:
             name="Complex Technical Bug Workaround Retention",
             dimension="Engineering Productivity",
             description="Verifies retrieval accuracy for exact dependency version pins and runtime bug workarounds.",
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"total_pins": len(pins), "correctly_retrieved": hits, "accuracy": f_score},
-            key_takeaway=f"Correctly surfaced {hits}/{len(pins)} ({f_score * 100:.1f}%) specialized technical workarounds, preventing recurring debugging cycles.",
+            key_takeaway=(
+                f"Correctly surfaced {hits}/{len(pins)} ({f_score * 100:.1f}%) "
+                f"specialized technical workarounds, preventing recurring debugging cycles."
+            ),
         )
 
     def _test_zero_touch_transcript_capture(self) -> ScenarioProofResult:
@@ -609,11 +664,16 @@ class ProofBenchmarkRunner:
             {"role": "assistant", "content": "Hello! I am ready to help you with your development tasks."},  # Noise
             {
                 "role": "user",
-                "content": "Let's migrate our API authentication from session cookies to JWT bearer tokens with HS256 algorithm.",
+                "content": (
+                    "Let's migrate our API authentication from session "
+                    "cookies to JWT bearer tokens with HS256 algorithm."
+                ),
             },  # Signal 1
             {
                 "role": "assistant",
-                "content": "Agreed. I will implement JWT bearer token middleware with HS256 algorithm and 1 hour expiration.",
+                "content": (
+                    "Agreed. I will implement JWT bearer token middleware with HS256 algorithm and 1 hour expiration."
+                ),
             },  # Signal 1 confirmation
             {"role": "user", "content": "Thanks, that sounds great. What's the weather like in Seattle?"},  # Noise
             {"role": "assistant", "content": "Seattle is currently overcast with intermittent rain."},  # Noise
@@ -661,14 +721,20 @@ class ProofBenchmarkRunner:
             scenario_id="proof_04_zero_touch_transcript_capture",
             name="Zero-Touch Multi-Turn Conversation Self-Noting",
             dimension="Autonomous Ingestion",
-            description="Evaluates extraction precision, signal recall, and noise rejection from multi-turn unstructured conversations.",
-            passed=f_score >= 0.75,
+            description=(
+                "Evaluates extraction precision, signal recall, and noise "
+                "rejection from multi-turn unstructured conversations."
+            ),
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"precision": precision, "recall": recall, "f1_score": f1, "noise_rejected": rejected_noise},
-            key_takeaway=f"Achieved F1 of {f1:.2f} (Precision: {precision * 100:.0f}%, Recall: {recall * 100:.0f}%) while cleanly rejecting irrelevant chitchat noise.",
+            key_takeaway=(
+                f"Achieved F1 of {f1:.2f} (Precision: {precision * 100:.0f}%, Recall: "
+                f"{recall * 100:.0f}%) while cleanly rejecting irrelevant chitchat noise."
+            ),
         )
 
     def _test_phrase_trigger_capture(self) -> ScenarioProofResult:
@@ -712,14 +778,20 @@ class ProofBenchmarkRunner:
             scenario_id="proof_05_phrase_trigger_capture",
             name="Zero-Config Inline Phrase Trigger Storage",
             dimension="User Experience",
-            description="Measures trigger detection sensitivity and specificity across declarative developer statements and control sentences.",
-            passed=f_score >= 0.80,
+            description=(
+                "Measures trigger detection sensitivity and specificity "
+                "across declarative developer statements and control sentences."
+            ),
+            passed=f_score >= PASS_THRESHOLD_STRICT,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
             latency_ms=round(latency, 2),
             details={"sensitivity": sensitivity, "specificity": specificity, "captured_triggers": captured_triggers},
-            key_takeaway=f"Demonstrated {sensitivity * 100:.1f}% trigger sensitivity and {specificity * 100:.0f}% specificity without requiring explicit tool invocations.",
+            key_takeaway=(
+                f"Demonstrated {sensitivity * 100:.1f}% trigger sensitivity and "
+                f"{specificity * 100:.0f}% specificity without requiring explicit tool invocations."
+            ),
         )
 
     def _test_git_commit_capture(self) -> ScenarioProofResult:
@@ -759,8 +831,11 @@ class ProofBenchmarkRunner:
             scenario_id="proof_06_git_commit_capture",
             name="Automated Git Commit Context Enrichment",
             dimension="DevOps Integration",
-            description="Validates continuous indexing and semantic recall of codebase commit milestones and architecture shifts.",
-            passed=f_score >= 0.75,
+            description=(
+                "Validates continuous indexing and semantic recall of "
+                "codebase commit milestones and architecture shifts."
+            ),
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
@@ -795,15 +870,17 @@ class ProofBenchmarkRunner:
         avg_lat = sum(times) / len(times)
 
         # Performance score based on sub-150ms SLA
-        f_score = 0.95 if p50 < 50.0 else (0.88 if p50 < 150.0 else 0.80)
+        f_score = 0.95 if p50 < LATENCY_FAST_MS else (0.88 if p50 < LATENCY_SLA_MS else 0.80)
         a_score = 0.0
 
         return ScenarioProofResult(
             scenario_id="proof_07_stateless_injection_latency",
             name="FastMCP 4.0 High-Throughput Retrieval Latency",
             dimension="Performance",
-            description="Measures latency distribution (p50, p90, p99) of hybrid retrieval under FastMCP stateless execution.",
-            passed=f_score >= 0.80,
+            description=(
+                "Measures latency distribution (p50, p90, p99) of hybrid retrieval under FastMCP stateless execution."
+            ),
+            passed=f_score >= PASS_THRESHOLD_STRICT,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=10.0,
@@ -815,7 +892,10 @@ class ProofBenchmarkRunner:
                 "avg_ms": round(avg_lat, 2),
                 "samples": len(times),
             },
-            key_takeaway=f"High-speed stateless retrieval: p50={p50:.1f}ms, p90={p90:.1f}ms across remote TLS connection pooling and vector indexing.",
+            key_takeaway=(
+                f"High-speed stateless retrieval: p50={p50:.1f}ms, p90={p90:.1f}ms "
+                f"across remote TLS connection pooling and vector indexing."
+            ),
         )
 
     def _test_hands_off_context_distillation(self) -> ScenarioProofResult:
@@ -861,14 +941,20 @@ class ProofBenchmarkRunner:
             scenario_id="proof_08_hands_off_distillation",
             name="Autonomous Self-Curation & Context Distillation",
             dimension="Self-Healing",
-            description="Proves background maintenance consolidates duplicate entries and automatically distills clean context blocks.",
-            passed=f_score >= 0.75,
+            description=(
+                "Proves background maintenance consolidates duplicate "
+                "entries and automatically distills clean context blocks."
+            ),
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=8.5,
             latency_ms=round(latency, 2),
             details={"distilled_blocks": distill_res.get("distilled_blocks", []), "deduplication_ratio": dedup_ratio},
-            key_takeaway="Zero manual curation: duplicate rules were synthesized into active user_preferences block automatically.",
+            key_takeaway=(
+                "Zero manual curation: duplicate rules were synthesized "
+                "into active user_preferences block automatically."
+            ),
         )
 
     def _test_token_savings_and_context_compression(self) -> ScenarioProofResult:
@@ -880,12 +966,18 @@ class ProofBenchmarkRunner:
             ("user", "We are setting up the caching layer for our clinical session analysis."),
             (
                 "assistant",
-                "I recommend using Redis for session caching and token bucket rate limiting. We can connect to redis://localhost:6379/0 using the standard redis-py or ioredis client.",
+                (
+                    "I recommend using Redis for session caching and token bucket rate limiting. We can "
+                    "connect to redis://localhost:6379/0 using the standard redis-py or ioredis client."
+                ),
             ),
             ("user", "Okay, let's lock in Redis on port 6379 with DB index 0. What about PostgreSQL database?"),
             (
                 "assistant",
-                "For primary persistence, we are running PostgreSQL 17 with the pgvector extension on port 5432, with the database named 'foresight_production'.",
+                (
+                    "For primary persistence, we are running PostgreSQL 17 with the pgvector "
+                    "extension on port 5432, with the database named 'foresight_production'."
+                ),
             ),
             ("user", "Great, remember to always use pnpm instead of npm or yarn, and uv for python scripts."),
             (
@@ -894,17 +986,25 @@ class ProofBenchmarkRunner:
             ),
             (
                 "user",
-                "Also, for test suites, vitest is used for unit tests with config/vitest.config.ts and pytest for python.",
+                (
+                    "Also, for test suites, vitest is used for unit tests "
+                    "with config/vitest.config.ts and pytest for python."
+                ),
             ),
             ("assistant", "Understood. Vitest for TypeScript unit tests and pytest via uv for Python tests."),
             (
                 "user",
-                "Here is a sample log from the pipeline run showing 500 lines of trace: [TRACE 2026-08-20: Memory maintenance triggered, 142 rows processed, embedding model initialized with 1536 dims, index scan completed in 1.4ms, Redis TTL set to 86400s, PostgreSQL connection pool healthy].",
+                (
+                    "Here is a sample log from the pipeline run showing 500 lines of trace: [TRACE 2026-08-20: Memory "
+                    "maintenance triggered, 142 rows processed, embedding model initialized with 1536 dims, index "
+                    "scan completed in 1.4ms, Redis TTL set to 86400s, PostgreSQL connection pool healthy]."
+                ),
             ),
             ("assistant", "Thanks for the log. Everything looks aligned with our Redis and PostgreSQL configuration."),
         ]
 
-        # Calculate realistic raw baseline tokens (unpruned history dump that naive agents stuffing context window must pass)
+        # Calculate realistic raw baseline tokens: the unpruned history dump a
+        # naive agent stuffing its context window must pass.
         raw_session_text = "\n".join(f"{role.upper()}: {content}" for role, content in turns)
         raw_context_expanded = raw_session_text + (
             "\n[FULL PROJECT REPOSITORY HISTORY & TRACE DUMP: "
@@ -922,7 +1022,9 @@ class ProofBenchmarkRunner:
         manage_context_blocks(
             action="update",
             label="user_preferences",
-            content="- Always use pnpm for Node/TS and uv for Python.\n- PostgreSQL 17 on port 5432, Redis on port 6379/0.",
+            content=(
+                "- Always use pnpm for Node/TS and uv for Python.\n- PostgreSQL 17 on port 5432, Redis on port 6379/0."
+            ),
             user_id=self.user_id,
         )
 
@@ -943,7 +1045,7 @@ class ProofBenchmarkRunner:
         has_pnpm = "pnpm" in injected.lower()
         has_all_facts = has_redis and has_pg and has_pnpm
 
-        passed = reduction_pct >= 70.0 and has_all_facts
+        passed = reduction_pct >= TOKEN_REDUCTION_PASS_PCT and has_all_facts
         f_score = round(reduction_pct / 100.0, 3)  # Real token compression ratio (e.g. 0.884)
         a_score = 0.12  # Amnesia / unpruned baseline efficiency score
 
@@ -953,7 +1055,10 @@ class ProofBenchmarkRunner:
             scenario_id="proof_09_token_savings_and_compression",
             name="Context Token Compression & Cost Reduction",
             dimension="Cost & Efficiency",
-            description="Measures prompt token reduction achieved by surgical vector memory and context block injection vs. unpruned raw history dumps.",
+            description=(
+                "Measures prompt token reduction achieved by surgical vector "
+                "memory and context block injection vs. unpruned raw history dumps."
+            ),
             passed=passed,
             amnesia_score=a_score,
             foresight_score=f_score,
@@ -967,7 +1072,10 @@ class ProofBenchmarkRunner:
                 "monthly_cost_saved_usd": monthly_cost_saved,
                 "fact_retention": "100% (Redis, PostgreSQL, pnpm)",
             },
-            key_takeaway=f"Saves ~{tokens_saved:,} tokens/turn ({reduction_pct}% reduction, ~${monthly_cost_saved}/dev/mo) by injecting compact high-density context vs dumping raw history.",
+            key_takeaway=(
+                f"Saves ~{tokens_saved:,} tokens/turn ({reduction_pct}% reduction, "
+                f"~${monthly_cost_saved}/dev/mo) by injecting compact high-density context vs dumping raw history."
+            ),
         )
 
     def _test_temporal_shift_and_conflict_resolution(self) -> ScenarioProofResult:
@@ -1036,8 +1144,11 @@ class ProofBenchmarkRunner:
             scenario_id="proof_10_temporal_preference_shift",
             name="Temporal Shift & Conflict Resolution (Yarn vs Pnpm)",
             dimension="Conflict Resolution",
-            description="Proves that an explicit new decision overrides legacy historical frequency via recency weighting and active context block dominance.",
-            passed=f_score >= 0.80,
+            description=(
+                "Proves that an explicit new decision overrides legacy historical "
+                "frequency via recency weighting and active context block dominance."
+            ),
+            passed=f_score >= PASS_THRESHOLD_STRICT,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement,
@@ -1048,7 +1159,9 @@ class ProofBenchmarkRunner:
                 "resolved_winner": "pnpm",
                 "superseded_rule": "yarn",
             },
-            key_takeaway="Temporal conflict resolved: new explicit pnpm directive cleanly superseded legacy yarn frequency.",
+            key_takeaway=(
+                "Temporal conflict resolved: new explicit pnpm directive cleanly superseded legacy yarn frequency."
+            ),
         )
 
     def _test_negative_distractor_and_hallucination_resistance(self) -> ScenarioProofResult:
@@ -1074,7 +1187,7 @@ class ProofBenchmarkRunner:
                 query=q, user_id=self.user_id, options=HybridSearchOptions(limit=5, min_importance=0.5)
             )
             # Strict relevance check: do any high-confidence false positive memories match?
-            false_positives = [m for m in res.results if m.combined_score > 0.08]
+            false_positives = [m for m in res.results if m.combined_score > NOISE_SCORE_FLOOR]
             if len(false_positives) == 0:
                 clean_rejections += 1
 
@@ -1092,8 +1205,11 @@ class ProofBenchmarkRunner:
             scenario_id="proof_11_negative_noise_rejection",
             name="Negative Distractor & Hallucination Resistance",
             dimension="Safety & Signal",
-            description="Evaluates out-of-domain queries to verify relevance thresholds reject false positives and prevent context window pollution.",
-            passed=rejection_rate >= 0.80,
+            description=(
+                "Evaluates out-of-domain queries to verify relevance thresholds "
+                "reject false positives and prevent context window pollution."
+            ),
+            passed=rejection_rate >= NOISE_REJECTION_PASS_RATE,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement,
@@ -1103,7 +1219,10 @@ class ProofBenchmarkRunner:
                 "clean_zero_pollution_rejections": clean_rejections,
                 "hallucination_resistance_pct": round(rejection_rate * 100.0, 1),
             },
-            key_takeaway=f"100% noise rejection ({clean_rejections}/{total_queries} out-of-domain queries filtered with zero false-positive context pollution).",
+            key_takeaway=(
+                f"100% noise rejection ({clean_rejections}/{total_queries} out-of-domain "
+                f"queries filtered with zero false-positive context pollution)."
+            ),
         )
 
     def _check_surface_readiness(self) -> dict[str, bool]:

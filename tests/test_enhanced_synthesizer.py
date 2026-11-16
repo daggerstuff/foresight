@@ -3,7 +3,7 @@ Tests for enhanced memory synthesizer.
 """
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,12 +11,19 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from foresight.enhanced_synthesizer import (
+    MIN_CONTRADICTION_CONFIDENCE,
     Contradiction,
     EnhancedMemorySynthesizer,
     Insight,
     TemporalTrend,
 )
 from foresight.memory_types import EmotionalMetadata, MemoryObject
+
+# A perfectly linear series should explain essentially all of its variance.
+MIN_PERFECT_FIT_R_SQUARED = 0.99
+
+# The sentiment-opposite table is a curated lexicon; it should stay substantial.
+MIN_SENTIMENT_PAIRS = 20
 
 
 def create_memory(content: str, timestamp: datetime, intensity: float = 0.5, tags=None) -> MemoryObject:
@@ -43,8 +50,8 @@ class TestContradictionDetection:
         values = [1.0, 2.0, 3.0, 4.0, 5.0]
         slope, r_squared = synthesizer._calculate_slope(values)
 
-        assert abs(slope - 1.0) < 0.01
-        assert r_squared > 0.99
+        assert slope == pytest.approx(1.0, abs=0.01)
+        assert r_squared > MIN_PERFECT_FIT_R_SQUARED
 
     def test_calculate_slope_downward(self):
         """Should calculate negative slope for downward trend."""
@@ -53,17 +60,18 @@ class TestContradictionDetection:
         values = [5.0, 4.0, 3.0, 2.0, 1.0]
         slope, r_squared = synthesizer._calculate_slope(values)
 
-        assert abs(slope - (-1.0)) < 0.01
-        assert r_squared > 0.99
+        assert slope == pytest.approx(-1.0, abs=0.01)
+        assert r_squared > MIN_PERFECT_FIT_R_SQUARED
 
     def test_extract_metric_value(self):
         """Should extract intensity from memories."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        memory = create_memory("Test", datetime.now(timezone.utc), intensity=0.75)
+        intensity = 0.75
+        memory = create_memory("Test", datetime.now(UTC), intensity=intensity)
         value = synthesizer._extract_metric_value([memory])
 
-        assert value == 0.75
+        assert value == intensity
 
 
 class TestTemporalTrendAnalysis:
@@ -74,24 +82,25 @@ class TestTemporalTrendAnalysis:
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [
-            create_memory("Feeling anxious", datetime.now(timezone.utc), intensity=0.8, tags=["anxiety"]),
-            create_memory("High stress", datetime.now(timezone.utc), intensity=0.7, tags=["stress"]),
-            create_memory("Less anxiety", datetime.now(timezone.utc), intensity=0.4, tags=["anxiety"]),
+            create_memory("Feeling anxious", datetime.now(UTC), intensity=0.8, tags=["anxiety"]),
+            create_memory("High stress", datetime.now(UTC), intensity=0.7, tags=["stress"]),
+            create_memory("Less anxiety", datetime.now(UTC), intensity=0.4, tags=["anxiety"]),
         ]
 
+        anxiety_tagged = sum(1 for m in memories if "anxiety" in m.tags)
         clusters = synthesizer._cluster_by_topic(memories)
 
         assert "anxiety" in clusters
-        assert len(clusters["anxiety"]) == 2
+        assert len(clusters["anxiety"]) == anxiety_tagged
 
     def test_cluster_by_topic_multi_topic(self):
         """Memories about 'work anxiety' should appear in both 'work' and 'anxiety' clusters."""
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [
-            create_memory("Work anxiety is increasing", datetime.now(timezone.utc), intensity=0.8),
-            create_memory("Family stress is high", datetime.now(timezone.utc), intensity=0.7),
-            create_memory("Therapy for anxiety helps", datetime.now(timezone.utc), intensity=0.4),
+            create_memory("Work anxiety is increasing", datetime.now(UTC), intensity=0.8),
+            create_memory("Family stress is high", datetime.now(UTC), intensity=0.7),
+            create_memory("Therapy for anxiety helps", datetime.now(UTC), intensity=0.4),
         ]
 
         clusters = synthesizer._cluster_by_topic(memories)
@@ -129,7 +138,7 @@ class TestTemporalTrendAnalysis:
 
         # Shared words: i, therapy, sessions = 3/5 unique = 0.6
         assert 0 < score < 1
-        assert score > 0.3  # Should exceed overlap threshold
+        assert score > synthesizer.overlap_threshold
 
     def test_find_sentiment_conflict_detected(self):
         """Should detect love/hate sentiment conflict."""
@@ -165,7 +174,7 @@ class TestTemporalTrendAnalysis:
         """Should detect direct_conflict via keyword overlap + opposite sentiment."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        base_time = datetime.now(timezone.utc)
+        base_time = datetime.now(UTC)
         historic = [
             create_memory("I love my therapy sessions", base_time - timedelta(days=30), intensity=0.5),
         ]
@@ -185,7 +194,7 @@ class TestTemporalTrendAnalysis:
 
     def test_sentiment_opposites_class_constant(self):
         """SENTIMENT_OPPOSITES should contain the expected word pairs."""
-        assert len(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES) >= 20
+        assert len(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES) >= MIN_SENTIMENT_PAIRS
         pairs = set(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES)
         assert ("love", "hate") in pairs
         assert ("good", "bad") in pairs
@@ -249,7 +258,7 @@ class TestInsightGeneration:
         )
 
         insights = []
-        if contradiction.confidence >= 0.7:
+        if contradiction.confidence >= MIN_CONTRADICTION_CONFIDENCE:
             insights.append(
                 Insight(
                     statement=synthesizer._format_contradiction_insight(contradiction),
@@ -274,8 +283,8 @@ class TestEnhancedSynthesis:
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [
-            create_memory("Memory 1", datetime.now(timezone.utc), intensity=0.5),
-            create_memory("Memory 2", datetime.now(timezone.utc), intensity=0.6),
+            create_memory("Memory 1", datetime.now(UTC), intensity=0.5),
+            create_memory("Memory 2", datetime.now(UTC), intensity=0.6),
         ]
 
         # synthesize is async, so we need to run it

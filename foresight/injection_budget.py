@@ -76,6 +76,12 @@ DEFAULT_LANE_WEIGHTS: dict[Lane, float] = {
 # Minimum characters before a lane gets promoted from the shared pool
 MIN_LANE_CHARS: int = 40
 
+# Tolerance when validating that the lane weights sum to 1.0.
+LANE_WEIGHT_TOLERANCE: float = 0.01
+
+# Marker appended when content is cut short.
+ELLIPSIS: str = "..."
+
 # Sentence boundary pattern: period, exclamation, or question mark followed
 # by whitespace or end-of-string, respecting common abbreviations.
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
@@ -118,7 +124,7 @@ class InjectionBudget:
         if self.max_chars is not None and self.max_chars < 0:
             raise ValueError(f"max_chars must be >= 0 or None, got {self.max_chars}")
         total_weight = sum(self.lane_weights.values())
-        if abs(total_weight - 1.0) > 0.01:
+        if abs(total_weight - 1.0) > LANE_WEIGHT_TOLERANCE:
             raise ValueError(f"lane_weights must sum to 1.0, got {total_weight:.4f}")
 
     @property
@@ -131,11 +137,14 @@ class InjectionBudget:
         Lanes with weights < 0 get MIN_LANE_CHARS from the shared pool,
         then the remaining budget is distributed proportionally.
         """
-        if not self.is_bounded:
+        # Bind once and narrow: `is_bounded` is a property, so the check above
+        # does not narrow `self.max_chars` for the type checker.
+        max_chars = self.max_chars
+        if max_chars is None:
             return -1  # sentinel for unbounded
 
         weight = self.lane_weights.get(lane, 0.0)
-        return max(MIN_LANE_CHARS, int(self.max_chars * weight))  # type: ignore[arg-type]
+        return max(MIN_LANE_CHARS, int(max_chars * weight))
 
 
 # =============================================================================
@@ -165,7 +174,7 @@ def _first_sentence(text: str, max_chars: int = 200) -> str:
     last_space = truncated.rfind(" ")
     if last_space > 0:
         truncated = truncated[:last_space]
-    return truncated.rstrip(".,;:!?") + "..."
+    return truncated.rstrip(".,;:!?") + ELLIPSIS
 
 
 def _truncate_to_chars(text: str, max_chars: int) -> str:
@@ -177,7 +186,7 @@ def _truncate_to_chars(text: str, max_chars: int) -> str:
     last_space = truncated.rfind(" ")
     if last_space > 0:
         truncated = truncated[:last_space]
-    return truncated.rstrip(".,;:!?") + "..."
+    return truncated.rstrip(".,;:!?") + ELLIPSIS
 
 
 # =============================================================================

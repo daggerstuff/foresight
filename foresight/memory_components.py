@@ -6,10 +6,25 @@ Restored from src/lib/ai/memory/ - Socratic Gate, Crisis Tagger, Synthesizer, Li
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .crisis_detection import AnomalyDetector, get_anomaly_detector
 from .memory_types import GateDecision, GateResult, MemoryObject, StanceShift, SynthesisResult
+
+# Smallest corpus worth synthesizing; callers guard on this before paying for a run.
+MIN_MEMORIES_FOR_SYNTHESIS = 5
+
+# Smallest group of memories that can be merged or clustered.
+MIN_CLUSTER_MEMBERS = 2
+
+# Confidence above which a non-anomalous crisis signal is still worth flagging.
+CONCERN_CONFIDENCE_THRESHOLD = 0.3
+
+# Content larger than this is ingested passively to protect session performance.
+LARGE_PAYLOAD_CHARS = 500
+
+# Words kept when condensing a memory into a gist.
+GIST_MAX_WORDS = 10
 
 
 class MemoryCrisisTagger:
@@ -55,7 +70,7 @@ class MemoryCrisisTagger:
 
             if result.urgency == "immediate":
                 tags.append("URGENT_INTERVENTION")
-            elif result.confidence > 0.3:
+            elif result.confidence > CONCERN_CONFIDENCE_THRESHOLD:
                 # Minor concern but not a full anomaly
                 tags.append("CONCERN_SIGNAL")
                 if result.category:
@@ -110,7 +125,7 @@ class SocraticGate:
             elif any(t.startswith("CONCERN") for t in tags):
                 decision = "passive"
                 reason = "Moderate concern detected. Flagged for review in post-session summary."
-            elif len(memory.content) > 500:
+            elif len(memory.content) > LARGE_PAYLOAD_CHARS:
                 # Large data chunks should be passively accepted
                 decision = "passive"
                 reason = "Large data volume. Ingesting passively to maintain performance."
@@ -154,7 +169,7 @@ class MemorySynthesizer:
         Returns:
             SynthesisResult or None if not enough data
         """
-        if len(memories) < 5:
+        if len(memories) < MIN_MEMORIES_FOR_SYNTHESIS:
             return None  # Not enough context for synthesis
 
         try:
@@ -165,7 +180,7 @@ class MemorySynthesizer:
             # 2. Identify candidates for merging (low importance/decayed)
             merge_candidates = self._identify_merge_candidates(memories)
 
-            if len(merge_candidates) < 2:
+            if len(merge_candidates) < MIN_CLUSTER_MEMBERS:
                 return SynthesisResult(
                     merged_ids=[], new_memory_id="", stance_shifts=stance_shifts, compression_ratio=1.0
                 )
@@ -248,7 +263,7 @@ class MemorySynthesizer:
 
     def _calculate_importance(self, memory: MemoryObject) -> float:
         """Calculates importance based on recency and intensity."""
-        now = datetime.now(timezone.utc).timestamp() * 1000
+        now = datetime.now(UTC).timestamp() * 1000
         ts = memory.timestamp.replace("Z", "+00:00")
         try:
             memory_time = datetime.fromisoformat(ts).timestamp() * 1000
@@ -330,6 +345,6 @@ class MemoryLinker:
     def _generate_gist(self, content: str) -> str:
         """Generates a short gist for the ghost node if not provided."""
         words = content.split()
-        if len(words) <= 10:
+        if len(words) <= GIST_MAX_WORDS:
             return content
-        return " ".join(words[:10]) + "..."
+        return " ".join(words[:GIST_MAX_WORDS]) + "..."

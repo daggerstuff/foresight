@@ -5,7 +5,7 @@ Tests for reflection engine.
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,13 @@ from foresight.reflection_engine import (
     ReflectionReport,
     reset_reflection_engine,
 )
+
+# create_test_db() seeds this many memories for "test_user".
+SEEDED_MEMORY_COUNT = 5
+
+# A gist that only repeats a status word ("improving", "unknown") is a
+# regression; real insight summaries are longer than this.
+MIN_GIST_CHARS = 20
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +110,7 @@ def create_test_db():
  )
  """)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     uid = "test_user"
 
     # Mix of trends for interesting analysis
@@ -118,7 +125,8 @@ def create_test_db():
 
     for mid, content, cat, imp, trend, ts in memories:
         conn.execute(
-            "INSERT INTO memories (id, user_id, tenant_id, content, category, importance, strength_trend, created_at) VALUES (?, ?, 'default', ?, ?, ?, ?, ?)",
+            "INSERT INTO memories (id, user_id, tenant_id, content, category, importance, strength_trend, "
+            "created_at) VALUES (?, ?, 'default', ?, ?, ?, ?, ?)",
             (mid, uid, content, cat, imp, trend, ts.isoformat()),
         )
 
@@ -137,15 +145,18 @@ def create_test_db():
 
     # Relationships to make anxiety a hub
     conn.execute(
-        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, "
+        "user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_anxiety", "entity_therapy", "relates_to", uid),
     )
     conn.execute(
-        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, "
+        "user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_anxiety", "entity_stress", "relates_to", uid),
     )
     conn.execute(
-        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, "
+        "user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_stress", "entity_therapy", "supports", uid),
     )
 
@@ -177,7 +188,7 @@ class TestReflectionEngine:
         assert report is not None
         assert isinstance(report, ReflectionReport)
         assert report.period == "weekly"
-        assert report.memories_analyzed >= 5
+        assert report.memories_analyzed >= SEEDED_MEMORY_COUNT
 
     def test_reflect_insufficient_data(self, test_db):
         engine = ReflectionEngine(test_db)
@@ -303,7 +314,7 @@ class TestReflectionEngine:
         assert row is not None
         gist = row[0]
         # Gist should contain at least one insight summary (not just 'improving')
-        assert len(gist) > 20  # More than just 'improving' or 'unknown'
+        assert len(gist) > MIN_GIST_CHARS  # More than just 'improving' or 'unknown'
         # Should contain semicolons if multiple insights
         if len(report.insights) > 1:
             assert ";" in gist

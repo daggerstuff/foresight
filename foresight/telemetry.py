@@ -20,6 +20,9 @@ from typing import Any
 
 logger = logging.getLogger("foresight_telemetry")
 
+# Rolling window of latency samples kept for percentile reporting.
+LATENCY_WINDOW_SIZE = 100
+
 DEFAULT_TELEMETRY_PATH = Path(
     os.environ.get("FORESIGHT_TELEMETRY_PATH", Path.home() / ".config" / "foresight" / "telemetry.json")
 )
@@ -121,10 +124,9 @@ class TelemetryStore:
             self._data.total_tokens_saved += saved
             self._data.total_cost_saved_usd = round(self._data.total_cost_saved_usd + cost_saved, 4)
 
-            # Rolling latency window (keep last 100)
             if latency_ms > 0:
                 self._data.recent_latencies_ms.append(round(latency_ms, 2))
-                if len(self._data.recent_latencies_ms) > 100:
+                if len(self._data.recent_latencies_ms) > LATENCY_WINDOW_SIZE:
                     self._data.recent_latencies_ms.pop(0)
 
             # Surface breakdown
@@ -194,15 +196,31 @@ class TelemetryStore:
             }
 
 
-_GLOBAL_TELEMETRY_STORE: TelemetryStore | None = None
-_TELEMETRY_LOCK = threading.Lock()
+class _TelemetryStoreSingleton:
+    """Process-wide slot holding the single TelemetryStore instance."""
+
+    instance: TelemetryStore | None = None
+    lock = threading.Lock()
+
+    @classmethod
+    def get(cls) -> TelemetryStore:
+        if cls.instance is None:
+            with cls.lock:
+                if cls.instance is None:
+                    cls.instance = TelemetryStore()
+        return cls.instance
+
+    @classmethod
+    def set(cls, store: TelemetryStore | None) -> None:
+        with cls.lock:
+            cls.instance = store
 
 
 def get_telemetry_store() -> TelemetryStore:
     """Get or create global TelemetryStore singleton."""
-    global _GLOBAL_TELEMETRY_STORE
-    if _GLOBAL_TELEMETRY_STORE is None:
-        with _TELEMETRY_LOCK:
-            if _GLOBAL_TELEMETRY_STORE is None:
-                _GLOBAL_TELEMETRY_STORE = TelemetryStore()
-    return _GLOBAL_TELEMETRY_STORE
+    return _TelemetryStoreSingleton.get()
+
+
+def set_telemetry_store(store: TelemetryStore | None) -> None:
+    """Replace (or clear, with ``None``) the global TelemetryStore instance."""
+    _TelemetryStoreSingleton.set(store)

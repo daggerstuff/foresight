@@ -13,7 +13,7 @@ Designed to run frequently alongside heavy maintenance operations.
 import logging
 import sqlite3
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from psycopg import errors as psycopg_errors
 
@@ -29,15 +29,20 @@ DEFAULT_RETENTION_TTLS: dict[str, int] = {
     "short_term": 168,  # 7 days
 }
 
+# Retention defaults for the event tables the collector prunes.
+DEFAULT_DECAY_EVENTS_RETENTION_DAYS = 30
+DEFAULT_MAINTENANCE_EVENTS_RETENTION_DAYS = 60
+DEFAULT_MAX_BATCH_SIZE = 500
+
 
 @dataclass
 class GCConfig:
     """Configuration for memory garbage collection."""
 
     retention_ttls: dict[str, int] | None = None
-    decay_events_retention_days: int = 30
-    maintenance_events_retention_days: int = 60
-    max_batch_size: int = 500
+    decay_events_retention_days: int = DEFAULT_DECAY_EVENTS_RETENTION_DAYS
+    maintenance_events_retention_days: int = DEFAULT_MAINTENANCE_EVENTS_RETENTION_DAYS
+    max_batch_size: int = DEFAULT_MAX_BATCH_SIZE
     raw_retention_window_days: int | None = field(default_factory=raw_retention_window_days)
 
     def to_dict(self) -> dict:
@@ -99,7 +104,7 @@ class MemoryGC:
         Returns:
             GCStats with per-phase deletion counts
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         cfg = config or GCConfig()
         ttls = cfg.retention_ttls if cfg.retention_ttls is not None else DEFAULT_RETENTION_TTLS
         stats = GCStats()
@@ -338,7 +343,7 @@ class MemoryGC:
         finally:
             pool.release(conn)
 
-        stats.gc_duration_seconds = (datetime.now(timezone.utc) - start_time).total_seconds()
+        stats.gc_duration_seconds = (datetime.now(UTC) - start_time).total_seconds()
 
         logger.info(
             f"GC complete: deleted {stats.expired_memories_deleted}/{stats.expired_memories_found} "

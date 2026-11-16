@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -14,6 +15,8 @@ import pytest
 from foresight import document_layer as doc_mod
 from foresight.document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET,
+    MAX_CHUNK_CHAR_BUDGET,
+    MIN_CHUNK_CHAR_BUDGET,
     VALID_DOCUMENT_SOURCES,
     Document,
     DocumentChunk,
@@ -99,8 +102,7 @@ def _patched_store(db_path: str) -> Iterator[DocumentStore]:
 
 
 def test_default_chunk_budget_in_range():
-    assert DEFAULT_CHUNK_CHAR_BUDGET >= 100
-    assert DEFAULT_CHUNK_CHAR_BUDGET <= 8_000
+    assert MIN_CHUNK_CHAR_BUDGET <= DEFAULT_CHUNK_CHAR_BUDGET <= MAX_CHUNK_CHAR_BUDGET
 
 
 def test_valid_sources_contains_expected_set():
@@ -119,7 +121,7 @@ def test_content_hash_is_deterministic():
 
 def test_content_hash_is_64_char_hex():
     h = content_hash("anything")
-    assert len(h) == 64
+    assert len(h) == len(hashlib.sha256(b"").hexdigest())
     assert all(c in "0123456789abcdef" for c in h)
 
 
@@ -141,18 +143,21 @@ def test_chunk_text_splits_on_paragraph_breaks():
 
 
 def test_chunk_text_splits_when_overflow():
-    text = "A" * 50 + "\n\n" + "B" * 50 + "\n\n" + "C" * 50
+    paragraphs = ("A" * 50, "B" * 50, "C" * 50)
+    text = "\n\n".join(paragraphs)
     chunks = chunk_text(text, char_budget=105)
-    assert len(chunks) == 2
+    # Two paragraphs plus their separator fit; the third overflows into its own chunk.
+    assert len(chunks) == len(paragraphs) - 1
     assert "A" * 50 in chunks[0][2]
     assert "B" * 50 in chunks[0][2]
     assert "C" * 50 in chunks[1][2]
 
 
 def test_chunk_text_each_paragraph_alone_when_no_two_fit():
-    text = "A" * 50 + "\n\n" + "B" * 50 + "\n\n" + "C" * 50
+    paragraphs = ("A" * 50, "B" * 50, "C" * 50)
+    text = "\n\n".join(paragraphs)
     chunks = chunk_text(text, char_budget=100)
-    assert len(chunks) == 3
+    assert len(chunks) == len(paragraphs)
     assert [c[2] for c in chunks] == ["A" * 50, "B" * 50, "C" * 50]
 
 
@@ -172,10 +177,11 @@ def test_chunk_text_packs_short_paragraphs_into_one_chunk():
 
 
 def test_chunk_text_emits_overflow_chunks_as_is():
+    char_budget = 100
     long = "x" * 2000
-    chunks = chunk_text(long, char_budget=100)
+    chunks = chunk_text(long, char_budget=char_budget)
     assert len(chunks) >= 1
-    assert all(len(c[2]) >= 100 for c in chunks)
+    assert all(len(c[2]) >= char_budget for c in chunks)
 
 
 def test_chunk_text_rejects_out_of_range_budget():
@@ -191,12 +197,13 @@ def test_chunk_text_rejects_out_of_range_budget():
 
 
 def test_extract_memories_returns_pending_chunks():
-    text = "para one\n\n" + "x" * 100 + "\n\n" + "y" * 100
+    paragraphs = ("para one", "x" * 100, "y" * 100)
+    text = "\n\n".join(paragraphs)
     chunks = extract_memories_from_text(text, char_budget=200)
     assert all(isinstance(c, DocumentChunk) for c in chunks)
     assert all(c.document_id == "pending" for c in chunks)
     assert all(c.memory_id == "pending" for c in chunks)
-    assert len(chunks) == 2
+    assert len(chunks) == len(paragraphs) - 1
     assert "para one" in chunks[0].text
     assert "x" * 100 in chunks[0].text
     assert chunks[1].text == "y" * 100
@@ -210,7 +217,8 @@ def test_extract_memories_returns_pending_chunks():
 def test_create_document_persists_doc_and_chunks():
     db = _make_test_db()
     with _patched_store(db) as store:
-        text = "alpha paragraph.\n\n" + "b" * 200 + "\n\ngamma paragraph."
+        paragraphs = ("alpha paragraph.", "b" * 200, "gamma paragraph.")
+        text = "\n\n".join(paragraphs)
         doc, chunks = store.create_document(
             title="My Notes",
             content=text,
@@ -226,7 +234,7 @@ def test_create_document_persists_doc_and_chunks():
     assert doc.content == text
     assert doc.char_count == len(text)
     assert doc.content_hash == content_hash(text)
-    assert len(chunks) == 2
+    assert len(chunks) == len(paragraphs) - 1
     assert all(isinstance(c, DocumentChunk) for c in chunks)
     assert all(c.memory_id == "" for c in chunks)
     assert "alpha paragraph." in chunks[0].text
@@ -255,16 +263,17 @@ def test_create_document_with_callable_memory_id_for_chunk():
         def _id_fn(idx: int, text: str) -> str:
             return f"mem_{idx}_{len(text)}"
 
+        paragraphs = ("alpha", "b" * 300, "gamma")
         _doc, chunks = store.create_document(
             title="t",
-            content="alpha\n\n" + "b" * 300 + "\n\ngamma",
+            content="\n\n".join(paragraphs),
             user_id="u1",
             options=DocumentCreateOptions(
                 memory_id_for_chunk=_id_fn,
                 char_budget=310,
             ),
         )
-    assert len(chunks) == 2
+    assert len(chunks) == len(paragraphs) - 1
     assert chunks[0].memory_id == "mem_0_307"
     assert chunks[1].memory_id == "mem_1_5"
 
@@ -386,8 +395,9 @@ def test_documents_are_tenant_isolated():
     with _patched_store(db) as store:
         doc_a, _ = store.create_document(title="t", content="hello", user_id="u1", tenant_id="tA")
         doc_b, _ = store.create_document(title="t", content="hello", user_id="u1", tenant_id="tB")
-        same_hash_docs = [d for d in (doc_a, doc_b) if d is not None]
-    assert len(same_hash_docs) == 2
+        created_docs = (doc_a, doc_b)
+        same_hash_docs = [d for d in created_docs if d is not None]
+    assert len(same_hash_docs) == len(created_docs)
     assert doc_a.id != doc_b.id
     a_again = store.get_document(document_id=doc_a.id, user_id="u1", tenant_id="tA")
     assert a_again is not None
@@ -535,15 +545,14 @@ async def test_llm_extractor_heuristic_fallback():
 
 def test_llm_parse_llm_response_valid_json():
     extractor = LLMDocumentExtractor()
-    response = json.dumps(
-        [
-            {"content": "User prefers dark mode", "category": "preference", "importance": 0.8},
-            {"content": "Team chose GraphQL", "category": "decision", "importance": 0.9},
-        ]
-    )
+    entries = [
+        {"content": "User prefers dark mode", "category": "preference", "importance": 0.8},
+        {"content": "Team chose GraphQL", "category": "decision", "importance": 0.9},
+    ]
+    response = json.dumps(entries)
     source = "Some text about User prefers dark mode and Team chose GraphQL here."
     chunks = extractor._parse_llm_response(response, source)
-    assert len(chunks) == 2
+    assert len(chunks) == len(entries)
     assert chunks[0].text == "User prefers dark mode"
     assert chunks[1].text == "Team chose GraphQL"
     assert chunks[0].chunk_index == 0

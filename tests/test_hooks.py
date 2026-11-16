@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from foresight.event_bus import Event, EventType, get_event_bus, reset_event_bus
@@ -23,7 +23,7 @@ def _make_event() -> Event:
     return Event(
         id=f"evt-{uuid.uuid4()}",
         event_type=EventType.MEMORY_STORED,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         actor="tester",
         entity_id="memory-1",
         payload={"value": "hello"},
@@ -109,15 +109,17 @@ def test_register_and_list_handlers():
     def h2(_ctx: MemoryHookContext) -> HookResult:
         return HookResult()
 
+    pre_store_count = 2
+    post_retrieve_count = 1
     reg.register(MemoryHookType.PRE_STORE, h1, name="handler_one")
     reg.register(MemoryHookType.PRE_STORE, h2, name="handler_two")
     reg.register(MemoryHookType.POST_RETRIEVE, h1, name="post_handler")
 
     all_h = reg.list_handlers()
-    assert len(all_h) == 3
+    assert len(all_h) == pre_store_count + post_retrieve_count
 
     pre_store_h = reg.list_handlers(MemoryHookType.PRE_STORE)
-    assert len(pre_store_h) == 2
+    assert len(pre_store_h) == pre_store_count
     assert pre_store_h[0]["name"] == "handler_one"
 
     assert len(reg.list_handlers(MemoryHookType.POST_RETRIEVE)) == 1
@@ -150,9 +152,10 @@ def test_clear_all_handlers():
     def h(_ctx: MemoryHookContext) -> None:
         pass
 
-    reg.register(MemoryHookType.PRE_STORE, h)
-    reg.register(MemoryHookType.POST_DELETE, h)
-    assert len(reg.list_handlers()) == 2
+    hook_types = (MemoryHookType.PRE_STORE, MemoryHookType.POST_DELETE)
+    for hook_type in hook_types:
+        reg.register(hook_type, h)
+    assert len(reg.list_handlers()) == len(hook_types)
 
     reg.clear()
     assert len(reg.list_handlers()) == 0
@@ -345,6 +348,7 @@ def test_async_handler_on_post():
 
 def test_memory_hook_context_to_dict_roundtrip():
     """to_dict() and from_dict() are symmetric."""
+    importance = 0.8
     ctx = MemoryHookContext(
         action="store",
         memory_id="mem-1",
@@ -354,7 +358,7 @@ def test_memory_hook_context_to_dict_roundtrip():
         category="fact",
         scope="session",
         retention="short_term",
-        importance=0.8,
+        importance=importance,
         tags=["tag1", "tag2"],
         query="search term",
         metadata={"source": "test"},
@@ -366,7 +370,7 @@ def test_memory_hook_context_to_dict_roundtrip():
     assert restored.content == "hello"
     assert restored.query == "search term"
     assert restored.metadata == {"source": "test"}
-    assert restored.importance == 0.8
+    assert restored.importance == importance
 
 
 def test_thread_safe_concurrent_registrations():
@@ -425,7 +429,8 @@ def test_hook_result_defaults():
 
 def test_hook_result_with_context_override():
     """HookResult modified_context overrides specified fields."""
-    r = HookResult(modified_context={"content": "new", "importance": 0.9})
+    overridden_importance = 0.9
+    r = HookResult(modified_context={"content": "new", "importance": overridden_importance})
     ctx = _make_ctx(content="old", importance=0.5)
 
     if r.modified_context:
@@ -434,4 +439,4 @@ def test_hook_result_with_context_override():
                 setattr(ctx, k, v)
 
     assert ctx.content == "new"
-    assert ctx.importance == 0.9
+    assert ctx.importance == overridden_importance

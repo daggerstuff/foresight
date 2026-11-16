@@ -13,11 +13,15 @@ import logging
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
+from .decay_model import MIN_REINFORCED_ACTIVATIONS
+
+# Aggregate columns returned by the trend-count query.
+TREND_ROW_COLUMNS = 7
 
 logger = logging.getLogger("foresight_temporal")
 
@@ -148,7 +152,7 @@ class TemporalService:
 
         # Calculate hours elapsed
         created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         hours_elapsed = (now - created).total_seconds() / 3600
 
         # Apply category multiplier to half-life
@@ -185,7 +189,7 @@ class TemporalService:
 
         # Weakening: Not accessed recently (use half-life as reference)
         # If memory hasn't been activated much and is decaying normally
-        if activation_count < 2 and hours_since_creation > config.half_life_hours * 1.0:
+        if activation_count < MIN_REINFORCED_ACTIVATIONS and hours_since_creation > config.half_life_hours:
             return "weakening"
 
         return "stable"
@@ -261,7 +265,7 @@ class TemporalService:
 
             # Calculate trend
             created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             hours_elapsed = (now - created).total_seconds() / 3600
 
             trend = self._calculate_trend(new_importance, new_activation_count, hours_elapsed, config)
@@ -386,7 +390,7 @@ class TemporalService:
                         conn.execute("COMMIT")
                         break
 
-                    now = datetime.now(timezone.utc).isoformat()
+                    now = datetime.now(UTC).isoformat()
                     for memory_id, importance, created_at, activation_count, category in memories:
                         new_importance, trend = self.calculate_decay(
                             importance=importance,
@@ -461,22 +465,35 @@ class TemporalService:
             )
 
             row = cursor.fetchone() or {}
+            if isinstance(row, Mapping):
+                return {
+                    "total_memories": row["total_memories"],
+                    "avg_importance": row["avg_importance"],
+                    "stable_count": row["stable_count"],
+                    "strengthening_count": row["strengthening_count"],
+                    "weakening_count": row["weakening_count"],
+                    "stale_count": row["stale_count"],
+                    "total_activations": row["total_activations"],
+                }
+            # Positional rows: pad a short row with zeros instead of indexing blindly.
+            padded = (tuple(row) + (0,) * TREND_ROW_COLUMNS)[:TREND_ROW_COLUMNS]
+            (
+                total_memories,
+                avg_importance,
+                stable_count,
+                strengthening_count,
+                weakening_count,
+                stale_count,
+                total_activations,
+            ) = padded
             return {
-                "total_memories": row["total_memories"] if isinstance(row, Mapping) else (row[0] if row else 0),
-                "avg_importance": row["avg_importance"]
-                if isinstance(row, Mapping)
-                else (row[1] if len(row) > 1 else 0),
-                "stable_count": row["stable_count"] if isinstance(row, Mapping) else (row[2] if len(row) > 2 else 0),
-                "strengthening_count": row["strengthening_count"]
-                if isinstance(row, Mapping)
-                else (row[3] if len(row) > 3 else 0),
-                "weakening_count": row["weakening_count"]
-                if isinstance(row, Mapping)
-                else (row[4] if len(row) > 4 else 0),
-                "stale_count": row["stale_count"] if isinstance(row, Mapping) else (row[5] if len(row) > 5 else 0),
-                "total_activations": row["total_activations"]
-                if isinstance(row, Mapping)
-                else (row[6] if len(row) > 6 else 0),
+                "total_memories": total_memories,
+                "avg_importance": avg_importance,
+                "stable_count": stable_count,
+                "strengthening_count": strengthening_count,
+                "weakening_count": weakening_count,
+                "stale_count": stale_count,
+                "total_activations": total_activations,
             }
         finally:
             pool.release(conn)

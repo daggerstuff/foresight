@@ -19,8 +19,9 @@ import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Any
 
 # Optional dependency availability flags
@@ -193,9 +194,9 @@ class KafkaProducer(StreamProducer):
                 "original_topic": topic,
                 "original_event": event.to_dict(),
                 "error": error,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
         try:
             producer = self._get_producer()
@@ -367,7 +368,7 @@ class KinesisProducer(StreamProducer):
                 PartitionKey=partition_key,
             )
 
-            return response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            return response["ResponseMetadata"]["HTTPStatusCode"] == HTTPStatus.OK
 
         except Exception:
             self._failed_messages.append(

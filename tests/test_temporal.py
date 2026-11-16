@@ -13,7 +13,7 @@ import sqlite3
 # Add parent directory to path for imports
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -22,7 +22,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from foresight.temporal_queries import TemporalQueryBuilder
 from foresight.temporal_schema import run_temporal_migrations
-from foresight.temporal_service import TemporalService
+from foresight.temporal_service import DecayConfig, TemporalService
+
+# calculate_decay carries float rounding, so equal-to-target checks allow a
+# small absolute drift.
+DECAY_TOLERANCE = 0.05
 
 
 def create_minimal_schema(db_path: str) -> None:
@@ -88,24 +92,24 @@ class TestDecayCalculations:
 
     def test_no_decay_for_new_memory(self, temporal_service):
         """New memories should have full importance."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         importance, trend = temporal_service.calculate_decay(
             importance=1.0, created_at=now, activation_count=0, category="general", user_id="test"
         )
-        assert importance >= 0.95  # Allow small floating point variance
+        assert importance == pytest.approx(1.0, abs=DECAY_TOLERANCE)
         assert trend == "stable"
 
     def test_exponential_decay_after_one_half_life(self, temporal_service):
         """After one half-life (168 hours), importance should be ~50%."""
-        one_week_ago = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
+        one_week_ago = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
         importance, _trend = temporal_service.calculate_decay(
             importance=1.0, created_at=one_week_ago, activation_count=0, category="general", user_id="test"
         )
-        assert 0.45 <= importance <= 0.55  # ~50% with variance
+        assert importance == pytest.approx(0.5, abs=DECAY_TOLERANCE)
 
     def test_category_multiplier_affects_decay(self, temporal_service):
         """Preferences should decay slower than conversations."""
-        two_weeks_ago = (datetime.now(timezone.utc) - timedelta(hours=336)).isoformat()
+        two_weeks_ago = (datetime.now(UTC) - timedelta(hours=336)).isoformat()
 
         # Preference (2x half-life = 2 weeks)
         pref_importance, _ = temporal_service.calculate_decay(
@@ -122,12 +126,12 @@ class TestDecayCalculations:
 
     def test_stale_threshold(self, temporal_service):
         """Very old memories should be marked as stale."""
-        one_month_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        one_month_ago = (datetime.now(UTC) - timedelta(days=30)).isoformat()
         importance, trend = temporal_service.calculate_decay(
             importance=1.0, created_at=one_month_ago, activation_count=0, category="general", user_id="test"
         )
         assert trend == "stale"
-        assert importance <= 0.2  # Below stale threshold
+        assert importance <= DecayConfig().stale_threshold
 
 
 class TestFreshnessTrends:
@@ -135,7 +139,7 @@ class TestFreshnessTrends:
 
     def test_strengthening_with_activations(self, temporal_service):
         """Frequent activations should result in strengthening trend."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         _importance, trend = temporal_service.calculate_decay(
             importance=0.8,
             created_at=now,
@@ -147,7 +151,7 @@ class TestFreshnessTrends:
 
     def test_stable_for_normal_decay(self, temporal_service):
         """Recent memories with some activations should be stable."""
-        one_day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        one_day_ago = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
         _importance, trend = temporal_service.calculate_decay(
             importance=0.9, created_at=one_day_ago, activation_count=2, category="general", user_id="test"
         )
@@ -162,7 +166,7 @@ class TestTemporalQueries:
         conn = sqlite3.connect(temp_db)
 
         # Insert test memories
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         conn.execute(
             """
             INSERT INTO memories (id, user_id, content, created_at, importance)
@@ -184,7 +188,7 @@ class TestTemporalQueries:
         conn = sqlite3.connect(temp_db)
 
         # Insert test memories
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         conn.execute(
             """
             INSERT INTO memories (id, user_id, content, created_at, importance, category)
@@ -211,28 +215,23 @@ class TestBatchDecayUpdate:
         conn = sqlite3.connect(temp_db)
 
         # Insert test memories
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            """
-            INSERT INTO memories (id, user_id, content, created_at, importance)
-            VALUES (?, ?, ?, ?, ?)
-        """,
-            ("mem1", "test", "Test 1", now, 0.8),
-        )
-        conn.execute(
-            """
-            INSERT INTO memories (id, user_id, content, created_at, importance)
-            VALUES (?, ?, ?, ?, ?)
-        """,
-            ("mem2", "test", "Test 2", now, 0.6),
-        )
+        now = datetime.now(UTC).isoformat()
+        memories = [("mem1", "Test 1", 0.8), ("mem2", "Test 2", 0.6)]
+        for memory_id, content, importance in memories:
+            conn.execute(
+                """
+                INSERT INTO memories (id, user_id, content, created_at, importance)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (memory_id, "test", content, now, importance),
+            )
 
         conn.commit()
         conn.close()
 
         count = temporal_service.batch_update_decay(user_id="test")
 
-        assert count == 2
+        assert count == len(memories)
 
 
 if __name__ == "__main__":

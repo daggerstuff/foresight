@@ -37,7 +37,14 @@ from .context_blocks import (
 )
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .injection_budget import _truncate_to_chars
+from .memory_components import MIN_MEMORIES_FOR_SYNTHESIS
 from .memory_types import EmotionalMetadata, MemoryObject
+
+# Importance above which a static memory carries enough affect to annotate.
+HIGH_EMOTIONAL_IMPORTANCE = 0.6
+
+# Shortest truncated line worth keeping when fitting the profile into its budget.
+MIN_TRUNCATED_LINE_CHARS = 3
 
 logger = logging.getLogger("foresight_profile")
 
@@ -404,11 +411,15 @@ def synthesize_profile(
             dynamic_lines.append(m["content"])
 
         # ── Optional synthesis on static memories ───────────────────────
-        if cfg.include_synthesis and len(static_mems) >= 5:
+        if cfg.include_synthesis and len(static_mems) >= MIN_MEMORIES_FOR_SYNTHESIS:
             try:
                 memories_objs: list[MemoryObject] = []
                 for m in static_mems[:15]:
-                    emo = EmotionalMetadata(intensity=0.5) if m.get("importance", 0.5) > 0.6 else None
+                    emo = (
+                        EmotionalMetadata(intensity=0.5)
+                        if m.get("importance", 0.5) > HIGH_EMOTIONAL_IMPORTANCE
+                        else None
+                    )
                     memories_objs.append(
                         MemoryObject(
                             id=f"prof_{hash(m['content'])}",
@@ -469,7 +480,7 @@ def _fit_section(header: str, lines: list[str], budget: int) -> str:
         # _truncate_to_chars may grow the text by up to 3 chars ("..."),
         # so leave room for the "- " prefix and that growth.
         avail = budget - used - 1
-        if avail > 2:
+        if avail > MIN_TRUNCATED_LINE_CHARS:
             fitted_line = _truncate_to_chars(line, avail - 5)
             if fitted_line.strip(" .,;:!?"):
                 pieces.append(f"- {fitted_line}")

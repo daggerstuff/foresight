@@ -45,11 +45,13 @@ def status():
     console.print(table)
     if not st.enabled:
         console.print(
-            "\n[dim]To enable encryption, set [bold]FORESIGHT_ENCRYPTION_KEY='your-secret-passphrase'[/bold] in your .env file.[/dim]"
+            "\n[dim]To enable encryption, set "
+            "[bold]FORESIGHT_ENCRYPTION_KEY='your-secret-passphrase'[/bold] in your .env file.[/dim]"
         )
     elif st.mode == "sensitive_only":
         console.print(
-            "\n[dim]Currently encrypting sensitive memories only. To encrypt the entire store, set [bold]FORESIGHT_ENCRYPT_ALL=true[/bold].[/dim]"
+            "\n[dim]Currently encrypting sensitive memories only. To encrypt "
+            "the entire store, set [bold]FORESIGHT_ENCRYPT_ALL=true[/bold].[/dim]"
         )
 
 

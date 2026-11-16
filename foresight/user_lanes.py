@@ -143,7 +143,8 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             synth_new = _remap_json_ids(synth, memory_map, keep_unmapped=False)
             if not dry_run:
                 conn.execute(
-                    "UPDATE memories SET related_memory_id = ?, superseded_by = ?, synthesized_from = ? WHERE id = ? AND user_id = ?",
+                    "UPDATE memories SET related_memory_id = ?, superseded_by = ?, synthesized_from = ? "
+                    "WHERE id = ? AND user_id = ?",
                     (rel_new, sup_new, synth_new, new_id, dst_user),
                 )
 
@@ -207,7 +208,10 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             new_row["entity_id"] = eid
             if not dry_run:
                 conn.execute(
-                    'INSERT INTO "memory_entity_links" ({cols}) VALUES ({ph}) ON CONFLICT (memory_id, entity_id) DO NOTHING'.format(
+                    (
+                        'INSERT INTO "memory_entity_links" ({cols}) VALUES ({ph}) '
+                        "ON CONFLICT (memory_id, entity_id) DO NOTHING"
+                    ).format(
                         cols=", ".join(f'"{c}"' for c in new_row),
                         ph=", ".join("?" for _ in new_row),
                     ),
@@ -303,11 +307,11 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             ).fetchall()
         }
         for row in cb_rows:
-            ckey = (row["tenant_id"], row["label"], row["agent_id"], row["project"])
-            if ckey in dst_cb:
+            cb_key = (row["tenant_id"], row["label"], row["agent_id"], row["project"])
+            if cb_key in dst_cb:
                 bump("context_blocks", skipped=1)
                 continue
-            dst_cb.add(ckey)
+            dst_cb.add(cb_key)
             new_row = dict(row)
             new_row["user_id"] = dst_user
             if not dry_run:
@@ -353,11 +357,11 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             if not did:
                 bump("document_chunks", skipped=1)
                 continue
-            ckey = (did, row["chunk_index"])
-            if ckey in dst_chunks:
+            chunk_key = (did, row["chunk_index"])
+            if chunk_key in dst_chunks:
                 bump("document_chunks", skipped=1)
                 continue
-            dst_chunks.add(ckey)
+            dst_chunks.add(chunk_key)
             new_row = dict(row)
             new_row.pop("id", None)  # serial PK
             new_row["user_id"] = dst_user

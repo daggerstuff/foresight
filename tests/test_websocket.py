@@ -2,12 +2,15 @@
 
 import asyncio
 import contextlib
+from datetime import UTC
 from unittest.mock import patch
 
 import pytest
 
 from foresight.event_bus import EventType
 from foresight.websocket.server import (
+    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
     ConnectionState,
     WebSocketHandler,
     WebSocketServer,
@@ -44,7 +47,7 @@ class TestWebSocketHandler:
         assert conn_id is not None
         assert response["type"] == "connection_accepted"
         assert response["connection_id"] == conn_id
-        assert response["heartbeat_interval"] == 30
+        assert response["heartbeat_interval"] == int(DEFAULT_HEARTBEAT_INTERVAL_SECONDS)
 
     @pytest.mark.asyncio
     async def test_reconnect_connection(self):
@@ -81,16 +84,17 @@ class TestSubscriptionManager:
         """Test creating a subscription."""
         sub_manager = get_subscription_manager()
 
+        event_types = ["memory.stored", "memory.updated"]
         result = await sub_manager.subscribe(
             subscription_id="sub-1",
             connection_id="conn-1",
-            event_types=["memory.stored", "memory.updated"],
+            event_types=event_types,
             entity_filter="memory:*",
         )
 
         assert result.id == "sub-1"
         assert result.connection_id == "conn-1"
-        assert len(result.event_types) == 2
+        assert len(result.event_types) == len(event_types)
 
     @pytest.mark.asyncio
     async def test_unsubscribe(self):
@@ -134,8 +138,8 @@ class TestWebSocketServer:
         """Test server initializes correctly."""
         server = WebSocketServer()
         assert server.handler is not None
-        assert server._heartbeat_interval == 30.0
-        assert server._heartbeat_timeout == 90.0
+        assert server._heartbeat_interval == DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+        assert server._heartbeat_timeout == DEFAULT_HEARTBEAT_TIMEOUT_SECONDS
 
     @pytest.mark.asyncio
     async def test_server_with_auth_callback(self):
@@ -180,28 +184,30 @@ class TestEventBuffer:
     @pytest.mark.asyncio
     async def test_get_buffered_events_all(self):
         handler = WebSocketHandler()
-        for i in range(5):
+        event_count = 5
+        for i in range(event_count):
             handler.push_event({"id": f"evt-{i}"})
         result = handler.get_buffered_events()
-        assert len(result) == 5
+        assert len(result) == event_count
 
     @pytest.mark.asyncio
     async def test_get_buffered_events_since_id(self):
         handler = WebSocketHandler()
-        handler.push_event({"id": "evt-0"})
-        handler.push_event({"id": "evt-1"})
-        handler.push_event({"id": "evt-2"})
-        result = handler.get_buffered_events(since_event_id="evt-0")
-        assert len(result) == 3
+        event_ids = ("evt-0", "evt-1", "evt-2")
+        for event_id in event_ids:
+            handler.push_event({"id": event_id})
+        result = handler.get_buffered_events(since_event_id=event_ids[0])
+        assert len(result) == len(event_ids)
         assert result[0]["id"] == "evt-0"
 
     @pytest.mark.asyncio
     async def test_get_buffered_events_unknown_id_returns_all(self):
         handler = WebSocketHandler()
-        handler.push_event({"id": "evt-0"})
-        handler.push_event({"id": "evt-1"})
+        event_ids = ("evt-0", "evt-1")
+        for event_id in event_ids:
+            handler.push_event({"id": event_id})
         result = handler.get_buffered_events(since_event_id="unknown")
-        assert len(result) == 2
+        assert len(result) == len(event_ids)
 
     @pytest.mark.asyncio
     async def test_buffer_respects_max_size(self):
@@ -209,7 +215,7 @@ class TestEventBuffer:
         handler._max_buffer_size = 3
         for i in range(5):
             handler.push_event({"id": f"evt-{i}"})
-        assert len(handler._event_buffer) == 3
+        assert len(handler._event_buffer) == handler._max_buffer_size
         assert handler._event_buffer[0]["id"] == "evt-2"
 
     @pytest.mark.asyncio
@@ -217,9 +223,9 @@ class TestEventBuffer:
         handler = WebSocketHandler()
         conn_id, _ = await handler.connect(connection_id="replay-conn")
         conn = handler.get_connection(conn_id)
-        handler.push_event({"id": "evt-0"})
-        handler.push_event({"id": "evt-1"})
-        handler.push_event({"id": "evt-2"})
+        replayable_ids = ("evt-0", "evt-1", "evt-2")
+        for event_id in replayable_ids:
+            handler.push_event({"id": event_id})
 
         with patch.object(conn, "send_message") as mock_send:
             _, response = await handler.connect(connection_id="replay-conn")
@@ -227,7 +233,7 @@ class TestEventBuffer:
             replay_count = sum(
                 1 for call_args in mock_send.call_args_list if call_args[0][0].get("type") == "event_replay"
             )
-            assert replay_count == 3
+            assert replay_count == len(replayable_ids)
 
 
 class TestBroadcastEvent:
@@ -354,9 +360,9 @@ class TestHeartbeat:
 
         await handler.connect(connection_id="stale-conn")
         conn = handler.get_connection("stale-conn")
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        conn.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=5)
+        conn.last_heartbeat = datetime.now(UTC) - timedelta(seconds=5)
 
         server._running = True
         task = asyncio.create_task(server._heartbeat_loop())

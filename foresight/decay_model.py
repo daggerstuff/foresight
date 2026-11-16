@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .config import DB_PATH, DB_URL
@@ -40,6 +40,9 @@ DEFAULT_MIN_IMPORTANCE = 0.1
 DEFAULT_ACTIVATION_BOOST = 1.2
 DEFAULT_STRENGTHENING_THRESHOLD = 5
 DEFAULT_STALE_THRESHOLD = 0.2
+MAX_ACTIVATION_BOOST = 10.0
+# Activations below this count mark a memory as weakening once it passes its half-life.
+MIN_REINFORCED_ACTIVATIONS = 2
 
 # A memory whose last_decay_at is within this many hours of ``now`` is
 # considered "fresh" and is skipped by apply_decay_batch. This handles
@@ -252,7 +255,7 @@ class MemoryDecayService:
             return "stale"
         if activation_count >= config.strengthening_threshold:
             return "strengthening"
-        if activation_count < 2 and hours_since_decay > config.half_life_hours:
+        if activation_count < MIN_REINFORCED_ACTIVATIONS and hours_since_decay > config.half_life_hours:
             return "weakening"
         return "stable"
 
@@ -342,8 +345,8 @@ class MemoryDecayService:
             raise DecayModelError("half_life_hours must be > 0")
         if not 0.0 <= cfg.min_importance <= 1.0:
             raise DecayModelError("min_importance must be in [0, 1]")
-        if not 0.0 <= cfg.activation_boost <= 10.0:
-            raise DecayModelError("activation_boost must be in [0, 10]")
+        if not 0.0 <= cfg.activation_boost <= MAX_ACTIVATION_BOOST:
+            raise DecayModelError(f"activation_boost must be in [0, {MAX_ACTIVATION_BOOST:g}]")
         if cfg.strengthening_threshold < 0:
             raise DecayModelError("strengthening_threshold must be >= 0")
         if not 0.0 <= cfg.stale_threshold <= 1.0:
@@ -453,7 +456,7 @@ class MemoryDecayService:
             new_strength = min(1.0, old_strength * boost)
             new_strength = max(config.min_importance, new_strength)
             new_activation_count = row["activation_count"] + 1
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             trend = self._compute_trend(
                 new_strength=new_strength,
                 activation_count=new_activation_count,
@@ -523,7 +526,7 @@ class MemoryDecayService:
         self._validate_ids(user_id, tid)
         if batch_size <= 0:
             raise DecayModelError("batch_size must be > 0")
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         now_iso = now.isoformat()
         stats = DecayStats()
         conn = self._connect()
@@ -642,7 +645,7 @@ class MemoryDecayService:
                 params.new_strength,
                 params.decay_factor,
                 params.reason,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 

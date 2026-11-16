@@ -9,6 +9,9 @@ preservation under pressure.
 import pytest
 
 from foresight.injection_budget import (
+    DEFAULT_LANE_WEIGHTS,
+    ELLIPSIS,
+    MIN_LANE_CHARS,
     InjectionBudget,
     Lane,
     LaneItem,
@@ -17,6 +20,10 @@ from foresight.injection_budget import (
     allocate_lane,
     format_budgeted_payload,
 )
+
+# Lane headers and separators are not charged against the content budget, so
+# the formatted payload may exceed max_chars by this allowance.
+PAYLOAD_OVERHEAD_ALLOWANCE = 300
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -43,10 +50,11 @@ class TestInjectionBudget:
         assert budget.is_bounded
 
     def test_lane_budget_distribution(self):
-        budget = InjectionBudget(max_chars=1000)
-        assert budget.lane_budget(Lane.MEMORIES) == 500
-        assert budget.lane_budget(Lane.STATIC) == 100
-        assert budget.lane_budget(Lane.DYNAMIC) == 150
+        max_chars = 1000
+        budget = InjectionBudget(max_chars=max_chars)
+        assert budget.lane_budget(Lane.MEMORIES) == int(max_chars * DEFAULT_LANE_WEIGHTS[Lane.MEMORIES])
+        assert budget.lane_budget(Lane.STATIC) == int(max_chars * DEFAULT_LANE_WEIGHTS[Lane.STATIC])
+        assert budget.lane_budget(Lane.DYNAMIC) == int(max_chars * DEFAULT_LANE_WEIGHTS[Lane.DYNAMIC])
 
     def test_negative_max_chars_rejected(self):
         with pytest.raises(ValueError, match="max_chars must be >= 0"):
@@ -57,18 +65,19 @@ class TestInjectionBudget:
             InjectionBudget(max_chars=1000, lane_weights={Lane.MEMORIES: 0.5})
 
     def test_custom_weights(self):
+        max_chars = 200
         budget = InjectionBudget(
-            max_chars=200,
+            max_chars=max_chars,
             lane_weights={Lane.MEMORIES: 1.0, Lane.STATIC: 0.0, Lane.DYNAMIC: 0.0, Lane.BLOCKS: 0.0, Lane.SAFETY: 0.0},
         )
-        assert budget.lane_budget(Lane.MEMORIES) == 200
+        assert budget.lane_budget(Lane.MEMORIES) == max_chars
 
     def test_lane_budget_minimum(self):
         budget = InjectionBudget(
             max_chars=100,
             lane_weights={Lane.STATIC: 0.0, Lane.DYNAMIC: 0.0, Lane.MEMORIES: 1.0, Lane.BLOCKS: 0.0, Lane.SAFETY: 0.0},
         )
-        assert budget.lane_budget(Lane.STATIC) >= 40
+        assert budget.lane_budget(Lane.STATIC) >= MIN_LANE_CHARS
 
 
 # ---------------------------------------------------------------------------
@@ -93,18 +102,20 @@ class TestFirstSentence:
         assert result == "Why now?"
 
     def test_long_sentence_truncated(self):
+        max_chars = 200
         text = "A" * 300
-        result = _first_sentence(text, max_chars=200)
-        assert len(result) <= 203  # 200 + "..."
-        assert result.endswith("...")
+        result = _first_sentence(text, max_chars=max_chars)
+        assert len(result) <= max_chars + len(ELLIPSIS)
+        assert result.endswith(ELLIPSIS)
 
     def test_empty_string(self):
         assert _first_sentence("") == ""
 
     def test_truncation_at_word_boundary(self):
+        max_chars = 30
         text = "The quick brown fox jumps over the lazy dog and keeps going and going"
-        result = _first_sentence(text, max_chars=30)
-        assert len(result) <= 33
+        result = _first_sentence(text, max_chars=max_chars)
+        assert len(result) <= max_chars + len(ELLIPSIS)
         assert not result.rstrip(".").endswith("goi")
 
 
@@ -113,10 +124,11 @@ class TestTruncateToChars:
         assert _truncate_to_chars("hi", 10) == "hi"
 
     def test_long_text_truncated(self):
+        max_chars = 30
         text = "word " * 100
-        result = _truncate_to_chars(text, 30)
-        assert len(result) <= 33
-        assert result.endswith("...")
+        result = _truncate_to_chars(text, max_chars)
+        assert len(result) <= max_chars + len(ELLIPSIS)
+        assert result.endswith(ELLIPSIS)
 
     def test_empty(self):
         assert _truncate_to_chars("", 10) == ""
@@ -132,7 +144,7 @@ class TestAllocateLane:
         items = [_item("a", "content a"), _item("b", "content b")]
         budget = InjectionBudget()
         alloc = allocate_lane(items, Lane.MEMORIES, budget)
-        assert len(alloc.full_items) == 2
+        assert len(alloc.full_items) == len(items)
         assert alloc.summary_items == []
         assert alloc.stub_items == []
         assert alloc.omitted_count == 0
@@ -141,8 +153,8 @@ class TestAllocateLane:
         items = [_item("a", "A" * 100, score=0.9), _item("b", "B" * 100, score=0.5)]
         budget = InjectionBudget(max_chars=150)
         alloc = allocate_lane(items, Lane.MEMORIES, budget)
-        assert alloc.total_items == 2
-        assert len(alloc.full_items) + len(alloc.summary_items) + len(alloc.stub_items) == 2
+        assert alloc.total_items == len(items)
+        assert len(alloc.full_items) + len(alloc.summary_items) + len(alloc.stub_items) == len(items)
 
     def test_highest_score_gets_full_first(self):
         items = [_item("low", "low score content", score=0.2), _item("high", "high score content", score=0.9)]
@@ -152,11 +164,12 @@ class TestAllocateLane:
         assert "high" in full_ids
 
     def test_omitted_items(self):
-        items = [_item(f"i{n}", "X" * 200, score=0.5 - n * 0.01) for n in range(20)]
+        item_count = 20
+        items = [_item(f"i{n}", "X" * 200, score=0.5 - n * 0.01) for n in range(item_count)]
         budget = InjectionBudget(max_chars=100)
         alloc = allocate_lane(items, Lane.MEMORIES, budget)
         assert alloc.omitted_count > 0
-        assert alloc.total_items + alloc.omitted_count == 20
+        assert alloc.total_items + alloc.omitted_count == item_count
 
     def test_empty_items(self):
         budget = InjectionBudget(max_chars=500)
@@ -224,9 +237,10 @@ class TestFormatBudgetedPayload:
     def test_budget_respected(self):
         items = [_item(f"m{n}", "X" * 100, score=0.5) for n in range(10)]
         lane_items = {Lane.MEMORIES: items}
-        budget = InjectionBudget(max_chars=300)
+        max_chars = 300
+        budget = InjectionBudget(max_chars=max_chars)
         result = format_budgeted_payload(lane_items, budget)
-        assert result.total_chars <= 600  # Allow for headers + separators
+        assert result.total_chars <= max_chars + PAYLOAD_OVERHEAD_ALLOWANCE
 
     def test_unbounded(self):
         items = [_item("a", "Content A", 0.5)]
@@ -314,7 +328,7 @@ class TestEdgeCases:
         items = [_item("a", "content")]
         budget = InjectionBudget(max_chars=0)
         alloc = allocate_lane(items, Lane.MEMORIES, budget)
-        assert budget.lane_budget(Lane.MEMORIES) == 40
+        assert budget.lane_budget(Lane.MEMORIES) == MIN_LANE_CHARS
         assert alloc.total_items >= 0
 
     def test_single_item_fits(self):

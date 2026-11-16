@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from foresight.backend.redis_companion import RedisCompanion
+from foresight.backend.redis_companion import UNAVAILABLE_REMAINING_FALLBACK, RedisCompanion
 
 
 class TestRedisCompanionGracefulDegradation:
@@ -42,7 +42,7 @@ class TestRedisCompanionGracefulDegradation:
     async def test_rate_limit_remaining_high_when_unavailable(self):
         companion = RedisCompanion(url="redis://localhost:19999/0")
         remaining = await companion.rate_limit_remaining("t1", "u1")
-        assert remaining == 9999
+        assert remaining == UNAVAILABLE_REMAINING_FALLBACK
 
     @pytest.mark.asyncio
     async def test_close_noop_when_unavailable(self):
@@ -70,5 +70,6 @@ class TestRedisCompanionInitialState:
         assert companion._warned is False
 
     def test_initial_state_with_db_param(self):
-        companion = RedisCompanion(url="redis://localhost:6379/0", db=3)
-        assert companion._db == 3
+        db = 3
+        companion = RedisCompanion(url="redis://localhost:6379/0", db=db)
+        assert companion._db == db

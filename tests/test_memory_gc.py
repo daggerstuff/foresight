@@ -6,9 +6,12 @@ maintenance events pruning, and orphan cleanup.
 
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from foresight.memory_gc import (
+    DEFAULT_DECAY_EVENTS_RETENTION_DAYS,
+    DEFAULT_MAINTENANCE_EVENTS_RETENTION_DAYS,
+    DEFAULT_MAX_BATCH_SIZE,
     GCConfig,
     GCStats,
     MemoryGC,
@@ -113,7 +116,8 @@ def _insert_memory(
     created_at: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, is_ghost, created_at) "
+        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, "
+        "is_ghost, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
@@ -125,7 +129,7 @@ def _insert_memory(
             0.5,
             "stable",
             0,
-            created_at or datetime.now(timezone.utc).isoformat(),
+            created_at or datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()
@@ -139,7 +143,8 @@ def _insert_decay_event(
     created_at: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO memory_decay_events (tenant_id, user_id, memory_id, event_type, old_strength, new_strength, decay_factor, reason, created_at) "
+        "INSERT INTO memory_decay_events (tenant_id, user_id, memory_id, event_type, old_strength, "
+        "new_strength, decay_factor, reason, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             tenant_id,
@@ -150,7 +155,7 @@ def _insert_decay_event(
             0.8,
             0.8,
             "test decay",
-            created_at or datetime.now(timezone.utc).isoformat(),
+            created_at or datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()
@@ -166,10 +171,10 @@ def _insert_maintenance_event(
         "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
-            f"evt_{event_type}_{datetime.now(timezone.utc).timestamp()}",
+            f"evt_{event_type}_{datetime.now(UTC).timestamp()}",
             tenant_id,
             event_type,
-            timestamp or datetime.now(timezone.utc).isoformat(),
+            timestamp or datetime.now(UTC).isoformat(),
             "gc_test",
             None,
             None,
@@ -214,22 +219,23 @@ def _insert_embedding(
 class TestGCConfig:
     def test_default_config(self) -> None:
         cfg = GCConfig()
-        assert cfg.decay_events_retention_days == 30
-        assert cfg.maintenance_events_retention_days == 60
-        assert cfg.max_batch_size == 500
+        assert cfg.decay_events_retention_days == DEFAULT_DECAY_EVENTS_RETENTION_DAYS
+        assert cfg.maintenance_events_retention_days == DEFAULT_MAINTENANCE_EVENTS_RETENTION_DAYS
+        assert cfg.max_batch_size == DEFAULT_MAX_BATCH_SIZE
         assert cfg.retention_ttls is None
 
     def test_custom_config(self) -> None:
-        cfg = GCConfig(retention_ttls={"ephemeral": 12}, decay_events_retention_days=7)
+        retention_days = 7
+        cfg = GCConfig(retention_ttls={"ephemeral": 12}, decay_events_retention_days=retention_days)
         assert cfg.retention_ttls == {"ephemeral": 12}
-        assert cfg.decay_events_retention_days == 7
+        assert cfg.decay_events_retention_days == retention_days
 
     def test_to_dict(self) -> None:
         cfg = GCConfig()
         d = cfg.to_dict()
         assert "retention_ttls" in d
         assert "decay_events_retention_days" in d
-        assert d["decay_events_retention_days"] == 30
+        assert d["decay_events_retention_days"] == DEFAULT_DECAY_EVENTS_RETENTION_DAYS
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +272,7 @@ class TestPhase1ExpiredRetention:
     def test_deletes_expired_ephemeral(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
         _insert_memory(conn, "m1", "old ephemeral", retention="ephemeral", created_at=old)
         _insert_memory(conn, "m2", "fresh ephemeral", retention="ephemeral")
         conn.close()
@@ -285,7 +291,7 @@ class TestPhase1ExpiredRetention:
     def test_deletes_expired_short_term(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+        old = (datetime.now(UTC) - timedelta(days=14)).isoformat()
         _insert_memory(conn, "m1", "old short_term", retention="short_term", created_at=old)
         _insert_memory(conn, "m2", "recent short_term", retention="short_term")
         conn.close()
@@ -300,7 +306,7 @@ class TestPhase1ExpiredRetention:
     def test_preserves_long_term_and_permanent(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        old = (datetime.now(UTC) - timedelta(days=365)).isoformat()
         _insert_memory(conn, "m1", "old long_term", retention="long_term", created_at=old)
         _insert_memory(conn, "m2", "old permanent", retention="permanent", created_at=old)
         conn.close()
@@ -332,7 +338,7 @@ class TestPhase1ExpiredRetention:
     def test_tenant_isolation(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
         _insert_memory(conn, "m1", "t1 old", retention="ephemeral", tenant_id="t1", created_at=old)
         _insert_memory(conn, "m2", "t2 old", retention="ephemeral", tenant_id="t2", created_at=old)
         conn.close()
@@ -350,16 +356,17 @@ class TestPhase1ExpiredRetention:
     def test_batch_limiting(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
-        for i in range(20):
+        old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        memory_count = 20
+        for i in range(memory_count):
             _insert_memory(conn, f"m{i}", f"old {i}", retention="ephemeral", created_at=old)
         conn.close()
 
         gc = MemoryGC(db_path)
         stats = gc.run(tenant_id="t1", config=GCConfig(max_batch_size=5))
 
-        assert stats.expired_memories_found == 20
-        assert stats.expired_memories_deleted == 20
+        assert stats.expired_memories_found == memory_count
+        assert stats.expired_memories_deleted == memory_count
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +397,7 @@ def _insert_memory_with_expiry(
             0.5,
             "stable",
             0,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             expires_at,
         ),
     )
@@ -401,8 +408,8 @@ class TestPhase15ExplicitExpiry:
     def test_deletes_memories_past_expires_at(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         _insert_memory_with_expiry(conn, "m1", "already expired", past)
         _insert_memory_with_expiry(conn, "m2", "not yet expired", future)
         _insert_memory_with_expiry(conn, "m3", "no expiry", None)
@@ -421,7 +428,7 @@ class TestPhase15ExplicitExpiry:
     def test_expires_at_respects_tenant_isolation(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         _insert_memory_with_expiry(conn, "m1", "t1 expired", past, tenant_id="t1")
         _insert_memory_with_expiry(conn, "m2", "t2 expired", past, tenant_id="t2")
         conn.close()
@@ -439,7 +446,7 @@ class TestPhase15ExplicitExpiry:
     def test_no_explicit_expiry_deletes_nothing(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        future = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
         _insert_memory_with_expiry(conn, "m1", "future", future)
         _insert_memory_with_expiry(conn, "m2", "none", None)
         conn.close()
@@ -460,7 +467,7 @@ class TestPhase2DecayEventsPruning:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         _insert_memory(conn, "m1", "test")
-        old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        old = (datetime.now(UTC) - timedelta(days=60)).isoformat()
         _insert_decay_event(conn, memory_id="m1", created_at=old)
         _insert_decay_event(conn, memory_id="m1")  # recent
         conn.close()
@@ -497,21 +504,22 @@ class TestPhase3MaintenanceEvents:
     def test_prunes_old_maintenance_events(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        old = (datetime.now(UTC) - timedelta(days=90)).isoformat()
         _insert_maintenance_event(conn, event_type="maintenance_review", timestamp=old)
         _insert_maintenance_event(conn, event_type="maintenance_insight")  # recent
         _insert_maintenance_event(conn, event_type="maintenance_review:consolidate", timestamp=old)
         conn.close()
+        stale_event_count = 2
 
         gc = MemoryGC(db_path)
         stats = gc.run(tenant_id="t1")
 
-        assert stats.maintenance_events_pruned == 2
+        assert stats.maintenance_events_pruned == stale_event_count
 
     def test_preserves_non_maintenance_events(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        old = (datetime.now(UTC) - timedelta(days=90)).isoformat()
         _insert_maintenance_event(conn, event_type="memory_access", timestamp=old)
         conn.close()
 
@@ -589,16 +597,16 @@ class TestCombinedRun:
         conn = sqlite3.connect(db_path)
 
         # Phase 1: expired ephemeral
-        old = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
         _insert_memory(conn, "m1", "old ephemeral", retention="ephemeral", created_at=old)
         _insert_memory(conn, "m2", "recent", retention="short_term")
 
         # Phase 2: old decay event
-        old_decay = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        old_decay = (datetime.now(UTC) - timedelta(days=60)).isoformat()
         _insert_decay_event(conn, memory_id="m1", created_at=old_decay)
 
         # Phase 3: old maintenance event (>60d ago)
-        very_old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        very_old = (datetime.now(UTC) - timedelta(days=90)).isoformat()
         _insert_maintenance_event(conn, event_type="maintenance_review", timestamp=very_old)
 
         # Phase 4: orphan
@@ -630,7 +638,7 @@ class TestFactory:
     def test_run_memory_gc(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        old = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
         _insert_memory(conn, "m1", "old too", retention="ephemeral", created_at=old)
         conn.close()
 

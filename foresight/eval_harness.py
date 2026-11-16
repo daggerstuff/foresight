@@ -31,8 +31,8 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 logger = logging.getLogger("foresight_eval")
 
@@ -51,6 +51,11 @@ _PII_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
+# Findings are audit evidence, not a data store: never echo more of a match
+# than needed to identify it.
+PII_MATCH_PREVIEW_CHARS = 20
+
+
 def scan_for_pii(text: str) -> list[dict[str, Any]]:
     """Scan text for PII/secret patterns. Returns list of findings."""
     findings: list[dict[str, Any]] = []
@@ -59,7 +64,7 @@ def scan_for_pii(text: str) -> list[dict[str, Any]]:
             findings.append(
                 {
                     "type": label,
-                    "match": match.group()[:20],  # Truncate for safety
+                    "match": match.group()[:PII_MATCH_PREVIEW_CHARS],  # Truncate for safety
                     "position": match.start(),
                 }
             )
@@ -74,7 +79,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     # --- S1: Preferences ---
     {
         "id": "pref_concise_typescript",
-        "content": "User prefers concise TypeScript type definitions with explicit generics rather than inferred types. Always use interface over type alias for object shapes.",
+        "content": (
+            "User prefers concise TypeScript type definitions with explicit generics rather "
+            "than inferred types. Always use interface over type alias for object shapes."
+        ),
         "scope": "trait",
         "retention": "long_term",
         "category": "preference",
@@ -83,7 +91,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "id": "pref_2space_indent",
-        "content": "Project uses 2-space indentation for all TypeScript/JavaScript files. Configure eslint and prettier accordingly.",
+        "content": (
+            "Project uses 2-space indentation for all TypeScript/JavaScript "
+            "files. Configure eslint and prettier accordingly."
+        ),
         "scope": "trait",
         "retention": "long_term",
         "category": "preference",
@@ -93,7 +104,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     # --- S2: Pending items ---
     {
         "id": "pending_dashboard",
-        "content": "TODO: Build the dashboard overview component showing memory health metrics. Requires creating stat cards for total memories, by-scope breakdown, and recent activity.",
+        "content": (
+            "TODO: Build the dashboard overview component showing memory health metrics. Requires "
+            "creating stat cards for total memories, by-scope breakdown, and recent activity."
+        ),
         "scope": "arc",
         "retention": "short_term",
         "category": "plan",
@@ -102,7 +116,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "id": "pending_auth",
-        "content": "TODO: Implement OAuth2 authentication flow for the Foresight API. Research refresh token rotation strategy first. Blocked on security review.",
+        "content": (
+            "TODO: Implement OAuth2 authentication flow for the Foresight API. "
+            "Research refresh token rotation strategy first. Blocked on security review."
+        ),
         "scope": "arc",
         "retention": "short_term",
         "category": "plan",
@@ -111,7 +128,9 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "id": "pending_refactor",
-        "content": "TODO: Refactor the hybrid retriever to use composable signal scorers instead of monolithic search method.",
+        "content": (
+            "TODO: Refactor the hybrid retriever to use composable signal scorers instead of monolithic search method."
+        ),
         "scope": "arc",
         "retention": "short_term",
         "category": "plan",
@@ -121,7 +140,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     # --- S3: Stale vs current facts ---
     {
         "id": "current_auth_approach",
-        "content": "Current authentication uses JWT with RS256 signatures. Tokens expire after 15 minutes and refresh tokens are stored in HTTP-only cookies. Session management is handled by the auth service.",
+        "content": (
+            "Current authentication uses JWT with RS256 signatures. Tokens expire after 15 minutes and "
+            "refresh tokens are stored in HTTP-only cookies. Session management is handled by the auth service."
+        ),
         "scope": "fact",
         "retention": "long_term",
         "category": "fact",
@@ -131,7 +153,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "id": "stale_auth_approach",
-        "content": "Old authentication used API keys passed in headers. Every request required a valid HMAC signature computed from the shared secret. Deprecated in favor of JWT-based auth.",
+        "content": (
+            "Old authentication used API keys passed in headers. Every request required a valid "
+            "HMAC signature computed from the shared secret. Deprecated in favor of JWT-based auth."
+        ),
         "scope": "fact",
         "retention": "long_term",
         "category": "fact",
@@ -142,7 +167,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     # --- S4: Entity/file references ---
     {
         "id": "entity_db_config",
-        "content": "Database configuration is in `config/database.yaml`. Connection string uses environment variable DATABASE_URL with postgres:// scheme. Pool size defaults to 10 connections.",
+        "content": (
+            "Database configuration is in `config/database.yaml`. Connection string uses environment "
+            "variable DATABASE_URL with postgres:// scheme. Pool size defaults to 10 connections."
+        ),
         "scope": "fact",
         "retention": "long_term",
         "category": "fact",
@@ -151,7 +179,11 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "id": "entity_deploy_script",
-        "content": "Deployment script is at `scripts/deploy.sh`. Uses rsync for static assets and systemd service restart for the API server. Staging and production environments are configured via environment-specific YAML files.",
+        "content": (
+            "Deployment script is at `scripts/deploy.sh`. Uses rsync for static assets and systemd service restart "
+            "for the API server. Staging and production environments are configured via environment-specific YAML "
+            "files."
+        ),
         "scope": "fact",
         "retention": "long_term",
         "category": "fact",
@@ -161,7 +193,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     # --- S6: Entity salience ---
     {
         "id": "entity_rich_session",
-        "content": "The user discussed integrating authentication, database configuration, and deployment automation in a single session. Multiple architectural concerns were covered.",
+        "content": (
+            "The user discussed integrating authentication, database configuration, and deployment "
+            "automation in a single session. Multiple architectural concerns were covered."
+        ),
         "scope": "session",
         "retention": "short_term",
         "category": "fact",
@@ -182,7 +217,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     # --- S7: Decay priority ---
     {
         "id": "decay_priority_high",
-        "content": "Security incident response plan: first verify the breach scope, then rotate all credentials, and finally notify stakeholders. This is a critical procedure.",
+        "content": (
+            "Security incident response plan: first verify the breach scope, then rotate "
+            "all credentials, and finally notify stakeholders. This is a critical procedure."
+        ),
         "scope": "fact",
         "retention": "short_term",
         "category": "plan",
@@ -194,7 +232,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "id": "decay_priority_low",
-        "content": "Old security incident response procedure notes. The breach was contained but the documentation is outdated and incomplete.",
+        "content": (
+            "Old security incident response procedure notes. The breach "
+            "was contained but the documentation is outdated and incomplete."
+        ),
         "scope": "fact",
         "retention": "short_term",
         "category": "fact",
@@ -207,7 +248,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     # --- S5: Session / discussion memories ---
     {
         "id": "session_deploy",
-        "content": "Discussed deployment pipeline improvements during standup. Agreed to migrate from rsync to Docker-based deployments. Need to set up GitHub Actions workflow for CI/CD.",
+        "content": (
+            "Discussed deployment pipeline improvements during standup. Agreed to migrate from "
+            "rsync to Docker-based deployments. Need to set up GitHub Actions workflow for CI/CD."
+        ),
         "scope": "session",
         "retention": "short_term",
         "category": "fact",
@@ -217,7 +261,10 @@ FIXTURE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "id": "session_code_review",
-        "content": "Reviewed PR #1234: hybrid retriever refactor. Main feedback was about test coverage — need more edge case tests for empty queries and tenant isolation edge cases.",
+        "content": (
+            "Reviewed PR #1234: hybrid retriever refactor. Main feedback was about test coverage "
+            "— need more edge case tests for empty queries and tenant isolation edge cases."
+        ),
         "scope": "session",
         "retention": "short_term",
         "category": "fact",
@@ -638,8 +685,11 @@ class EvalHarness:
 
         # Patch config DB_PATH in each module that holds a local binding
         for mod in (config_module, conn_pool_module):
-            orig = mod.DB_PATH
-            mod.DB_PATH = self.db_path
+            # Module attribute patching is dynamic by nature (that is the whole
+            # point of the monkeypatch), so DB_PATH is accessed through Any.
+            target = cast(Any, mod)
+            orig = target.DB_PATH
+            target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # The package __init__ already imported modules like subconscious,
@@ -668,8 +718,9 @@ class EvalHarness:
                 continue
             if not hasattr(mod, "DB_PATH"):
                 continue
-            orig = mod.DB_PATH
-            mod.DB_PATH = self.db_path
+            target = cast(Any, mod)
+            orig = target.DB_PATH
+            target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Set tenant context
@@ -727,7 +778,7 @@ class EvalHarness:
         self._apply_patches()
         self._conn = None
         conn = self._get_connection()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         count = 0
         for mem in FIXTURE_MEMORIES:
@@ -738,9 +789,9 @@ class EvalHarness:
             created_at = now
             offset = mem.get("created_at_offset_hours")
             if offset is not None:
-                created_at = datetime.now(timezone.utc).__class__.fromtimestamp(
+                created_at = datetime.now(UTC).__class__.fromtimestamp(
                     now.timestamp() + (offset or 0) * 3600,
-                    tz=timezone.utc,
+                    tz=UTC,
                 )
             created_at_iso = created_at.isoformat()
             updated_at_iso = created_at.isoformat()
@@ -877,12 +928,14 @@ class EvalHarness:
 
         # Create entity relationships
         conn.execute(
-            "INSERT OR IGNORE INTO entity_relationships (source_entity_id, target_entity_id, user_id, tenant_id, confidence, relationship_type) "
+            "INSERT OR IGNORE INTO entity_relationships "
+            "(source_entity_id, target_entity_id, user_id, tenant_id, confidence, relationship_type) "
             "VALUES ('ent_db', 'ent_config', ?, ?, 0.9, 'depends_on')",
             (self.user_id, self.tenant_id),
         )
         conn.execute(
-            "INSERT OR IGNORE INTO entity_relationships (source_entity_id, target_entity_id, user_id, tenant_id, confidence, relationship_type) "
+            "INSERT OR IGNORE INTO entity_relationships "
+            "(source_entity_id, target_entity_id, user_id, tenant_id, confidence, relationship_type) "
             "VALUES ('ent_deploy', 'ent_config', ?, ?, 0.85, 'depends_on')",
             (self.user_id, self.tenant_id),
         )
@@ -1153,7 +1206,10 @@ class EvalHarness:
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
 
-        as_of = datetime.now(timezone.utc) + timedelta(hours=scenario.as_of_offset_hours)
+        offset_hours = scenario.as_of_offset_hours
+        if offset_hours is None:
+            raise ValueError("temporal scenario requires as_of_offset_hours to be set")
+        as_of = datetime.now(UTC) + timedelta(hours=offset_hours)
 
         t0 = time.perf_counter()
         builder = TemporalQueryBuilder(db_path=self.db_path)
@@ -1263,7 +1319,7 @@ class EvalHarness:
         }
 
         return EvalReport(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             scenarios=results,
             summary=summary,
         )

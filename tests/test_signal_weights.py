@@ -11,7 +11,7 @@ import os
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -71,7 +71,7 @@ def _create_test_db() -> str:
     """)
 
     uid = "signal_weights_user"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # ``old_match`` is keyword-relevant but old; ``recent_miss`` is recent but
     # contains none of the query terms. This makes keyword and temporal rankings
@@ -216,6 +216,7 @@ class TestPerRequestSignalWeights:
     def test_explain_echoes_effective_weights(self, swapped_db):
         """explain output reflects the per-request weights."""
         retriever = HybridRetriever(swapped_db)
+        temporal_weight = 5.0
 
         result = retriever.search(
             "firewall",
@@ -226,13 +227,13 @@ class TestPerRequestSignalWeights:
                 use_graph=False,
                 use_tfidf_cosine=False,
                 explain=True,
-                signal_weights={"temporal": 5.0, "keyword": 0.0},
+                signal_weights={"temporal": temporal_weight, "keyword": 0.0},
             ),
         )
 
         assert result.score_details is not None
         weights = result.score_details["weights"]
-        assert weights["temporal"] == 5.0
+        assert weights["temporal"] == temporal_weight
         assert weights["keyword"] == 0.0
         assert weights["semantic"] == pytest.approx(0.7)
         # temporal was active, so its max contribution should be present.

@@ -33,6 +33,7 @@ import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from typing import Any, ClassVar, Literal, cast, get_args
 
 from foresight.llm_providers.openai import chat_completions_url
@@ -45,13 +46,16 @@ logger = logging.getLogger("foresight_entity_extractor")
 # to rule-based extraction, so keep this generous.
 _LLM_TIMEOUT_SECONDS = 180.0
 
+# An entity + relationship payload for a long note overruns the old 1024-token
+# budget and comes back truncated.
+DEFAULT_EXTRACTION_MAX_TOKENS = 4096
+
 # Optional httpx dependency for external API calls
 try:
     import httpx
 
     HAS_HTTPX = True
-except Exception:
-    httpx = None
+except Exception:  # pragma: no cover - httpx is a declared dependency
     HAS_HTTPX = False
 
 EntityType = Literal["person", "place", "concept", "event", "emotion", "object"]
@@ -254,7 +258,7 @@ Output (raw JSON only, no markdown):
         self,
         api_key: str | None = None,
         model: str | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_EXTRACTION_MAX_TOKENS,
         temperature: float = 0.1,
         provider: str | None = None,
         base_url: str | None = None,
@@ -418,7 +422,7 @@ Output (raw JSON only, no markdown):
         Returns:
             ExtractionResult with entities and relationships.
         """
-        if not HAS_HTTPX or httpx is None:
+        if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed. Install it with 'pip install httpx'")
 
         try:
@@ -433,7 +437,7 @@ Output (raw JSON only, no markdown):
             status_code = exc.response.status_code
             if status_code in (401, 403):
                 logger.error("LLM auth error (%d): check API key. Falling back to rules.", status_code)
-            elif status_code == 429:
+            elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
                 logger.warning("LLM rate limited (429). Falling back to rules.")
             else:
                 logger.warning("LLM HTTP error (%d): %s. Falling back to rules.", status_code, exc)
@@ -445,7 +449,7 @@ Output (raw JSON only, no markdown):
 
     async def _extract_anthropic(self, prompt: str, content: str) -> ExtractionResult:
         """Extract entities via Anthropic Messages API."""
-        if httpx is None:
+        if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed")
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -472,7 +476,7 @@ Output (raw JSON only, no markdown):
 
     async def _extract_openai_compat(self, prompt: str, content: str) -> ExtractionResult:
         """Extract entities via OpenAI-compatible API (NVIDIA NIM, Azure, etc.)."""
-        if httpx is None:
+        if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed")
         api_url = chat_completions_url(self.base_url)
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_SECONDS) as client:

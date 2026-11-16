@@ -40,9 +40,9 @@ def pg_db(monkeypatch):
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import PostgresPooledConnection, _global_backend
+            from foresight.server import PostgresPooledConnection, get_backend
 
-            pool = _global_backend._pool
+            pool = get_backend()._pool
             return PostgresPooledConnection(pool.getconn(), pool)
         return real_sqlite3_connect(database, *args, **kwargs)
 
@@ -71,6 +71,12 @@ def _list_items(limit=None):
     res = json.loads(_tool("list", user_id=UID, limit=limit))
     assert res["ok"], res
     return res
+
+
+def _inferred_list_max_limit():
+    from foresight.server import INFERRED_LIST_MAX_LIMIT
+
+    return INFERRED_LIST_MAX_LIMIT
 
 
 def _insert_memory(
@@ -238,11 +244,12 @@ class TestInferredQueue:
                 _insert_memory(conn, f"inf_{n}", f"inferred fact {n}", created_at=ts)
         finally:
             conn.close()
-        res = _list_items(limit=2)
-        assert res["count"] == 2
-        assert res["limit"] == 2
+        limit = 2
+        res = _list_items(limit=limit)
+        assert res["count"] == limit
+        assert res["limit"] == limit
         assert [i["id"] for i in res["items"]] == ["inf_0", "inf_1"]
-        assert _list_items(limit=100)["limit"] == 50
+        assert _list_items(limit=100)["limit"] == _inferred_list_max_limit()
 
     def test_items_round_trip_content_and_fields(self):
         conn = _pg()

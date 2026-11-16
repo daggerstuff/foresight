@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from http import HTTPStatus
 from typing import Any
 
 import pytest
@@ -52,7 +53,7 @@ def api_key() -> str:
 
 def _store_memory(client: TestClient, api_key: str, content: str, **extra: Any) -> str:
     resp = client.post("/memories", json={"content": content, **extra}, headers=_headers(api_key))
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == HTTPStatus.CREATED, resp.text
     return _memory_id_from_store(resp.json()["result"])
 
 
@@ -60,7 +61,7 @@ def _set_vector_id(memory_id: str) -> None:
     """Archive requires vector_id; the embedding pipeline is out of scope for Phase A."""
     from foresight import server as server_module
 
-    with server_module._global_backend.connection() as conn:
+    with server_module.get_backend().connection() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE memories SET vector_id = %s WHERE id = %s", (f"vec_{memory_id}", memory_id))
         conn.commit()
@@ -69,7 +70,7 @@ def _set_vector_id(memory_id: str) -> None:
 class TestOpenApi:
     def test_spec_served_unauthenticated(self, client: TestClient) -> None:
         resp = client.get("/openapi.json")
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         spec = resp.json()
         assert spec["openapi"] == "3.1.0"
         assert spec["info"]["title"] == "Foresight REST API"
@@ -112,47 +113,47 @@ class TestOpenApi:
 class TestAuth:
     def test_missing_credentials_rejected(self, client: TestClient) -> None:
         resp = client.post("/memories", json={"content": "no creds"}, headers={"X-Tenant-Id": TENANT})
-        assert resp.status_code == 401
+        assert resp.status_code == HTTPStatus.UNAUTHORIZED
         assert resp.json()["ok"] is False
         assert "Authentication required" in resp.json()["error"]["message"]
 
     def test_invalid_credentials_rejected(self, client: TestClient, api_key: str) -> None:
         del api_key
         resp = client.post("/memories", json={"content": "bogus"}, headers=_headers("not-a-real-key"))
-        assert resp.status_code == 401
+        assert resp.status_code == HTTPStatus.UNAUTHORIZED
         assert "Invalid or expired credentials" in resp.json()["error"]["message"]
 
     def test_api_key_via_x_api_key_header(self, client: TestClient, api_key: str) -> None:
         resp = client.post("/memories", json={"content": "key header auth"}, headers=_headers(api_key))
-        assert resp.status_code == 201
+        assert resp.status_code == HTTPStatus.CREATED
         assert resp.json()["ok"] is True
 
     def test_api_key_via_bearer_header(self, client: TestClient, api_key: str) -> None:
         resp = client.post("/memories", json={"content": "bearer auth"}, headers=_bearer(api_key))
-        assert resp.status_code == 201
+        assert resp.status_code == HTTPStatus.CREATED
 
     def test_session_token_via_bearer_header(self, client: TestClient) -> None:
         manager = get_auth_manager()
         user = manager.create_user("rest_session_user", "rest-session@test.local", "password-123")
         session_id = manager.create_session(user)
         resp = client.post("/memories", json={"content": "session auth"}, headers=_bearer(session_id))
-        assert resp.status_code == 201
+        assert resp.status_code == HTTPStatus.CREATED
 
     def test_unauthenticated_mode_allows_anonymous(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("FORESIGHT_ALLOW_UNAUTHENTICATED", "1")
         resp = client.post("/memories", json={"content": "open mode"}, headers={"X-Tenant-Id": TENANT})
-        assert resp.status_code == 201
+        assert resp.status_code == HTTPStatus.CREATED
 
 
 class TestIdentityAndScoping:
     def test_invalid_user_header_400(self, client: TestClient, api_key: str) -> None:
         resp = client.get("/memories", headers=_headers(api_key, user="has space"))
-        assert resp.status_code == 400
+        assert resp.status_code == HTTPStatus.BAD_REQUEST
         assert "Invalid X-User-Id" in resp.json()["error"]["message"]
 
     def test_invalid_tenant_header_400(self, client: TestClient, api_key: str) -> None:
         resp = client.get("/memories", headers=_headers(api_key, tenant="bad tenant!"))
-        assert resp.status_code == 400
+        assert resp.status_code == HTTPStatus.BAD_REQUEST
         assert "Invalid X-Tenant-Id" in resp.json()["error"]["message"]
 
     def test_tenant_access_denied_403(self, client: TestClient) -> None:
@@ -164,19 +165,19 @@ class TestIdentityAndScoping:
             tenant_access=["_other_tenant_"],
         )
         resp = client.post("/memories", json={"content": "denied"}, headers=_headers(user.api_key))
-        assert resp.status_code == 403
+        assert resp.status_code == HTTPStatus.FORBIDDEN
         assert "Tenant access denied" in resp.json()["error"]["message"]
 
     def test_user_scoping_isolates_memories(self, client: TestClient, api_key: str) -> None:
         _store_memory(client, api_key, "alice secret note")
 
         mine = client.get("/memories?q=alice", headers=_headers(api_key))
-        assert mine.status_code == 200
+        assert mine.status_code == HTTPStatus.OK
         assert mine.json()["ok"] is True
         assert "alice secret note" in mine.json()["result"]
 
         theirs = client.get("/memories?q=alice", headers=_headers(api_key, user="bob"))
-        assert theirs.status_code == 200
+        assert theirs.status_code == HTTPStatus.OK
         assert theirs.json()["result"] == "No memories found."
 
 
@@ -187,7 +188,7 @@ class TestMemoryLifecycle:
             json={"content": "rest store check", "category": "fact", "importance": 0.7},
             headers=_headers(api_key),
         )
-        assert resp.status_code == 201
+        assert resp.status_code == HTTPStatus.CREATED
         body = resp.json()
         assert body["ok"] is True
         assert body["result"].startswith("Stored memory ")
@@ -196,7 +197,7 @@ class TestMemoryLifecycle:
         content = "parity lookup target"
         mid = _store_memory(client, api_key, content)
         resp = client.post("/search", json={"query_type": "id", "memory_id": mid}, headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         result = resp.json()["result"]
         assert f"[{mid}]" in result
         assert f"Content: {content}" in result
@@ -213,7 +214,7 @@ class TestMemoryLifecycle:
             },
             headers=_headers(api_key),
         )
-        assert resp.status_code == 201, resp.text
+        assert resp.status_code == HTTPStatus.CREATED, resp.text
         assert resp.json()["result"].startswith("Stored memory ")
 
     def test_search_filters_via_body(self, client: TestClient, api_key: str) -> None:
@@ -222,7 +223,7 @@ class TestMemoryLifecycle:
         _store_memory(client, api_key, "beta category filter", category="fact")
 
         resp = client.post("/search", json={"query_type": "list", "category": "preference"}, headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         result = resp.json()["result"]
         assert "alpha category filter" in result
         assert "beta category filter" not in result
@@ -230,7 +231,7 @@ class TestMemoryLifecycle:
     def test_patch_updates_content(self, client: TestClient, api_key: str) -> None:
         mid = _store_memory(client, api_key, "before patch")
         resp = client.patch(f"/memories/{mid}", json={"content": "after patch"}, headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         assert resp.json()["result"] == f"Updated memory {mid}"
 
         lookup = client.post("/search", json={"query_type": "id", "memory_id": mid}, headers=_headers(api_key))
@@ -238,51 +239,52 @@ class TestMemoryLifecycle:
 
     def test_patch_missing_memory_404(self, client: TestClient, api_key: str) -> None:
         resp = client.patch("/memories/no-such-id", json={"content": "x"}, headers=_headers(api_key))
-        assert resp.status_code == 404
+        assert resp.status_code == HTTPStatus.NOT_FOUND
 
     def test_delete_removes_memory(self, client: TestClient, api_key: str) -> None:
         mid = _store_memory(client, api_key, "doomed memory")
         resp = client.delete(f"/memories/{mid}", headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         assert resp.json()["result"] == f"Deleted memory {mid}"
 
         lookup = client.post("/search", json={"query_type": "id", "memory_id": mid}, headers=_headers(api_key))
-        assert lookup.status_code == 404
+        assert lookup.status_code == HTTPStatus.NOT_FOUND
 
     def test_delete_missing_memory_404(self, client: TestClient, api_key: str) -> None:
         resp = client.delete("/memories/no-such-id", headers=_headers(api_key))
-        assert resp.status_code == 404
+        assert resp.status_code == HTTPStatus.NOT_FOUND
 
     def test_archive_with_vector_id(self, client: TestClient, api_key: str) -> None:
         mid = _store_memory(client, api_key, "archivable memory")
         _set_vector_id(mid)
         resp = client.delete(f"/memories/{mid}", params={"archive": "true"}, headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         assert resp.json()["result"].startswith(f"Archived memory {mid} to ghost node")
 
     def test_id_lookup_missing_404(self, client: TestClient, api_key: str) -> None:
         resp = client.post("/search", json={"query_type": "id", "memory_id": "no-such-id"}, headers=_headers(api_key))
-        assert resp.status_code == 404
+        assert resp.status_code == HTTPStatus.NOT_FOUND
 
 
 class TestOtherEndpoints:
     def test_batch_store_multiple_items(self, client: TestClient, api_key: str) -> None:
+        items = [{"content": "batch one"}, {"content": "batch two"}]
         resp = client.post(
             "/memories/batch",
-            json={"items": [{"content": "batch one"}, {"content": "batch two"}]},
+            json={"items": items},
             headers=_headers(api_key),
         )
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         body = resp.json()
         assert body["ok"] is True
         assert body["action"] == "batch_store"
-        assert body["count"] == 2
+        assert body["count"] == len(items)
         assert all(r["ok"] for r in body["results"])
         assert all(r["memory_id"] for r in body["results"])
 
     def test_batch_rejects_empty_items_422(self, client: TestClient, api_key: str) -> None:
         resp = client.post("/memories/batch", json={"items": []}, headers=_headers(api_key))
-        assert resp.status_code == 422
+        assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
     def test_reflect_returns_citations(self, client: TestClient, api_key: str) -> None:
         _store_memory(client, api_key, "The deploy window for payments is Tuesday nights")
@@ -291,7 +293,7 @@ class TestOtherEndpoints:
             json={"question": "When is the payments deploy window?"},
             headers=_headers(api_key),
         )
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         body = resp.json()
         assert body["answer"]
         assert isinstance(body["citations"], list)
@@ -300,32 +302,34 @@ class TestOtherEndpoints:
 
     def test_reflect_missing_question_422(self, client: TestClient, api_key: str) -> None:
         resp = client.post("/reflect", json={}, headers=_headers(api_key))
-        assert resp.status_code == 422
+        assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
     def test_reflect_requires_credentials(self, client: TestClient) -> None:
         resp = client.post("/reflect", json={"question": "anything"})
-        assert resp.status_code == 401
+        assert resp.status_code == HTTPStatus.UNAUTHORIZED
 
     def test_curate_observations_endpoint(self, client: TestClient, api_key: str) -> None:
-        _store_memory(client, api_key, "rest obs pattern one", category="restcat")
-        _store_memory(client, api_key, "rest obs pattern two", category="restcat")
+        stored_ids = [
+            _store_memory(client, api_key, "rest obs pattern one", category="restcat"),
+            _store_memory(client, api_key, "rest obs pattern two", category="restcat"),
+        ]
         resp = client.post("/observations/curate", json={"category": "restcat"}, headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         body = resp.json()
         assert body["ok"] is True
         assert body["action"] == "curate"
         assert body["observations_created"] >= 1
-        assert body["observations"][0]["evidence_count"] >= 2
+        assert body["observations"][0]["evidence_count"] >= len(stored_ids)
 
     def test_curate_observations_requires_credentials(self, client: TestClient) -> None:
         resp = client.post("/observations/curate", json={})
-        assert resp.status_code == 401
+        assert resp.status_code == HTTPStatus.UNAUTHORIZED
 
     def test_inject_returns_formatted(self, client: TestClient, api_key: str) -> None:
         resp = client.post(
             "/inject", json={"conversation_text": "we were talking about anxiety"}, headers=_headers(api_key)
         )
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         assert "formatted" in resp.json()
 
     def test_document_create_and_get(self, client: TestClient, api_key: str) -> None:
@@ -334,7 +338,7 @@ class TestOtherEndpoints:
             json={"title": "Rest Doc", "content": "paragraph text\n\nsecond paragraph with more detail here"},
             headers=_headers(api_key),
         )
-        assert resp.status_code == 201
+        assert resp.status_code == HTTPStatus.CREATED
         body = resp.json()
         doc_id = body["document"]["id"]
         assert doc_id
@@ -342,24 +346,24 @@ class TestOtherEndpoints:
         assert body["chunks"]
 
         fetched = client.get(f"/documents/{doc_id}", headers=_headers(api_key))
-        assert fetched.status_code == 200
+        assert fetched.status_code == HTTPStatus.OK
         assert fetched.json()["id"] == doc_id
         assert fetched.json()["title"] == "Rest Doc"
 
     def test_get_missing_document_404(self, client: TestClient, api_key: str) -> None:
         resp = client.get("/documents/no-such-doc", headers=_headers(api_key))
-        assert resp.status_code == 404
+        assert resp.status_code == HTTPStatus.NOT_FOUND
 
     def test_profile_layers(self, client: TestClient, api_key: str) -> None:
         resp = client.get("/profile", headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         body = resp.json()
         assert "static" in body
         assert "dynamic" in body
 
     def test_store_missing_content_422(self, client: TestClient, api_key: str) -> None:
         resp = client.post("/memories", json={"category": "fact"}, headers=_headers(api_key))
-        assert resp.status_code == 422
+        assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
         assert "Invalid request body" in resp.json()["error"]["message"]
 
     def test_invalid_json_body_400(self, client: TestClient, api_key: str) -> None:
@@ -368,14 +372,14 @@ class TestOtherEndpoints:
             content=b"not json",
             headers={**_headers(api_key), "content-type": "application/json"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == HTTPStatus.BAD_REQUEST
         assert "valid JSON" in resp.json()["error"]["message"]
 
 
 def _user_memory_count(user: str = USER, tenant: str = TENANT) -> int:
     from foresight import server as server_module
 
-    with server_module._global_backend.connection() as conn, conn.cursor() as cur:
+    with server_module.get_backend().connection() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT COUNT(*) FROM memories WHERE tenant_id = %s AND user_id = %s",
             (tenant, user),
@@ -406,30 +410,30 @@ class TestTemporalAndReprocess:
     def test_temporal_window_returns_recent_memory(self, client: TestClient, api_key: str) -> None:
         memory_id = _store_memory(client, api_key, "temporal window mirror note", importance=0.9)
         resp = client.post("/memories/temporal", json={"window": "week"}, headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         assert memory_id in {m["memory_id"] for m in resp.json()}
 
     def test_temporal_as_of_reconstructs_point_in_time(self, client: TestClient, api_key: str) -> None:
         memory_id = _store_memory(client, api_key, "as of mirror note", importance=0.9)
 
         before = client.post("/memories/temporal", json={"as_of": "2000-01-01T00:00:00Z"}, headers=_headers(api_key))
-        assert before.status_code == 200
+        assert before.status_code == HTTPStatus.OK
         assert memory_id not in {m["memory_id"] for m in before.json()}
 
         after = client.post("/memories/temporal", json={"as_of": "2100-01-01T00:00:00Z"}, headers=_headers(api_key))
-        assert after.status_code == 200
+        assert after.status_code == HTTPStatus.OK
         assert memory_id in {m["memory_id"] for m in after.json()}
 
     def test_temporal_invalid_as_of_422(self, client: TestClient, api_key: str) -> None:
         """An unparseable instant must not be ignored — that would answer from the present."""
         resp = client.post("/memories/temporal", json={"as_of": "last tuesday"}, headers=_headers(api_key))
-        assert resp.status_code == 422
+        assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
         assert "Invalid as_of" in resp.json()["error"]["message"]
 
     def test_temporal_post_not_answered_by_memory_id_route(self, client: TestClient, api_key: str) -> None:
         """/memories/{memory_id} matches this path shape but only serves PATCH/DELETE."""
         resp = client.post("/memories/temporal", json={}, headers=_headers(api_key))
-        assert resp.status_code == 200, resp.text
+        assert resp.status_code == HTTPStatus.OK, resp.text
         assert isinstance(resp.json(), list)
 
     def test_listing_content_mentioning_not_found_stays_200(self, client: TestClient, api_key: str) -> None:
@@ -441,38 +445,38 @@ class TestTemporalAndReprocess:
         """
         memory_id = _store_memory(client, api_key, "root cause: the error was not found in any log", importance=0.9)
         resp = client.post("/memories/temporal", json={"window": "week"}, headers=_headers(api_key))
-        assert resp.status_code == 200, resp.text
+        assert resp.status_code == HTTPStatus.OK, resp.text
         assert memory_id in {m["memory_id"] for m in resp.json()}
 
     def test_tool_json_wording_only_applies_to_plain_text(self) -> None:
         from foresight.rest_api import _tool_json
 
         ok = _tool_json(json.dumps({"ok": True, "memories": [{"content": "not found"}]}))
-        assert ok.status_code == 200
+        assert ok.status_code == HTTPStatus.OK
 
         legacy = _tool_json("Memory abc not found.")
-        assert legacy.status_code == 404
+        assert legacy.status_code == HTTPStatus.NOT_FOUND
 
         structured = _tool_json(json.dumps({"ok": False, "error": {"message": "Memory abc not found."}}))
-        assert structured.status_code == 404
+        assert structured.status_code == HTTPStatus.NOT_FOUND
 
     def test_temporal_requires_credentials(self, client: TestClient) -> None:
         resp = client.post("/memories/temporal", json={}, headers={"X-Tenant-Id": TENANT})
-        assert resp.status_code == 401
+        assert resp.status_code == HTTPStatus.UNAUTHORIZED
 
     def test_temporal_denied_for_other_tenant(self, client: TestClient) -> None:
         key = _restricted_key("rest_temporal_gated", "rest-temporal-gated@test.local")
         resp = client.post("/memories/temporal", json={}, headers=_headers(key))
-        assert resp.status_code == 403
+        assert resp.status_code == HTTPStatus.FORBIDDEN
 
     def test_reprocess_requires_credentials(self, client: TestClient) -> None:
         resp = client.post("/admin/raw-events/reprocess", json={}, headers={"X-Tenant-Id": TENANT})
-        assert resp.status_code == 401
+        assert resp.status_code == HTTPStatus.UNAUTHORIZED
 
     def test_reprocess_denied_for_other_tenant(self, client: TestClient) -> None:
         key = _restricted_key("rest_reprocess_gated", "rest-reprocess-gated@test.local")
         resp = client.post("/admin/raw-events/reprocess", json={}, headers=_headers(key))
-        assert resp.status_code == 403
+        assert resp.status_code == HTTPStatus.FORBIDDEN
 
     def test_reprocess_invalid_window_422(self, client: TestClient, api_key: str) -> None:
         resp = client.post(
@@ -480,7 +484,7 @@ class TestTemporalAndReprocess:
             json={"window_start": "yesterday"},
             headers=_headers(api_key),
         )
-        assert resp.status_code == 422
+        assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
     def test_reprocess_names_the_retention_gate(
         self, client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch
@@ -488,7 +492,7 @@ class TestTemporalAndReprocess:
         """Zero replayed work is ambiguous without the flag: report it explicitly."""
         monkeypatch.delenv("FORESIGHT_RAW_RETENTION", raising=False)
         resp = client.post("/admin/raw-events/reprocess", json={}, headers=_headers(api_key))
-        assert resp.status_code == 200
+        assert resp.status_code == HTTPStatus.OK
         body = resp.json()
         assert body["ok"] is True
         assert body["action"] == "reprocess_raw_events"
@@ -505,8 +509,8 @@ class TestTemporalAndReprocess:
             json={"window_start": "2000-01-01T00:00:00Z", "window_end": "2100-01-01T00:00:00Z"},
             headers=_headers(api_key),
         )
-        assert first.status_code == 200
-        assert second.status_code == 200
+        assert first.status_code == HTTPStatus.OK
+        assert second.status_code == HTTPStatus.OK
         assert first.json()["raw_retention_enabled"] is True
         assert first.json()["reprocess"] == second.json()["reprocess"]
         assert _user_memory_count() == before

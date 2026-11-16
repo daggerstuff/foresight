@@ -19,13 +19,34 @@ import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
+
+# Share of memories whose trend must shift before the overall trajectory flips.
+TREND_SHIFT_PCT = 30
+STALE_SHARE_DECLINING = 0.4
+
+# Insight thresholds. These are analysis heuristics, not protocol values: they
+# decide when a trend is strong enough to be worth surfacing as an insight.
+HUB_ENTITY_CONNECTIONS = 3
+MAJOR_HUB_CONNECTIONS = 5
+STALE_SHARE_WARNING = 0.5
+CATEGORY_HEALTH_IMPROVING = 0.3
+CATEGORY_HEALTH_DECLINING = -0.3
+MIN_IMPROVING_CATEGORIES = 2
+MIN_CATEGORY_ROWS = 2
+MIN_CATEGORY_PATTERN_ROWS = 3
+KEYSTONE_EARLY_SHARE = 0.7
+RAPID_WEAKENING_SHARE = 0.5
+URGENT_WEAKENING_SHARE = 0.7
+CONCENTRATION_RISK_SHARE = 0.6
+CONCENTRATION_MIN_MEMORIES = 5
+SUSTAINED_STABLE_SHARE = 0.4
 
 
 def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
@@ -163,8 +184,8 @@ class ReflectionEngine:
             raise ValueError(f"Invalid period '{period}'. Must be one of: {', '.join(valid_periods)}")
 
         hours = {"daily": 24, "weekly": 168, "monthly": 720, "quarterly": 2160}.get(period, 168)
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        now = datetime.now(timezone.utc)
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        now = datetime.now(UTC)
 
         conn = self._get_connection()
         try:
@@ -238,9 +259,9 @@ class ReflectionEngine:
         weakening_pct = (trend_counts["weakening"] / total * 100) if total else 0
 
         overall = "stable"
-        if strengthening_pct > 30:
+        if strengthening_pct > TREND_SHIFT_PCT:
             overall = "improving"
-        elif weakening_pct > 30 or trend_counts["stale"] / max(total, 1) > 0.4:
+        elif weakening_pct > TREND_SHIFT_PCT or trend_counts["stale"] / max(total, 1) > STALE_SHARE_DECLINING:
             overall = "declining"
 
         return {
@@ -327,13 +348,16 @@ class ReflectionEngine:
         top_entities = entity_summary.get("top_connected_entities", [])
         memory_ids = [_memory_id(row) for row in rows]
         for entity in top_entities[:3]:
-            if entity["connections"] >= 3:
+            if entity["connections"] >= HUB_ENTITY_CONNECTIONS:
                 # Generate specific action based on entity type
                 action = self._recommend_action_for_entity(entity)
                 insights.append(
                     ReflectionInsight(
                         insight_type="pattern",
-                        summary=f"{entity['name']} ({entity['type']}) anchors {entity['connections']} areas - leverage as hub for change",
+                        summary=(
+                            f"{entity['name']} ({entity['type']}) anchors "
+                            f"{entity['connections']} areas - leverage as hub for change"
+                        ),
                         confidence=0.75,
                         evidence_ids=memory_ids[:3],
                         recommended_action=action,
@@ -356,13 +380,16 @@ class ReflectionEngine:
         # Stale memory warning with specific recovery plan
         stale_count = counts.get("stale", 0)
         total = trend_summary.get("total_memories", 1)
-        if stale_count / max(total, 1) > 0.5:
+        if stale_count / max(total, 1) > STALE_SHARE_WARNING:
             stale_rows = [r for r in rows if _memory_trend(r) == "stale"]
             stale_categories = {_memory_category(r) for r in stale_rows}
             insights.append(
                 ReflectionInsight(
                     insight_type="warning",
-                    summary=f"Half your memories ({stale_count}/{total}) are stale. Focus on {', '.join(list(stale_categories)[:3])} to re-engage.",
+                    summary=(
+                        f"Half your memories ({stale_count}/{total}) are stale. Focus "
+                        f"on {', '.join(list(stale_categories)[:3])} to re-engage."
+                    ),
                     confidence=0.85,
                     evidence_ids=[_memory_id(r) for r in stale_rows[:5]],
                     recommended_action="review",
@@ -414,8 +441,8 @@ class ReflectionEngine:
             }
 
         # Detect cascading improvements (multiple related areas improving)
-        improving_cats = [c for c, d in category_health.items() if d["score"] > 0.3]
-        if len(improving_cats) >= 2:
+        improving_cats = [c for c, d in category_health.items() if d["score"] > CATEGORY_HEALTH_IMPROVING]
+        if len(improving_cats) >= MIN_IMPROVING_CATEGORIES:
             # Find common themes in improving categories
             improving_memories = []
             for cat in improving_cats:
@@ -424,7 +451,10 @@ class ReflectionEngine:
             insights.append(
                 ReflectionInsight(
                     insight_type="breakthrough",
-                    summary=f"Multiple areas improving simultaneously ({', '.join(improving_cats[:3])}). This momentum suggests foundational changes are taking hold - maintain current practices.",
+                    summary=(
+                        f"Multiple areas improving simultaneously ({', '.join(improving_cats[:3])}). This "
+                        f"momentum suggests foundational changes are taking hold - maintain current practices."
+                    ),
                     confidence=0.8,
                     evidence_ids=[_memory_id(r) for r in improving_memories[:5]],
                     recommended_action="preserve",
@@ -439,11 +469,18 @@ class ReflectionEngine:
         # Detect resource competition (one strong, one weak)
         for high_cat, high_data in category_health.items():
             for low_cat, low_data in category_health.items():
-                if high_cat != low_cat and high_data["score"] > 0.3 and low_data["score"] < -0.3:
+                if (
+                    high_cat != low_cat
+                    and high_data["score"] > CATEGORY_HEALTH_IMPROVING
+                    and low_data["score"] < CATEGORY_HEALTH_DECLINING
+                ):
                     insights.append(
                         ReflectionInsight(
                             insight_type="pattern",
-                            summary=f"Energy imbalance: {high_cat} is thriving while {low_cat} struggles. Consider if time/energy allocation needs rebalancing.",
+                            summary=(
+                                f"Energy imbalance: {high_cat} is thriving while {low_cat} "
+                                f"struggles. Consider if time/energy allocation needs rebalancing."
+                            ),
                             confidence=0.65,
                             evidence_ids=(
                                 [_memory_id(r) for r in high_data["rows"][:2]]
@@ -488,7 +525,7 @@ class ReflectionEngine:
 
         # Find categories with early strengthening
         for cat, cat_rows in by_category.items():
-            if len(cat_rows) < 2:
+            if len(cat_rows) < MIN_CATEGORY_ROWS:
                 continue
 
             # Check if this category strengthened early and others followed
@@ -500,11 +537,17 @@ class ReflectionEngine:
             early_rows = sorted_cat[: max(1, len(sorted_cat) // 3)]
             strengthening_early = sum(1 for r in early_rows if _memory_trend(r) == "strengthening")
 
-            if strengthening_early >= len(early_rows) * 0.7 and len(cat_rows) >= 3:
+            if (
+                strengthening_early >= len(early_rows) * KEYSTONE_EARLY_SHARE
+                and len(cat_rows) >= MIN_CATEGORY_PATTERN_ROWS
+            ):
                 insights.append(
                     ReflectionInsight(
                         insight_type="breakthrough",
-                        summary=f"{cat} appears to be a keystone area - early improvements here may have driven broader progress. Double down on what is working in {cat}.",
+                        summary=(
+                            f"{cat} appears to be a keystone area - early improvements here may "
+                            f"have driven broader progress. Double down on what is working in {cat}."
+                        ),
                         confidence=0.7,
                         evidence_ids=[_memory_id(r) for r in early_rows],
                         recommended_action="preserve",
@@ -543,20 +586,23 @@ class ReflectionEngine:
             weakening_count = sum(1 for r in cat_rows if _memory_trend(r) == "weakening")
             total = len(cat_rows)
 
-            if weakening_count / max(total, 1) > 0.5 and total >= 3:
+            if weakening_count / max(total, 1) > RAPID_WEAKENING_SHARE and total >= MIN_CATEGORY_PATTERN_ROWS:
                 recent_weakening = [r for r in cat_rows if _memory_trend(r) == "weakening"][:3]
 
                 insights.append(
                     ReflectionInsight(
                         insight_type="warning",
-                        summary=f"WARNING: {cat} showing consistent decline ({weakening_count}/{total} weakening). Address soon before pattern solidifies.",
+                        summary=(
+                            f"WARNING: {cat} showing consistent decline ({weakening_count}/{total} "
+                            f"weakening). Address soon before pattern solidifies."
+                        ),
                         confidence=0.8,
                         evidence_ids=[_memory_id(r) for r in recent_weakening],
                         recommended_action="review",
                         metadata={
                             "risk_category": cat,
                             "weakening_ratio": weakening_count / total,
-                            "urgency": "high" if weakening_count / total > 0.7 else "medium",
+                            "urgency": "high" if weakening_count / total > URGENT_WEAKENING_SHARE else "medium",
                             "actionable": f"Identify specific stressors in {cat}; consider intervention",
                         },
                     )
@@ -564,14 +610,17 @@ class ReflectionEngine:
 
         # Detect concentration risk
         total_memories = len(rows)
-        if total_memories >= 5:
+        if total_memories >= CONCENTRATION_MIN_MEMORIES:
             for cat, cat_rows in by_category.items():
                 concentration = len(cat_rows) / total_memories
-                if concentration > 0.6:
+                if concentration > CONCENTRATION_RISK_SHARE:
                     insights.append(
                         ReflectionInsight(
                             insight_type="warning",
-                            summary=f"Focus concentration risk: {cat} dominates your attention ({concentration:.0%} of memories). Consider broadening scope.",
+                            summary=(
+                                f"Focus concentration risk: {cat} dominates your attention "
+                                f"({concentration:.0%} of memories). Consider broadening scope."
+                            ),
                             confidence=0.75,
                             evidence_ids=[_memory_id(r) for r in cat_rows[:5]],
                             recommended_action="investigate",
@@ -611,11 +660,18 @@ class ReflectionEngine:
             total = len(cat_rows)
 
             # Stable areas with some strengthening momentum
-            if stable_count / max(total, 1) > 0.4 and strengthening_count >= 1 and total >= 3:
+            if (
+                stable_count / max(total, 1) > SUSTAINED_STABLE_SHARE
+                and strengthening_count >= 1
+                and total >= MIN_CATEGORY_PATTERN_ROWS
+            ):
                 insights.append(
                     ReflectionInsight(
                         insight_type="breakthrough",
-                        summary=f"{cat} is stable with emerging momentum - ripe for intentional growth. Small investments here could yield disproportionate returns.",
+                        summary=(
+                            f"{cat} is stable with emerging momentum - ripe for intentional "
+                            f"growth. Small investments here could yield disproportionate returns."
+                        ),
                         confidence=0.7,
                         evidence_ids=[_memory_id(r) for r in cat_rows[:4]],
                         recommended_action="preserve",
@@ -636,7 +692,7 @@ class ReflectionEngine:
         entity_type = entity.get("type", "concept")
         connections = entity.get("connections", 0)
 
-        if connections >= 5:
+        if connections >= MAJOR_HUB_CONNECTIONS:
             return "leverage"  # Major hub - use as change agent
         if entity_type == "emotion":
             return "review"  # Emotional hub - check for regulation needs
@@ -712,8 +768,11 @@ class ReflectionEngine:
     ) -> None:
         """Store reflection report as a memory for continuity."""
         try:
-            now = datetime.now(timezone.utc).isoformat()
-            content = f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
+            now = datetime.now(UTC).isoformat()
+            content = (
+                f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} "
+                f"insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
+            )
 
             # Build gist from insight summaries for quick retrieval
             insight_summaries = [i.summary for i in report.insights]

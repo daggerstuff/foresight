@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +17,8 @@ from foresight.block_registry import MemoryBlockSchema
 from foresight.context_blocks import register_context_block_schema
 from foresight.hybrid_retriever import HybridResult, HybridSearchResult
 from foresight.server import (
+    DEFAULT_CASCADE_DEPTH,
+    DEFAULT_CASCADE_LIMIT,
     ContextBlockAction,
     CurationRunAction,
     _extract_terms,
@@ -33,6 +35,10 @@ from foresight.server import (
     store_memory,
 )
 from foresight_cli.cli import _decode_tool_result
+
+# _score_memory_relevance sums normalized overlap, importance and decay; a
+# recent memory whose content fully covers the query terms scores around 1.9.
+MIN_FULL_MATCH_RELEVANCE_SCORE = 1.5
 
 
 @pytest.fixture(autouse=True)
@@ -52,9 +58,9 @@ def setup_test_db(monkeypatch):
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import PostgresPooledConnection, _global_backend
+            from foresight.server import PostgresPooledConnection, get_backend
 
-            pool = _global_backend._pool
+            pool = get_backend()._pool
             return PostgresPooledConnection(pool.getconn(), pool)
         return real_sqlite3_connect(database, *args, **kwargs)
 
@@ -69,14 +75,14 @@ def setup_test_db(monkeypatch):
 
 def test_store_memory():
     # Use unique content to avoid dedup collision with previous runs
-    unique = f"test_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'store_test').hexdigest()[:8]}"
+    unique = f"test_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'store_test').hexdigest()[:8]}"
     result = store_memory(unique)
     assert "Stored" in result
 
 
 def test_store_memory_dedup():
     """Storing identical content should bump activation, not create duplicate."""
-    content = f"dedup_test_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'dedup_unique').hexdigest()[:8]}"
+    content = f"dedup_test_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'dedup_unique').hexdigest()[:8]}"
     result1 = store_memory(content)
     assert "Stored" in result1
     result2 = store_memory(content)
@@ -136,7 +142,7 @@ def test_store_memory_uses_content_hash_for_dedup():
     """
     from foresight.server import store_memory
 
-    unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:8]
+    unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:8]
     content = f"hash_dedup_test_{unique_marker}"
 
     result1 = store_memory(content)
@@ -150,7 +156,7 @@ def test_store_memory_dedup_increments_activation_count():
     """Duplicate store must bump activation_count, not create a new row."""
     from foresight.server import store_memory
 
-    unique = f"activation_bump_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
+    unique = f"activation_bump_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
     r1 = store_memory(unique)
     assert "Stored" in r1
     r2 = store_memory(unique)
@@ -164,7 +170,10 @@ def test_store_memory_dedup_increments_activation_count():
         (unique,),
     ).fetchone()
     assert row is not None
-    assert row["activation_count"] >= 2, f"expected >=2, got {row['activation_count']}"
+    duplicate_store_activation_count = 2
+    assert row["activation_count"] >= duplicate_store_activation_count, (
+        f"expected >= {duplicate_store_activation_count}, got {row['activation_count']}"
+    )
 
 
 def test_store_memory_tenant_isolation_on_dedup():
@@ -194,7 +203,7 @@ def test_store_memory_tenant_isolation_on_dedup():
 
         shared_content = "cross-tenant dedup test"
         h = content_hash(shared_content)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         for tenant, mid in [("tenant-a", "mem-a-1"), ("tenant-b", "mem-b-1")]:
             conn.execute(
@@ -213,9 +222,9 @@ def test_store_memory_tenant_isolation_on_dedup():
             "SELECT tenant_id FROM memories WHERE content_hash = ? AND user_id = ?",
             (h, "user-1"),
         ).fetchall()
-        assert len(rows) == 2, f"expected 2 rows across tenants, got {len(rows)}"
         tenants = {r[0] for r in rows}
         assert tenants == {"tenant-a", "tenant-b"}
+        assert len(rows) == len(tenants), f"expected one row per tenant, got {len(rows)}"
 
         conn.close()
     finally:
@@ -371,15 +380,16 @@ async def test_mcp_synthesize_profile_buckets_and_budget(monkeypatch):
                 "user_id": "_test_user_",
             },
         )
+        max_chars = 200
         result = await client.call_tool(
             "synthesize_profile",
-            {"user_id": "_test_user_", "include_buckets": True, "format_prompt": True, "max_chars": 200},
+            {"user_id": "_test_user_", "include_buckets": True, "format_prompt": True, "max_chars": max_chars},
         )
 
     assert result.is_error is False
     text = result.content[0].text
     assert "concise replies" in text
-    assert len(text) <= 200
+    assert len(text) <= max_chars
 
 
 @contextmanager
@@ -412,7 +422,8 @@ def test_bridge_context_blocks_to_memories():
         ):
             stored = _bridge_context_blocks_to_memories(agent, "bridge_test_user")
 
-        assert stored >= 2  # at least one preference + one pending
+        bridged_categories = {"preference", "pending"}
+        assert stored >= len(bridged_categories)
 
         # Verify rows were actually inserted
         conn = sqlite3.connect(db_path)
@@ -422,8 +433,7 @@ def test_bridge_context_blocks_to_memories():
         ).fetchall()
         conn.close()
         categories = {r[0] for r in rows}
-        assert "preference" in categories
-        assert "pending" in categories
+        assert bridged_categories <= categories
     finally:
         os.unlink(db_path)
 
@@ -522,7 +532,7 @@ def _make_inject_test_db(memories=None):
                     m.get("tenant_id", "default"),
                     m.get("user_id", "inject_test_user"),
                     m.get("importance", 1.0),
-                    m.get("created_at", datetime.now(timezone.utc).isoformat()),
+                    m.get("created_at", datetime.now(UTC).isoformat()),
                     m.get("is_ghost", 0),
                 ),
             )
@@ -546,7 +556,7 @@ def _make_hybrid_result(memory_id, content, combined_score=0.8, **kwargs):
         category=kwargs.get("category", "fact"),
         importance=kwargs.get("importance", 1.0),
         strength_trend=kwargs.get("strength_trend", "stable"),
-        created_at=kwargs.get("created_at", datetime.now(timezone.utc).isoformat()),
+        created_at=kwargs.get("created_at", datetime.now(UTC).isoformat()),
         keyword_score=kwargs.get("keyword_score", 0.0),
         tfidf_cosine_score=kwargs.get("tfidf_cosine_score", 0.0),
         semantic_score=kwargs.get("semantic_score", 0.0),
@@ -635,10 +645,11 @@ def test_inject_context_respects_max_memories():
         patch("foresight.server.USER_ID", "inject_test_user"),
         patch("foresight.server.get_context_block_agent"),
     ):
-        result = inject_context("python topic", max_memories=2)
+        max_memories = 2
+        result = inject_context("python topic", max_memories=max_memories)
 
     memory_lines = [line for line in result.splitlines() if line.startswith("- [")]
-    assert len(memory_lines) <= 2
+    assert len(memory_lines) <= max_memories
 
 
 def test_inject_context_no_match():
@@ -698,8 +709,9 @@ def test_get_relevant_memories_returns_structured_data():
         _make_hybrid_result("mem1", "User prefers Python type hints", combined_score=0.85),
         _make_hybrid_result("mem2", "Session discussed database migrations", combined_score=0.7),
     ]
+    total_candidates = 5
     with (
-        _patch_hybrid_retriever(results, total_candidates=5, signal_counts={"keyword": 3, "graph": 2}),
+        _patch_hybrid_retriever(results, total_candidates=total_candidates, signal_counts={"keyword": 3, "graph": 2}),
         patch("foresight.server.USER_ID", "inject_test_user"),
     ):
         result = get_relevant_memories("python type hints")
@@ -708,9 +720,9 @@ def test_get_relevant_memories_returns_structured_data():
     assert "memories" in payload
     assert "total_candidates" in payload
     assert "signal_counts" in payload
-    assert len(payload["memories"]) == 2
+    assert len(payload["memories"]) == len(results)
     assert payload["memories"][0]["memory_id"] == "mem1"
-    assert payload["total_candidates"] == 5
+    assert payload["total_candidates"] == total_candidates
     assert payload["signal_counts"] == {"keyword": 3, "graph": 2}
 
 
@@ -738,10 +750,11 @@ def test_get_relevant_memories_respects_limit():
         _patch_hybrid_retriever(results),
         patch("foresight.server.USER_ID", "inject_test_user"),
     ):
-        result = get_relevant_memories("test query", limit=3)
+        limit = 3
+        result = get_relevant_memories("test query", limit=limit)
 
     payload = json.loads(result)
-    assert len(payload["memories"]) == 3
+    assert len(payload["memories"]) == limit
 
 
 def test_format_context_blocks_by_injection_point_groups_by_schema():
@@ -771,7 +784,7 @@ def test_format_context_blocks_by_injection_point_groups_by_schema():
 
 def test_score_memory_relevance():
     """_score_memory_relevance combines overlap, importance, and recency."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Create a mock row-like object using a dict wrapped to behave like Row
     class FakeRow:
@@ -788,12 +801,12 @@ def test_score_memory_relevance():
 
     # overlap_score=1.0 (4/4), importance=0.8*0.5=0.4, decay~0.5 -> total ~1.9
     # Normalized score: 1.0 + 0.4 + 0.5 = 1.9
-    assert score > 1.5  # Normalized score ~1.9
+    assert score > MIN_FULL_MATCH_RELEVANCE_SCORE
 
 
 def test_score_memory_relevance_old_memory():
     """Older memories get lower recency scores."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     old_time = (now - timedelta(days=30)).isoformat()
 
     class FakeRow:
@@ -824,7 +837,7 @@ def test_score_memory_relevance_old_memory():
 
 def test_manage_context_blocks_update_reset_clear_cycle():
     """The renamed block manager preserves the continuity block semantics."""
-    user_id = f"context_block_test_{datetime.now(timezone.utc).timestamp()}"
+    user_id = f"context_block_test_{datetime.now(UTC).timestamp()}"
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
 
@@ -883,8 +896,9 @@ def test_manage_context_blocks_update_reset_clear_cycle():
 
 def test_registered_context_block_schema_allows_validated_custom_block():
     """Custom schemas can create validated non-default context blocks."""
-    label = f"custom_notes_{datetime.now(timezone.utc).timestamp()}".replace(".", "_")
-    user_id = f"custom_block_user_{datetime.now(timezone.utc).timestamp()}"
+    label = f"custom_notes_{datetime.now(UTC).timestamp()}".replace(".", "_")
+    user_id = f"custom_block_user_{datetime.now(UTC).timestamp()}"
+    char_limit = 12
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
 
@@ -892,7 +906,7 @@ def test_registered_context_block_schema_allows_validated_custom_block():
         MemoryBlockSchema(
             label=label,
             description="Short custom notes",
-            char_limit=12,
+            char_limit=char_limit,
         )
     )
 
@@ -913,7 +927,7 @@ def test_registered_context_block_schema_allows_validated_custom_block():
         listed = _decode_json_result(manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id))
         custom_block = next(block for block in listed["blocks"] if block["label"] == label)
         assert custom_block["description"] == "Short custom notes"
-        assert custom_block["char_limit"] == 12
+        assert custom_block["char_limit"] == char_limit
         invalid = _decode_json_result(
             manage_context_blocks(
                 ContextBlockAction(action="update", label=label, content="this note is too long"),
@@ -941,7 +955,7 @@ def test_registered_context_block_schema_allows_validated_custom_block():
 
 def test_manage_context_blocks_are_tenant_isolated():
     """Same user ID gets separate persisted context blocks per tenant."""
-    user_id = f"tenant_isolation_user_{datetime.now(timezone.utc).timestamp()}"
+    user_id = f"tenant_isolation_user_{datetime.now(UTC).timestamp()}"
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
 
@@ -1052,13 +1066,14 @@ def _seed_memory(
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn.execute(
         """INSERT INTO memories
         (id, content, tenant_id, scope, retention, category, user_id, bank_id, created_at,
          updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, version,
          importance, activation_count, decay_rate, retrieval_count, strength_trend, last_retrieved_at)
-        VALUES (?, ?, ?, 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, 'stable', NULL)
+        VALUES (?, ?, ?, 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, \
+'stable', NULL)
         ON CONFLICT (id) DO NOTHING""",
         (memory_id, content, tenant_id, user_id, bank_id, now, now),
     )
@@ -1217,20 +1232,15 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
 
     db_path = _make_curation_test_db()
     user_id = "curation_in_place_user"
-    _seed_memory(
-        db_path,
-        memory_id="mem1",
-        content="Original memory one",
-        bank_id="source_bank",
-        user_id=user_id,
-    )
-    _seed_memory(
-        db_path,
-        memory_id="mem2",
-        content="Original memory two",
-        bank_id="source_bank",
-        user_id=user_id,
-    )
+    seeded_memory_ids = ("mem1", "mem2")
+    for index, memory_id in enumerate(seeded_memory_ids, start=1):
+        _seed_memory(
+            db_path,
+            memory_id=memory_id,
+            content=f"Original memory {index}",
+            bank_id="source_bank",
+            user_id=user_id,
+        )
 
     def _run_inline(run_id, payload):
         server_module._execute_curation_run(run_id, payload)
@@ -1271,7 +1281,7 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
     assert fetched["output_mode"] == "in_place"
     assert fetched["output_bank_id"].startswith("curation:stage:")
     assert fetched["summary"]["archive_bank_id"] == f"source_bank:archived:{run['id']}"
-    assert fetched["summary"]["archived_memory_count"] == 2
+    assert fetched["summary"]["archived_memory_count"] == len(seeded_memory_ids)
     assert fetched["summary"]["promoted_memory_count"] == fetched["summary"]["output_memory_count"]
 
     conn = sqlite3.connect(db_path)
@@ -1292,7 +1302,7 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
 
     assert len(source_rows) == fetched["summary"]["output_memory_count"]
     assert all('"curation_run:' in (row[2] or "") for row in source_rows)
-    assert len(archived_rows) == 2
+    assert len(archived_rows) == len(seeded_memory_ids)
     assert len(staging_rows) == 0
     assert {row[0] for row in original_memories} == {fetched["summary"]["archive_bank_id"]}
 
@@ -1476,7 +1486,7 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
 
     source_tuples = [(r["id"], r["bank_id"]) for r in source_rows]
     assert source_tuples == [("mem1", "source_bank")]
-    assert len(staging_rows) == 2
+    assert len(staging_rows) == len(source_rows) + 1  # preserved copies plus the run summary
     assert archive_rows == []
 
 
@@ -1485,7 +1495,7 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
     from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = sqlite3.connect(db_path)
     conn.execute(
         """INSERT INTO curation_runs
@@ -1538,7 +1548,7 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
     from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     transcript_bundle = [{"role": "user", "content": "Remember this detail"}]
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -1775,10 +1785,11 @@ def test_old_archive_update_would_leak_across_tenants():
             )"""
         )
         memory_id = "mem-leak-demo"
-        for tenant, content in [
+        tenant_rows = [
             ("tenant-a", "tenant-a content"),
             ("tenant-b", "tenant-b content"),
-        ]:
+        ]
+        for tenant, content in tenant_rows:
             conn.execute(
                 "INSERT INTO memories (id, content, tenant_id, user_id, is_ghost, gist) VALUES (?, ?, ?, ?, 0, NULL)",
                 (memory_id, content, tenant, "user-1"),
@@ -1791,7 +1802,7 @@ def test_old_archive_update_would_leak_across_tenants():
         )
         conn.commit()
 
-        assert cursor.rowcount == 2, (
+        assert cursor.rowcount == len(tenant_rows), (
             f"Vulnerability confirmed: old UPDATE leaks across tenants (updated {cursor.rowcount} rows instead of 1)"
         )
         conn.close()
@@ -1956,11 +1967,12 @@ def test_memory_budget_metrics_utilization():
     from foresight.server import SystemStatusOptions, get_system_status, store_memory
 
     # Store a few memories
-    for i in range(5):
+    seeded_memory_count = 5
+    for i in range(seeded_memory_count):
         store_memory(f"budget test {i}")
     result = get_system_status(options=SystemStatusOptions(include_cache_metrics=True))
     data = json.loads(result)
-    assert data["memory_budget"]["current_count"] >= 5
+    assert data["memory_budget"]["current_count"] >= seeded_memory_count
     assert data["memory_budget"]["utilization_pct"] >= 0
     assert data["memory_budget"]["hard_cap_enforced"] is False
 
@@ -1978,25 +1990,28 @@ def test_cascade_retrieval_respects_limit():
     """Cascade retrieval respects the limit parameter."""
     from foresight.server import SearchOptions, search_memories
 
-    result = search_memories(SearchOptions(query="test", use_cascade=True, limit=2))
+    limit = 2
+    result = search_memories(SearchOptions(query="test", use_cascade=True, limit=limit))
     # Count lines in result
     lines = [line for line in result.split("\n") if line.startswith("- [")]
-    assert len(lines) <= 2
+    assert len(lines) <= limit
 
 
 def test_search_options_cascade_fields():
     """SearchOptions accepts cascade-related fields."""
     from foresight.server import SearchOptions
 
-    opts = SearchOptions(query="test", use_cascade=True, cascade_depth=3, cascade_limit=100)
+    cascade_depth = 3
+    cascade_limit = 100
+    opts = SearchOptions(query="test", use_cascade=True, cascade_depth=cascade_depth, cascade_limit=cascade_limit)
     assert opts.use_cascade is True
-    assert opts.cascade_depth == 3
-    assert opts.cascade_limit == 100
+    assert opts.cascade_depth == cascade_depth
+    assert opts.cascade_limit == cascade_limit
     # Test defaults
     opts2 = SearchOptions(query="test")
     assert opts2.use_cascade is False
-    assert opts2.cascade_depth == 2
-    assert opts2.cascade_limit == 100
+    assert opts2.cascade_depth == DEFAULT_CASCADE_DEPTH
+    assert opts2.cascade_limit == DEFAULT_CASCADE_LIMIT
 
 
 class TestSystemStatusHealth:
@@ -2019,8 +2034,8 @@ class TestSystemStatusHealth:
             inject_context("python type hints and database")
 
         assert "last_run_at" in _last_injection_stats
-        assert _last_injection_stats["memories_returned"] == 2
-        assert _last_injection_stats["memories_fetched"] == 2
+        assert _last_injection_stats["memories_returned"] == len(results)
+        assert _last_injection_stats["memories_fetched"] == len(results)
         assert "fast_path" in _last_injection_stats
         assert "signal_counts" in _last_injection_stats
         assert "latency_ms" in _last_injection_stats
@@ -2359,7 +2374,8 @@ def test_process_session_transcript_infer_false_stores_verbatim():
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT content, tags, metrics FROM memories WHERE user_id = ? AND tags LIKE ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT content, tags, metrics FROM memories WHERE user_id = ? AND tags LIKE ? ORDER BY created_at DESC "
+        "LIMIT 1",
         ("_test_user_", "%verbatim%"),
     ).fetchone()
     assert row is not None, "expected a verbatim memory to be stored"

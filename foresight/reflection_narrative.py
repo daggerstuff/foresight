@@ -96,9 +96,12 @@ LLMCallable = Callable[[str, str, str], str]
 # filled in by :func:`_build_phi_safe_prompt`.
 NARRATIVE_PROMPT_TEMPLATE = """You are summarizing a structured reflection report for a clinical AI memory platform.
 
-The report contains {n_insights} insights about a user's memory state over the period {start_date} to {end_date} (period: {period}). Total memories analyzed: {memories_analyzed}.
+The report contains {n_insights} insights about a user's memory state over the period {start_date} to \
+{end_date} (period: {period}). Total memories analyzed: {memories_analyzed}.
 
-Each insight is provided below as a structured record. Summarize the most important themes in 2-4 paragraphs of natural prose. Do not invent details. Do not include any raw memory content — only describe the patterns the structured insights reveal.
+Each insight is provided below as a structured record. Summarize the most important themes in 2-4 paragraphs of \
+natural prose. Do not invent details. Do not include any raw memory content — only describe the patterns the \
+structured insights reveal.
 
 Insights:
 {insights_block}
@@ -106,7 +109,8 @@ Insights:
 Trend summary (counts of memories by trend state): {trend_summary}
 Entity summary (most-connected entities): {entity_summary}
 
-Write a 2-4 paragraph narrative summary suitable for surfacing in a clinical coaching context. Keep the tone professional, observational, and non-judgmental.
+Write a 2-4 paragraph narrative summary suitable for surfacing in a clinical coaching context. Keep the tone \
+professional, observational, and non-judgmental.
 """
 
 

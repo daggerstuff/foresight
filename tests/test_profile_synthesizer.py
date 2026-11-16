@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from foresight import profile_synthesizer as ps_mod, subconscious as sub_mod
@@ -81,7 +81,7 @@ class MemorySeed:
 def _seed_memory(conn: sqlite3.Connection, seed: MemorySeed) -> str:
     """Insert a test memory row and return its ID."""
     mid = f"mem_{abs(hash(seed.content))}"
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn.execute(
         """INSERT OR IGNORE INTO memories
         (id, content, tenant_id, scope, retention, category, user_id,
@@ -113,7 +113,7 @@ def _seed_context_block(
     user_id: str = "test_user",
 ) -> None:
     """Insert a test context block row."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn.execute(
         """INSERT OR REPLACE INTO context_blocks
         (tenant_id, user_id, label, content, updated_at)
@@ -180,9 +180,10 @@ class TestExtractBlockLines:
 
     def test_respects_max(self):
         agent = ContextBlockAgent("test_user")
+        max_per_block = 5
         agent.update_block("user_preferences", "\n".join(f"pref_{i}" for i in range(20)))
-        lines = _extract_block_lines(agent, ["user_preferences"], max_per_block=5)
-        assert len(lines) <= 5
+        lines = _extract_block_lines(agent, ["user_preferences"], max_per_block=max_per_block)
+        assert len(lines) <= max_per_block
 
 
 # ---------------------------------------------------------------------------
@@ -442,28 +443,32 @@ class TestProfileToPromptBudget:
 
     def test_generous_budget_keeps_everything(self):
         profile = {"static": ["Engineer", "Prefers dark mode"], "dynamic": []}
-        prompt = profile_to_prompt(profile, max_chars=10_000)
+        max_chars = 10_000
+        prompt = profile_to_prompt(profile, max_chars=max_chars)
         assert "- Engineer" in prompt
         assert "- Prefers dark mode" in prompt
-        assert len(prompt) <= 10_000
+        assert len(prompt) <= max_chars
 
     def test_static_preferred_over_dynamic(self):
+        max_chars = 60
         profile = {"static": ["A" * 40], "dynamic": ["B" * 40]}
-        prompt = profile_to_prompt(profile, max_chars=60)
+        prompt = profile_to_prompt(profile, max_chars=max_chars)
         assert prompt.startswith("ABOUT USER:")
         assert "CURRENT CONTEXT:" not in prompt
-        assert len(prompt) <= 60
+        assert len(prompt) <= max_chars
 
     def test_buckets_dropped_when_tight(self):
+        max_chars = 60
         profile = {"static": ["A" * 40], "buckets": {"preferences": ["B" * 40]}}
-        prompt = profile_to_prompt(profile, max_chars=60)
+        prompt = profile_to_prompt(profile, max_chars=max_chars)
         assert "BY TOPIC:" not in prompt
-        assert len(prompt) <= 60
+        assert len(prompt) <= max_chars
 
     def test_truncates_last_line_at_word_boundary(self):
         line = "Engineer working on the payments platform"
-        prompt = profile_to_prompt({"static": [line]}, max_chars=30)
-        assert len(prompt) <= 30
+        max_chars = 30
+        prompt = profile_to_prompt({"static": [line]}, max_chars=max_chars)
+        assert len(prompt) <= max_chars
         assert prompt.startswith("ABOUT USER:")
         assert "..." in prompt
         assert "Engineer w" not in prompt  # never cuts mid-word

@@ -29,8 +29,8 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from .memory_maintenance import (
     MAX_BATCH_SIZE,
@@ -442,8 +442,11 @@ class MaintenanceEvalHarness:
         reset_pool()
 
         for mod in (config_module, conn_pool_module):
-            orig = mod.DB_PATH  # type: ignore[attr-defined]
-            mod.DB_PATH = self.db_path  # type: ignore[attr-defined]
+            # These modules are patched dynamically, so their DB_PATH binding is
+            # not statically known; cast to Any for this one statement group.
+            target = cast(Any, mod)
+            orig = target.DB_PATH
+            target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Ensure schema exists
@@ -472,7 +475,7 @@ class MaintenanceEvalHarness:
         """Create core schema and seed fixture memories. Returns count inserted."""
         self._apply_patches()
         conn = self._get_connection()
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
 
         count = 0
         for mem in ALL_FIXTURES:
@@ -577,7 +580,7 @@ class MaintenanceEvalHarness:
         if scenario.id == "S5_all_modes":
             # All 4 modes ran and produced results
             passed = (
-                len(stats.modes_run) >= 4
+                len(stats.modes_run) >= len(config.modes)
                 and stats.duplicates_found > 0
                 and stats.contradictions_found > 0
                 and (stats.stale_archived > 0 or stats.stale_found > 0)
@@ -634,7 +637,7 @@ class MaintenanceEvalHarness:
         }
 
         return MaintenanceEvalReport(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             scenarios=results,
             summary=summary,
         )

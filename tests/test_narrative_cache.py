@@ -76,7 +76,8 @@ def test_narrative_cache_tenant_isolation(tmp_path) -> None:
 
 
 def test_narrative_cache_lru_eviction(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=2)
+    max_entries = 2
+    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=max_entries)
     for report_id in ("oldest", "middle"):
         cache.put(
             report_id,
@@ -128,7 +129,7 @@ def test_narrative_cache_lru_eviction(tmp_path) -> None:
         )
         is None
     )
-    assert cache.stats()["size"] == 2
+    assert cache.stats()["size"] == max_entries
 
 
 def test_narrative_cache_ttl_expiry(tmp_path) -> None:
@@ -269,7 +270,7 @@ def test_narrative_cache_stats(tmp_path) -> None:
     assert stats["size"] == 1
     assert stats["hits"] == 1
     assert stats["misses"] == 1
-    assert stats["hit_rate"] == 0.5
+    assert stats["hit_rate"] == stats["hits"] / (stats["hits"] + stats["misses"])
     assert stats["eviction_count"] == 1
 
 
@@ -374,4 +375,4 @@ def test_narrative_cache_db_file_is_private(tmp_path) -> None:
 
     file_mode = stat.S_IMODE(path.stat().st_mode)
 
-    assert file_mode == 0o600
+    assert file_mode == stat.S_IRUSR | stat.S_IWUSR

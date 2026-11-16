@@ -1,6 +1,6 @@
 """Tests for Phase 2 — MemLake append-only raw layer, provenance, reprocess, tombstone."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -258,8 +258,8 @@ class TestTombstone:
         user_id = "_test_user_"
 
         # Simulate raw events captured three days ago and three minutes ago.
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
-        recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+        recent_ts = (datetime.now(UTC) - timedelta(minutes=3)).isoformat()
 
         pool = get_pool(pipeline.db_path)
         conn = pool.acquire()
@@ -303,10 +303,11 @@ class TestTombstone:
         stats = gc.run(tenant_id=tenant_id, config=GCConfig(raw_retention_window_days=1))
         assert stats.raw_events_tombstoned == 1
 
+        raw_event_ids = ("raw_old", "raw_recent")
         rows_by_id = {
             row["id"]: row for row in _get_raw_event_rows(pipeline.db_path, tenant_id=tenant_id, session_id="sess_gc")
         }
-        assert len(rows_by_id) == 2
+        assert len(rows_by_id) == len(raw_event_ids)
         assert rows_by_id["raw_old"]["tombstone"] == 1
         assert rows_by_id["raw_old"]["content"] is None
         assert rows_by_id["raw_recent"]["tombstone"] == 0

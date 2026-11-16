@@ -52,7 +52,8 @@ import re
 import struct
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any, Protocol
 
 from .config import DB_PATH, DB_URL
@@ -348,7 +349,7 @@ class OpenAIEmbedder:
             )
         except Exception as exc:
             raise SemanticSearchError(f"embedding request failed: {exc}") from exc
-        if response.status_code != 200:
+        if response.status_code != HTTPStatus.OK:
             raise SemanticSearchError(f"embedding request failed: HTTP {response.status_code}: {response.text[:200]}")
         try:
             rows = sorted(response.json()["data"], key=lambda row: row.get("index", 0))
@@ -417,9 +418,13 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
+MAX_VECTOR_DIMENSIONS = 65_535
+MAX_SEARCH_LIMIT = 1000
+
+
 def serialize_vector(vec: list[float]) -> bytes:
     """Pack a float vector into compact little-endian float32 bytes."""
-    if len(vec) > 65_535:
+    if len(vec) > MAX_VECTOR_DIMENSIONS:
         raise SemanticSearchError("vector too large to serialize")
     return struct.pack(f"<{len(vec)}f", *vec)
 
@@ -516,7 +521,8 @@ class SemanticSearch:
         self.embedder: Embedder = embedder or get_embedder(self.provider)
         if self.embedder.provider_name != self.provider:
             raise SemanticSearchError(
-                f"embedder.provider_name {self.embedder.provider_name!r} does not match requested provider {self.provider!r}"
+                f"embedder.provider_name {self.embedder.provider_name!r} "
+                f"does not match requested provider {self.provider!r}"
             )
         self.dimension = self.embedder.dimension
         self._lock = threading.Lock()
@@ -672,7 +678,7 @@ class SemanticSearch:
             raise SemanticSearchError(str(exc)) from exc
 
         blob = serialize_vector(vec)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         ann = self._pgvector_ready and embedder.dimension == ANN_DIM
         conn = self._connect()
         try:
@@ -829,24 +835,18 @@ class SemanticSearch:
         if options is None:
             options = SemanticSearchOptions()
 
-        # Apply overrides
-        options_dict = {
-            "tenant_id": options.tenant_id,
-            "limit": options.limit,
-            "min_score": options.min_score,
-            "provider": options.provider,
-        }
-        options_dict.update(overrides)
-
-        tenant_id = options_dict["tenant_id"]
-        limit = options_dict["limit"]
-        min_score = options_dict["min_score"]
-        provider = options_dict["provider"]
+        # Apply overrides. Read each option out explicitly rather than merging
+        # into an untyped dict: a dict literal here widens every value to
+        # `float | int | str | None` and the comparisons below lose their types.
+        tenant_id: str | None = overrides.get("tenant_id", options.tenant_id)
+        limit: int = overrides.get("limit", options.limit)
+        min_score: float = overrides.get("min_score", options.min_score)
+        provider: str | None = overrides.get("provider", options.provider)
 
         if not query or not query.strip():
             raise SemanticSearchError("query must be a non-empty string")
-        if limit < 1 or limit > 1000:
-            raise SemanticSearchError("limit must be in [1, 1000]")
+        if limit < 1 or limit > MAX_SEARCH_LIMIT:
+            raise SemanticSearchError(f"limit must be in [1, {MAX_SEARCH_LIMIT}]")
         if min_score < -1.0 or min_score > 1.0:
             raise SemanticSearchError("min_score must be in [-1.0, 1.0]")
         tid = tenant_id or get_current_account_id()

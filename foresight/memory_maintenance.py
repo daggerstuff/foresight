@@ -28,7 +28,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .clustering import cluster_memories
@@ -36,6 +36,7 @@ from .config import DB_PATH
 from .connection_pool import get_pool
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .event_bus import EventType
+from .memory_components import MIN_MEMORIES_FOR_SYNTHESIS
 from .memory_types import EmotionalMetadata, MemoryObject
 from .sensitivity import resolve_is_sensitive
 
@@ -80,6 +81,19 @@ LOW_RELEVANCE_MIN_AGE_DAYS = 14
 LOW_RELEVANCE_MAX_ACTIVATIONS = 1
 MAX_BATCH_SIZE = 200
 MAX_RUNTIME_SECONDS = 300
+
+# Smallest group of memories worth treating as a cluster.
+MIN_CLUSTER_MEMBERS = 2
+# Topic words shorter than this carry no topical signal for contradiction detection.
+MIN_CONTRADICTION_TOPIC_CHARS = 4
+# Topics shared by more memories than this are too broad to compare pairwise.
+MAX_CONTRADICTION_CLUSTER_MEMBERS = 50
+# Smallest corpus worth synthesizing insights from.
+MIN_SYNTHESIS_MEMORIES = 3
+# Topic words shorter than this carry no topical signal for synthesis.
+MIN_SYNTHESIS_TOPIC_CHARS = 5
+# References a topic needs before it becomes an insight.
+MIN_SYNTHESIS_TOPIC_REFS = 3
 
 
 @dataclass
@@ -218,7 +232,8 @@ class MemoryMaintenanceJob:
 
         stats.maintenance_duration_seconds = time.perf_counter() - t0
         logger.info(
-            "Maintenance complete: modes=%s duration=%.2fs dups=%d+%d contr=%d stale=%d low_rel=%d/%d insights=%d enh=[contr=%d tr=%d ins=%d] errors=%d",
+            "Maintenance complete: modes=%s duration=%.2fs dups=%d+%d contr=%d stale=%d "
+            "low_rel=%d/%d insights=%d enh=[contr=%d tr=%d ins=%d] errors=%d",
             stats.modes_run,
             stats.maintenance_duration_seconds,
             stats.duplicates_auto_consolidated,
@@ -321,19 +336,20 @@ class MemoryMaintenanceJob:
         # log captures them even when they short-circuit clustering.
         if not config.sensitive_only:
             sensitive_count_row = conn.execute(
-                "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+                "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? "
+                "AND COALESCE(is_sensitive, 0) = 1",
                 (config.user_id, config.tenant_id),
             ).fetchone()
             sensitive_count = sensitive_count_row["sensitive_count"] if sensitive_count_row else 0
             stats.sensitive_excluded += int(sensitive_count or 0)
         memories = self._fetch_memories(conn, config)
-        if len(memories) < 2:
+        if len(memories) < MIN_CLUSTER_MEMBERS:
             return
 
         result = cluster_memories(
             memories,
             min_similarity=config.duplicate_threshold,
-            min_cluster_size=2,
+            min_cluster_size=MIN_CLUSTER_MEMBERS,
             max_clusters=None,
         )
 
@@ -346,7 +362,7 @@ class MemoryMaintenanceJob:
         for entity in result.cluster_entities:
             props = entity.get("properties", {})
             member_ids: list[str] = props.get("member_ids", [])
-            if len(member_ids) < 2:
+            if len(member_ids) < MIN_CLUSTER_MEMBERS:
                 continue
 
             cluster_memories_list = [m for m in memories if m["id"] in member_ids]
@@ -460,7 +476,7 @@ class MemoryMaintenanceJob:
             current_version = 0
         next_version = current_version + 1
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         version_id = str(uuid.uuid4())
         try:
             prim_meta = conn.execute(
@@ -604,12 +620,10 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(f"{cand.cluster_id}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
-                        :16
-                    ],
+                    hashlib.sha256(f"{cand.cluster_id}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16],
                     cand.memory_ids[0][:8],
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "maintenance_job",
                     cand.cluster_id,
                     str(payload),
@@ -628,13 +642,14 @@ class MemoryMaintenanceJob:
         # The count here tracks how many sensitive rows were *flagged*, not
         # excluded — use += so earlier modes' counts are preserved.
         sensitive_count_row = conn.execute(
-            "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+            "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? "
+            "AND COALESCE(is_sensitive, 0) = 1",
             (config.user_id, config.tenant_id),
         ).fetchone()
         sensitive_count = sensitive_count_row["sensitive_count"] if sensitive_count_row else 0
         stats.sensitive_excluded += int(sensitive_count or 0)
         memories = self._fetch_memories_batch(conn, config)
-        if len(memories) < 2:
+        if len(memories) < MIN_CLUSTER_MEMBERS:
             return
 
         scan_target = memories
@@ -644,7 +659,7 @@ class MemoryMaintenanceJob:
             content_lower = (mem["content"] or "").lower()
             words = set(re.findall(r"\b\w+\b", content_lower))
             for topic in words:
-                if len(topic) > 3 and topic not in {
+                if len(topic) >= MIN_CONTRADICTION_TOPIC_CHARS and topic not in {
                     "that",
                     "with",
                     "from",
@@ -671,9 +686,9 @@ class MemoryMaintenanceJob:
             )
 
         for topic, cluster in topic_clusters.items():
-            if len(cluster) < 2:
+            if len(cluster) < MIN_CLUSTER_MEMBERS:
                 continue
-            if len(cluster) > 50:
+            if len(cluster) > MAX_CONTRADICTION_CLUSTER_MEMBERS:
                 continue
             for i, mem_a in enumerate(cluster):
                 for mem_b in cluster[i + 1 :]:
@@ -761,11 +776,11 @@ class MemoryMaintenanceJob:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     hashlib.sha256(
-                        f"{cand.memory_id_a}{cand.memory_id_b}{datetime.now(timezone.utc).isoformat()}".encode()
+                        f"{cand.memory_id_a}{cand.memory_id_b}{datetime.now(UTC).isoformat()}".encode()
                     ).hexdigest()[:16],
                     tenant_id,
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "maintenance_job",
                     cand.memory_id_a[:8],
                     json.dumps(payload),
@@ -857,7 +872,7 @@ class MemoryMaintenanceJob:
         if config.sensitive_only and getattr(config, "tool_access", None) != "observe":
             raise ValueError("sensitive_only prune_low_relevance requires tool_access=observe to prevent PHI loss")
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=config.low_relevance_min_age_days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=config.low_relevance_min_age_days)).isoformat()
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
         cursor = conn.execute(
             f"""
@@ -915,23 +930,30 @@ class MemoryMaintenanceJob:
 
     def _run_synthesize(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         memories = self._fetch_memories(conn, config)
-        if len(memories) < 3:
+        if len(memories) < MIN_SYNTHESIS_MEMORIES:
             return
 
         topic_map: dict[str, list[dict[str, Any]]] = {}
         for mem in memories:
             words = set(re.findall(r"\b\w+\b", (mem["content"] or "").lower()))
             for word in words:
-                if len(word) > 4 and word not in {"which", "where", "would", "could", "should", "about"}:
+                if len(word) >= MIN_SYNTHESIS_TOPIC_CHARS and word not in {
+                    "which",
+                    "where",
+                    "would",
+                    "could",
+                    "should",
+                    "about",
+                }:
                     if word not in topic_map:
                         topic_map[word] = []
                     topic_map[word].append(mem)
 
         insights: list[SynthesisInsight] = []
         for topic, cluster in topic_map.items():
-            if len(cluster) >= 3:
+            if len(cluster) >= MIN_SYNTHESIS_TOPIC_REFS:
                 contents = [m["content"] for m in cluster if m["content"]]
-                if len(contents) >= 3:
+                if len(contents) >= MIN_SYNTHESIS_TOPIC_REFS:
                     " ".join(contents[:5])
                     statement = (
                         f"Multiple memories share topic '{topic}': {len(cluster)} references across recent memories."
@@ -964,12 +986,10 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(f"{insight.topic}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
-                        :16
-                    ],
+                    hashlib.sha256(f"{insight.topic}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16],
                     tenant_id,
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "maintenance_job",
                     insight.member_ids[0][:8] if insight.member_ids else "unknown",
                     json.dumps(payload),
@@ -986,8 +1006,12 @@ class MemoryMaintenanceJob:
         temporal trends, and evidence-anchored insights.
         """
         memories = self._fetch_memories(conn, config, extra_where=" AND COALESCE(is_ghost, 0) = 0")
-        if len(memories) < 5:
-            logger.debug("Enhanced synthesize: skipped (only %d memories, need >=5)", len(memories))
+        if len(memories) < MIN_MEMORIES_FOR_SYNTHESIS:
+            logger.debug(
+                "Enhanced synthesize: skipped (only %d memories, need >=%d)",
+                len(memories),
+                MIN_MEMORIES_FOR_SYNTHESIS,
+            )
             return
 
         mem_objs: list[MemoryObject] = []
@@ -1079,12 +1103,10 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(
-                        f"{event_type}{entity_id}{datetime.now(timezone.utc).isoformat()}".encode()
-                    ).hexdigest()[:16],
+                    hashlib.sha256(f"{event_type}{entity_id}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16],
                     tenant_id,
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "enhanced_synthesizer",
                     entity_id,
                     json.dumps(payload),

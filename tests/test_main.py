@@ -85,16 +85,18 @@ def test_status_human_formats_payload_budget_weights_and_injection_health():
 
 
 def test_status_json_mode_emits_scriptable_status_payload():
+    memories_lane_weight = 0.5
+    total_runs = 4
     result = {
         "status": "healthy",
         "memory_count": 12,
         "stale_count": 2,
         "payload_budget": {
             "min_lane_chars": 40,
-            "default_lane_weights": {"memories": 0.5},
+            "default_lane_weights": {"memories": memories_lane_weight},
         },
         "injection_health": {
-            "total_runs": 4,
+            "total_runs": total_runs,
             "fast_path_rate_pct": 75.0,
         },
     }
@@ -108,5 +110,5 @@ def test_status_json_mode_emits_scriptable_status_payload():
 
     assert cli_result.exit_code == 0
     parsed = json.loads(cli_result.stdout)
-    assert parsed["payload_budget"]["default_lane_weights"]["memories"] == 0.5
-    assert parsed["injection_health"]["total_runs"] == 4
+    assert parsed["payload_budget"]["default_lane_weights"]["memories"] == memories_lane_weight
+    assert parsed["injection_health"]["total_runs"] == total_runs

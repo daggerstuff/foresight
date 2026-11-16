@@ -9,14 +9,33 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 # =============================================================================
 # Core Types (Domain-Agnostic)
 # =============================================================================
 
 RiskLevel = Literal["none", "low", "moderate", "high", "critical"]
+
+# Distinct terms required before a turn is treated as a crisis anomaly.
+MIN_ANOMALY_TERMS = 2
 Urgency = Literal["routine", "elevated", "high", "immediate"]
+
+
+class _CategoryPattern(TypedDict):
+    """One entry of the keyword pattern table."""
+
+    keywords: list[str]
+    urgency: Urgency
+    risk_level: RiskLevel
+
+
+class _CategoryScore(TypedDict):
+    """Per-category tally accumulated while scanning a message."""
+
+    count: int
+    urgency: Urgency
+    risk_level: RiskLevel
 
 
 @dataclass
@@ -95,7 +114,7 @@ MentalHealthCategory = Literal[
 ]
 
 # Crisis keyword patterns by category - mental health specific
-MENTAL_HEALTH_PATTERNS = {
+MENTAL_HEALTH_PATTERNS: dict[str, _CategoryPattern] = {
     "self_harm": {
         "keywords": [
             r"\bkill myself\b",
@@ -222,7 +241,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
         """
         sensitivity = kwargs.get("sensitivity_level", self.sensitivity_level)
         detected_terms = []
-        category_scores = {}
+        category_scores: dict[str, _CategoryScore] = {}
 
         # Scan for crisis patterns
         for category, patterns in self.compiled_patterns.items():
@@ -240,7 +259,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
                 }
 
         # Determine if anomaly detected
-        is_anomaly = len(detected_terms) >= 2  # Require 2+ terms to reduce false positives
+        is_anomaly = len(detected_terms) >= MIN_ANOMALY_TERMS  # multiple terms reduce false positives
         primary_category = None
         risk_level: RiskLevel = "none"
         urgency: Urgency = "routine"

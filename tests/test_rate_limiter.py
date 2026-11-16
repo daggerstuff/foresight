@@ -46,10 +46,12 @@ class TestTokenBucket:
         assert limiter.acquire("tenant_a")
 
     def test_get_remaining(self):
-        limiter = RateLimiter(rate_limit=100, burst_limit=20)
-        for _ in range(5):
+        burst_limit = 20
+        acquire_count = 5
+        limiter = RateLimiter(rate_limit=100, burst_limit=burst_limit)
+        for _ in range(acquire_count):
             limiter.acquire("tenant_a")
-        assert limiter.get_remaining("tenant_a") == 15
+        assert limiter.get_remaining("tenant_a") == burst_limit - acquire_count
 
     def test_custom_per_tenant_limits(self):
         limiter = RateLimiter(rate_limit=100, burst_limit=20)
@@ -68,9 +70,10 @@ class TestRateLimitExceededError:
     """Test exception structure."""
 
     def test_exception_attributes(self):
-        exc = RateLimitExceededError(remaining=0, reset_time=123.45)
+        reset_time = 123.45
+        exc = RateLimitExceededError(remaining=0, reset_time=reset_time)
         assert exc.remaining == 0
-        assert exc.reset_time == 123.45
+        assert exc.reset_time == reset_time
         assert "Rate limit exceeded" in str(exc)
 
 

@@ -5,7 +5,7 @@ Covers all four modes: consolidate, contradict, archive_stale, synthesize.
 
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from foresight.memory_maintenance import (
     DUPLICATE_OVERLAP_HIGH,
@@ -19,6 +19,9 @@ from foresight.memory_maintenance import (
     MaintenanceStats,
     MemoryMaintenanceJob,
 )
+
+# Every SENTIMENT_OPPOSITES entry is an (antonym, antonym) tuple.
+SENTIMENT_PAIR_LENGTH = 2
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,7 +90,8 @@ def _insert_memory(
     retention: str = "short_term",
 ) -> None:
     conn.execute(
-        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, is_ghost, created_at) "
+        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, "
+        "is_ghost, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
@@ -99,7 +103,7 @@ def _insert_memory(
             importance,
             strength_trend,
             is_ghost,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()
@@ -117,7 +121,7 @@ class TestConstants:
     def test_sentiment_opposites_are_string_pairs(self) -> None:
         for pair in SENTIMENT_OPPOSITES:
             assert isinstance(pair, tuple)
-            assert len(pair) == 2
+            assert len(pair) == SENTIMENT_PAIR_LENGTH
             assert isinstance(pair[0], str)
             assert isinstance(pair[1], str)
 
@@ -209,22 +213,18 @@ class TestMaintenanceJobConsolidate:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             # Two very similar memories — should exceed 0.70 overlap
-            _insert_memory(
-                conn, "m1", "I feel very happy and grateful today about my progress", user_id="u1", tenant_id="t1"
-            )
-            _insert_memory(
-                conn,
-                "m2",
+            cluster_memories = (
+                "I feel very happy and grateful today about my progress",
                 "I feel very happy and grateful today about my progress in therapy",
-                user_id="u1",
-                tenant_id="t1",
             )
+            for memory_id, content in zip(("m1", "m2"), cluster_memories, strict=True):
+                _insert_memory(conn, memory_id, content, user_id="u1", tenant_id="t1")
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
             cfg = MaintenanceConfig(user_id="u1", tenant_id="t1", modes=["consolidate"])
             stats = job.run(cfg)
-            assert stats.duplicates_found >= 2  # 2 memories in the cluster
+            assert stats.duplicates_found >= len(cluster_memories)
         finally:
             import os
 

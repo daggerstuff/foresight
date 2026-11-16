@@ -39,7 +39,7 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from .backend.base import DatabaseBackend
@@ -59,12 +59,22 @@ FAST_PATH_MAX_CACHE_SIZE = 128
 FAST_PATH_EARLY_TERMINATION_RATIO = 2.0
 FAST_PATH_MIN_CANDIDATES = 2
 
+# Recency window and ceiling for the burst boost applied to recently-active memories.
+BURST_WINDOW_HOURS = 4.0
+MAX_BURST_BOOST = 3.0
+
+# Minimum decay multiplier per strength trend, so a decayed memory is penalised
+# proportionally to its trend instead of collapsing toward zero.
+DECAY_FLOOR_STALE = 0.10
+DECAY_FLOOR_WEAKENING = 0.15
+DECAY_FLOOR_STABLE = 0.20
+
 
 def _hours_since(iso_timestamp: str) -> float:
     """Compute hours elapsed between an ISO 8601 timestamp and now."""
     try:
         created = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
-        return max((datetime.now(timezone.utc) - created).total_seconds() / 3600, 0.01)
+        return max((datetime.now(UTC) - created).total_seconds() / 3600, 0.01)
     except (ValueError, AttributeError):
         return 168.0
 
@@ -457,7 +467,8 @@ class HybridRetriever:
         # TF-IDF cache: maps (user_id, tenant_id) -> {"idf": dict, "doc_count": int,
         #   "docs": dict[id, list[str]]}
         # Invalidated when doc_count changes (new/deleted memories).
-        self._tfidf_cache: dict[tuple[str, str], dict] = {}
+        # Key: (user_id, tenant_id, agent_id, project) — the full namespace.
+        self._tfidf_cache: dict[tuple[str, str, str | None, str | None], dict[str, Any]] = {}
         self._tfidf_cache_lock = threading.Lock()
         self._schema_cache: dict[str, set[str]] = {}
         self._result_cache: OrderedDict[tuple, Any] = OrderedDict()
@@ -491,7 +502,7 @@ class HybridRetriever:
     def _fetch_rows(self, sql: str, params: tuple | list | dict = ()) -> list[dict]:
         """Execute a SELECT and return rows as dicts (backend-agnostic)."""
         if self._backend is not None:
-            _p: tuple | dict = tuple(params) if isinstance(params, list) else params  # type: ignore[arg-type]
+            _p: tuple | dict = tuple(params) if isinstance(params, list) else params
             return self._backend.fetch(sql, _p)
         conn = self._get_connection()
         try:
@@ -502,7 +513,7 @@ class HybridRetriever:
     def _execute_sql(self, sql: str, params: tuple | list | dict = ()) -> None:
         """Execute a write query with auto-commit (backend-agnostic)."""
         if self._backend is not None:
-            _p: tuple | dict = tuple(params) if isinstance(params, list) else params  # type: ignore[arg-type]
+            _p: tuple | dict = tuple(params) if isinstance(params, list) else params
             self._backend.execute(sql, _p)
         else:
             conn = self._get_connection()
@@ -731,7 +742,7 @@ class HybridRetriever:
             entity_confidence=dict(self._entity_confidence),
         )
 
-        all_ids = set()
+        all_ids: set[str] = set()
         all_ids.update(keyword_ranking.keys())
         all_ids.update(tfidf_cosine_ranking.keys())
         all_ids.update(vector_ranking.keys())
@@ -790,7 +801,7 @@ class HybridRetriever:
         top_ids = [mid for mid, _ in merged[:fetch_window]]
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id, options)
         if has_filters:
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             memories = {mid: row for mid, row in memories.items() if _row_matches_filters(row, options, now_iso)}
 
         results = self._build_results(
@@ -1286,13 +1297,13 @@ class HybridRetriever:
             try:
                 last_ret = datetime.fromisoformat(last_retrieved_at.replace("Z", "+00:00"))
                 hours_since_retrieval = max((now - last_ret).total_seconds() / 3600, 0.0)
-                if hours_since_retrieval < 4.0:
-                    burst_factor = 1.0 + (1.0 - hours_since_retrieval / 4.0) * 0.5
+                if hours_since_retrieval < BURST_WINDOW_HOURS:
+                    burst_factor = 1.0 + (1.0 - hours_since_retrieval / BURST_WINDOW_HOURS) * 0.5
                     base_boost *= burst_factor
             except (ValueError, AttributeError):
                 pass
 
-        return min(base_boost, 3.0)  # cap at 3x
+        return min(base_boost, MAX_BURST_BOOST)
 
     def _compute_time_score(self, hours_old: float, category: str | None) -> float:
         """Compute exponential decay time score with category-aware half-life."""
@@ -1364,7 +1375,7 @@ class HybridRetriever:
         if not rows:
             return {}
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         scored = []
 
         for row in rows:
@@ -1424,7 +1435,7 @@ class HybridRetriever:
         """
         vector = vector or {}
         effective_weights = weights if weights is not None else self.weights
-        all_ids = set()
+        all_ids: set[str] = set()
         all_ids.update(keyword.keys())
         all_ids.update(tfidf_cosine.keys())
         all_ids.update(vector.keys())
@@ -1683,11 +1694,11 @@ class HybridRetriever:
                 ratio = current_strength / importance
                 _trend = strength_trend or ""
                 if _trend == "stale":
-                    floor = 0.10
+                    floor = DECAY_FLOOR_STALE
                 elif _trend == "weakening":
-                    floor = 0.15
+                    floor = DECAY_FLOOR_WEAKENING
                 else:
-                    floor = 0.20
+                    floor = DECAY_FLOOR_STABLE
                 decay_multiplier = max(floor, min(1.0, ratio))
             result.decay_multiplier = decay_multiplier
 
