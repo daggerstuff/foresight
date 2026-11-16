@@ -33,15 +33,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 # Match trivial prompts with no semantic signal (greetings, confirmations, commands)
 _TRIVIAL_PROMPT_RE = re.compile(
     r"^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|"
     r"hi|hey|hello|yo|sup|"
     r"continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)"
-    r"[\s!?.:;,'" + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
+    r"[\s!?.:;,'" + r"~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$",
     re.IGNORECASE,
 )
 
@@ -75,15 +76,16 @@ except ImportError:
         name: str,
         daemon: bool = True,
         args: tuple = (),
-        kwargs: Optional[dict[str, Any]] = None,
+        kwargs: dict[str, Any] | None = None,
     ) -> threading.Thread:
         return threading.Thread(target=target, name=name, daemon=daemon, args=args, kwargs=kwargs or {})
 
-    def is_trivial_prompt(text: Optional[str]) -> bool:  # type: ignore[no-redef]
+    def is_trivial_prompt(text: str | None) -> bool:  # type: ignore[no-redef]
         stripped = (text or "").strip()
         if not stripped or stripped.startswith("/"):
             return True
         return bool(_TRIVIAL_PROMPT_RE.match(stripped))
+
 
 try:
     from agent.secret_scope import get_secret
@@ -91,6 +93,7 @@ except ImportError:
 
     def get_secret(key: str, default: str = "") -> str:  # type: ignore[misc]
         return os.environ.get(key, default)
+
 
 try:
     from tools.registry import tool_error
@@ -583,7 +586,7 @@ class ForesightMemoryProvider(MemoryProvider):
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Background pre-warm for subsequent turns (non-blocking)."""
 
-    def recall_status(self) -> Optional[RecallStatus]:
+    def recall_status(self) -> RecallStatus | None:
         """Return status of the most recent prefetch for deterministic UI indicators."""
         with self._lock:
             return self._last_recall_status
@@ -773,13 +776,13 @@ class ForesightMemoryProvider(MemoryProvider):
                 if action == "add":
                     self._client.store(content, category=category, importance=0.7, tags=tags)
                 elif action == "replace":
-                    self._client.store(content, category=category, importance=0.7, tags=tags + ["replaced"])
+                    self._client.store(content, category=category, importance=0.7, tags=[*tags, "replaced"])
                 elif action == "remove":
                     self._client.store(
                         f"[Deleted Memory] {content}",
                         category="archived",
                         importance=0.1,
-                        tags=tags + ["deleted"],
+                        tags=[*tags, "deleted"],
                         retention="ephemeral",
                     )
             except Exception as exc:

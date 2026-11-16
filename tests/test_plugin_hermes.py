@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from plugins.hermes import (
-    _Client,
     ForesightMemoryProvider,
-    RecallStatus,
-    _load_config,
+    _Client,
     register,
 )
 from plugins.hermes.cli import register_cli
@@ -175,7 +168,7 @@ class TestProvider:
                 prov._sync_thread.join(timeout=2.0)
 
             mock_transcript.assert_called_once()
-            args, kwargs = mock_transcript.call_args
+            _args, kwargs = mock_transcript.call_args
             assert kwargs["session_id"] == "sess_1"
             assert kwargs["project_path"] == "/project"
             assert len(kwargs["messages"]) == 2

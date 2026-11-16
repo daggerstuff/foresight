@@ -12,7 +12,6 @@ import json
 import os
 import re
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +21,7 @@ except ImportError:
 
     def load_config() -> dict[str, Any]:
         return {}
+
 
 try:
     from hermes_constants import get_hermes_home
@@ -43,12 +43,14 @@ except (ImportError, ValueError):
         _init_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_init_mod)
         _DEFAULT_URL = getattr(_init_mod, "_DEFAULT_URL", "http://127.0.0.1:8764")
-        _Client = getattr(_init_mod, "_Client")
-        _load_config = getattr(_init_mod, "_load_config")
+        _Client = _init_mod._Client
+        _load_config = _init_mod._load_config
     else:
         _DEFAULT_URL = "http://127.0.0.1:8764"
         _Client = None  # type: ignore[assignment]
-        _load_config = lambda h: {}  # type: ignore[assignment]
+
+        def _load_config(_hermes_home: Path) -> dict[str, Any]:
+            return {}
 
 
 def _get_client() -> _Client:
@@ -82,7 +84,7 @@ def _get_client() -> _Client:
     return _Client(base_url, api_key, user_id)
 
 
-def _cmd_status(args: argparse.Namespace) -> None:
+def _cmd_status(_args: argparse.Namespace) -> None:
     """Check connectivity, latency, identity lane, and memory stats."""
     client = _get_client()
     print("\n🔮 Foresight Memory Brain Status")
@@ -189,7 +191,7 @@ def _cmd_reflect(args: argparse.Namespace) -> None:
     print()
 
 
-def _cmd_profile(args: argparse.Namespace) -> None:
+def _cmd_profile(_args: argparse.Namespace) -> None:
     """Display the synthesized user profile and persistent preferences."""
     client = _get_client()
     print("\n👤 User Profile & Mental Models (Foresight)")
@@ -219,7 +221,7 @@ def _cmd_profile(args: argparse.Namespace) -> None:
     print()
 
 
-def _cmd_test(args: argparse.Namespace) -> None:
+def _cmd_test(_args: argparse.Namespace) -> None:
     """Run an automated self-test of the Foresight plugin endpoints."""
     client = _get_client()
     print("\n⚡ Running Foresight Integration Self-Test")
