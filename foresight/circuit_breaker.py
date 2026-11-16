@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
-from typing import Any
+from typing import Any, Protocol, cast
 
 
 class CircuitState(Enum):
@@ -131,6 +131,12 @@ class CircuitBreaker:
             self._last_failure_time = None
 
 
+class CircuitBreakerDecorated(Protocol):
+    """A wrapped callable carrying the breaker that guards it."""
+
+    circuit_breaker: CircuitBreaker
+
+
 def with_circuit_breaker(config: CircuitBreakerConfig | None = None):
     """Decorator for circuit breaker protection."""
     breaker = CircuitBreaker(config)
@@ -140,7 +146,9 @@ def with_circuit_breaker(config: CircuitBreakerConfig | None = None):
         def wrapper(*args, **kwargs):
             return breaker.call(func, *args, **kwargs)
 
-        wrapper.circuit_breaker = breaker
+        # `wraps` returns the plain function type, so the attribute is attached
+        # through an explicit view of the wrapper rather than a bare setattr.
+        cast(CircuitBreakerDecorated, wrapper).circuit_breaker = breaker
         return wrapper
 
     return decorator

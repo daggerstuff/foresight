@@ -197,6 +197,11 @@ class TenantLLMClient:
 
     __slots__ = ("_config", "_tenant_id")
 
+    # __slots__ declares the storage at runtime but not to the type checker;
+    # these annotations are what make the slot attributes visible to mypy.
+    _config: LLMConfig
+    _tenant_id: str
+
     def __init__(self, config: LLMConfig, tenant_id: str) -> None:
         object.__setattr__(self, "_config", config)
         object.__setattr__(self, "_tenant_id", tenant_id)

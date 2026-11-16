@@ -32,7 +32,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger("foresight_eval")
 
@@ -638,8 +638,11 @@ class EvalHarness:
 
         # Patch config DB_PATH in each module that holds a local binding
         for mod in (config_module, conn_pool_module):
-            orig = mod.DB_PATH
-            mod.DB_PATH = self.db_path
+            # Module attribute patching is dynamic by nature (that is the whole
+            # point of the monkeypatch), so DB_PATH is accessed through Any.
+            target = cast(Any, mod)
+            orig = target.DB_PATH
+            target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # The package __init__ already imported modules like subconscious,
@@ -668,8 +671,9 @@ class EvalHarness:
                 continue
             if not hasattr(mod, "DB_PATH"):
                 continue
-            orig = mod.DB_PATH
-            mod.DB_PATH = self.db_path
+            target = cast(Any, mod)
+            orig = target.DB_PATH
+            target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Set tenant context
@@ -1153,7 +1157,10 @@ class EvalHarness:
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
 
-        as_of = datetime.now(timezone.utc) + timedelta(hours=scenario.as_of_offset_hours)
+        offset_hours = scenario.as_of_offset_hours
+        if offset_hours is None:
+            raise ValueError("temporal scenario requires as_of_offset_hours to be set")
+        as_of = datetime.now(timezone.utc) + timedelta(hours=offset_hours)
 
         t0 = time.perf_counter()
         builder = TemporalQueryBuilder(db_path=self.db_path)

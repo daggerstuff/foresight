@@ -104,6 +104,7 @@ dev = [
   "ruff>=0.17.3",
   "bandit>=1.9.4",
   "twine>=7.0.0",
+  "mypy>=1.11",
 ]
 
 [tool.ruff]
@@ -200,6 +201,46 @@ max-args = 10
 known-first-party = ["foresight", "foresight_cli"]
 combine-as-imports = true
 force-single-line = false
+
+[tool.mypy]
+# The lowest interpreter the package supports (requires-python = ">=3.12",
+# and [tool.ruff] target-version = "py312"). Checking against 3.12 rather than
+# the interpreter running mypy is the conservative choice: it rejects use of
+# stdlib features that only exist on 3.13/3.14 and would break a 3.12 install.
+python_version = "3.12"
+# No strictness flags are set here. The defaults are what the gate has always
+# been measuring conceptually — this section exists so the command runs at all
+# and so the optional-extra imports below resolve, not to redefine the check.
+warn_unused_configs = true
+warn_redundant_casts = true
+show_error_codes = true
+
+# Optional extras that are deliberately NOT installed in the dev environment.
+# Each is imported behind a try/except (or a lazy in-function import) and has a
+# documented fallback, so a missing stub is expected rather than a defect:
+#   argon2 / bcrypt  — optional password-hashing backends in foresight/auth.py
+#   PIL              — Pillow, pulled in only by the `ocr` extra
+#   pypdf            — `pdf` extra (foresight/document_ingestion.py)
+#   pytesseract      — `ocr` extra (foresight/document_ingestion.py)
+#   fastembed        — `embeddings` extra; ~200MB of onnxruntime and missing
+#                      platform wheels, so it cannot be a dev dependency
+#                      (foresight/semantic_search.py, foresight/reranker.py)
+#   psycopg / psycopg_pool — declared runtime deps, listed for parity with the
+#                      environments where the binary wheel is unavailable
+[[tool.mypy.overrides]]
+module = [
+  "argon2",
+  "bcrypt",
+  "PIL",
+  "pypdf",
+  "pytesseract",
+  "fastembed",
+  "fastembed.*",
+  "psycopg",
+  "psycopg.*",
+  "psycopg_pool",
+]
+ignore_missing_imports = true
 
 [tool.pyright]
 venvPath = "."

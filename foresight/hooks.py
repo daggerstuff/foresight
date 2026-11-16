@@ -20,6 +20,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -405,10 +406,10 @@ class HookExecutor:
                     logger.error(f"Callable hook error: {e}")
 
         if event_type in self._async_handlers:
-            for handler in self._async_handlers[event_type]:
-                handler_name = getattr(handler, "__name__", "async_handler")
+            for async_handler in self._async_handlers[event_type]:
+                handler_name = getattr(async_handler, "__name__", "async_handler")
                 self._submit_coroutine(
-                    handler(event),
+                    async_handler(event),
                     description=f"In-memory async hook {handler_name}",
                 )
 
@@ -472,11 +473,11 @@ class HookExecutor:
         except RuntimeError:
             background_loop = self._ensure_background_loop()
             future = asyncio.run_coroutine_threadsafe(coroutine, background_loop)
-            future.add_done_callback(lambda done, desc=description: self._log_future_result(done, description=desc))
+            future.add_done_callback(partial(self._log_future_result, description=description))
             return
 
         task = loop.create_task(coroutine)
-        task.add_done_callback(lambda done, desc=description: self._log_future_result(done, description=desc))
+        task.add_done_callback(partial(self._log_future_result, description=description))
 
     def close(self) -> None:
         """Stop the background loop used for sync-triggered async hooks."""

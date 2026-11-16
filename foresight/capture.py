@@ -597,7 +597,7 @@ class CapturePipeline:
 
         # Phase 3-4: Dedupe and persist
         pool = get_pool(self.db_path)
-        candidate_map = {
+        candidate_map: dict[str, list[tuple[CapturedMemory, DedupeResult]]] = {
             "decision": [],
             "preference": [],
             "tool_recipe": [],

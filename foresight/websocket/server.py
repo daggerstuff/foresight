@@ -22,6 +22,7 @@ from enum import StrEnum
 from typing import Any
 
 import websockets
+from websockets.asyncio.server import Server as WebsocketsServer
 
 from foresight.event_bus import EventType
 
@@ -107,11 +108,13 @@ class WebSocketHandler:
             Tuple of (connection_id, welcome_message)
         """
         conn_id = connection_id or str(uuid.uuid4())
-        is_reconnect = connection_id in self._connections
+        # Narrow once: a reconnect is "the id is present in the connection map",
+        # which mypy cannot derive from the membership test alone.
+        existing = self._connections.get(connection_id) if connection_id is not None else None
 
-        if is_reconnect:
+        if existing is not None:
             # Restore existing connection
-            conn = self._connections[connection_id]
+            conn = existing
             conn.state = ConnectionState.CONNECTED
             conn.last_heartbeat = datetime.now(timezone.utc)
             logger.info("Reconnected connection: %s", connection_id)
@@ -138,9 +141,9 @@ class WebSocketHandler:
                         logger.error("Failed to replay event to %s: %s", connection_id, e)
                         break
 
-            return connection_id, {
+            return conn_id, {
                 "type": "reconnected",
-                "connection_id": connection_id,
+                "connection_id": conn_id,
                 "message": "Reconnected to previous session",
                 "last_event_id": conn.last_event_id,
             }
@@ -313,7 +316,7 @@ class WebSocketHandler:
 
     def get_stats(self) -> dict[str, Any]:
         """Get connection statistics."""
-        states = {}
+        states: dict[str, int] = {}
         for conn in self._connections.values():
             state = conn.state.value
             states[state] = states.get(state, 0) + 1
@@ -379,7 +382,7 @@ class WebSocketServer:
         self._running = False
         self._task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
-        self._ws_server = None
+        self._ws_server: WebsocketsServer | None = None
         self._stop_event: asyncio.Event | None = None
 
     async def start(self, host: str = "127.0.0.1", port: int = 8765) -> None:

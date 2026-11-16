@@ -602,11 +602,14 @@ _enhanced_synthesizer_lock = threading.Lock()
 
 def get_enhanced_synthesizer() -> EnhancedMemorySynthesizer:
     """Get or create global enhanced synthesizer instance (thread-safe)."""
-    if _ENHANCED_SYNTHESIZER_CONTAINER["instance"] is None:
+    instance = _ENHANCED_SYNTHESIZER_CONTAINER["instance"]
+    if instance is None:
         with _enhanced_synthesizer_lock:
-            if _ENHANCED_SYNTHESIZER_CONTAINER["instance"] is None:
-                _ENHANCED_SYNTHESIZER_CONTAINER["instance"] = EnhancedMemorySynthesizer()
-    return _ENHANCED_SYNTHESIZER_CONTAINER["instance"]
+            instance = _ENHANCED_SYNTHESIZER_CONTAINER["instance"]
+            if instance is None:
+                instance = EnhancedMemorySynthesizer()
+                _ENHANCED_SYNTHESIZER_CONTAINER["instance"] = instance
+    return instance
 
 
 def reset_enhanced_synthesizer() -> None:

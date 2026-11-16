@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 # =============================================================================
 # Core Types (Domain-Agnostic)
@@ -17,6 +17,22 @@ from typing import Any, Literal
 
 RiskLevel = Literal["none", "low", "moderate", "high", "critical"]
 Urgency = Literal["routine", "elevated", "high", "immediate"]
+
+
+class _CategoryPattern(TypedDict):
+    """One entry of the keyword pattern table."""
+
+    keywords: list[str]
+    urgency: Urgency
+    risk_level: RiskLevel
+
+
+class _CategoryScore(TypedDict):
+    """Per-category tally accumulated while scanning a message."""
+
+    count: int
+    urgency: Urgency
+    risk_level: RiskLevel
 
 
 @dataclass
@@ -95,7 +111,7 @@ MentalHealthCategory = Literal[
 ]
 
 # Crisis keyword patterns by category - mental health specific
-MENTAL_HEALTH_PATTERNS = {
+MENTAL_HEALTH_PATTERNS: dict[str, _CategoryPattern] = {
     "self_harm": {
         "keywords": [
             r"\bkill myself\b",
@@ -222,7 +238,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
         """
         sensitivity = kwargs.get("sensitivity_level", self.sensitivity_level)
         detected_terms = []
-        category_scores = {}
+        category_scores: dict[str, _CategoryScore] = {}
 
         # Scan for crisis patterns
         for category, patterns in self.compiled_patterns.items():

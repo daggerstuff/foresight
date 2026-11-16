@@ -10,14 +10,21 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _REDIS_IMPORTED = False
+# The module handles are typed Any because the import is guarded: when the
+# `redis` package is absent they are bound to None and every caller checks
+# _REDIS_IMPORTED first. Declaring them up front removes the need for a
+# per-line assignment ignore on the fallback branch.
+_aioredis: Any = None
+_redis_exc: Any = None
 try:
-    import redis.asyncio as _aioredis
-    import redis.exceptions as _redis_exc
+    import redis.asyncio as _aioredis_mod
+    import redis.exceptions as _redis_exc_mod
 
+    _aioredis = _aioredis_mod
+    _redis_exc = _redis_exc_mod
     _REDIS_IMPORTED = True
 except ImportError:
-    _aioredis = None  # type: ignore[assignment]
-    _redis_exc = None  # type: ignore[assignment]
+    pass
 
 
 _KEY_PREFIX = "foresight"
@@ -66,7 +73,7 @@ class RedisCompanion:
                 self._warned = True
             return False
         try:
-            self._redis = _aioredis.from_url(  # type: ignore[union-attr]  # type: ignore[union-attr]
+            self._redis = _aioredis.from_url(
                 self._url,
                 db=self._db,
                 decode_responses=True,

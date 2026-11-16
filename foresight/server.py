@@ -31,7 +31,7 @@ from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
 from mcp.types import TextContent
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -1610,6 +1610,10 @@ def _seed_static_oauth_client() -> None:
     """
     if not _oauth_base_url:
         return
+    if _oauth_provider is None:
+        # No provider was constructed (missing OAuth configuration); nothing to
+        # seed. Guarded separately so the calls below have a concrete provider.
+        return
     static_client_id = os.environ.get("FORESIGHT_OAUTH_STATIC_CLIENT_ID")
     static_redirect_uri = os.environ.get("FORESIGHT_OAUTH_STATIC_REDIRECT_URI")
     if not (static_client_id and static_redirect_uri):
@@ -1629,7 +1633,7 @@ def _seed_static_oauth_client() -> None:
                         "FORESIGHT_OAUTH_STATIC_CLIENT_NAME",
                         "External MCP Connector",
                     ),
-                    redirect_uris=[static_redirect_uri],
+                    redirect_uris=[AnyUrl(static_redirect_uri)],
                     grant_types=["authorization_code", "refresh_token"],
                     response_types=["code"],
                     token_endpoint_auth_method="none",
@@ -1715,10 +1719,13 @@ if _oauth_base_url:
         treat a 404 there as "not a valid MCP server" before ever reaching the
         authorization flow. Serve the same document at both paths.
         """
+        base_url = _oauth_base_url
+        if base_url is None:  # the route is only registered when it is set
+            raise RuntimeError("OAuth base URL is not configured")
         return JSONResponse(
             {
-                "resource": f"{_oauth_base_url.rstrip('/')}/mcp",
-                "authorization_servers": [_oauth_base_url.rstrip("/") + "/"],
+                "resource": f"{base_url.rstrip('/')}/mcp",
+                "authorization_servers": [base_url.rstrip("/") + "/"],
                 "scopes_supported": [],
                 "bearer_methods_supported": ["header"],
             }
@@ -2540,7 +2547,7 @@ def search_memories(
         project: Flat project namespace lane filter (own lane + shared 'default')
     """
     if options is None:
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if query_type is not None:
             kwargs["query_type"] = query_type
         if query is not None:
@@ -2696,16 +2703,16 @@ def search_memories(
 
         tags = json.loads(row["tags"])
         decrypted = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
-        result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
-        result += f"Content: {decrypted}\n"
-        result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
+        detail = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
+        detail += f"Content: {decrypted}\n"
+        detail += f"Tags: {', '.join(tags) if tags else 'none'}\n"
         if row["is_ghost"]:
-            result += "[GHOST NODE - Content archived]"
+            detail += "[GHOST NODE - Content archived]"
 
         # ── POST_RETRIEVE hook (ID lookup) ─────────────────────────────
         hook_ctx.memory_id = mid
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-        return result
+        return detail
 
     # 2. Hybrid search if enabled and query provided
     if options.use_hybrid and options.query:
@@ -2740,13 +2747,14 @@ def search_memories(
                 return json.dumps(trace.to_dict(), indent=2)
             if hybrid_result.results:
                 results = []
-                for r in hybrid_result.results:
-                    signals = ", ".join(r.source_signals) if r.source_signals else "hybrid"
+                for hit in hybrid_result.results:
+                    signals = ", ".join(hit.source_signals) if hit.source_signals else "hybrid"
                     results.append(
-                        f"- [{r.memory_id}] {r.content[:100]}... (score={r.combined_score:.3f}, signals={signals})"
+                        f"- [{hit.memory_id}] {hit.content[:100]}... "
+                        f"(score={hit.combined_score:.3f}, signals={signals})"
                     )
                 # Reinforce surfaced memories (closes decay loop).
-                _auto_reinforce_batch([r.memory_id for r in hybrid_result.results], uid, tenant_id)
+                _auto_reinforce_batch([hit.memory_id for hit in hybrid_result.results], uid, tenant_id)
                 # ── POST_RETRIEVE hook (hybrid search) ─────────────────
                 get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
@@ -4058,7 +4066,7 @@ def _make_curated_entries(
                 }
             )
     else:
-        rebuilt_lines = []
+        rebuilt_lines: list[str] = []
         if synthesis and synthesis.get("insights"):
             rebuilt_lines.extend(f"- {insight['summary']}" for insight in synthesis["insights"][:5])
         elif reflection and reflection.get("insights"):
@@ -6112,7 +6120,7 @@ def query_memories_temporal(
             Takes precedence over window and trend.
     """
     if options is None:
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if window is not None:
             kwargs["window"] = window
         if trend is not None:
@@ -6199,7 +6207,7 @@ def get_system_status(
     """
     uid = user_id or USER_ID
     if options is None:
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if include_trends is not None:
             kwargs["include_trends"] = include_trends
         if timeframe is not None:
@@ -6285,7 +6293,7 @@ def get_system_status(
         by_category = {}
 
     conn.close()
-    result = {
+    result: dict[str, Any] = {
         "status": "healthy",
         "memory_count": count,
         "by_scope": {row["scope"]: row["scope_count"] for row in scope_counts},
@@ -7949,7 +7957,7 @@ def session_catchup_prompt(query: str = "", user_id: str | None = None) -> str:
     uid = user_id or USER_ID
     snapshot = get_context_snapshot(user_id=uid)
     msg = query if query else "current session context and user goals"
-    injected = inject_context(user_message=msg, user_id=uid)
+    injected = inject_context(conversation_text=msg, user_id=uid)
 
     return f"""# Foresight Continuity & Context Catch-Up
 
@@ -7973,7 +7981,10 @@ def curate_review_prompt(run_id: str | None = None, user_id: str | None = None) 
     if run_id:
         run_res = manage_curation_runs(CurationRunAction(action="get", run_id=run_id), user_id=uid)
     else:
-        run_res = manage_curation_runs(CurationRunAction(action="list", status="staged"), user_id=uid)
+        # CurationRunAction has no status filter (and its model_config is
+        # extra="ignore"), so listing is unfiltered — the review prompt shows
+        # every run for the user rather than only staged ones.
+        run_res = manage_curation_runs(CurationRunAction(action="list"), user_id=uid)
 
     inferred_res = _handle_inferred_list(uid, get_current_account_id(), 20)
 
