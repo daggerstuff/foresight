@@ -2177,13 +2177,13 @@ def _purge_orphaned_memory_dependents(conn, user_id: str | None = None, tenant_i
     ):
         scope, params = _scope("d", include_user)
         res = conn.execute(
-            f"DELETE FROM {table} d WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id){scope}",  # nosec B608 - table names are hardcoded literals
+            f"DELETE FROM {table} AS d WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id){scope}",  # nosec B608 - table names are hardcoded literals
             tuple(params),
         )
         stats[table] = getattr(res, "rowcount", 0) or 0
     scope, params = _scope("r")
     res = conn.execute(
-        "DELETE FROM memory_relationships r WHERE "
+        "DELETE FROM memory_relationships AS r WHERE "
         "(NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.source_memory_id)"
         " OR NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.target_memory_id))" + scope,
         tuple(params),
@@ -2191,7 +2191,7 @@ def _purge_orphaned_memory_dependents(conn, user_id: str | None = None, tenant_i
     stats["memory_relationships"] = getattr(res, "rowcount", 0) or 0
     scope, params = _scope("d")
     res = conn.execute(
-        "UPDATE document_chunks d SET memory_id = NULL WHERE d.memory_id IS NOT NULL "
+        "UPDATE document_chunks AS d SET memory_id = NULL WHERE d.memory_id IS NOT NULL "
         "AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id)" + scope,
         tuple(params),
     )
@@ -2199,7 +2199,7 @@ def _purge_orphaned_memory_dependents(conn, user_id: str | None = None, tenant_i
     for col in ("related_memory_id", "superseded_by"):
         scope, params = _scope("d")
         res = conn.execute(
-            f"UPDATE memories d SET {col} = NULL WHERE d.{col} IS NOT NULL "  # nosec B608 - column names are hardcoded literals
+            f"UPDATE memories AS d SET {col} = NULL WHERE d.{col} IS NOT NULL "  # nosec B608 - column names are hardcoded literals
             f"AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.{col})" + scope,
             tuple(params),
         )
