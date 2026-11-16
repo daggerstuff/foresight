@@ -2,9 +2,11 @@ allowBuilds:
   core-js: true
 
 overrides:
-  body-parser: 1.20.6
+  # body-parser: CVE-2026-111181 (DoS via unhandled decompression), fixed in 1.20.9
+  body-parser: 1.20.9
   http-proxy-middleware: 2.0.10
-  joi: 17.13.7
+  # joi: CVE-2026-118772 (DoS via inefficient regular expression), fixed in 17.13.9
+  joi: 17.13.9
   # qs: CVE-2026-82417 + CVE-2026-82562 (DoS), fixed in 6.16.0
   qs: 6.16.2
   uuid: 11.1.1
