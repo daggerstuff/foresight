@@ -30,7 +30,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from .memory_maintenance import (
     MAX_BATCH_SIZE,
@@ -442,8 +442,11 @@ class MaintenanceEvalHarness:
         reset_pool()
 
         for mod in (config_module, conn_pool_module):
-            orig = mod.DB_PATH  # type: ignore[attr-defined]
-            mod.DB_PATH = self.db_path  # type: ignore[attr-defined]
+            # These modules are patched dynamically, so their DB_PATH binding is
+            # not statically known; cast to Any for this one statement group.
+            target = cast(Any, mod)
+            orig = target.DB_PATH
+            target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Ensure schema exists

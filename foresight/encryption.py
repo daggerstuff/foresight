@@ -27,7 +27,9 @@ from typing import Any
 
 logger = logging.getLogger("foresight_encryption")
 
-# Check cryptography library availability
+# Check cryptography library availability. The imports stay at module scope so
+# their real types are available; availability is tracked by the flag and every
+# use site below is guarded on it rather than on the module/class object.
 try:
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -36,9 +38,6 @@ try:
     HAS_CRYPTOGRAPHY = True
 except ImportError:
     HAS_CRYPTOGRAPHY = False
-    AESGCM = None  # type: ignore
-    PBKDF2HMAC = None  # type: ignore
-    hashes = None  # type: ignore
 
 ENC_PREFIX_V1 = "enc:v1:"
 PBKDF2_ITERATIONS = 100_000

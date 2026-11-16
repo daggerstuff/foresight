@@ -23,13 +23,14 @@ from .tenant_middleware import resolve_tenant_id_from_message
 
 logger = logging.getLogger(__name__)
 
-# Optional dependencies for password hashing
+# Optional dependencies for password hashing. The modules are imported at module
+# scope so their real types are available; availability is tracked by the HAS_*
+# flags and every use site is guarded on the flag, not on the module object.
 try:
     from argon2 import PasswordHasher
 
     HAS_ARGON2 = True
 except Exception:
-    PasswordHasher = None
     HAS_ARGON2 = False
 
 try:
@@ -37,7 +38,6 @@ try:
 
     HAS_BCRYPT = True
 except Exception:
-    bcrypt = None
     HAS_BCRYPT = False
 
 
@@ -166,11 +166,11 @@ class AuthManager:
     def _hash_password(self, password: str) -> str:
         """Hash a password using Argon2, bcrypt, or PBKDF2-SHA256."""
         # Use optional dependencies if available
-        if HAS_ARGON2 and PasswordHasher:
+        if HAS_ARGON2:
             ph = PasswordHasher()
             return ph.hash(password)
         # Fallback to bcrypt
-        if HAS_BCRYPT and bcrypt:
+        if HAS_BCRYPT:
             hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
             return hashed.decode("utf-8")
         # Final fallback: PBKDF2-SHA256 from the Python standard library
@@ -196,7 +196,7 @@ class AuthManager:
 
     def _verify_argon2(self, password: str, password_hash: str) -> bool | None:
         """Try Argon2 verification. Returns None if argon2 unavailable or hash incompatible."""
-        if not (HAS_ARGON2 and PasswordHasher):
+        if not HAS_ARGON2:
             return None
         try:
             ph = PasswordHasher()
@@ -207,7 +207,7 @@ class AuthManager:
 
     def _verify_bcrypt(self, password: str, password_hash: str) -> bool | None:
         """Try bcrypt verification. Returns None if bcrypt unavailable or hash incompatible."""
-        if not (HAS_BCRYPT and bcrypt):
+        if not HAS_BCRYPT:
             return None
         try:
             return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))

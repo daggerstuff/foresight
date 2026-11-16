@@ -492,7 +492,7 @@ class HybridRetriever:
     def _fetch_rows(self, sql: str, params: tuple | list | dict = ()) -> list[dict]:
         """Execute a SELECT and return rows as dicts (backend-agnostic)."""
         if self._backend is not None:
-            _p: tuple | dict = tuple(params) if isinstance(params, list) else params  # type: ignore[arg-type]
+            _p: tuple | dict = tuple(params) if isinstance(params, list) else params
             return self._backend.fetch(sql, _p)
         conn = self._get_connection()
         try:
@@ -503,7 +503,7 @@ class HybridRetriever:
     def _execute_sql(self, sql: str, params: tuple | list | dict = ()) -> None:
         """Execute a write query with auto-commit (backend-agnostic)."""
         if self._backend is not None:
-            _p: tuple | dict = tuple(params) if isinstance(params, list) else params  # type: ignore[arg-type]
+            _p: tuple | dict = tuple(params) if isinstance(params, list) else params
             self._backend.execute(sql, _p)
         else:
             conn = self._get_connection()
