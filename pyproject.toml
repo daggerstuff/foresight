@@ -183,6 +183,18 @@ max-args = 10
   "PT012",
 ]
 "scripts/*" = ["T201", "E402", "N999"]
+# Hermes provider plugin. Two entries, each mirroring an established precedent
+# in this table rather than inventing a new exemption:
+# - cli.py is a print-driven terminal entry point (like scripts/*), so T201 is
+#   the same exemption for the same kind of surface.
+# - __init__.py implements the external MemoryProvider protocol, whose hook
+#   signatures are fixed by Hermes: keyword args such as session_id, rewound and
+#   metadata must keep their names even when a hook does not read them (the same
+#   ARG002 exemption narrative_cache.py / entity_extractor.py / stream_producer.py
+#   carry), and _dispatch is an if-chain tool dispatcher (the same PLR0911
+#   exemption foresight/server.py carries).
+"plugins/hermes/cli.py" = ["T201"]
+"plugins/hermes/__init__.py" = ["ARG002", "PLR0911"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["foresight", "foresight_cli"]
