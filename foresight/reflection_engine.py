@@ -333,7 +333,10 @@ class ReflectionEngine:
                 insights.append(
                     ReflectionInsight(
                         insight_type="pattern",
-                        summary=f"{entity['name']} ({entity['type']}) anchors {entity['connections']} areas - leverage as hub for change",
+                        summary=(
+                            f"{entity['name']} ({entity['type']}) anchors "
+                            f"{entity['connections']} areas - leverage as hub for change"
+                        ),
                         confidence=0.75,
                         evidence_ids=memory_ids[:3],
                         recommended_action=action,
@@ -362,7 +365,10 @@ class ReflectionEngine:
             insights.append(
                 ReflectionInsight(
                     insight_type="warning",
-                    summary=f"Half your memories ({stale_count}/{total}) are stale. Focus on {', '.join(list(stale_categories)[:3])} to re-engage.",
+                    summary=(
+                        f"Half your memories ({stale_count}/{total}) are stale. Focus "
+                        f"on {', '.join(list(stale_categories)[:3])} to re-engage."
+                    ),
                     confidence=0.85,
                     evidence_ids=[_memory_id(r) for r in stale_rows[:5]],
                     recommended_action="review",
@@ -424,7 +430,10 @@ class ReflectionEngine:
             insights.append(
                 ReflectionInsight(
                     insight_type="breakthrough",
-                    summary=f"Multiple areas improving simultaneously ({', '.join(improving_cats[:3])}). This momentum suggests foundational changes are taking hold - maintain current practices.",
+                    summary=(
+                        f"Multiple areas improving simultaneously ({', '.join(improving_cats[:3])}). This "
+                        f"momentum suggests foundational changes are taking hold - maintain current practices."
+                    ),
                     confidence=0.8,
                     evidence_ids=[_memory_id(r) for r in improving_memories[:5]],
                     recommended_action="preserve",
@@ -443,7 +452,10 @@ class ReflectionEngine:
                     insights.append(
                         ReflectionInsight(
                             insight_type="pattern",
-                            summary=f"Energy imbalance: {high_cat} is thriving while {low_cat} struggles. Consider if time/energy allocation needs rebalancing.",
+                            summary=(
+                                f"Energy imbalance: {high_cat} is thriving while {low_cat} "
+                                f"struggles. Consider if time/energy allocation needs rebalancing."
+                            ),
                             confidence=0.65,
                             evidence_ids=(
                                 [_memory_id(r) for r in high_data["rows"][:2]]
@@ -504,7 +516,10 @@ class ReflectionEngine:
                 insights.append(
                     ReflectionInsight(
                         insight_type="breakthrough",
-                        summary=f"{cat} appears to be a keystone area - early improvements here may have driven broader progress. Double down on what is working in {cat}.",
+                        summary=(
+                            f"{cat} appears to be a keystone area - early improvements here may "
+                            f"have driven broader progress. Double down on what is working in {cat}."
+                        ),
                         confidence=0.7,
                         evidence_ids=[_memory_id(r) for r in early_rows],
                         recommended_action="preserve",
@@ -549,7 +564,10 @@ class ReflectionEngine:
                 insights.append(
                     ReflectionInsight(
                         insight_type="warning",
-                        summary=f"WARNING: {cat} showing consistent decline ({weakening_count}/{total} weakening). Address soon before pattern solidifies.",
+                        summary=(
+                            f"WARNING: {cat} showing consistent decline ({weakening_count}/{total} "
+                            f"weakening). Address soon before pattern solidifies."
+                        ),
                         confidence=0.8,
                         evidence_ids=[_memory_id(r) for r in recent_weakening],
                         recommended_action="review",
@@ -571,7 +589,10 @@ class ReflectionEngine:
                     insights.append(
                         ReflectionInsight(
                             insight_type="warning",
-                            summary=f"Focus concentration risk: {cat} dominates your attention ({concentration:.0%} of memories). Consider broadening scope.",
+                            summary=(
+                                f"Focus concentration risk: {cat} dominates your attention "
+                                f"({concentration:.0%} of memories). Consider broadening scope."
+                            ),
                             confidence=0.75,
                             evidence_ids=[_memory_id(r) for r in cat_rows[:5]],
                             recommended_action="investigate",
@@ -615,7 +636,10 @@ class ReflectionEngine:
                 insights.append(
                     ReflectionInsight(
                         insight_type="breakthrough",
-                        summary=f"{cat} is stable with emerging momentum - ripe for intentional growth. Small investments here could yield disproportionate returns.",
+                        summary=(
+                            f"{cat} is stable with emerging momentum - ripe for intentional "
+                            f"growth. Small investments here could yield disproportionate returns."
+                        ),
                         confidence=0.7,
                         evidence_ids=[_memory_id(r) for r in cat_rows[:4]],
                         recommended_action="preserve",
@@ -713,7 +737,10 @@ class ReflectionEngine:
         """Store reflection report as a memory for continuity."""
         try:
             now = datetime.now(UTC).isoformat()
-            content = f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
+            content = (
+                f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} "
+                f"insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
+            )
 
             # Build gist from insight summaries for quick retrieval
             insight_summaries = [i.summary for i in report.insights]

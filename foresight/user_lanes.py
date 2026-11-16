@@ -143,7 +143,8 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             synth_new = _remap_json_ids(synth, memory_map, keep_unmapped=False)
             if not dry_run:
                 conn.execute(
-                    "UPDATE memories SET related_memory_id = ?, superseded_by = ?, synthesized_from = ? WHERE id = ? AND user_id = ?",
+                    "UPDATE memories SET related_memory_id = ?, superseded_by = ?, synthesized_from = ? "
+                    "WHERE id = ? AND user_id = ?",
                     (rel_new, sup_new, synth_new, new_id, dst_user),
                 )
 
@@ -207,7 +208,10 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             new_row["entity_id"] = eid
             if not dry_run:
                 conn.execute(
-                    'INSERT INTO "memory_entity_links" ({cols}) VALUES ({ph}) ON CONFLICT (memory_id, entity_id) DO NOTHING'.format(
+                    (
+                        'INSERT INTO "memory_entity_links" ({cols}) VALUES ({ph}) '
+                        "ON CONFLICT (memory_id, entity_id) DO NOTHING"
+                    ).format(
                         cols=", ".join(f'"{c}"' for c in new_row),
                         ph=", ".join("?" for _ in new_row),
                     ),

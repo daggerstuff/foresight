@@ -246,7 +246,10 @@ class MemoryOptions(BaseModel):
     )
     relation_type: str | None = Field(
         default=None,
-        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
+        description=(
+            "Optional typed relationship to another memory. Allowed: "
+            "updates, extends, derives, contradicts, supports, related"
+        ),
     )
     related_memory_id: str | None = Field(
         default=None, description="ID of the memory this one relates to (paired with relation_type)"
@@ -264,7 +267,10 @@ class MemoryOptions(BaseModel):
     )
     expires_at: str | float | int | None = Field(
         default=None,
-        description="Optional expiration (ISO-8601 string or epoch seconds). Expired memories are excluded from retrieval and GC'd.",
+        description=(
+            "Optional expiration (ISO-8601 string or epoch seconds). "
+            "Expired memories are excluded from retrieval and GC'd."
+        ),
     )
     memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
         default=None,
@@ -301,7 +307,10 @@ class MemoryUpdateOptions(BaseModel):
     )
     relation_type: str | None = Field(
         default=None,
-        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
+        description=(
+            "Optional typed relationship to another memory. Allowed: "
+            "updates, extends, derives, contradicts, supports, related"
+        ),
     )
     related_memory_id: str | None = Field(
         default=None, description="ID of the memory this one relates to (paired with relation_type)"
@@ -373,7 +382,9 @@ class ContextBlockAction(BaseModel):
     project: str | None = Field(default=None, description="Optional project namespace lane")
     visibility: Literal["private", "shared"] | None = Field(
         default=None,
-        description="Block visibility for update: 'private' (own agent lane) or 'shared' (all agents in the project lane)",
+        description=(
+            "Block visibility for update: 'private' (own agent lane) or 'shared' (all agents in the project lane)"
+        ),
     )
 
     @model_validator(mode="before")
@@ -918,7 +929,10 @@ class PostgresPooledConnection(PooledConnection):
             match = re.search(r"PRAGMA\s+table_info\s*\(\s*([\'\"]?\w+[\'\"]?)\s*\)", sql, re.IGNORECASE)
             if match:
                 table_name = match.group(1).strip("'\"")
-                pg_sql = "SELECT 0 as cid, column_name as name, 'TEXT' as type, 0 as notnull, NULL as dflt_value, 0 as pk FROM information_schema.columns WHERE table_name = %s"
+                pg_sql = (
+                    "SELECT 0 as cid, column_name as name, 'TEXT' as type, 0 as notnull, NULL "
+                    "as dflt_value, 0 as pk FROM information_schema.columns WHERE table_name = %s"
+                )
                 self._last_result = self._execute_with_retry(pg_sql, (table_name,))
                 self._rowcount = self._last_result.rowcount
                 return self
@@ -1173,9 +1187,9 @@ def _initialize_backend() -> None:
         return
     if not os.environ.get("FORESIGHT_DB_URL"):
         raise RuntimeError(
-            "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. "
-            "SQLite-as-primary is no longer supported.\n"
-            "Example: export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=verify-full&channel_binding=require'"
+            "FORESIGHT_DB_URL is not set.  Foresight requires a Postgres DSN. SQLite-as-primary is no longer "
+            "supported.\nExample: export "
+            "FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=verify-full&channel_binding=require'"
         )
     try:
         backend = create_backend()
@@ -1547,17 +1561,21 @@ class InputValidationMiddleware(_Middleware):
         return await call_next(context)
 
 
-FORESIGHT_SERVER_INSTRUCTIONS = """Foresight provides persistent memory, continuity context blocks, and background curation for AI agents.
+FORESIGHT_SERVER_INSTRUCTIONS = """Foresight provides persistent memory, continuity context blocks, and \
+background curation for AI agents.
 
 ### Guidelines for AI Agents:
-1. Context Continuity: At session start or when switching topics, call `inject_context` or `manage_context_blocks` to load active guidance, user preferences, and relevant memory items into context.
+1. Context Continuity: At session start or when switching topics, call `inject_context` or \
+`manage_context_blocks` to load active guidance, user preferences, and relevant memory items into context.
 2. Memory Scopes & Retention:
    - `session`: Ephemeral working memory for the immediate task/session.
    - `arc`: Medium-term project milestone or ongoing objective.
    - `fact`: Durable facts and verified project knowledge.
    - `trait`: Enduring user habits, communication preferences, and core principles.
-3. Proactive Capture: Store key user preferences, architectural decisions, and explicit user feedback using `manage_memories(action="store", ...)`.
-4. Curation: Use `manage_curation_runs` to inspect and review memory consolidation or archiving proposals without loss of durable context."""
+3. Proactive Capture: Store key user preferences, architectural decisions, and explicit user feedback using \
+`manage_memories(action="store", ...)`.
+4. Curation: Use `manage_curation_runs` to inspect and review memory consolidation or archiving proposals \
+without loss of durable context."""
 
 # Determine auth mode: OAuth provider when FORESIGHT_OAUTH_BASE_URL is set,
 # otherwise fall back to the legacy API-key AuthMiddleware.
@@ -2492,7 +2510,10 @@ def _trace_retrieval(
         response_bytes=0,
     )
     logger.debug(
-        "search_memories trace: query=%r user=%s tenant=%s latency_ms=%.2f results=%d candidates=%d fast_path=%s signals=%s",
+        (
+            "search_memories trace: query=%r user=%s tenant=%s "
+            "latency_ms=%.2f results=%d candidates=%d fast_path=%s signals=%s"
+        ),
         query,
         uid,
         tenant_id,
@@ -2812,7 +2833,8 @@ def search_memories(
     from .encryption import decrypt_if_encrypted
 
     results = [
-        f"- [{r['id']}] ({r['scope']}/{r['retention']}) {decrypt_if_encrypted(r['content'], tenant_id=tenant_id, user_id=uid)[:80]}..."
+        f"- [{r['id']}] ({r['scope']}/{r['retention']}) "
+        f"{decrypt_if_encrypted(r['content'], tenant_id=tenant_id, user_id=uid)[:80]}..."
         for r in rows
     ]
     # Reinforce surfaced memories (closes decay loop).
@@ -3060,7 +3082,10 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
         f"{options.memory_id}{row['version']}{datetime.now(UTC).isoformat()}".encode()
     ).hexdigest()[:16]
     conn.execute(
-        "INSERT INTO memory_versions (id, memory_id, tenant_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "INSERT INTO memory_versions (id, memory_id, tenant_id, content, version, created_at, "
+            "tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ),
         (
             version_id,
             options.memory_id,
@@ -3076,7 +3101,10 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     )
     new_version = options.to_version + 1
     conn.execute(
-        "UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (
+            "UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = "
+            "?, version = ?, updated_at = ? WHERE id = ? AND user_id = ? AND tenant_id = ?"
+        ),
         (
             version_row["content"],
             version_row["tags"],
@@ -6308,7 +6336,10 @@ def get_system_status(
     # Category breakdown (PIX-3955)
     try:
         category_rows = conn.execute(
-            "SELECT category, COUNT(*) AS category_count FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY category",
+            (
+                "SELECT category, COUNT(*) AS category_count FROM memories "
+                "WHERE user_id = ? AND tenant_id = ? GROUP BY category"
+            ),
             (uid, tenant_id),
         ).fetchall()
         by_category = {row["category"]: row["category_count"] for row in category_rows}
@@ -7378,7 +7409,8 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
         if row["review_status"] is None and row["is_ghost"] != 1:
             return _tool_error("undo", f"memory {memory_id} has no review action to undo.", memory_id=memory_id)
         conn.execute(
-            "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, review_reason = NULL, updated_at = ? "
+            "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, "
+            "review_reason = NULL, updated_at = ? "
             "WHERE id = ? AND user_id = ? AND tenant_id = ?",
             (now, memory_id, uid, tenant_id),
         )
@@ -8307,7 +8339,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div id="tab-memories" class="tab-content active">
     <div class="search-bar">
-      <input type="text" id="memory-search" placeholder="Search memories by keyword, entity, or tag..." onkeydown="if(event.key==='Enter') searchMemories()">
+      <input type="text" id="memory-search" placeholder="Search memories by keyword, entity, or tag..." \
+onkeydown="if(event.key==='Enter') searchMemories()">
       <button class="btn" onclick="searchMemories()">Search</button>
     </div>
     <div id="memories-list" class="card-list">Loading memories...</div>
@@ -8319,11 +8352,15 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div id="tab-simulator" class="tab-content">
     <div class="search-bar">
-      <input type="text" id="sim-prompt" placeholder="Simulate user message (e.g. 'What is our tech stack and formatting preferences?')" onkeydown="if(event.key==='Enter') simulateInject()">
+      <input type="text" id="sim-prompt" placeholder="Simulate user message (e.g. 'What is our tech stack and \
+formatting preferences?')" onkeydown="if(event.key==='Enter') simulateInject()">
       <button class="btn" onclick="simulateInject()">Simulate Auto-Inject</button>
     </div>
     <div id="sim-result">
-      <pre style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;border-radius:8px;border:1px solid var(--border);">Type a simulated message above to preview the exact context injected into the LLM system prompt.</pre>
+      <pre \
+style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;\
+border-radius:8px;border:1px solid var(--border);">Type a simulated message above to preview the exact context \
+injected into the LLM system prompt.</pre>
     </div>
   </div>
 
@@ -8331,13 +8368,15 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div>
         <h3 style="margin:0 0 4px 0;font-size:18px;">Empirical Production Proof & Continuity Benchmark</h3>
-        <p style="margin:0;color:var(--text-muted);font-size:13px;">Demonstrates mathematical proof of cross-session retention, turn self-noting, and multi-surface readiness.</p>
+        <p style="margin:0;color:var(--text-muted);font-size:13px;">Demonstrates mathematical proof of \
+cross-session retention, turn self-noting, and multi-surface readiness.</p>
       </div>
       <button class="btn" id="btn-run-bench" onclick="runBenchmark()">Run Proof Benchmark</button>
     </div>
     <div id="benchmark-result">
       <div class="item-card" style="text-align:center;padding:32px;color:var(--text-muted);">
-        Click <strong>Run Proof Benchmark</strong> to execute the full evaluation suite across all 8 proof dimensions and multi-surface integrations.
+        Click <strong>Run Proof Benchmark</strong> to execute the full evaluation suite across all 8 proof \
+dimensions and multi-surface integrations.
       </div>
     </div>
   </div>
@@ -8365,7 +8404,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
       try {
         const res = await fetch('/ui/api/maintenance', { method: 'POST' });
         const data = await res.json();
-        alert('Optimization & context distillation complete! Distilled: ' + (data.distillation?.distilled_blocks?.join(', ') || 'none needed'));
+        alert('Optimization & context distillation complete! Distilled: ' + \
+(data.distillation?.distilled_blocks?.join(', ') || 'none needed'));
         await refreshAll();
       } catch (e) {
         alert('Optimization error: ' + e);
@@ -8377,7 +8417,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
     async function simulateInject() {
       const text = document.getElementById('sim-prompt').value;
       const resContainer = document.getElementById('sim-result');
-      resContainer.innerHTML = '<pre style="padding:16px;border-radius:8px;">Running hybrid retrieval & lane budgeting...</pre>';
+      resContainer.innerHTML = '<pre style="padding:16px;border-radius:8px;">Running hybrid retrieval & lane \
+budgeting...</pre>';
       try {
         const res = await fetch('/ui/api/inject', {
           method: 'POST',
@@ -8385,9 +8426,12 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
           body: JSON.stringify({ text })
         });
         const data = await res.json();
-        resContainer.innerHTML = `<pre style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;border-radius:8px;border:1px solid var(--border);">${data.formatted || '(No context triggered)'}</pre>`;
+        resContainer.innerHTML = `<pre \
+style="white-space:pre-wrap;font-family:inherit;background:#11141d;color:var(--text);padding:16px;\
+border-radius:8px;border:1px solid var(--border);">${data.formatted || '(No context triggered)'}</pre>`;
       } catch (e) {
-        resContainer.innerHTML = '<pre style="color:var(--error);padding:16px;">Failed to simulate injection: ' + e + '</pre>';
+        resContainer.innerHTML = \
+'<pre style="color:var(--error);padding:16px;">Failed to simulate injection: ' + e + '</pre>';
       }
     }
 
@@ -8397,7 +8441,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
         document.getElementById('stat-memories').innerText = data.memory_count ?? '0';
         document.getElementById('stat-db').innerText = data.database ? 'PostgreSQL' : 'Active';
-        document.getElementById('stat-uptime').innerText = data.uptime_seconds ? Math.round(data.uptime_seconds) + 's' : 'Online';
+        document.getElementById('stat-uptime').innerText = data.uptime_seconds ? \
+Math.round(data.uptime_seconds) + 's' : 'Online';
         document.getElementById('stat-tenant').innerText = data.tenant_id ?? 'default';
         document.getElementById('raw-status').innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -8425,7 +8470,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
           return `
             <div class="item-card">
               <div class="item-header">
-                <div><span class="tag tag-${cat}">${cat}</span> <span style="color:var(--text-muted);margin-left:8px;">${id.slice(0, 16)}</span></div>
+                <div><span class="tag tag-${cat}">${cat}</span> <span \
+style="color:var(--text-muted);margin-left:8px;">${id.slice(0, 16)}</span></div>
                 <span style="color:var(--text-muted);font-size:12px;">scope: ${scope}</span>
               </div>
               <div style="font-size:14px;color:var(--text);">${content}</div>
@@ -8454,7 +8500,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
               <span class="tag tag-guidance">${b.label || 'block'}</span>
               <span style="color:var(--text-muted);font-size:12px;">${b.updated_at || ''}</span>
             </div>
-            <pre style="white-space:pre-wrap;font-family:inherit;background:transparent;border:none;padding:0;color:var(--text);font-size:14px;">${b.content || '(empty)'}</pre>
+            <pre \
+style="white-space:pre-wrap;font-family:inherit;background:transparent;border:none;padding:0;color:var(--text);\
+font-size:14px;">${b.content || '(empty)'}</pre>
           </div>
         `).join('');
       } catch (e) {
@@ -8467,7 +8515,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
       const btn = document.getElementById('btn-run-bench');
       btn.disabled = true;
       btn.textContent = 'Running Benchmark Suite...';
-      resultDiv.innerHTML = '<div class="item-card" style="text-align:center;padding:32px;color:var(--primary);">Running 8 real-world proof scenarios across memory retention, turn self-noting, and multi-surface integrations...</div>';
+      resultDiv.innerHTML = '<div class="item-card" \
+style="text-align:center;padding:32px;color:var(--primary);">Running 8 real-world proof scenarios across memory \
+retention, turn self-noting, and multi-surface integrations...</div>';
       try {
         const res = await fetch('/ui/api/benchmark', { method: 'POST' });
         const rep = await res.json();
@@ -8481,7 +8531,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
             <div class="stat-card">
               <div class="stat-label">Scenarios Passed</div>
-              <div class="stat-value" style="color:var(--accent);">${rep.passed_scenarios}/${rep.total_scenarios} (${Math.round(rep.success_rate_pct || 0)}%)</div>
+              <div class="stat-value" \
+style="color:var(--accent);">${rep.passed_scenarios}/${rep.total_scenarios} (${Math.round(rep.success_rate_pct \
+|| 0)}%)</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Foresight Lift</div>
@@ -8489,11 +8541,15 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
             <div class="stat-card">
               <div class="stat-label">Token Reduction</div>
-              <div class="stat-value" style="color:var(--success);font-size:20px;">${rep.token_reduction_pct ? rep.token_reduction_pct.toFixed(1) : 92.5}%</div>
+              <div class="stat-value" style="color:var(--success);font-size:20px;">${rep.token_reduction_pct ? \
+rep.token_reduction_pct.toFixed(1) : 92.5}%</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Est. Value Saved</div>
-              <div class="stat-value" style="color:var(--secondary);font-size:20px;">~${rep.estimated_hours_saved_monthly || 0}h / ~$${rep.estimated_monthly_token_cost_savings_usd ? rep.estimated_monthly_token_cost_savings_usd.toFixed(2) : '42.24'}/mo</div>
+              <div class="stat-value" \
+style="color:var(--secondary);font-size:20px;">~${rep.estimated_hours_saved_monthly || 0}h / \
+~$${rep.estimated_monthly_token_cost_savings_usd ? rep.estimated_monthly_token_cost_savings_usd.toFixed(2) : \
+'42.24'}/mo</div>
             </div>
           </div>
           <div class="card-list">
@@ -8507,7 +8563,9 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
                   </div>
                   <span style="color:var(--text-muted);font-size:12px;">${s.latency_ms}ms</span>
                 </div>
-                <div style="font-size:13px;color:var(--text);margin:6px 0;"><strong>Amnesia:</strong> ${Math.round(s.amnesia_score * 100)}% → <strong>Foresight:</strong> <span style="color:var(--success);font-weight:600;">${Math.round(s.foresight_score * 100)}%</span> (${s.improvement_factor}x)</div>
+                <div style="font-size:13px;color:var(--text);margin:6px 0;"><strong>Amnesia:</strong> \
+${Math.round(s.amnesia_score * 100)}% → <strong>Foresight:</strong> <span style="color:var(--success);\
+font-weight:600;">${Math.round(s.foresight_score * 100)}%</span> (${s.improvement_factor}x)</div>
                 <div style="font-size:13px;color:var(--accent);">${s.key_takeaway || s.description}</div>
               </div>
             `).join('')}
@@ -8516,7 +8574,8 @@ _FORESIGHT_DASHBOARD_HTML = """<!DOCTYPE html>
       } catch (e) {
         btn.disabled = false;
         btn.textContent = 'Run Proof Benchmark';
-        resultDiv.innerHTML = '<div class="item-card" style="color:var(--error);">Failed to run benchmark: ' + e + '</div>';
+        resultDiv.innerHTML = \
+'<div class="item-card" style="color:var(--error);">Failed to run benchmark: ' + e + '</div>';
       }
     }
 

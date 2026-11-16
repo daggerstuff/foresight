@@ -212,7 +212,8 @@ class OperationQueue:
         tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         row = conn.execute(
-            "SELECT id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, last_attempt, vector_clock FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1",
+            "SELECT id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, "
+            "last_attempt, vector_clock FROM operations WHERE tenant_id = ? ORDER BY created_at LIMIT 1",
             (tid,),
         ).fetchone()
         conn.close()
@@ -234,7 +235,8 @@ class OperationQueue:
         tid = tenant_id or get_current_account_id()
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, last_attempt, vector_clock FROM operations WHERE tenant_id = ? ORDER BY created_at",
+            "SELECT id, tenant_id, type, entity_type, entity_id, payload, created_at, retry_count, "
+            "last_attempt, vector_clock FROM operations WHERE tenant_id = ? ORDER BY created_at",
             (tid,),
         ).fetchall()
         conn.close()

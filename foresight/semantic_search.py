@@ -516,7 +516,8 @@ class SemanticSearch:
         self.embedder: Embedder = embedder or get_embedder(self.provider)
         if self.embedder.provider_name != self.provider:
             raise SemanticSearchError(
-                f"embedder.provider_name {self.embedder.provider_name!r} does not match requested provider {self.provider!r}"
+                f"embedder.provider_name {self.embedder.provider_name!r} "
+                f"does not match requested provider {self.provider!r}"
             )
         self.dimension = self.embedder.dimension
         self._lock = threading.Lock()

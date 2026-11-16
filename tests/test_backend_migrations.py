@@ -153,7 +153,8 @@ class TestSqliteMigrationRunner:
                 # shared databases (id/name/executed_at), including a row.
                 backend.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT, executed_at TEXT)")
                 backend.execute(
-                    "INSERT INTO schema_migrations (id, name, executed_at) VALUES (1, '013_consent_records.sql', '2026-07-31')"
+                    "INSERT INTO schema_migrations (id, name, executed_at) "
+                    "VALUES (1, '013_consent_records.sql', '2026-07-31')"
                 )
 
                 applied = run_migrations(backend)
@@ -219,7 +220,8 @@ class TestServerInitDbReconcilesWrongShapedSchemaMigrations:
                 # Simulate the shared DB's app-shaped table with a row.
                 backend.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT, executed_at TEXT)")
                 backend.execute(
-                    "INSERT INTO schema_migrations (id, name, executed_at) VALUES (13, '013_consent_records.sql', '2026-07-31')"
+                    "INSERT INTO schema_migrations (id, name, executed_at) "
+                    "VALUES (13, '013_consent_records.sql', '2026-07-31')"
                 )
             finally:
                 backend.close()
@@ -326,7 +328,8 @@ class TestPostgresMigrationRunner:
             backend.execute("DROP TABLE IF EXISTS schema_migrations_legacy CASCADE")
             backend.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT, executed_at TEXT)")
             backend.execute(
-                "INSERT INTO schema_migrations (id, name, executed_at) VALUES (13, '013_consent_records.sql', '2026-07-31')"
+                "INSERT INTO schema_migrations (id, name, executed_at) "
+                "VALUES (13, '013_consent_records.sql', '2026-07-31')"
             )
 
             applied = run_migrations(backend)

@@ -256,7 +256,8 @@ class SQLiteEventStore(EventStoreBase):
         conn = self._connect()
         try:
             conn.execute(
-                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, "
+                "metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.id,
                     tid,
@@ -320,7 +321,8 @@ class SQLiteEventStore(EventStoreBase):
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? "
+                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 (start.isoformat(), end.isoformat(), tid, limit, offset),
             ).fetchall()
         finally:
@@ -737,7 +739,8 @@ class PostgresEventStore(EventStoreBase):
         conn = self._get_conn()
         try:
             conn.execute(
-                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload, "
+                "metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.id,
                     tid,
@@ -801,7 +804,8 @@ class PostgresEventStore(EventStoreBase):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? "
+                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 (start.isoformat(), end.isoformat(), tid, limit, offset),
             ).fetchall()
         finally:

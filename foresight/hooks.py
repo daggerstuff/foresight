@@ -255,7 +255,8 @@ class SQLiteHookRegistry(HookRegistryBase):
         conn.execute(
             """
         INSERT OR REPLACE INTO hooks
-        (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
+        (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, \
+metadata, enabled, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
@@ -1111,7 +1112,8 @@ class PostgresHookRegistry(HookRegistryBase):
             conn.execute(
                 """
             INSERT INTO hooks
-            (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, metadata, enabled, created_at)
+            (id, tenant_id, name, event_type, hook_type, handler, condition_name, retry_count, timeout, \
+metadata, enabled, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,

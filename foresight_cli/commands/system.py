@@ -478,9 +478,11 @@ def stats(
     if telemetry:
         out.panel(
             f"[bold cyan]Lifetime Turns Augmented:[/] {telemetry.get('total_turns_augmented', 0):,}\n"
-            f"[bold green]Prompt Tokens Saved:[/]     {telemetry.get('total_tokens_saved', 0):,} tokens ({telemetry.get('token_reduction_pct', 88.5):.1f}% reduction)\n"
+            f"[bold green]Prompt Tokens Saved:[/]     {telemetry.get('total_tokens_saved', 0):,} tokens "
+            f"({telemetry.get('token_reduction_pct', 88.5):.1f}% reduction)\n"
             f"[bold yellow]Est. API Cost Saved:[/]     ${telemetry.get('total_cost_saved_usd', 0.0):.2f}\n"
-            f"[bold magenta]In-Memory Cache Hit Rate:[/] {cache_stats.get('hit_rate_pct', 0.0):.1f}% ({cache_stats.get('total_hits', 0)} hits / {cache_stats.get('total_lookups', 0)} lookups)",
+            f"[bold magenta]In-Memory Cache Hit Rate:[/] {cache_stats.get('hit_rate_pct', 0.0):.1f}% "
+            f"({cache_stats.get('total_hits', 0)} hits / {cache_stats.get('total_lookups', 0)} lookups)",
             title="⚡ Foresight Lifetime Telemetry & Economics",
         )
 
@@ -600,7 +602,8 @@ def config(
     if key and value:
         if key == "db_url":
             out.warn(
-                "db_url is read-only in config; set the FORESIGHT_DB_URL environment variable to configure the database."
+                "db_url is read-only in config; set the FORESIGHT_DB_URL "
+                "environment variable to configure the database."
             )
             return
         setattr(c, key, value)

@@ -154,7 +154,7 @@ select = [
 ]
 # PLC0415: function-level imports are an intentional pattern here — the MCP
 # server lazily imports heavy subsystems to keep startup fast.
-ignore = ["E501", "PLR2004", "PLC0415"]
+ignore = ["PLR2004", "PLC0415"]
 
 [tool.ruff.lint.pylint]
 max-args = 10
