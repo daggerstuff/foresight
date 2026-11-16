@@ -3,6 +3,7 @@
 Covers all four modes: consolidate, contradict, archive_stale, synthesize.
 """
 
+import os
 import sqlite3
 import tempfile
 from datetime import UTC, datetime
@@ -203,8 +204,6 @@ class TestMaintenanceJobConsolidate:
             stats = job.run(cfg)
             assert stats.duplicates_found == 0  # single memory, no pairs
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_near_duplicates_auto_consolidated(self) -> None:
@@ -226,8 +225,6 @@ class TestMaintenanceJobConsolidate:
             stats = job.run(cfg)
             assert stats.duplicates_found >= len(cluster_memories)
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_dissimilar_memories_not_consolidated(self) -> None:
@@ -248,8 +245,6 @@ class TestMaintenanceJobConsolidate:
             # m1 and m3 share "weather", "outside", "today" — should cluster
             assert stats.duplicates_found >= 0  # no crash
         finally:
-            import os
-
             os.unlink(db_path)
 
 
@@ -269,8 +264,6 @@ class TestMaintenanceJobContradict:
             stats = job.run(cfg)
             assert stats.contradictions_found == 0
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_sentiment_conflict_detected(self) -> None:
@@ -292,8 +285,6 @@ class TestMaintenanceJobContradict:
             assert stats.contradictions_found >= 1
             assert stats.contradictions_flagged_review >= 1
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_no_conflict_same_sentiment(self) -> None:
@@ -311,8 +302,6 @@ class TestMaintenanceJobContradict:
             # "happy" and "grateful" are not in SENTIMENT_OPPOSITES — no conflict
             assert stats.contradictions_found == 0
         finally:
-            import os
-
             os.unlink(db_path)
 
 
@@ -345,8 +334,6 @@ class TestMaintenanceJobArchiveStale:
             conn.close()
             assert row["is_ghost"] == 1
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_important_memory_not_archived(self) -> None:
@@ -374,8 +361,6 @@ class TestMaintenanceJobArchiveStale:
             conn.close()
             assert row["is_ghost"] == 0
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_stale_trend_archived(self) -> None:
@@ -394,8 +379,6 @@ class TestMaintenanceJobArchiveStale:
             assert stats.stale_found >= 1
             assert stats.stale_archived >= 1
         finally:
-            import os
-
             os.unlink(db_path)
 
 
@@ -417,8 +400,6 @@ class TestMaintenanceJobSynthesize:
             # Less than 3 memories → no insights
             assert stats.insights_generated == 0
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_cross_topic_insights_generated(self) -> None:
@@ -442,8 +423,6 @@ class TestMaintenanceJobSynthesize:
             stats = job.run(cfg)
             assert stats.insights_generated >= 1
         finally:
-            import os
-
             os.unlink(db_path)
 
 
@@ -464,8 +443,6 @@ class TestMaintenanceJobMultiMode:
             assert stats.maintenance_duration_seconds > 0
             assert stats.errors == []
         finally:
-            import os
-
             os.unlink(db_path)
 
     def test_single_mode(self) -> None:
@@ -482,8 +459,6 @@ class TestMaintenanceJobMultiMode:
             assert stats.modes_run == ["archive_stale"]
             assert stats.stale_found >= 1
         finally:
-            import os
-
             os.unlink(db_path)
 
 
@@ -512,8 +487,6 @@ class TestMaintenanceJobTenantIsolation:
             assert r1["is_ghost"] == 1
             assert r2["is_ghost"] == 0  # different tenant, untouched
         finally:
-            import os
-
             os.unlink(db_path)
 
 

@@ -10,6 +10,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import asyncio
+
 from foresight.enhanced_synthesizer import (
     MIN_CONTRADICTION_CONFIDENCE,
     Contradiction,
@@ -278,7 +280,6 @@ class TestEnhancedSynthesis:
 
     def test_synthesize_with_few_memories(self):
         """Should return None for too few memories."""
-        import asyncio
 
         synthesizer = EnhancedMemorySynthesizer()
 

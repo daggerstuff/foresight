@@ -10,6 +10,7 @@ from rich.table import Table
 
 from foresight.auth import Role, get_auth_manager
 from foresight.server import _initialize_backend, init_db
+from foresight.user_lanes import copy_user_lane, move_user_lane
 from foresight_cli.utils import output as out
 
 console = Console()
@@ -153,7 +154,6 @@ def copy_lane(
 ):
     """Copy all memories from one identity lane to another (IDs remapped, idempotent)."""
     _init_backend()
-    from foresight.user_lanes import copy_user_lane
 
     try:
         stats = copy_user_lane(src, dst, dry_run=dry_run)
@@ -174,7 +174,6 @@ def move_lane(
 ):
     """Move all memories from one identity lane to another (IDs unchanged)."""
     _init_backend()
-    from foresight.user_lanes import move_user_lane
 
     try:
         stats = move_user_lane(src, dst, dry_run=dry_run)

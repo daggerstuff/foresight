@@ -56,6 +56,8 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any, Protocol
 
+import httpx
+
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
 from .embedding_validation import (
@@ -238,7 +240,7 @@ class FastEmbedEmbedder:
 
     def __init__(self, model_name: str | None = None, cache_dir: str | None = None) -> None:
         try:
-            from fastembed import TextEmbedding
+            text_embedding_cls = importlib.import_module("fastembed").TextEmbedding
         except Exception as exc:  # pragma: no cover - depends on install
             raise SemanticSearchError(
                 "embedder provider 'fastembed' requires an optional dependency; "
@@ -252,7 +254,7 @@ class FastEmbedEmbedder:
         if self.cache_dir:
             kwargs["cache_dir"] = self.cache_dir
         try:
-            self._model = TextEmbedding(model_name=self.model_name, **kwargs)
+            self._model = text_embedding_cls(model_name=self.model_name, **kwargs)
         except Exception as exc:
             raise SemanticSearchError(f"failed to load fastembed model {self.model_name!r}: {exc}") from exc
 
@@ -335,8 +337,6 @@ class OpenAIEmbedder:
 
     def _request(self, texts: list[str]) -> list[list[float]]:
         """POST one batch to the embeddings endpoint."""
-        import httpx
-
         try:
             response = httpx.post(
                 f"{self.base_url}/embeddings",

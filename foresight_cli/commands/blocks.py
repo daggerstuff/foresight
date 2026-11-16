@@ -6,7 +6,7 @@ import json
 
 import typer
 
-from foresight.server import ContextBlockAction, init_db, manage_context_blocks
+from foresight.server import ContextBlockAction, _initialize_backend, init_db, manage_context_blocks
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage Foresight context blocks (guidance, preferences, state).")
@@ -15,7 +15,6 @@ app = typer.Typer(help="Manage Foresight context blocks (guidance, preferences, 
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)

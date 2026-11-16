@@ -17,6 +17,9 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
+
+from foresight.server import _initialize_backend, get_db_connection
 
 # ── Locate legacy SQLite files ──────────────────────────────────────────────
 HOME = Path.home()
@@ -26,7 +29,6 @@ NARRATIVE_CACHE_DB = HOME / ".foresight" / "narrative_cache.sqlite"
 
 def _get_pg_conn():
     """Acquire a Postgres connection. Initializes the backend first."""
-    from foresight.server import _initialize_backend, get_db_connection
 
     _initialize_backend()
     return get_db_connection()
@@ -34,7 +36,6 @@ def _get_pg_conn():
 
 def _mask_db_url(db_url: str) -> str:
     """Mask credentials in a database URL so it is safe to log."""
-    from urllib.parse import urlparse
 
     try:
         parsed = urlparse(db_url)

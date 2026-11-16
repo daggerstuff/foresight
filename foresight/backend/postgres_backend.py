@@ -20,6 +20,9 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
 from .base import DatabaseBackend
 
 logger = logging.getLogger("foresight_postgres_backend")
@@ -112,9 +115,6 @@ class PostgresBackend(DatabaseBackend):
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        from psycopg.rows import dict_row
-        from psycopg_pool import ConnectionPool
-
         logger.debug("Initialising PostgresBackend with dsn=%s", self._redact_dsn())
         self._pool = ConnectionPool(
             self._dsn,

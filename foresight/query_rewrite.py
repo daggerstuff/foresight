@@ -29,6 +29,8 @@ import logging
 import os
 import re
 
+from .llm_client import default_llm_call
+
 logger = logging.getLogger("foresight_query_rewrite")
 
 # Maximum variants produced for one query (original + statement + core).
@@ -202,11 +204,6 @@ def _llm_paraphrase(query: str, user_id: str, tenant_id: str) -> str | None:
     Never raises: the paraphrase is a bonus variant, and search must keep
     working unchanged when the provider is missing or failing.
     """
-    try:
-        from .llm_client import default_llm_call
-    except Exception as exc:
-        logger.debug("LLM paraphrase unavailable (import): %s", exc)
-        return None
     try:
         prompt = (
             "Rewrite this memory-search query as a short declarative statement "

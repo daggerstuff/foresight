@@ -13,7 +13,9 @@ import tempfile
 
 import pytest
 
+from foresight.capture import CaptureStats
 from foresight.connection_pool import reset_pool
+from foresight.server import _bridge_capture_memories_to_blocks
 from foresight.subconscious import (
     PENDING_ITEMS,
     PROJECT_CONTEXT,
@@ -372,7 +374,6 @@ def test_assistant_preference_no_false_positive(agent):
 
 def test_capture_stats_stored_items():
     """CaptureStats should track stored_items as (category, content) tuples."""
-    from foresight.capture import CaptureStats
 
     stats = CaptureStats()
     stats.stored_items.append(("preference", "I prefer pnpm over npm"))
@@ -384,7 +385,6 @@ def test_capture_stats_stored_items():
 
 def test_bridge_capture_memories_to_blocks(agent):
     """_bridge_capture_memories_to_blocks should sync memories to context blocks."""
-    from foresight.server import _bridge_capture_memories_to_blocks
 
     stored_items = [
         ("preference", "I prefer pnpm over npm"),
@@ -410,7 +410,6 @@ def test_bridge_capture_memories_to_blocks(agent):
 
 def test_bridge_capture_dedup(agent):
     """_bridge_capture_memories_to_blocks should not duplicate existing content."""
-    from foresight.server import _bridge_capture_memories_to_blocks
 
     items = [("preference", "I prefer pnpm over npm")]
     _bridge_capture_memories_to_blocks(agent, items)
@@ -421,7 +420,6 @@ def test_bridge_capture_dedup(agent):
 
 def test_bridge_capture_ignores_unknown_category(agent):
     """Unknown categories (e.g. tool_recipe) should be silently skipped."""
-    from foresight.server import _bridge_capture_memories_to_blocks
 
     count = _bridge_capture_memories_to_blocks(agent, [("tool_recipe", "npm install --save-dev vitest")])
     assert count == 0

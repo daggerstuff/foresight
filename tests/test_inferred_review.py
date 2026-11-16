@@ -19,6 +19,17 @@ import uuid
 
 import pytest
 
+from foresight.memory_relationships import reset_memory_relationship_store
+from foresight.server import (
+    INFERRED_LIST_MAX_LIMIT,
+    InferredAction,
+    PostgresPooledConnection,
+    curate_review_prompt,
+    get_backend,
+    manage_inferred,
+)
+from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
+
 UID = "_test_user_"
 TENANT = "_test_"
 NOW = "2026-09-25T10:00:00+00:00"
@@ -29,8 +40,6 @@ def pg_db(monkeypatch):
     """Postgres test backend (conftest session fixture) with tenant context and
     the ``sqlite3.connect("postgres")`` mock from test_server.py, so tests can
     reach the same DB the server tools write to via get_db_connection()."""
-    from foresight.memory_relationships import reset_memory_relationship_store
-    from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id(UID)
     set_current_account_id(TENANT)
@@ -40,8 +49,6 @@ def pg_db(monkeypatch):
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import PostgresPooledConnection, get_backend
-
             pool = get_backend()._pool
             return PostgresPooledConnection(pool.getconn(), pool)
         return real_sqlite3_connect(database, *args, **kwargs)
@@ -51,7 +58,6 @@ def pg_db(monkeypatch):
     yield
 
     reset_memory_relationship_store()
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -62,7 +68,6 @@ def _pg():
 
 
 def _tool(action, **kwargs):
-    from foresight.server import manage_inferred
 
     return manage_inferred(action=action, **kwargs)
 
@@ -74,7 +79,6 @@ def _list_items(limit=None):
 
 
 def _inferred_list_max_limit():
-    from foresight.server import INFERRED_LIST_MAX_LIMIT
 
     return INFERRED_LIST_MAX_LIMIT
 
@@ -485,7 +489,6 @@ class TestScoping:
 @pytest.mark.usefixtures("pg_db")
 class TestManageInferredDispatch:
     def test_no_action_or_options_errors(self):
-        from foresight.server import manage_inferred
 
         res = json.loads(manage_inferred())
         assert res["ok"] is False
@@ -497,14 +500,12 @@ class TestManageInferredDispatch:
         assert "'memory_id' is required" in res["error"]["message"]
 
     def test_options_object_is_accepted(self):
-        from foresight.server import InferredAction
 
         conn = _pg()
         try:
             _insert_memory(conn, "inf_opt", "inferred fact via options")
         finally:
             conn.close()
-        from foresight.server import manage_inferred
 
         res = json.loads(manage_inferred(options=InferredAction(action="list", limit=5), user_id=UID))
         assert res["ok"] is True
@@ -530,7 +531,6 @@ class TestCurateReviewPrompt:
             )
         finally:
             conn.close()
-        from foresight.server import curate_review_prompt
 
         prompt = curate_review_prompt(user_id=UID)
         assert "Inferred Memory Queue" in prompt
@@ -538,7 +538,6 @@ class TestCurateReviewPrompt:
         assert "inf_prompt" in prompt
 
     def test_prompt_with_empty_queue_still_renders(self):
-        from foresight.server import curate_review_prompt
 
         prompt = curate_review_prompt(user_id=UID)
         assert "Inferred Memory Queue" in prompt

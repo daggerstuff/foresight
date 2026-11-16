@@ -20,7 +20,7 @@ from typing import Any, Literal, cast
 
 from .backend.base import DatabaseBackend
 from .config import DB_PATH, DB_URL
-from .connection_pool import get_pool
+from .connection_pool import get_backend, get_pool
 from .entity_extractor import Entity, EntityType, ExtractionResult, Relationship, RelationshipType
 from .sql_helpers import build_type_filter
 from .tenant_context import get_current_account_id
@@ -283,9 +283,7 @@ class GraphStore:
                 cursor = conn.execute(f"PRAGMA table_info({table})")
                 columns = [row["name"] for row in cursor.fetchall()]
             except Exception:
-                import logging
-
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "Table %s info check failed, skipping",
                     table,
                     exc_info=True,
@@ -808,16 +806,10 @@ def get_graph_store(db_path: str | None = None, backend: DatabaseBackend | None 
             if backend is None and isinstance(db_path, str) and "://" in db_path:
                 # A DSN means Postgres; the SQLite DDL in GraphStore._init_db
                 # cannot run there. Reuse the process-wide backend when the
-                # server has already initialised one (lazy import avoids the
-                # server -> graph_store circular import).
-                try:
-                    from .server import get_backend
-                except Exception:
-                    logger.debug("foresight.server not importable yet; no process backend to reuse")
-                else:
-                    active_backend = get_backend()
-                    if active_backend is not None:
-                        backend = active_backend
+                # server has already initialised one.
+                active_backend = get_backend()
+                if active_backend is not None:
+                    backend = active_backend
             if db_path is None and backend is None:
                 raise RuntimeError("db_path or DB_PATH or backend required")
             _state["graph_store"] = GraphStore(db_path, backend=backend)

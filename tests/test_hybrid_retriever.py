@@ -19,11 +19,13 @@ from foresight.hybrid_retriever import (
     DECAY_FLOOR_WEAKENING,
     MAX_BURST_BOOST,
     HybridRetriever,
+    HybridSearchOptions,
     _escape_like,
     _normalize_query,
     _validate_input,
     reset_hybrid_retriever,
 )
+from foresight.semantic_search import SemanticSearch
 from foresight.server import SearchTrace
 
 # The decay floors pin the multiplier; the band allows for the strength ratio
@@ -207,8 +209,6 @@ def create_test_db():
     conn.commit()
     conn.close()
 
-    import os
-
     os.close(_)
     return path
 
@@ -217,7 +217,6 @@ def create_test_db():
 def test_db():
     path = create_test_db()
     yield path
-    import os
 
     os.unlink(path)
 
@@ -902,7 +901,6 @@ class TestTemporalSignalHardening:
             rankings = retriever._temporal_search("u1", "default", 10, 0.0)
         finally:
             conn2.close()
-        import os
 
         os.unlink(path)
 
@@ -989,8 +987,6 @@ class TestDecayCrossCutting:
 
         retriever = HybridRetriever(path)
         result = retriever.search("anxiety", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
-
-        import os
 
         os.unlink(path)
 
@@ -1626,7 +1622,6 @@ class TestVectorSignal:
 
     def test_vector_signal_contributes_to_fusion(self, test_db):
         """Indexed embeddings should surface via a distinct `vector` signal."""
-        from foresight.semantic_search import SemanticSearch
 
         conn = sqlite3.connect(test_db)
         rows = conn.execute("SELECT id, content FROM memories WHERE user_id = 'test_user'").fetchall()
@@ -1651,7 +1646,6 @@ class TestVectorSignal:
 
     def test_vector_signal_is_independent_of_tfidf(self, test_db):
         """vector_score must not simply mirror tfidf_cosine_score."""
-        from foresight.semantic_search import SemanticSearch
 
         conn = sqlite3.connect(test_db)
         rows = conn.execute("SELECT id, content FROM memories WHERE user_id = 'test_user'").fetchall()
@@ -1686,8 +1680,6 @@ class TestVectorSignal:
 
     def test_use_vector_false_disables_signal(self, test_db):
         """Callers can opt out of the vector signal."""
-        from foresight.hybrid_retriever import HybridSearchOptions
-        from foresight.semantic_search import SemanticSearch
 
         conn = sqlite3.connect(test_db)
         rows = conn.execute("SELECT id, content FROM memories WHERE user_id = 'test_user'").fetchall()

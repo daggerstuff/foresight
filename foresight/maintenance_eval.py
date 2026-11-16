@@ -21,6 +21,7 @@ Or via CLI:
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import hashlib
 import json
@@ -32,6 +33,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from . import config as config_module, connection_pool as conn_pool_module
+from .connection_pool import get_pool, reset_pool
 from .memory_maintenance import (
     MAX_BATCH_SIZE,
     MAX_RUNTIME_SECONDS,
@@ -41,6 +44,7 @@ from .memory_maintenance import (
     MaintenanceStats,
     MemoryMaintenanceJob,
 )
+from .server import init_db
 
 logger = logging.getLogger("maintenance_eval")
 
@@ -422,7 +426,6 @@ class MaintenanceEvalHarness:
     def _get_connection(self) -> Any:
         if self._conn is not None:
             return self._conn
-        from .connection_pool import get_pool
 
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -434,10 +437,6 @@ class MaintenanceEvalHarness:
 
         Mirrors the pattern in eval_harness.py and tests/test_server.py.
         """
-        import foresight.config as config_module
-        import foresight.connection_pool as conn_pool_module
-        from foresight.connection_pool import reset_pool
-        from foresight.server import init_db
 
         reset_pool()
 
@@ -453,7 +452,6 @@ class MaintenanceEvalHarness:
         init_db()
 
     def _restore_patches(self) -> None:
-        from foresight.connection_pool import reset_pool
 
         reset_pool()
         for module, attr, orig in self._monkeypatches:
@@ -515,9 +513,7 @@ class MaintenanceEvalHarness:
                 )
                 count += 1
             except Exception:
-                import logging
-
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "Fixture seeding failed, non-critical",
                     exc_info=True,
                 )
@@ -696,7 +692,6 @@ def run_maintenance_eval(
 
 def main() -> None:
     """CLI entry point. Run with: python -m foresight.maintenance_eval"""
-    import argparse
 
     parser = argparse.ArgumentParser(description="Foresight Maintenance Evaluation (PIX-3952)")
     parser.add_argument(

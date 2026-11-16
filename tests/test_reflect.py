@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 
 import pytest
 
-from foresight.server import USER_ID, manage_memories, reflect
+from foresight import llm_client, reflect as reflect_mod, telemetry
+from foresight.hybrid_retriever import get_hybrid_retriever
+from foresight.server import USER_ID, manage_memories, manage_mental_models, reflect
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 
@@ -20,7 +23,6 @@ def setup_test_ctx():
 
 
 def _store(content: str, **kwargs) -> str:
-    import re
 
     result = manage_memories(action="store", content=content, category="fact", **kwargs)
     match = re.search(r"Stored memory (\S+)\.", result)
@@ -52,7 +54,6 @@ def test_reflect_returns_cited_answer():
 
 def test_reflect_extractive_fallback_without_llm(monkeypatch):
     """No LLM configured (or failing) → deterministic extractive answer, never fails."""
-    from foresight import llm_client
 
     def _boom(*args, **kwargs):
         raise llm_client.LLMError("no provider")
@@ -90,7 +91,6 @@ def test_reflect_include_archived_flag_accepted():
 def test_reflect_records_telemetry(monkeypatch, tmp_path):
     store_path = tmp_path / "telemetry.json"
     monkeypatch.setenv("FORESIGHT_TELEMETRY_PATH", str(store_path))
-    from foresight import telemetry
 
     telemetry.set_telemetry_store(telemetry.TelemetryStore(store_path))
     try:
@@ -121,7 +121,6 @@ def test_reflect_second_identical_question_is_cached():
 
 
 def test_reflect_cache_hit_costs_zero_retrieval(monkeypatch):
-    from foresight.hybrid_retriever import get_hybrid_retriever
 
     retriever = get_hybrid_retriever()
     _store(f"zero cost probe ({datetime.now(UTC).isoformat()})")
@@ -144,7 +143,6 @@ def test_mental_models_are_tenant_scoped():
 
 
 def test_manage_mental_models_list_refresh_delete():
-    from foresight.server import manage_mental_models
 
     _store(f"managed model memory ({datetime.now(UTC).isoformat()})")
     first = _reflect("managed model memory")
@@ -166,7 +164,6 @@ def test_manage_mental_models_list_refresh_delete():
 
 
 def test_stale_mental_model_self_heals(monkeypatch):
-    from foresight import reflect as reflect_mod
 
     _store(f"self heal memory ({datetime.now(UTC).isoformat()})")
     first = _reflect("self heal memory")
@@ -195,8 +192,6 @@ def test_supersede_invalidates_dependent_mental_model(monkeypatch):
     # Storing the contradicting memory triggers truth-resolution supersede,
     # which must mark dependent mental models stale.
     _store("I stopped going to the gym every morning")
-
-    from foresight import reflect as reflect_mod
 
     models = reflect_mod.list_mental_models(user_id=USER_ID, tenant_id="_test_")
     assert models

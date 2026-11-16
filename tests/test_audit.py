@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from typing import Any
 
 import pytest
@@ -395,7 +396,6 @@ def test_audit_log_append_only_no_update_method(tmp_path: Any) -> None:
 
 
 def test_audit_log_thread_safe_writes(tmp_path: Any) -> None:
-    import threading
 
     log = AuditLog(str(tmp_path / "audit.db"))
     try:

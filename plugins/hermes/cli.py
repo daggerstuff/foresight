@@ -8,6 +8,7 @@ searching, remembering, reflecting, and managing user profiles.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -59,7 +60,7 @@ def _get_client() -> _Client:
     cfg = _load_config(hermes_home)
 
     try:
-        from agent.secret_scope import get_secret
+        get_secret = importlib.import_module("agent.secret_scope").get_secret
     except ImportError:
 
         def get_secret(key: str, default: str = "") -> str:

@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
-from .connection_pool import get_pool
+from .connection_pool import get_backend, get_db_connection, get_pool
 from .tenant_context import get_current_account_id
 
 logger = logging.getLogger(__name__)
@@ -508,8 +508,6 @@ class _EventBusSingleton:
         so that tests can monkeypatch event_bus.EventStore with a fake.
         """
         try:
-            from .server import get_backend
-
             backend = get_backend()
             if EventStore is SQLiteEventStore and backend is not None and backend.backend_type == "postgresql":
                 return PostgresEventStore()
@@ -690,7 +688,7 @@ class PostgresEventStore(EventStoreBase):
     """
     Persistent event store using PostgreSQL.
 
-    Uses get_db_connection() from server.py which routes through
+    Uses get_db_connection() from connection_pool.py which routes through
     PostgresPooledConnection when PostgresBackend is active.
     The translation layer handles ? → $1,$2... param conversion.
     """
@@ -704,8 +702,6 @@ class PostgresEventStore(EventStoreBase):
 
     def _get_conn(self):
         """Get a database connection via the global backend router."""
-        from .server import get_db_connection
-
         return get_db_connection()
 
     def _init_db(self) -> None:

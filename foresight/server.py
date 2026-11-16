@@ -10,15 +10,19 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
+import functools
 import hashlib
 import json
 import logging
 import math
 import os
 import re
+import shutil  # nosec B404 - git lookup only, no shell invocation
+import subprocess as _sp  # nosec B404 - bandit attributes the import to this line; argv-list git call only
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 import warnings
 from collections.abc import Mapping
@@ -30,11 +34,13 @@ from typing import Any, Literal, Protocol, cast
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
+from mcp.shared.auth import OAuthClientInformationFull
 from mcp.types import TextContent
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 
+from . import connection_pool, oauth_store, reflect as reflect_mod
 from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
 from .auth_oauth import ForesightOAuthProvider
 from .backend import RedisCompanion, create_backend
@@ -59,12 +65,18 @@ from .config import (
     REDIS_URL,
     USER_ID,
 )
-from .connection_pool import PooledConnection, reset_pool
+from .connection_pool import (
+    _supports_execute_returning,
+    get_backend,
+    reset_pool,
+    set_backend,
+)
 from .context_blocks import (
     PENDING_ITEMS,
     PROJECT_CONTEXT,
     SESSION_PATTERNS,
     USER_PREFERENCES,
+    auto_distill_context_blocks,
     get_context_block_agent,
     get_context_snapshot,
     get_context_whisper,
@@ -73,6 +85,7 @@ from .context_cache import get_context_cache
 from .crisis_detection import get_crisis_service
 from .decay_model import DecayConfigOptions, get_decay_model
 from .dependent_cleanup import purge_dead_synthesized_from_ids
+from .document_ingestion import ingest_document_file as _ingest
 from .document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
     DocumentCreateOptions,
@@ -80,7 +93,7 @@ from .document_layer import (
     content_hash as _content_hash,
     get_document_store,
 )
-from .encryption import get_encryption_engine
+from .encryption import decrypt_if_encrypted, encrypt_if_enabled, get_encryption_engine
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .entity_extractor import Entity, get_entity_extractor
 from .event_bus import (
@@ -141,13 +154,16 @@ from .memory_types import (
     RetentionPolicy,
 )
 from .narrative_cache import NarrativeCache
+from .observations import curate_observations as _curate, list_observations
 from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
+from .profile_export import export_profile as _export
 from .profile_synthesizer import (
     DEFAULT_PROFILE_BUCKETS,
     ProfileConfig,
     profile_to_prompt,
     synthesize_profile as _synthesize_profile,
 )
+from .proof_benchmark import run_proof_benchmark
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
 from .reflection_engine import get_reflection_engine
 from .reflection_narrative import (
@@ -176,9 +192,17 @@ from .tenant_context import (
     set_current_user_id,
 )
 from .tenant_middleware import TenantMiddleware, _sanitize_id
+from .truth_resolution import create_supersede_edges, detect_and_mark_supersessions, supersede_detection_enabled
 
 # WebSocket imports
 from .websocket.server import WebSocketServer
+
+# Compatibility re-exports. These live in connection_pool so that modules
+# below server.py in the import graph can reach them without importing here.
+PooledConnection = connection_pool.PooledConnection
+PostgresPooledConnection = connection_pool.PostgresPooledConnection
+PostgresRow = connection_pool.PostgresRow
+get_db_connection = connection_pool.get_db_connection
 
 DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
 DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
@@ -186,17 +210,6 @@ DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
 
 # Last injection tracking for system status visibility (PIX-3955)
 _last_injection_stats: dict[str, Any] = {}
-
-
-class _BackendHolder:
-    """Process-wide slot for the database backend (set during main() startup, PIX-3994)."""
-
-    instance: Any = None
-
-
-def get_backend() -> Any:
-    """Return the active database backend, or ``None`` before startup."""
-    return _BackendHolder.instance
 
 
 class _RedisCompanionHolder:
@@ -855,214 +868,6 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
         raise RateLimitExceededError(remaining=remaining, reset_time=reset_time)
 
 
-class PostgresPooledConnection(PooledConnection):
-    """Wraps a psycopg connection to match the PooledConnection interface.
-
-    Translates SQLite-flavoured SQL to PostgreSQL dialect on execute().
-    Used when FORESIGHT_DB_URL is set and PostgresBackend is active.
-    Calling close() returns the connection to the psycopg pool.
-    """
-
-    def __init__(self, conn: Any, pool: Any) -> None:
-        self._conn = conn
-        self._pool: Any = pool
-        self._last_result = None
-        self._rowcount = -1
-        self._released = False
-
-    @staticmethod
-    def _adapt_row(row: Any) -> Any:
-        if row is None or not isinstance(row, dict):
-            return row
-        return PostgresRow(row)
-
-    def _ensure_healthy_conn(self):
-        """Replace the wrapped connection if Neon or the server closed it."""
-        if self._conn.closed or getattr(self._conn, "broken", False):
-            if hasattr(self._pool, "putconn"):
-                with contextlib.suppress(Exception):
-                    self._pool.putconn(self._conn)
-            self._conn = self._pool.getconn()
-
-    @staticmethod
-    def _is_transient_conn_error(exc: Exception) -> bool:
-        """True if *exc* is a connection-level error worth a single retry.
-
-        Covers Neon ``AdminShutdown`` (PG class 57P01), generic ``OperationalError``
-        (connection lost mid-query), and ``InterfaceError`` (connection already
-        closed/broken).  These are transient: a fresh connection from the pool
-        will succeed.
-        """
-        try:
-            import psycopg
-            import psycopg.errors
-        except ImportError:
-            return False
-        transient_types = (
-            psycopg.OperationalError,
-            psycopg.InterfaceError,
-            psycopg.errors.AdminShutdown,
-        )
-        return isinstance(exc, transient_types)
-
-    def _execute_with_retry(self, pg_sql: str, params: tuple) -> Any:
-        """Execute *pg_sql* with one automatic retry on transient connection errors.
-
-        Neon serverless Postgres can ``pg_terminate_backend()`` a pooled
-        connection between the ``_ensure_healthy_conn()`` check and the actual
-        ``execute()`` call (scale-to-zero wake-up race).  This wraps the execute
-        in a try/except, refreshes the connection on a transient error, and
-        retries exactly once.  A second failure propagates to the caller.
-        """
-        try:
-            return self._conn.execute(pg_sql, params)
-        except Exception as exc:
-            if not self._is_transient_conn_error(exc):
-                raise
-            logging.warning("Transient connection error on execute(), refreshing connection: %s", exc)
-            self._ensure_healthy_conn()
-            return self._conn.execute(pg_sql, params)
-
-    def execute(self, sql, params=()):
-        import re
-
-        from foresight.backend.postgres_backend import _translate_sql
-
-        self._ensure_healthy_conn()
-        sql_upper = sql.lstrip().upper()
-        if sql_upper.startswith("PRAGMA "):
-            match = re.search(r"PRAGMA\s+table_info\s*\(\s*([\'\"]?\w+[\'\"]?)\s*\)", sql, re.IGNORECASE)
-            if match:
-                table_name = match.group(1).strip("'\"")
-                pg_sql = (
-                    "SELECT 0 as cid, column_name as name, 'TEXT' as type, 0 as notnull, NULL "
-                    "as dflt_value, 0 as pk FROM information_schema.columns WHERE table_name = %s"
-                )
-                self._last_result = self._execute_with_retry(pg_sql, (table_name,))
-                self._rowcount = self._last_result.rowcount
-                return self
-
-            class DummyResult:
-                rowcount = 0
-
-                def fetchone(self):
-                    return None
-
-                def fetchall(self):
-                    return []
-
-            self._last_result = DummyResult()
-            self._rowcount = 0
-            return self
-
-        pg_sql = _translate_sql(sql)
-        self._last_result = self._execute_with_retry(pg_sql, params)
-        self._rowcount = self._last_result.rowcount
-        return self
-
-    def execute_returning(self, sql, params=()):
-        from foresight.backend.postgres_backend import _translate_sql
-
-        pg_sql = _translate_sql(sql)
-        upper_sql = pg_sql.upper()
-        if " RETURNING " not in upper_sql and upper_sql.lstrip().startswith(("INSERT ", "UPDATE ", "DELETE ")):
-            pg_sql = f"{pg_sql} RETURNING *"
-        self._last_result = self._execute_with_retry(pg_sql, params)
-        self._rowcount = self._last_result.rowcount
-        return self
-
-    @property
-    def rowcount(self):
-        return self._rowcount
-
-    def fetchone(self):
-        if self._last_result is None:
-            return None
-        return self._adapt_row(self._last_result.fetchone())
-
-    def fetchall(self):
-        if self._last_result is None:
-            return []
-        return [self._adapt_row(row) for row in self._last_result.fetchall()]
-
-    def commit(self):
-        self._conn.commit()
-
-    def rollback(self):
-        self._conn.rollback()
-
-    def close(self):
-        if not self._released:
-            self._released = True
-            # Commit any pending transaction before returning to the pool.
-            # Without this, the pool rolls back open transactions (INTRANS),
-            # discarding writes from code paths that don't call commit() explicitly.
-            with contextlib.suppress(Exception):
-                self._conn.commit()
-            if hasattr(self._pool, "release"):
-                self._pool.release(self)
-            elif hasattr(self._pool, "putconn"):
-                self._pool.putconn(self._conn)
-
-    @property
-    def row_factory(self):
-        return dict
-
-    @row_factory.setter
-    def row_factory(self, value):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
-
-
-class PostgresRow(dict):
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return list(self.values())[key]
-        return super().__getitem__(key)
-
-
-def _supports_execute_returning(conn: Any) -> bool:
-    return hasattr(conn, "execute_returning") and callable(conn.execute_returning)
-
-
-def get_db_connection(db_path: str | None = None):
-    """Get a Postgres connection from the shared backend pool.
-
-    Foresight is Postgres-only. The backend must be initialized first via
-    ``_initialize_backend()`` (which requires ``FORESIGHT_DB_URL``). There is
-    deliberately no SQLite fallback: if the backend is not a Postgres backend,
-    this raises ``RuntimeError`` instead of silently opening a local SQLite
-    store. That dual-store behavior is exactly the bug this migration removes.
-
-    Returns
-    -------
-    PostgresPooledConnection
-        A connection-like object with ``execute()``, ``fetchone()``,
-        ``fetchall()``, ``commit()``, and ``close()``.
-    """
-    backend = get_backend()
-    if backend is None:
-        raise RuntimeError(
-            "Database backend not initialized. Call _initialize_backend() first "
-            "(requires FORESIGHT_DB_URL). Foresight is Postgres-only; no SQLite fallback."
-        )
-    if backend.backend_type != "postgresql":
-        raise RuntimeError(
-            f"Database backend is '{backend.backend_type}', expected 'postgresql'. "
-            "Foresight is Postgres-only; no SQLite fallback."
-        )
-    _log = logging.getLogger("foresight.db")
-    _log.debug("get_db_connection: using PostgresBackend pool")
-    pool = backend._pool
-    conn = pool.getconn()
-    return PostgresPooledConnection(conn, pool)
-
-
 SCHEMA_VERSION = 17
 
 
@@ -1199,7 +1004,7 @@ def _initialize_backend() -> None:
     try:
         backend = create_backend()
         backend.connect()
-        _BackendHolder.instance = backend
+        set_backend(backend)
         logger.info("Database backend initialised (type=%s)", type(backend).__name__)
     except Exception:
         logger.exception(
@@ -1657,9 +1462,6 @@ def _seed_static_oauth_client() -> None:
     if not (static_client_id and static_redirect_uri):
         return
     try:
-        import asyncio
-
-        from mcp.shared.auth import OAuthClientInformationFull
 
         async def _seed() -> None:
             if await _oauth_provider.get_client(static_client_id) is not None:
@@ -1707,11 +1509,7 @@ def _health_status_dict() -> dict[str, Any]:
         "server": "foresight",
     }
     try:
-        # Deferred: get_system_status is defined later in this module (~L3960).
-        # Bare name fails if called during module init before that def.
-        from foresight.server import get_system_status as _get_status
-
-        raw = _get_status()
+        raw = get_system_status()
         parsed: Any = json.loads(raw) if isinstance(raw, str) else raw
         if isinstance(parsed, dict):
             status_value = parsed.get("status", "ok")
@@ -1722,8 +1520,6 @@ def _health_status_dict() -> dict[str, Any]:
             snapshot["memory_count"] = parsed.get("memory_count")
             snapshot["tenant_id"] = parsed.get("tenant_id")
     except Exception as exc:
-        import traceback
-
         logger.error(
             "_health_status_dict: get_system_status raised %s: %s\n%s", type(exc).__name__, exc, traceback.format_exc()
         )
@@ -1795,7 +1591,7 @@ def _cleanup_background_systems() -> None:
         except Exception as e:
             logger.error(f"Error closing database backend: {e}")
         finally:
-            _BackendHolder.instance = None
+            set_backend(None)
 
     # Release all pooled connections
     try:
@@ -1906,7 +1702,6 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     # Re-evaluate sensitivity at INSERT-time — content may have been
     # mutated by a PRE_STORE hook above.
     is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
-    from .encryption import encrypt_if_enabled
 
     stored_content = encrypt_if_enabled(
         content,
@@ -1952,28 +1747,21 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     conn.commit()
     # PIX-4702 truth resolution: best-effort supersede marking on the same
     # connection — must not fail an already-committed store.
-    from .truth_resolution import supersede_detection_enabled
 
     supersede_matches = []
     if supersede_detection_enabled():
-        from .truth_resolution import detect_and_mark_supersessions
-
         try:
             supersede_matches = detect_and_mark_supersessions(conn, memory_id, content, uid, tenant_id)
         except Exception as exc:
             logger.warning(f"Supersede detection failed for {memory_id}: {exc}")
     conn.close()
     if supersede_matches:
-        from .truth_resolution import create_supersede_edges
-
         try:
             create_supersede_edges(memory_id, supersede_matches, uid, tenant_id)
         except Exception as exc:
             logger.warning(f"Failed to create supersede edges for {memory_id}: {exc}")
     if supersede_matches:
         try:
-            from . import reflect as reflect_mod
-
             reflect_mod.mark_mental_models_stale(
                 [m.superseded_memory_id for m in supersede_matches], user_id=uid, tenant_id=tenant_id
             )
@@ -2046,7 +1834,6 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
                 "tenant_id": row["tenant_id"],
             },
         )
-        from .encryption import encrypt_if_enabled
 
         is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(
             options.updates.is_sensitive, options.updates.content.strip()
@@ -2247,8 +2034,6 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     try:
-        from . import reflect as reflect_mod
-
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
@@ -2303,8 +2088,6 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     conn.commit()
     conn.close()
     try:
-        from . import reflect as reflect_mod
-
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
@@ -2742,8 +2525,6 @@ def search_memories(
         event_bus = get_event_bus_with_stream()
         event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
 
-        from .encryption import decrypt_if_encrypted
-
         tags = json.loads(row["tags"])
         decrypted = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
         detail = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
@@ -2835,8 +2616,6 @@ def search_memories(
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return "No memories found."
 
-    from .encryption import decrypt_if_encrypted
-
     results = [
         f"- [{r['id']}] ({r['scope']}/{r['retention']}) "
         f"{decrypt_if_encrypted(r['content'], tenant_id=tenant_id, user_id=uid)[:80]}..."
@@ -2881,9 +2660,6 @@ def reflect(
     """
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
-
-    from . import reflect as reflect_mod
-    from .telemetry import get_telemetry_store
 
     # Mental-model cache: identical normalized questions reuse the stored
     # reflection (zero retrieval cost) until TTL expiry, supersession of a
@@ -2983,8 +2759,6 @@ def manage_mental_models(
         except Exception as exc:
             return _tool_error("mental_models", f"invalid arguments: {exc}")
 
-    from . import reflect as reflect_mod
-
     try:
         if options.action == "list":
             models = reflect_mod.list_mental_models(
@@ -3043,8 +2817,6 @@ def curate_observations(
     """
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
-
-    from .observations import curate_observations as _curate
 
     try:
         result = _curate(
@@ -3522,8 +3294,6 @@ def _detect_git_root() -> str | None:
     Used by process_session_transcript to automatically fill project_path
     without the caller having to discover or pass it.
     """
-    import shutil  # nosec B404 - git lookup only, no shell invocation
-    import subprocess as _sp  # nosec B404 - bandit attributes the import to this line; argv-list git call only
 
     git_bin = shutil.which("git")
     if not git_bin:
@@ -4831,8 +4601,6 @@ def inject_context(
     # in the background without blocking retrieval or requiring end-of-session wrapup.
     if conversation_text:
         try:
-            import threading
-
             threading.Thread(
                 target=_auto_capture_in_flight,
                 args=(conversation_text, uid, tenant_id),
@@ -4960,8 +4728,6 @@ def _active_observations(
 ) -> list[dict]:
     """Top active observations ranked by confidence * recency (best-effort)."""
     try:
-        from .observations import list_observations
-
         return list_observations(user_id=uid, tenant_id=tenant_id, limit=limit, agent_id=agent_id, project=project)
     except Exception:
         logger.debug("observation lookup failed", exc_info=True)
@@ -5871,8 +5637,6 @@ def _run_scheduled_maintenance_gc() -> None:
                     stats.maintenance_duration_seconds,
                 )
                 try:
-                    from .context_blocks import auto_distill_context_blocks
-
                     distill_res = auto_distill_context_blocks(uid, tid)
                     if distill_res.get("distilled_blocks"):
                         logger.info(
@@ -5947,8 +5711,6 @@ def _run_scheduled_maintenance_gc() -> None:
 
     if _oauth_base_url:
         try:
-            from . import oauth_store
-
             purged = oauth_store.purge_expired(DB_PATH)
             if purged:
                 logger.info("OAuth store purged %d expired code/token row(s)", purged)
@@ -6724,8 +6486,6 @@ def export_profile(
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
-    from .profile_export import export_profile as _export
-
     try:
         return _export(uid, tenant_id, format=format, agent_id=agent_id, project=project)
     except Exception as exc:
@@ -6977,7 +6737,6 @@ def ingest_document_file(
         char_budget: Optional soft max chars per chunk.
         metadata: Optional JSON-serializable metadata.
     """
-    from .document_ingestion import ingest_document_file as _ingest
 
     try:
         return _ingest(
@@ -7332,8 +7091,6 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
         ).fetchall()
     finally:
         conn.close()
-
-    from .encryption import decrypt_if_encrypted
 
     items = [
         {
@@ -8675,7 +8432,6 @@ async def _ui_gate(request: Any) -> tuple[dict[str, str] | None, JSONResponse | 
 
 def _ui_protected(fn):
     """Decorator: gate a ``/ui/api/*`` handler behind ``_ui_gate`` and scope identity."""
-    import functools
 
     @functools.wraps(fn)
     async def wrapper(request: Any) -> Any:
@@ -8696,7 +8452,6 @@ def _ui_protected(fn):
 @mcp.custom_route("/ui/dashboard", methods=["GET"])
 async def ui_dashboard_endpoint(request: Any) -> Any:
     """Serve the modern interactive Foresight MCP UI Dashboard."""
-    from starlette.responses import HTMLResponse
 
     return HTMLResponse(_FORESIGHT_DASHBOARD_HTML)
 
@@ -8704,7 +8459,6 @@ async def ui_dashboard_endpoint(request: Any) -> Any:
 @mcp.custom_route("/ui/api/status", methods=["GET"])
 async def ui_api_status(request: Any) -> Any:
     """API endpoint for UI dashboard stats."""
-    from starlette.responses import JSONResponse
 
     status_raw = get_system_status()
     try:
@@ -8718,7 +8472,6 @@ async def ui_api_status(request: Any) -> Any:
 @_ui_protected
 async def ui_api_memories(request: Any) -> Any:
     """API endpoint for UI memory search."""
-    from starlette.responses import JSONResponse
 
     q = getattr(request, "query_params", {}).get("q", "")
     limit_val = getattr(request, "query_params", {}).get("limit", "50")
@@ -8745,7 +8498,6 @@ async def ui_api_memories(request: Any) -> Any:
 @_ui_protected
 async def ui_api_context_blocks(request: Any) -> Any:
     """API endpoint for UI context blocks."""
-    from starlette.responses import JSONResponse
 
     res = manage_context_blocks(action="list")
     try:
@@ -8759,7 +8511,6 @@ async def ui_api_context_blocks(request: Any) -> Any:
 @_ui_protected
 async def ui_api_inject(request: Any) -> Any:
     """API endpoint for testing context injection live in UI."""
-    from starlette.responses import JSONResponse
 
     try:
         body = await request.json()
@@ -8771,8 +8522,6 @@ async def ui_api_inject(request: Any) -> Any:
 
     res = inject_context(conversation_text=text, include_details=True)
     if messages and isinstance(messages, list):
-        import threading
-
         uid = get_current_user_id()
         tid = get_current_account_id()
         threading.Thread(
@@ -8791,7 +8540,6 @@ async def ui_api_inject(request: Any) -> Any:
 @_ui_protected
 async def ui_api_capture(request: Any) -> Any:
     """API endpoint for in-flight memory capture during ongoing sessions."""
-    from starlette.responses import JSONResponse
 
     try:
         body = await request.json()
@@ -8800,8 +8548,6 @@ async def ui_api_capture(request: Any) -> Any:
         raw_uid = body.get("user_id")
         user_id = (_sanitize_id(raw_uid) if isinstance(raw_uid, str) else None) or get_current_user_id()
         tenant_id = get_current_account_id()
-
-        import threading
 
         threading.Thread(
             target=_auto_capture_in_flight,
@@ -8818,9 +8564,6 @@ async def ui_api_capture(request: Any) -> Any:
 @_ui_protected
 async def ui_api_maintenance(request: Any) -> Any:
     """API endpoint for triggering background maintenance and auto-distillation."""
-    from starlette.responses import JSONResponse
-
-    from .context_blocks import auto_distill_context_blocks
 
     uid = USER_ID
     tid = get_current_account_id()
@@ -8835,9 +8578,6 @@ async def ui_api_maintenance(request: Any) -> Any:
 @_ui_protected
 async def ui_api_benchmark(request: Any) -> Any:
     """API endpoint for running the Foresight Production Value & Proof Benchmark Suite."""
-    from starlette.responses import JSONResponse
-
-    from .proof_benchmark import run_proof_benchmark
 
     try:
         report = run_proof_benchmark()
@@ -8851,10 +8591,6 @@ async def ui_api_benchmark(request: Any) -> Any:
 @_ui_protected
 async def ui_api_telemetry(request: Any) -> Any:
     """API endpoint for telemetry metrics and lifetime token savings."""
-    from starlette.responses import JSONResponse
-
-    from .context_cache import get_context_cache
-    from .telemetry import get_telemetry_store
 
     telemetry = get_telemetry_store().get_summary()
     cache_stats = get_context_cache().get_stats()

@@ -46,7 +46,9 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from . import oauth_store
+from .auth import get_auth_manager
 from .config import DB_PATH
+from .connection_pool import get_pool
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +142,6 @@ class ForesightOAuthProvider(OAuthProvider):
         if self._db_path is MEMORY_ONLY_DB:
             return False
         try:
-            from foresight.connection_pool import get_pool
-
             get_pool(self._db_path)
             return True
         except Exception:  # store is optional; degrade to memory-only
@@ -218,7 +218,6 @@ class ForesightOAuthProvider(OAuthProvider):
         if not self._store_available():
             return
         self._ensure_schema()
-        from foresight.connection_pool import get_pool
 
         pool = None
         conn = None
@@ -634,8 +633,6 @@ class ForesightOAuthProvider(OAuthProvider):
         # and /ui/api endpoints with a single credential. The synthetic token
         # carries the user's id as `subject` for future identity mapping.
         try:
-            from .auth import get_auth_manager
-
             user = get_auth_manager().authenticate_api_key(token)
         except Exception:
             user = None

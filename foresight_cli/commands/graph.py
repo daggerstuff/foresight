@@ -9,6 +9,7 @@ import typer
 from foresight.server import (
     EntityAction,
     EntityQuery,
+    _initialize_backend,
     get_memory_relationships,
     init_db,
     link_memories,
@@ -26,7 +27,6 @@ app = typer.Typer(help="Graph, entity, and clustering operations.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)

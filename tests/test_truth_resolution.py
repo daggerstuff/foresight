@@ -19,17 +19,27 @@ import sqlite3
 
 import pytest
 
+import foresight.config as config_module
+import foresight.connection_pool as conn_pool_module
+import foresight.server as server_module
+import foresight.subconscious as subconscious_module
+from foresight.capture import get_capture_pipeline, reset_capture_pipeline
+from foresight.connection_pool import reset_pool
 from foresight.hybrid_retriever import (
     INFERRED_RANK_PENALTY,
     SUPERSEDED_RANK_PENALTY,
     HybridRetriever,
     reset_hybrid_retriever,
 )
+from foresight.memory_relationships import reset_memory_relationship_store
+from foresight.server import PostgresPooledConnection, get_backend, init_db, manage_memories
+from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 from foresight.truth_resolution import (
     OVERLAP_THRESHOLD,
     detect_supersession,
     supersede_detection_enabled,
 )
+from tests._sqlite_backend import SqliteBackend
 from tests.test_hybrid_retriever import create_test_db
 
 # ====== Pure detector tests (no DB) ======
@@ -143,8 +153,6 @@ def pg_db(monkeypatch):
     """Postgres test backend (conftest session fixture) with tenant context and
     the ``sqlite3.connect("postgres")`` mock from test_server.py, so store-path
     tests can query the same DB the server writes to via _handle_memory_store."""
-    from foresight.memory_relationships import reset_memory_relationship_store
-    from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
@@ -154,8 +162,6 @@ def pg_db(monkeypatch):
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import PostgresPooledConnection, get_backend
-
             pool = get_backend()._pool
             return PostgresPooledConnection(pool.getconn(), pool)
         return real_sqlite3_connect(database, *args, **kwargs)
@@ -165,7 +171,6 @@ def pg_db(monkeypatch):
     yield
 
     reset_memory_relationship_store()
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -177,21 +182,10 @@ def sqlite_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_truth_resolution_capture.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
-    import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
-    from foresight.capture import get_capture_pipeline, reset_capture_pipeline
-    from foresight.connection_pool import reset_pool
-    from foresight.memory_relationships import reset_memory_relationship_store
-    from foresight.server import init_db
-    from foresight.tenant_context import set_current_account_id, set_current_user_id
-    from tests._sqlite_backend import SqliteBackend
-
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
-    import foresight.server as server_module
 
     monkeypatch.setattr(server_module, "DB_PATH", str(db_file))
-    import foresight.subconscious as subconscious_module
 
     monkeypatch.setattr(subconscious_module, "DB_PATH", str(db_file))
     reset_pool()
@@ -206,7 +200,6 @@ def sqlite_db(tmp_path, monkeypatch):
     reset_memory_relationship_store()
     yield db_file
     reset_pool()
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -237,7 +230,6 @@ def _pg():
 class TestStorePathSupersede:
     def test_contradiction_supersedes_old_memory(self, monkeypatch):
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
-        from foresight.server import manage_memories
 
         res_old = manage_memories(
             action="store", content="Therapy feels helpful for my weekly sessions", category="fact"
@@ -271,7 +263,6 @@ class TestStorePathSupersede:
 
     def test_negation_flip_supersedes_old_memory(self, monkeypatch):
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
-        from foresight.server import manage_memories
 
         res_old = manage_memories(action="store", content="I go to the gym every morning", category="fact")
         old_id = _stored_id(res_old)
@@ -295,7 +286,6 @@ class TestStorePathSupersede:
 
     def test_unrelated_memories_not_superseded(self, monkeypatch):
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
-        from foresight.server import manage_memories
 
         res1 = manage_memories(
             action="store", content="User prefers FastAPI for building backend services", category="fact"
@@ -317,7 +307,6 @@ class TestStorePathSupersede:
     def test_gate_off_no_supersede(self, monkeypatch):
         """With the gate off (default) contradicting memories coexist."""
         monkeypatch.delenv("FORESIGHT_SUPERSEDE_DETECTION", raising=False)
-        from foresight.server import manage_memories
 
         res1 = manage_memories(action="store", content="Therapy feels helpful for my weekly sessions", category="fact")
         res2 = manage_memories(action="store", content="Therapy feels harmful for my weekly sessions", category="fact")
@@ -388,7 +377,6 @@ class TestMigrationV15Columns:
 class TestCaptureInferredFlag:
     def test_near_dup_derived_memory_flagged_inferred(self, sqlite_db):
         """A memory written with a derives edge (near duplicate) is inferred."""
-        from foresight.capture import get_capture_pipeline
 
         pipeline = get_capture_pipeline()
         pipeline.db_path = str(sqlite_db)

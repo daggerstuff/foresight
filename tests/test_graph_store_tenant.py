@@ -4,9 +4,11 @@ import os
 import sqlite3
 import tempfile
 
+from foresight.backend.backend_migrations import run_migrations
 from foresight.entity_extractor import Entity, Relationship
 from foresight.graph_store import GraphStore
 from foresight.tenant_context import reset_tenant_context, set_current_tenant_id
+from tests._sqlite_backend import SqliteBackend
 
 
 def _fresh_store():
@@ -143,9 +145,6 @@ def test_migration_adds_tenant_id_to_existing_db():
         conn.close()
 
         # Run migration
-        from foresight.backend.backend_migrations import run_migrations
-        from tests._sqlite_backend import SqliteBackend
-
         backend = SqliteBackend(db_path=db_path)
         backend.connect()
         try:

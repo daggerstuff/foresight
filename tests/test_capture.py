@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+import foresight.config as config_module
+import foresight.connection_pool as conn_pool_module
+import foresight.server as server_module
+import foresight.subconscious as subconscious_module
 from foresight.capture import (
     DECISION_IMPORTANCE,
     CapturedMemory,
@@ -14,8 +18,12 @@ from foresight.capture import (
     get_capture_pipeline,
     reset_capture_pipeline,
 )
+from foresight.connection_pool import get_pool, reset_pool
 from foresight.document_layer import content_hash as _content_hash
 from foresight.memory_relationships import reset_memory_relationship_store
+from foresight.server import init_db, process_session_transcript
+from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
+from tests._sqlite_backend import SqliteBackend
 
 # ====== Fixtures ======
 
@@ -26,23 +34,13 @@ def setup_test_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_capture.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
-    import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
-    from foresight.connection_pool import reset_pool
-    from foresight.server import init_db
-    from tests._sqlite_backend import SqliteBackend
-
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
-    import foresight.server as server_module
 
     monkeypatch.setattr(server_module, "DB_PATH", str(db_file))
-    import foresight.subconscious as subconscious_module
 
     monkeypatch.setattr(subconscious_module, "DB_PATH", str(db_file))
     reset_pool()
-
-    from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
@@ -55,7 +53,6 @@ def setup_test_db(tmp_path, monkeypatch):
     reset_memory_relationship_store()
     yield
     reset_pool()
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -233,13 +230,11 @@ class TestDedupeEngine:
         self, content: str, category: str = "decision", user_id: str = "_test_user_", tenant_id: str = "_test_"
     ):
         """Insert a memory directly so the engine can find it."""
-        from foresight.config import DB_PATH
-        from foresight.connection_pool import get_pool
 
         # Route through the same SQLite pool the DedupeEngine.check calls use
-        # (they pass db_path=str(DB_PATH)); the bare get_pool() call would
+        # (they pass db_path=str(config_module.DB_PATH)); the bare get_pool() call would
         # otherwise resolve to the global Postgres backend when it is active.
-        pool = get_pool(db_path=str(DB_PATH))
+        pool = get_pool(db_path=str(config_module.DB_PATH))
         conn = pool.acquire()
         try:
             now = datetime.now(UTC).isoformat()
@@ -260,7 +255,6 @@ class TestDedupeEngine:
             pool.release(conn)
 
     def test_unique(self):
-        from foresight.config import DB_PATH
 
         c = CapturedMemory(
             content="Let's use Redis for caching",
@@ -269,35 +263,32 @@ class TestDedupeEngine:
             retention="long_term",
             importance=0.7,
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(config_module.DB_PATH))
         assert result.status == "UNIQUE"
         assert result.existing_id is None
 
     def test_duplicate_exact_match(self):
-        from foresight.config import DB_PATH
 
         content = "Let's use PostgreSQL for persistence"
         self._seed_memory(content, category="decision")
         c = CapturedMemory(content=content, category="decision", scope="arc", retention="long_term", importance=0.7)
-        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(config_module.DB_PATH))
         assert result.status == "DUPLICATE"
         assert result.existing_id is not None
         assert result.similarity == 1.0
 
     def test_near_duplicate_high_overlap(self):
-        from foresight.config import DB_PATH
 
         content = "Let's use PostgreSQL for persistence because it's reliable and performant"
         self._seed_memory(content, category="decision")
         similar = "Let's use PostgreSQL for persistence since it's reliable and performant for our use case"
         c = CapturedMemory(content=similar, category="decision", scope="arc", retention="long_term", importance=0.7)
-        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(config_module.DB_PATH))
         # Jaccard should be > 0.55
         assert result.status in ("NEAR_DUPLICATE", "DUPLICATE"), f"got {result.status}"
         assert result.existing_id is not None
 
     def test_near_duplicate_by_same_user(self):
-        from foresight.config import DB_PATH
 
         content1 = "I prefer using FastAPI for building REST APIs and web services"
         self._seed_memory(content1, category="preference")
@@ -305,11 +296,10 @@ class TestDedupeEngine:
         c = CapturedMemory(
             content=content2, category="preference", scope="trait", retention="long_term", importance=0.6
         )
-        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(config_module.DB_PATH))
         assert result.status in ("NEAR_DUPLICATE", "DUPLICATE"), f"got {result.status}"
 
     def test_different_content_unique(self):
-        from foresight.config import DB_PATH
 
         self._seed_memory("Let's use MongoDB for documents", category="decision")
         c = CapturedMemory(
@@ -321,12 +311,11 @@ class TestDedupeEngine:
         )
         # Keep the store consistent with _seed_memory: route through the
         # same SQLite pool (db_path) instead of the global Postgres backend.
-        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(config_module.DB_PATH))
         assert result.status == "UNIQUE"
 
     def test_different_category_no_false_dedup(self):
         """Same words but different category should not collide."""
-        from foresight.config import DB_PATH
 
         self._seed_memory("Let's use FastAPI for the service", category="decision")
         c = CapturedMemory(
@@ -338,7 +327,7 @@ class TestDedupeEngine:
         )
         # Keep the store consistent with _seed_memory: route through the
         # same SQLite pool (db_path) instead of the global Postgres backend.
-        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(DB_PATH))
+        result = DedupeEngine.check(c, "_test_user_", "_test_", db_path=str(config_module.DB_PATH))
         # Content hash will differ since it includes the category prefix
         assert result.status == "UNIQUE"
 
@@ -354,9 +343,8 @@ class TestDedupeEngine:
 
 class TestCapturePipeline:
     def _count_memories(self):
-        from foresight.connection_pool import DB_PATH, get_pool
 
-        pool = get_pool(db_path=DB_PATH)
+        pool = get_pool(db_path=config_module.DB_PATH)
         conn = pool.acquire()
         try:
             return conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE user_id = '_test_user_'").fetchone()["cnt"]
@@ -479,7 +467,6 @@ class TestServerIntegration:
 
     def test_process_session_transcript_includes_capture(self):
         """Verify the return message includes memory count from capture pipeline."""
-        from foresight.server import process_session_transcript
 
         msgs = [
             {"role": "user", "content": "Let's use Redis for caching"},
@@ -492,7 +479,6 @@ class TestServerIntegration:
 
     def test_process_session_transcript_skips_trivial(self):
         """Trivial sessions should still report zero new memories."""
-        from foresight.server import process_session_transcript
 
         msgs = [
             {"role": "user", "content": "hi"},
@@ -504,7 +490,6 @@ class TestServerIntegration:
 
     def test_process_session_transcript_with_existing_bridge(self):
         """Pipeline should coexist with existing _bridge_context_blocks_to_memories."""
-        from foresight.server import process_session_transcript
 
         msgs = [
             {"role": "user", "content": "TODO: Add retry logic for the API client."},

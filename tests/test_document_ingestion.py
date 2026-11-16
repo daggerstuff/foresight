@@ -13,6 +13,7 @@ from foresight.document_ingestion import (
     extract_text,
     ingest_document_file,
 )
+from foresight.rest_api import _ROUTES
 
 
 def _block_imports(monkeypatch, *names: str) -> None:
@@ -133,6 +134,5 @@ def test_ingest_document_file_pdf_source_default(tmp_path, monkeypatch):
 
 
 def test_rest_route_registered():
-    from foresight.rest_api import _ROUTES
 
     assert any(path == "/documents/ingest" for path, *_ in _ROUTES)

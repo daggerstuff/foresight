@@ -39,10 +39,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import subprocess  # nosec B404 - benchmark runner; fixed argv git call only, no shell
 import sys
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -50,6 +52,12 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
+
+from . import config as config_module, connection_pool as conn_pool_module
+from .connection_pool import get_pool, reset_pool
+from .hybrid_retriever import HybridSearchOptions, get_hybrid_retriever, reset_hybrid_retriever
+from .server import _SCHEMA_MIGRATIONS
+from .tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -474,19 +482,11 @@ class ForesightBackend:
         self._apply_isolation()
 
     def _apply_isolation(self) -> None:
-        import foresight.config as config_module
-        import foresight.connection_pool as conn_pool_module
-        from foresight.connection_pool import get_pool, reset_pool
-        from foresight.hybrid_retriever import reset_hybrid_retriever
-        from foresight.server import _SCHEMA_MIGRATIONS
-        from foresight.tenant_context import set_current_account_id, set_current_user_id
 
         reset_pool()
         reset_hybrid_retriever()
 
         if self._db_path is None:
-            import tempfile
-
             fd, resolved = tempfile.mkstemp(suffix=".db", prefix="foresight_bench_")
             os.close(fd)
             self._db_path = resolved
@@ -514,14 +514,12 @@ class ForesightBackend:
             pool.release(conn)
 
     def _connection(self) -> Any:
-        from foresight.connection_pool import get_pool
 
         pool = get_pool(self._db_path)
         return pool.acquire()
 
     def ingest(self, history_id: str, sessions: Sequence[Session], user_id: str, tenant_id: str) -> IngestStats:
         self._apply_isolation()
-        import hashlib
 
         conn = self._connection()
         now = datetime.now(UTC).isoformat()
@@ -575,7 +573,6 @@ class ForesightBackend:
         return IngestStats(memories=count, sessions=len(list(sessions)))
 
     def retrieve(self, query: str, k: int, user_id: str, tenant_id: str) -> list[RetrievedMemory]:
-        from foresight.hybrid_retriever import HybridSearchOptions, get_hybrid_retriever
 
         retriever = get_hybrid_retriever()
         result = retriever.search(
@@ -600,9 +597,6 @@ class ForesightBackend:
         return out[:k]
 
     def close(self) -> None:
-        from foresight.connection_pool import reset_pool
-        from foresight.hybrid_retriever import reset_hybrid_retriever
-        from foresight.tenant_context import reset_tenant_context
 
         reset_hybrid_retriever()
         reset_pool()

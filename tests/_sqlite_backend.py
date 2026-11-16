@@ -7,6 +7,8 @@ self-contained database without a running Postgres instance.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from foresight.backend.base import DatabaseBackend
 from foresight.config import DB_PATH
 from foresight.connection_pool import ConnectionPool, CustomRow
@@ -43,7 +45,6 @@ class SqliteBackend(DatabaseBackend):
             self._pool = None
 
     def connection(self):
-        from contextlib import contextmanager
 
         if self._pool is None:
             raise RuntimeError("SqliteBackend not connected. Call connect() first.")

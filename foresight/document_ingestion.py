@@ -25,6 +25,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import server
+
 _PDF_EXTENSIONS = {".pdf"}
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 _TEXT_EXTENSIONS = {".txt", ".md", ".text", ".json", ".csv", ".log", ".yaml", ".yml"}
@@ -66,13 +68,13 @@ def extract_text(path: str | Path) -> str:
 
 def _extract_pdf_text(path: Path) -> str:
     try:
-        from pypdf import PdfReader
+        pdf_reader_cls = importlib.import_module("pypdf").PdfReader
     except ImportError as exc:  # pragma: no cover - dependency optional
         raise DocumentIngestionError(
             "PDF ingestion requires the optional 'pypdf' dependency; install it with: pip install 'foresight[pdf]'"
         ) from exc
     try:
-        reader = PdfReader(str(path))
+        reader = pdf_reader_cls(str(path))
         pages = [(page.extract_text() or "") for page in reader.pages]
     except Exception as exc:  # pragma: no cover - malformed/encrypted PDFs
         raise DocumentIngestionError(f"failed to read PDF {path.name}: {exc}") from exc
@@ -88,7 +90,7 @@ def _extract_pdf_text(path: Path) -> str:
 def _extract_ocr_text(path: Path) -> str:
     try:
         pytesseract = importlib.import_module("pytesseract")
-        from PIL import Image
+        pil_image = importlib.import_module("PIL.Image")
     except ImportError as exc:  # pragma: no cover - dependency optional
         raise DocumentIngestionError(
             "OCR ingestion requires the optional 'pytesseract' + 'Pillow' "
@@ -96,7 +98,7 @@ def _extract_ocr_text(path: Path) -> str:
             "(and ensure the 'tesseract' binary is on your PATH)"
         ) from exc
     try:
-        return pytesseract.image_to_string(Image.open(str(path))).strip()
+        return pytesseract.image_to_string(pil_image.open(str(path))).strip()
     except Exception as exc:  # pragma: no cover - tesseract missing / bad image
         raise DocumentIngestionError(
             f"OCR failed for {path.name}: {exc}. Confirm the 'tesseract' binary is installed and on PATH."
@@ -137,8 +139,6 @@ def ingest_document_file(
     if not content:
         raise DocumentIngestionError(f"no text extracted from {p.name}")
 
-    from .server import create_document
-
     resolved_title = title or p.stem or p.name
     resolved_source = source or ("pdf" if kind == "pdf" else "document")
     kwargs: dict[str, Any] = {
@@ -150,7 +150,7 @@ def ingest_document_file(
     }
     if char_budget is not None:
         kwargs["char_budget"] = char_budget
-    return create_document(**kwargs)
+    return server.create_document(**kwargs)
 
 
 def ingest_document_file_json(*args: Any, **kwargs: Any) -> dict[str, Any]:

@@ -21,6 +21,7 @@ All operations are:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -1041,8 +1042,6 @@ class MemoryMaintenanceJob:
             result = asyncio.run(get_enhanced_synthesizer().synthesize(mem_objs, user_id=config.user_id))
         except RuntimeError:
             # Event loop already running -- use thread bridge
-            import concurrent.futures
-
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(
                     asyncio.run,

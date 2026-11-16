@@ -29,6 +29,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import foresight.llm_client as llm_client_module
 from foresight.hybrid_retriever import HybridRetriever
 from foresight.query_rewrite import query_rewrite_enabled, rewrite_variants
 
@@ -125,7 +126,6 @@ def test_env_toggle(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_llm_failure_never_breaks_rewrite(monkeypatch: pytest.MonkeyPatch):
-    import foresight.llm_client as llm_client_module
 
     def _boom(*args: object, **kwargs: object) -> str:
         raise RuntimeError("llm down")

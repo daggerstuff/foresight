@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 
 from .encryption import decrypt_if_encrypted
 from .enhanced_synthesizer import compute_overlap_score, find_sentiment_conflict
+from .memory_relationships import LinkMemoriesOptions, get_memory_relationship_store
 
 logger = logging.getLogger("foresight_truth_resolution")
 
@@ -181,7 +182,6 @@ def create_supersede_edges(
     tenant_id: str,
 ) -> int:
     """Create ``updates`` edges (new memory → each superseded memory)."""
-    from .memory_relationships import LinkMemoriesOptions, get_memory_relationship_store
 
     store = get_memory_relationship_store()
     created = 0

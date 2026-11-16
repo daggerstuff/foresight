@@ -20,6 +20,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import os
+
 from foresight.temporal_queries import TemporalQueryBuilder
 from foresight.temporal_schema import run_temporal_migrations
 from foresight.temporal_service import DecayConfig, TemporalService
@@ -67,7 +69,6 @@ def temp_db():
     # Create minimal schema first
     create_minimal_schema(path)
     yield path
-    import os
 
     os.close(fd)
     os.unlink(path)

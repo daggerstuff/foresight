@@ -27,6 +27,11 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import llm_client
+from .config import DB_PATH
+from .connection_pool import get_db_connection, get_pool
+from .hybrid_retriever import HybridSearchOptions, get_hybrid_retriever
+
 logger = logging.getLogger("foresight_reflect")
 
 DEFAULT_MENTAL_MODEL_TTL_DAYS = 30
@@ -43,13 +48,8 @@ MAX_ANSWER_PROMPT_MEMORIES = 8
 
 def _connect():
     try:
-        from .server import get_db_connection
-
         return get_db_connection()
     except Exception:
-        from .config import DB_PATH
-        from .connection_pool import get_pool
-
         return get_pool(DB_PATH).acquire()
 
 
@@ -170,8 +170,6 @@ def _extractive_answer(citations: list[dict]) -> str:
 
 def _llm_answer(question: str, citations: list[dict], uid: str, tenant_id: str) -> str | None:
     """Best-effort LLM synthesis. Returns None when unavailable/failing."""
-    from . import llm_client
-
     excerpts = "\n".join(f"[{c['memory_id']}] {c['content_excerpt']}" for c in citations[:MAX_ANSWER_PROMPT_MEMORIES])
     prompt = (
         "Answer the question using ONLY the memories below. Cite each fact "
@@ -204,8 +202,6 @@ def reflect(
     ``tokens_used``, ``cached`` and ``synthesized_by`` keys. Never raises
     for retrieval or synthesis failures — degradation is reported in-band.
     """
-    from .hybrid_retriever import HybridSearchOptions, get_hybrid_retriever
-
     t0 = time.perf_counter()
     retriever = get_hybrid_retriever()
     search_options: dict[str, Any] = {}
