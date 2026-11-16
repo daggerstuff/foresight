@@ -28,6 +28,8 @@ from __future__ import annotations
 import logging
 import time
 
+from .connection_pool import get_pool
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA = (
@@ -52,7 +54,6 @@ _SCHEMA = (
 
 def ensure_schema(db_path: str | None) -> None:
     """Create the OAuth tables if they do not exist (idempotent)."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -68,7 +69,6 @@ def ensure_schema(db_path: str | None) -> None:
 
 def persist_client(db_path: str | None, client_id: str, client_json: str) -> None:
     """Insert or update a registered client."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -85,7 +85,6 @@ def persist_client(db_path: str | None, client_id: str, client_json: str) -> Non
 
 def load_client(db_path: str | None, client_id: str) -> str | None:
     """Return the stored client JSON for ``client_id``, or ``None``."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -101,7 +100,6 @@ def load_client(db_path: str | None, client_id: str) -> str | None:
 
 def persist_auth_code(db_path: str | None, code: str, code_json: str, expires_at: float) -> None:
     """Insert or update an authorization code."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -119,7 +117,6 @@ def persist_auth_code(db_path: str | None, code: str, code_json: str, expires_at
 
 def load_auth_code(db_path: str | None, code: str) -> tuple[str, float] | None:
     """Return ``(code_json, expires_at)`` for a code, or ``None``."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -135,7 +132,6 @@ def load_auth_code(db_path: str | None, code: str) -> tuple[str, float] | None:
 
 def delete_auth_code(db_path: str | None, code: str) -> None:
     """Delete an authorization code (single-use consumption)."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -148,7 +144,6 @@ def delete_auth_code(db_path: str | None, code: str) -> None:
 
 def persist_token(db_path: str | None, token: str, kind: str, token_json: str, expires_at: float | None) -> None:
     """Insert or update an access or refresh token (``kind`` = "access"/"refresh")."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -166,7 +161,6 @@ def persist_token(db_path: str | None, token: str, kind: str, token_json: str, e
 
 def load_token(db_path: str | None, token: str) -> tuple[str, str, float | None] | None:
     """Return ``(kind, token_json, expires_at)`` for a token, or ``None``."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -182,7 +176,6 @@ def load_token(db_path: str | None, token: str) -> tuple[str, str, float | None]
 
 def delete_token(db_path: str | None, token: str) -> None:
     """Delete a token (single-use consumption or revocation)."""
-    from foresight.connection_pool import get_pool
 
     pool = get_pool(db_path)
     conn = pool.acquire()
@@ -195,7 +188,6 @@ def delete_token(db_path: str | None, token: str) -> None:
 
 def purge_expired(db_path: str | None) -> int:
     """Delete expired auth codes and tokens. Returns the number removed."""
-    from foresight.connection_pool import get_pool
 
     now = time.time()
     pool = get_pool(db_path)

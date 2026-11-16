@@ -24,6 +24,7 @@ Config (env vars, profile-scoped via secret scope):
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -125,7 +126,7 @@ def _load_config(hermes_home: Path | None) -> dict[str, Any]:
     if not cfg_path.exists():
         return {}
     try:
-        import yaml
+        yaml = importlib.import_module("yaml")
 
         data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
         section = data.get("memory", {}).get("foresight", {})
@@ -454,7 +455,7 @@ class ForesightMemoryProvider(MemoryProvider):
         if not hermes_home or not values:
             return
         try:
-            from hermes_cli.config import save_config
+            save_config = importlib.import_module("hermes_cli.config").save_config
 
             non_secret = {k: v for k, v in values.items() if k not in ("api_key",)}
             if non_secret:

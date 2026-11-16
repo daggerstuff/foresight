@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import typer
 
-from foresight.server import create_document, delete_document, get_document, init_db, list_document_chunks
+from foresight.server import (
+    _initialize_backend,
+    create_document,
+    delete_document,
+    get_document,
+    init_db,
+    list_document_chunks,
+)
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage source documents and their chunks.")
@@ -13,7 +20,6 @@ app = typer.Typer(help="Manage source documents and their chunks.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)

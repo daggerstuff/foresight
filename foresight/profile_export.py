@@ -16,6 +16,10 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+from .observations import list_observations
+from .profile_synthesizer import ProfileConfig, synthesize_profile
+from .reflect import list_mental_models
+
 logger = logging.getLogger("foresight_profile_export")
 
 PROFILE_VERSION = 1
@@ -64,9 +68,6 @@ def build_profile_document(
     max_dynamic_memories: int = 10,
 ) -> dict[str, Any]:
     """Assemble the versioned export document (profile + derived layer)."""
-    from .observations import list_observations
-    from .profile_synthesizer import ProfileConfig, synthesize_profile
-    from .reflect import list_mental_models
 
     profile = synthesize_profile(
         user_id,

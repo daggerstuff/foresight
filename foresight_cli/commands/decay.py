@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from foresight.server import (
+    _initialize_backend,
     apply_memory_decay,
     generate_recovery_payload,
     get_decay_config,
@@ -23,7 +24,6 @@ app = typer.Typer(help="Decay, strength, recovery, and relevance operations.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)

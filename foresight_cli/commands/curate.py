@@ -8,7 +8,7 @@ from typing import Any
 
 import typer
 
-from foresight.server import CurationRunAction, init_db, manage_curation_runs
+from foresight.server import CurationRunAction, _initialize_backend, init_db, manage_curation_runs
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage async Foresight curation runs.")
@@ -17,7 +17,6 @@ app = typer.Typer(help="Manage async Foresight curation runs.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)

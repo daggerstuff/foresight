@@ -12,6 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import os
+
 from foresight.reflection_engine import (
     ReflectionEngine,
     ReflectionReport,
@@ -163,8 +165,6 @@ def create_test_db():
     conn.commit()
     conn.close()
 
-    import os
-
     os.close(fd)
     return path
 
@@ -173,7 +173,6 @@ def create_test_db():
 def test_db():
     path = create_test_db()
     yield path
-    import os
 
     os.unlink(path)
 

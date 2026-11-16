@@ -2,6 +2,7 @@
 
 import pytest
 
+import tests._sqlite_backend as sqlite_backend_module
 from tests._sqlite_backend import SqliteBackend
 
 
@@ -140,7 +141,6 @@ def test_connection_exception_rollback(backend):
 
 def test_connect_default_db_path(monkeypatch, tmp_path):
     default_path = str(tmp_path / "default.db")
-    import tests._sqlite_backend as sqlite_backend_module
 
     monkeypatch.setattr(sqlite_backend_module, "DB_PATH", default_path)
 

@@ -7,9 +7,12 @@ blocks while reusing the existing compatibility-backed implementation.
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from .block_registry import MemoryBlockSchema, get_registry, initialize_default_blocks
+from .connection_pool import get_db_connection
 from .subconscious import (
     DEFAULT_MEMORY_BLOCKS,
     PENDING_ITEMS,
@@ -162,17 +165,11 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
     Operates hands-off in the background to keep user preferences and
     project context continuously refined.
     """
-    import logging
-
-    from .subconscious import get_context_block_agent
-
     logger = logging.getLogger("foresight_context_distill")
-    agent = get_context_block_agent(user_id, tenant_id)
+    agent = _get_context_block_agent(user_id, tenant_id)
     updated_blocks: list[str] = []
 
     try:
-        from .server import get_db_connection
-
         conn = get_db_connection()
         try:
             # 1. Distill Preferences / Traits with semantic deduplication
@@ -189,8 +186,6 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
             ).fetchall()
 
             if pref_rows:
-                import re
-
                 unique_rules: list[str] = []
                 seen_token_sets: list[set[str]] = []
 

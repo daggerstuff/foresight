@@ -7,6 +7,7 @@ from foresight.proof_benchmark import (
     ProofBenchmarkRunner,
     ScenarioProofResult,
 )
+from foresight.server import init_db
 
 # Every surface Foresight claims to support should appear in the readiness map.
 MIN_SUPPORTED_SURFACES = 7
@@ -110,7 +111,6 @@ def test_surface_readiness_check():
 
 
 def test_token_savings_scenario():
-    from foresight.server import init_db
 
     init_db()
     runner = ProofBenchmarkRunner(user_id="test_token_bench", tenant_id="test_tenant")

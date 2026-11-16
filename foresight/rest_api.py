@@ -29,8 +29,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from . import server
 from .auth import User, _should_require_api_key, get_auth_manager
 from .config import DEFAULT_ACCOUNT_ID, DEFAULT_USER_ID, raw_retention_enabled
+from .document_ingestion import DocumentIngestionError, ingest_document_file
 from .tenant_context import (
     reset_tenant_context,
     set_current_account_id,
@@ -210,9 +212,7 @@ class TemporalQueryBody(BaseModel):
     def _validate_as_of(cls, value: str | None) -> str | None:
         """Reject an unparseable instant as 422 instead of answering from the present."""
         if value is not None:
-            from .server import _parse_as_of
-
-            _parse_as_of(value)
+            server._parse_as_of(value)
         return value
 
 
@@ -228,9 +228,7 @@ class ReprocessBody(BaseModel):
     @classmethod
     def _validate_window(cls, value: str | None) -> str | None:
         if value is not None:
-            from .server import _parse_as_of
-
-            _parse_as_of(value)
+            server._parse_as_of(value)
         return value
 
 
@@ -438,13 +436,11 @@ async def _handle_store_memory(request: Request) -> Response:
     if err:
         return err
 
-    from .server import manage_memories
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            manage_memories,
+            server.manage_memories,
             user_id=user_id,
             action="store",
             content=body.content,
@@ -470,12 +466,11 @@ async def _handle_store_memory(request: Request) -> Response:
 
 
 def _store_one(user_id: str | None, tenant_id: str, body: StoreMemoryBody) -> str:
-    from .server import manage_memories
 
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
-        return manage_memories(
+        return server.manage_memories(
             user_id=user_id,
             action="store",
             content=body.content,
@@ -559,14 +554,12 @@ async def _handle_temporal_query(request: Request) -> Response:
     if err:
         return err
 
-    from .server import TemporalWindow, query_memories_temporal
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            query_memories_temporal,
-            options=TemporalWindow(**body.model_dump(exclude_none=True)),
+            server.query_memories_temporal,
+            options=server.TemporalWindow(**body.model_dump(exclude_none=True)),
             user_id=user_id,
         )
     finally:
@@ -595,11 +588,9 @@ async def _handle_list_memories(request: Request) -> Response:
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
-        from .server import search_memories
-
         if q:
             result = await run_in_threadpool(
-                search_memories,
+                server.search_memories,
                 user_id=user_id,
                 query_type="keyword",
                 query=q,
@@ -608,7 +599,7 @@ async def _handle_list_memories(request: Request) -> Response:
             )
         else:
             result = await run_in_threadpool(
-                search_memories,
+                server.search_memories,
                 user_id=user_id,
                 query_type="list",
                 limit=limit,
@@ -641,13 +632,11 @@ async def _handle_patch_memory(request: Request) -> Response:
     if err:
         return err
 
-    from .server import manage_memories
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            manage_memories,
+            server.manage_memories,
             user_id=user_id,
             action="update",
             memory_id=request.path_params["memory_id"],
@@ -677,13 +666,12 @@ async def _handle_delete_memory(request: Request) -> Response:
         return tenant_err
 
     archive = request.query_params.get("archive", "").lower() in ("1", "true")
-    from .server import manage_memories
 
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            manage_memories,
+            server.manage_memories,
             user_id=user_id,
             action="archive" if archive else "delete",
             memory_id=request.path_params["memory_id"],
@@ -708,13 +696,11 @@ async def _handle_search(request: Request) -> Response:
     if err:
         return err
 
-    from .server import SearchOptions, search_memories
-
-    options = SearchOptions(**body.model_dump(exclude_none=True))
+    options = server.SearchOptions(**body.model_dump(exclude_none=True))
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
-        result = await run_in_threadpool(search_memories, user_id=user_id, options=options)
+        result = await run_in_threadpool(server.search_memories, user_id=user_id, options=options)
     finally:
         reset_tenant_context()
     return _tool_json(result)
@@ -735,13 +721,11 @@ async def _handle_reflect(request: Request) -> Response:
     if err:
         return err
 
-    from .server import reflect
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            reflect,
+            server.reflect,
             question=body.question,
             user_id=user_id,
             max_memories=body.max_memories,
@@ -769,13 +753,11 @@ async def _handle_manage_mental_models(request: Request) -> Response:
     if err:
         return err
 
-    from .server import manage_mental_models
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            manage_mental_models,
+            server.manage_mental_models,
             user_id=user_id,
             action=body.action,
             model_id=body.model_id,
@@ -802,13 +784,11 @@ async def _handle_curate_observations(request: Request) -> Response:
     if err:
         return err
 
-    from .server import curate_observations
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            curate_observations,
+            server.curate_observations,
             user_id=user_id,
             category=body.category,
             limit=body.limit,
@@ -835,13 +815,11 @@ async def _handle_inject(request: Request) -> Response:
     if err:
         return err
 
-    from .server import inject_context
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            inject_context,
+            server.inject_context,
             user_id=user_id,
             conversation_text=body.conversation_text,
             max_memories=body.max_memories,
@@ -878,13 +856,11 @@ async def _handle_session_transcript(request: Request) -> Response:
     if err:
         return err
 
-    from .server import process_session_transcript
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            process_session_transcript,
+            server.process_session_transcript,
             session_id=body.session_id,
             messages=body.messages,
             project_path=body.project_path,
@@ -912,8 +888,6 @@ async def _handle_create_document(request: Request) -> Response:
     if err:
         return err
 
-    from .server import create_document
-
     create_kwargs: dict[str, Any] = {
         "title": body.title,
         "content": body.content,
@@ -927,7 +901,7 @@ async def _handle_create_document(request: Request) -> Response:
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
-        result = await run_in_threadpool(create_document, **create_kwargs)
+        result = await run_in_threadpool(server.create_document, **create_kwargs)
     finally:
         reset_tenant_context()
     return _tool_json(result, success_status=201)
@@ -947,8 +921,6 @@ async def _handle_ingest_document_file(request: Request) -> Response:
     body, err = await _validated_body(request, IngestDocumentFileBody)
     if err:
         return err
-
-    from .document_ingestion import DocumentIngestionError, ingest_document_file
 
     ingest_kwargs: dict[str, Any] = {
         "path": body.path,
@@ -982,13 +954,11 @@ async def _handle_get_document(request: Request) -> Response:
     if tenant_err:
         return tenant_err
 
-    from .server import get_document
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            get_document,
+            server.get_document,
             document_id=request.path_params["document_id"],
             user_id=user_id,
         )
@@ -1015,13 +985,11 @@ async def _handle_profile(request: Request) -> Response:
     except ValueError:
         return _error(400, "max_static_memories and max_dynamic_memories must be integers")
 
-    from .server import synthesize_profile
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            synthesize_profile,
+            server.synthesize_profile,
             user_id=user_id,
             max_static_memories=max_static,
             max_dynamic_memories=max_dynamic,
@@ -1050,13 +1018,11 @@ async def _handle_profile_export(request: Request) -> Response:
     agent_id = request.query_params.get("agent_id") or None
     project = request.query_params.get("project") or None
 
-    from .server import export_profile
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            export_profile,
+            server.export_profile,
             user_id=user_id,
             format=fmt,
             agent_id=agent_id,
@@ -1082,13 +1048,11 @@ async def _handle_reprocess_raw_events(request: Request) -> Response:
     if err:
         return err
 
-    from .server import reprocess_raw_events
-
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
         result = await run_in_threadpool(
-            reprocess_raw_events,
+            server.reprocess_raw_events,
             user_id=user_id,
             tenant_id=tenant_id,
             window_start=body.window_start,

@@ -11,6 +11,7 @@ import os
 import tempfile
 from types import SimpleNamespace
 
+import foresight.eval_harness as eval_harness_module
 from foresight.eval_harness import (
     FIXTURE_MEMORIES,
     PII_MATCH_PREVIEW_CHARS,
@@ -18,8 +19,10 @@ from foresight.eval_harness import (
     EvalHarness,
     EvalReport,
     ScenarioResult,
+    run_eval,
     scan_for_pii,
 )
+from foresight_cli.commands import eval as eval_cmd
 
 # seed_fixtures is the floor every scenario relies on; more is fine, less is a
 # broken fixture set.
@@ -406,7 +409,6 @@ class TestEdgeCases:
 
 class TestRunEval:
     def test_run_eval_returns_report(self):
-        from foresight.eval_harness import run_eval
 
         report = run_eval(db_path=":memory:", budget_chars=2000)
         assert isinstance(report, EvalReport)
@@ -415,7 +417,6 @@ class TestRunEval:
         assert report.summary["pass_rate_pct"] >= 0
 
     def test_run_eval_writes_report_file(self):
-        from foresight.eval_harness import run_eval
 
         with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
             report_path = f.name
@@ -436,8 +437,6 @@ class TestRunEval:
                 os.unlink(report_path)
 
     def test_cli_eval_command_uses_scenario_result_fields(self, monkeypatch):
-        import foresight.eval_harness as eval_harness_module
-        from foresight_cli.commands import eval as eval_cmd
 
         scenario = ScenarioResult(
             scenario_id="S1_preference",
@@ -519,7 +518,6 @@ class TestReportPersistence:
             harness.close()
 
     def test_compare_via_cli(self):
-        from foresight.eval_harness import run_eval
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             baseline_path = f.name
@@ -543,7 +541,6 @@ class TestReportPersistence:
                 os.unlink(baseline_path)
 
     def test_report_file_includes_baseline_diff(self):
-        from foresight.eval_harness import run_eval
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as baseline_file:
             baseline_path = baseline_file.name
@@ -568,7 +565,6 @@ class TestReportPersistence:
                 os.unlink(report_path)
 
     def test_compare_missing_baseline_does_not_crash(self):
-        from foresight.eval_harness import run_eval
 
         report = run_eval(
             db_path=":memory:",
@@ -578,7 +574,6 @@ class TestReportPersistence:
         assert isinstance(report, EvalReport)
 
     def test_invalid_json_baseline_does_not_crash(self):
-        from foresight.eval_harness import run_eval
 
         with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
             f.write("not json")

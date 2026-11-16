@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from .enhanced_synthesizer import EnhancedMemorySynthesizer
+from .memory_types import MemoryObject
 from .reflect import _connect, _fetch_all, _fetch_one
 
 logger = logging.getLogger("foresight_observations")
@@ -66,7 +69,6 @@ def _observation_row(row: dict) -> dict[str, Any]:
 
 
 def _memory_objects(rows: list[dict]) -> list[Any]:
-    from .memory_types import MemoryObject
 
     objects = []
     for row in rows:
@@ -88,7 +90,6 @@ def _memory_objects(rows: list[dict]) -> list[Any]:
 
 
 def _slug(text: str, length: int = 48) -> str:
-    import re
 
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return slug[:length] or "pattern"
@@ -100,7 +101,6 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     Returns candidate dicts: pattern_key, observation_text, category,
     confidence, supporting_memory_ids.
     """
-    from .enhanced_synthesizer import EnhancedMemorySynthesizer
 
     objects = _memory_objects(rows)
     if not objects:

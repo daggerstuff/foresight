@@ -10,6 +10,7 @@ reachable DSN; otherwise that case is skipped.
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 
 import pytest
@@ -19,6 +20,8 @@ from foresight.backend.backend_migrations import (
     current_version,
     run_migrations,
 )
+from foresight.backend.postgres_backend import PostgresBackend
+from foresight.server import init_db
 from tests._sqlite_backend import SqliteBackend
 
 # =============================================================================
@@ -30,7 +33,6 @@ class _TestConnectionPool:
     """Minimal in-memory connection pool satisfying ``DatabaseBackend``."""
 
     def __init__(self):
-        import sqlite3
 
         self._conn = sqlite3.connect(":memory:")
         self._conn.row_factory = sqlite3.Row
@@ -210,7 +212,6 @@ class TestServerInitDbReconcilesWrongShapedSchemaMigrations:
         """init_db() must reconcile a pre-existing app-shaped schema_migrations
         (id/name/executed_at) instead of crashing with UndefinedColumn — the
         exact failure class that broke foresight CI on the shared Neon DB."""
-        from foresight.server import init_db
 
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "foresight.sqlite")
@@ -294,7 +295,6 @@ class TestBackendBaseSchemaHelpers:
 class TestPostgresMigrationRunner:
     def test_migrations_apply(self):
         dsn = os.environ["FORESIGHT_DB_URL_TEST"]
-        from foresight.backend.postgres_backend import PostgresBackend
 
         backend = PostgresBackend(dsn=dsn)
         backend.connect()
@@ -319,7 +319,6 @@ class TestPostgresMigrationRunner:
         the runner no longer crashes with UndefinedColumn (the exact failure
         class seen in foresight CI against the shared Neon DB)."""
         dsn = os.environ["FORESIGHT_DB_URL_TEST"]
-        from foresight.backend.postgres_backend import PostgresBackend
 
         backend = PostgresBackend(dsn=dsn)
         backend.connect()

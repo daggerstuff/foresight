@@ -25,7 +25,7 @@ from .block_registry import (
     initialize_default_blocks,
 )
 from .config import DB_PATH
-from .connection_pool import get_pool
+from .connection_pool import get_db_connection, get_pool
 from .memory_components import MemoryCrisisTagger, SocraticGate
 
 logger = logging.getLogger("foresight_context_blocks")
@@ -386,8 +386,6 @@ class ContextBlockAgent:
 
     def _connect(self):
         try:
-            from .server import get_db_connection
-
             return get_db_connection()
         except Exception:
             return get_pool(DB_PATH).acquire()

@@ -25,6 +25,7 @@ from foresight.memory_maintenance import (
     MaintenanceConfig,
     MemoryMaintenanceJob,
 )
+from foresight.sensitivity import detect_sensitivity, resolve_is_sensitive
 
 
 def _make_test_db() -> str:
@@ -112,7 +113,6 @@ def _row(conn, mid: str) -> sqlite3.Row | None:
 
 class TestSensitiveDetector:
     def test_phi_text_marked_sensitive(self) -> None:
-        from foresight.sensitivity import detect_sensitivity, resolve_is_sensitive
 
         is_sensitive, reason = resolve_is_sensitive(None, "Patient SSN 123-45-6789 seen at clinic")
         assert is_sensitive is True
@@ -122,14 +122,12 @@ class TestSensitiveDetector:
         assert verdict.is_sensitive is False
 
     def test_clinical_keyword_triggers_detector(self) -> None:
-        from foresight.sensitivity import detect_sensitivity
 
         verdict = detect_sensitivity("Patient is on prescription medication, dosage adjustment needed")
         assert verdict.is_sensitive is True
         assert verdict.reason == "clinical_keyword"
 
     def test_caller_override_wins(self) -> None:
-        from foresight.sensitivity import resolve_is_sensitive
 
         is_sensitive, reason = resolve_is_sensitive(True, "user prefers dark mode")
         assert is_sensitive is True

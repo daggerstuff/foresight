@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from foresight.server import generate_recovery_payload
+from foresight.server import generate_recovery_payload, get_db_connection
+from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 # The rendered payload adds a header and separators on top of the char budget.
 RECOVERY_OVERHEAD_ALLOWANCE = 20
@@ -15,14 +16,11 @@ RECOVERY_OVERHEAD_ALLOWANCE = 20
 @pytest.fixture(autouse=True)
 def setup_test_db(monkeypatch):
     """Setup test context with tenant context."""
-    from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id("_recovery_test_user_")
     set_current_account_id("_recovery_test_")
 
     yield
-
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -63,7 +61,6 @@ def _insert_memory(conn, memory_id: str, content: str, **overrides):
 
 def _get_conn():
     """Get a direct connection to the test DB (for setup/assert)."""
-    from foresight.server import get_db_connection
 
     return get_db_connection()
 

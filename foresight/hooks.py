@@ -32,7 +32,7 @@ from .circuit_breaker import (
     CircuitBreakerConfig,
     CircuitState,
 )
-from .connection_pool import get_pool
+from .connection_pool import get_backend, get_db_connection, get_pool
 from .event_bus import Event, EventType, get_event_bus
 from .tenant_context import get_current_account_id
 
@@ -376,8 +376,6 @@ class HookExecutor:
         so that tests can monkeypatch hooks.HookRegistry with a fake.
         """
         try:
-            from .server import get_backend
-
             backend = get_backend()
             if backend is not None and backend.backend_type == "postgresql":
                 return PostgresHookRegistry()
@@ -1058,7 +1056,7 @@ class PostgresHookRegistry(HookRegistryBase):
     """
     Persistent registry for hook configurations using PostgreSQL.
 
-    Uses get_db_connection() from server.py which routes through
+    Uses get_db_connection() from connection_pool.py which routes through
     PostgresPooledConnection when PostgresBackend is active.
     The translation layer handles ? → $1,$2... param conversion.
     """
@@ -1072,8 +1070,6 @@ class PostgresHookRegistry(HookRegistryBase):
 
     def _get_conn(self):
         """Get a database connection via the global backend router."""
-        from .server import get_db_connection
-
         return get_db_connection()
 
     def _init_db(self) -> None:

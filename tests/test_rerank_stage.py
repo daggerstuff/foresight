@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from foresight import hybrid_retriever as hr, reranker as reranker_module
 from foresight.backend import SCHEMA_MIGRATIONS
 from foresight.backend.backend_migrations import current_version, run_migrations
+from foresight.backend.postgres_backend import PostgresBackend
 from foresight.backend.schema_ddl import PGVECTOR_MIGRATION
 from foresight.hybrid_retriever import HybridRetriever
 from tests._sqlite_backend import SqliteBackend
@@ -445,7 +446,6 @@ class TestPgvectorMigrationSqlite:
 class TestPgvectorMigrationPostgres:
     def test_v17_embedding_column_and_hnsw_index(self):
         dsn = os.environ["FORESIGHT_DB_URL_TEST"]
-        from foresight.backend.postgres_backend import PostgresBackend
 
         backend = PostgresBackend(dsn=dsn)
         backend.connect()

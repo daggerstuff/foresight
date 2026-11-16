@@ -11,13 +11,20 @@ from foresight.server import (
     MemoryAction,
     MemoryUpdateOptions,
     SearchOptions,
+    _initialize_backend,
+    delete_memory_embedding,
+    get_current_account_id,
+    get_db_connection,
+    index_memory_embedding,
     init_db,
     manage_memories,
     reinforce_memory,
     search_memories,
+    semantic_search_memories,
     store_memory,
 )
 from foresight_cli.utils import config as cfg, output as out
+from foresight_cli.utils.output import _stdout_console
 
 app = typer.Typer(help="Store, retrieve, search, and manage memories.")
 
@@ -25,7 +32,6 @@ app = typer.Typer(help="Store, retrieve, search, and manage memories.")
 def _init_and_user(user_id_override: str | None = None):
     """Initialize DB backend and resolve user ID."""
     init_db()
-    from foresight.server import _initialize_backend
 
     _initialize_backend()
     return cfg.get_user_id(user_id_override)
@@ -77,7 +83,6 @@ def list_memories(
     """List all memories (latest first)."""
     _init_and_user(user_id)
     result = search_memories(options=SearchOptions(query_type="list", limit=limit, offset=offset))
-    from foresight_cli.utils.output import _stdout_console
 
     _stdout_console.print(result)
 
@@ -157,8 +162,6 @@ def search(
 
     if mode == "semantic":
         try:
-            from foresight.server import semantic_search_memories
-
             result = semantic_search_memories(query=query_text, limit=limit, min_score=min_score)
         except ImportError:
             out.error("Semantic search requires embedding support. Use --mode keyword (default).")
@@ -179,7 +182,6 @@ def export(
 ):
     """Export memories to a JSON/JSONL file."""
     uid = _init_and_user(user_id)
-    from foresight.server import get_current_account_id, get_db_connection
 
     tenant_id = get_current_account_id()
     conn = get_db_connection()
@@ -272,7 +274,6 @@ def index(
 ):
     """Compute and store an embedding vector for a memory."""
     _init_and_user(user_id)
-    from foresight.server import index_memory_embedding
 
     result = index_memory_embedding(memory_id=memory_id, text=text, user_id=user_id, provider=provider)
     out.done(f"Indexed {memory_id}: {result}")
@@ -286,7 +287,6 @@ def unindex(
 ):
     """Remove a memory's stored embedding vector."""
     _init_and_user(user_id)
-    from foresight.server import delete_memory_embedding
 
     result = delete_memory_embedding(memory_id=memory_id, user_id=user_id, provider=provider)
     out.warn(f"Unindexed {memory_id}: {result}")

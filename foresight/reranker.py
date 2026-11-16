@@ -69,10 +69,10 @@ class FastEmbedReranker:
     def __init__(self, model: str = DEFAULT_RERANKER_MODEL) -> None:
         # fastembed exposes the cross-encoder as TextCrossEncoder (the name
         # `CrossEncoder` never existed in the >=0.9 API this extra pins).
-        from fastembed.rerank.cross_encoder import TextCrossEncoder
+        text_cross_encoder_cls = importlib.import_module("fastembed.rerank.cross_encoder").TextCrossEncoder
 
         self.model = model
-        self._encoder = TextCrossEncoder(model_name=model)
+        self._encoder = text_cross_encoder_cls(model_name=model)
 
     def rerank(self, query: str, documents: list[str]) -> list[float]:
         if not documents:

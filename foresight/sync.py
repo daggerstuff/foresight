@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from .connection_pool import get_db_connection
 from .crdt import LWWRegister, ORSet, VectorClock
 from .tenant_context import get_current_account_id
 
@@ -167,8 +168,6 @@ class OperationQueue:
 
     def _get_conn(self):
         """Acquire a Postgres connection via get_db_connection()."""
-        from .server import get_db_connection
-
         return get_db_connection()
 
     def enqueue(self, operation: Operation, tenant_id: str | None = None) -> None:

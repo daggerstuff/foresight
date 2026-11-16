@@ -14,6 +14,8 @@ import threading
 import time
 from typing import Any
 
+from .connection_pool import get_db_connection
+
 DEFAULT_MAX_ENTRIES = 10_000
 DEFAULT_TTL_SECONDS = 604_800
 
@@ -43,8 +45,6 @@ class NarrativeCache:
 
     def _get_conn(self):
         """Acquire a Postgres connection via get_db_connection()."""
-        from .server import get_db_connection
-
         return get_db_connection()
 
     def get(

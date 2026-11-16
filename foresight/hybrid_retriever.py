@@ -42,8 +42,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from . import config as config_module
 from .backend.base import DatabaseBackend
 from .connection_pool import get_pool
+from .encryption import decrypt_if_encrypted
 from .query_rewrite import (
     llm_rewrite_enabled,
     merge_variant_rankings,
@@ -52,6 +54,7 @@ from .query_rewrite import (
 )
 from .reranker import get_reranker, rerank_active, score_to_multiplier
 from .rrf_tuning import get_rrf_config
+from .semantic_search import SemanticSearch, SemanticSearchOptions
 
 logger = logging.getLogger("foresight_hybrid_retriever")
 
@@ -1545,8 +1548,6 @@ class HybridRetriever:
         if store is None:
             return {}
         try:
-            from .semantic_search import SemanticSearchOptions
-
             result = store.search(
                 query,
                 user_id,
@@ -1574,8 +1575,6 @@ class HybridRetriever:
             self._vector_store_failed = True
             return None
         try:
-            from .semantic_search import SemanticSearch
-
             store = SemanticSearch(self.db_path)
         except Exception as exc:
             logger.debug("vector store unavailable: %s", exc)
@@ -1640,8 +1639,6 @@ class HybridRetriever:
             strength_trend = mem.get("strength_trend")
             category = mem.get("category")
             temporal_category = self._classify_temporal_category(hours_old, category, strength_trend)
-
-            from .encryption import decrypt_if_encrypted
 
             raw_content = mem.get("content", "")
             decrypted_content = decrypt_if_encrypted(
@@ -1769,9 +1766,7 @@ class _HybridRetrieverSingleton:
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
-                    from .config import DB_PATH, DB_URL
-
-                    db_path = DB_PATH or DB_URL or ""
+                    db_path = config_module.DB_PATH or config_module.DB_URL or ""
                 cls._instance = HybridRetriever(db_path, weights, backend)
             return cls._instance
 

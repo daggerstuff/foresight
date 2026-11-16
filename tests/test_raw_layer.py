@@ -4,10 +4,17 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import foresight.config as config_module
+import foresight.connection_pool as conn_pool_module
+import foresight.server as server_module
+import foresight.subconscious as subconscious_module
 from foresight import config as foresight_config
 from foresight.capture import get_capture_pipeline, reset_capture_pipeline
 from foresight.connection_pool import get_pool, reset_pool
 from foresight.memory_gc import GCConfig, MemoryGC, tombstone_raw_events
+from foresight.server import init_db
+from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
+from tests._sqlite_backend import SqliteBackend
 
 
 @pytest.fixture(autouse=True)
@@ -15,14 +22,6 @@ def setup_test_db(tmp_path, monkeypatch):
     """Isolate DB per test and reset the capture pipeline singleton."""
     db_file = tmp_path / "test_raw_layer.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
-
-    import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
-    import foresight.server as server_module
-    import foresight.subconscious as subconscious_module
-    from foresight.server import init_db
-    from foresight.tenant_context import set_current_account_id, set_current_user_id
-    from tests._sqlite_backend import SqliteBackend
 
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
@@ -44,7 +43,6 @@ def setup_test_db(tmp_path, monkeypatch):
 
     yield
     reset_pool()
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 

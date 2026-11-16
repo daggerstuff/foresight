@@ -11,7 +11,15 @@ import asyncio
 
 import pytest
 
+import foresight.config as config_module
+import foresight.connection_pool as conn_pool_module
+import foresight.server as server_module
+import foresight.subconscious as subconscious_module
+from foresight.connection_pool import reset_pool
+from foresight.server import init_db
 from foresight.subconscious import PROJECT_CONTEXT, SNIPPET_MAX_CHARS, ContextBlockAgent
+from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
+from tests._sqlite_backend import SqliteBackend
 
 # ====== Fixtures ======
 
@@ -22,22 +30,12 @@ def setup_test_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_project_context.db"
     monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
 
-    import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
-    import foresight.subconscious as subconscious_module
-    from foresight.connection_pool import reset_pool
-    from foresight.server import init_db
-    from tests._sqlite_backend import SqliteBackend
-
     monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
     monkeypatch.setattr(subconscious_module, "DB_PATH", str(db_file))
-    import foresight.server as server_module
 
     monkeypatch.setattr(server_module, "DB_PATH", str(db_file))
     reset_pool()
-
-    from foresight.tenant_context import set_current_account_id, set_current_user_id
 
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
@@ -46,7 +44,6 @@ def setup_test_db(tmp_path, monkeypatch):
     init_db(backend=backend)
     yield
     reset_pool()
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 

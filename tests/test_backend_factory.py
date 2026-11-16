@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+import foresight.backend.backend_factory as _factory
 from foresight.backend.backend_factory import create_backend
 from foresight.backend.postgres_backend import PostgresBackend
 
@@ -15,7 +16,6 @@ from foresight.backend.postgres_backend import PostgresBackend
 class TestCreateBackend:
     def _clear_db_url(self, mp):
         """Clear both env var and factory module's DB_URL constant."""
-        import foresight.backend.backend_factory as _factory
 
         mp.delenv("FORESIGHT_DB_URL", raising=False)
         _factory.DB_URL = ""
@@ -56,7 +56,6 @@ class TestCreateBackend:
 
     def test_env_url_empty_string_raises_runtime_error(self):
         """When FORESIGHT_DB_URL is set to empty string, raises RuntimeError."""
-        import foresight.backend.backend_factory as _factory
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("FORESIGHT_DB_URL", "")
@@ -66,7 +65,6 @@ class TestCreateBackend:
 
     def test_create_backend_requires_url(self):
         """The error message tells the user to set FORESIGHT_DB_URL."""
-        import foresight.backend.backend_factory as _factory
 
         with pytest.MonkeyPatch.context() as mp:
             mp.delenv("FORESIGHT_DB_URL", raising=False)

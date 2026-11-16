@@ -21,6 +21,7 @@ Or via CLI:
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import hashlib
 import json
@@ -33,6 +34,21 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+
+from . import (
+    config as config_module,
+    connection_pool as conn_pool_module,
+    hybrid_retriever as hr_module,
+    server as server_module,
+    subconscious,
+)
+from .backend.schema_ddl import MIGRATIONS as _SCHEMA_MIGRATIONS
+from .connection_pool import get_pool, reset_pool
+from .hybrid_retriever import reset_hybrid_retriever
+from .memory_relationships import reset_memory_relationship_store
+from .server import get_relevant_memories as grm_fn, inject_context as ic_fn
+from .temporal_queries import TemporalQueryBuilder
+from .tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 logger = logging.getLogger("foresight_eval")
 
@@ -657,7 +673,6 @@ class EvalHarness:
     def _get_connection(self) -> Any:
         if self._conn is not None:
             return self._conn
-        from .connection_pool import get_pool
 
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -673,11 +688,6 @@ class EvalHarness:
         """
         if self._patches_applied:
             return
-        import foresight.config as config_module
-        import foresight.connection_pool as conn_pool_module
-        from foresight.connection_pool import reset_pool
-        from foresight.hybrid_retriever import reset_hybrid_retriever
-        from foresight.tenant_context import set_current_account_id, set_current_user_id
 
         # Reset singletons
         reset_pool()
@@ -729,21 +739,16 @@ class EvalHarness:
         self._patches_applied = True
 
         # Ensure schema exists using the connection pool
-        from .connection_pool import get_pool
 
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         try:
-            from foresight.server import _SCHEMA_MIGRATIONS
-
             for version in sorted(_SCHEMA_MIGRATIONS):
                 for stmt in _SCHEMA_MIGRATIONS[version]:
                     try:
                         conn.execute(stmt)
                     except Exception:
-                        import logging
-
-                        logging.getLogger(__name__).warning(
+                        logger.warning(
                             "Schema migration statement already applied, non-critical",
                             exc_info=True,
                         )
@@ -754,22 +759,17 @@ class EvalHarness:
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
         self._patches_applied = False
-        import foresight.hybrid_retriever as hr_module
 
         hr_module.reset_hybrid_retriever()
-        from foresight.connection_pool import reset_pool
 
         reset_pool()
-        from foresight.memory_relationships import reset_memory_relationship_store
 
         reset_memory_relationship_store()
-        from foresight import subconscious
 
         subconscious._context_block_agents.clear()
         for module, attr, orig in self._monkeypatches:
             setattr(module, attr, orig)
         self._monkeypatches.clear()
-        from foresight.tenant_context import reset_tenant_context
 
         reset_tenant_context()
 
@@ -830,9 +830,7 @@ class EvalHarness:
                 )
                 count += 1
             except Exception:
-                import logging
-
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "Fixture seeding failed, non-critical",
                     exc_info=True,
                 )
@@ -1058,15 +1056,12 @@ class EvalHarness:
         budget_chars: int | None,
     ) -> ScenarioResult:
         """Internal: run scenario without exception handling."""
-        from foresight.server import inject_context as ic_fn
-        from foresight.tenant_context import set_current_account_id, set_current_user_id
 
         # Set tenant context for server functions
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
 
         # Also patch the module-level USER_ID for inject_context
-        import foresight.server as server_module
 
         original_user_id = server_module.USER_ID
         server_module.USER_ID = self.user_id
@@ -1098,8 +1093,6 @@ class EvalHarness:
             formatted = result.get("formatted", "")
 
             # Also run get_relevant_memories for structured metrics
-            from foresight.server import get_relevant_memories as grm_fn
-
             t1 = time.perf_counter()
             grm_str = grm_fn(
                 query=scenario.query,
@@ -1200,8 +1193,6 @@ class EvalHarness:
         expected memory IDs, optional content substring, and raw-event
         provenance linkage.
         """
-        from foresight.temporal_queries import TemporalQueryBuilder
-        from foresight.tenant_context import set_current_account_id, set_current_user_id
 
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
@@ -1295,7 +1286,6 @@ class EvalHarness:
 
         for scenario in SCENARIOS:
             # Reset hybrid retriever between scenarios to avoid cross-contamination
-            from foresight.hybrid_retriever import reset_hybrid_retriever
 
             reset_hybrid_retriever()
             result = self.run_scenario(scenario, budget_chars)
@@ -1499,7 +1489,6 @@ def _error_out(json_output: bool, message: str) -> None:
 
 def main() -> None:
     """CLI entry point. Run with: python -m foresight.eval_harness"""
-    import argparse
 
     parser = argparse.ArgumentParser(description="Foresight Evaluation Harness (PIX-3953)")
     parser.add_argument(

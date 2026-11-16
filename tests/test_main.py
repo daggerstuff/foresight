@@ -7,13 +7,13 @@ from unittest.mock import patch
 from rich.console import Console
 from typer.testing import CliRunner
 
+import foresight.__main__ as main_module
 from foresight_cli.cli import app
 from foresight_cli.commands import system as system_commands
 from foresight_cli.utils import output as out
 
 
 def test_main_health_prints_status(capsys):
-    import foresight.__main__ as main_module
 
     with (
         patch.object(main_module.sys, "argv", ["foresight-server", "--health"]),
@@ -27,7 +27,6 @@ def test_main_health_prints_status(capsys):
 
 
 def test_main_help_prints_usage(capsys):
-    import foresight.__main__ as main_module
 
     with patch.object(main_module.sys, "argv", ["foresight-server", "--help"]):
         main_module.main()

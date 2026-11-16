@@ -18,8 +18,19 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import foresight.config as config_module
+import foresight.connection_pool as conn_pool_module
+import foresight.server as server_module
+import foresight.subconscious as subconscious_module
+from foresight.capture import get_capture_pipeline, reset_capture_pipeline
+from foresight.connection_pool import reset_pool
 from foresight.memory_gc import tombstone_raw_events
+from foresight.memory_relationships import reset_memory_relationship_store
+from foresight.server import init_db
+from foresight.temporal_queries import TemporalQueryBuilder
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
+from foresight.truth_resolution import detect_and_mark_supersessions
+from tests._sqlite_backend import SqliteBackend
 
 
 @pytest.fixture
@@ -30,16 +41,6 @@ def ml_db(tmp_path, monkeypatch):
     monkeypatch.setenv("FORESIGHT_DB_PATH", db_path)
     monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
     monkeypatch.setenv("FORESIGHT_RAW_RETENTION", "1")
-
-    import foresight.config as config_module
-    import foresight.connection_pool as conn_pool_module
-    import foresight.server as server_module
-    import foresight.subconscious as subconscious_module
-    from foresight.capture import get_capture_pipeline, reset_capture_pipeline
-    from foresight.connection_pool import reset_pool
-    from foresight.memory_relationships import reset_memory_relationship_store
-    from foresight.server import init_db
-    from tests._sqlite_backend import SqliteBackend
 
     monkeypatch.setattr(config_module, "DB_PATH", db_path)
     monkeypatch.setattr(conn_pool_module, "DB_PATH", db_path)
@@ -112,7 +113,6 @@ def _store_memory(
 
 class TestRawLayerAppendOnly:
     def test_reprocess_is_idempotent(self, ml_db):
-        from foresight.capture import get_capture_pipeline
 
         pipeline = get_capture_pipeline()
         pipeline.db_path = str(ml_db)
@@ -153,7 +153,6 @@ class TestRawLayerAppendOnly:
         assert conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0] == before[0]
 
     def test_provenance_roundtrip(self, ml_db):
-        from foresight.capture import get_capture_pipeline
 
         pipeline = get_capture_pipeline()
         pipeline.db_path = str(ml_db)
@@ -190,7 +189,6 @@ class TestSupersessionInvariants:
 
     def test_superseded_by_resolves_to_live_memory(self, ml_db, monkeypatch):
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
-        from foresight.truth_resolution import detect_and_mark_supersessions
 
         old_id = _memory_id("I love going to therapy every week.")
         new_id = _memory_id("I hate going to therapy every week.")
@@ -289,8 +287,6 @@ class TestSupersessionInvariants:
 class TestTemporalReconstruction:
     def test_as_of_returns_old_fact_before_supersede(self, ml_db, monkeypatch):
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
-        from foresight.temporal_queries import TemporalQueryBuilder
-        from foresight.truth_resolution import detect_and_mark_supersessions
 
         old_id = _memory_id("I love therapy.")
         new_id = _memory_id("I hate therapy.")
@@ -326,8 +322,6 @@ class TestTemporalReconstruction:
 
     def test_as_of_returns_new_fact_after_supersede(self, ml_db, monkeypatch):
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
-        from foresight.temporal_queries import TemporalQueryBuilder
-        from foresight.truth_resolution import detect_and_mark_supersessions
 
         old_id = _memory_id("I love therapy.")
         new_id = _memory_id("I hate therapy.")
@@ -354,7 +348,6 @@ class TestTemporalReconstruction:
         assert newer["id"] in ids
 
     def test_as_of_resolves_edited_content(self, ml_db):
-        from foresight.temporal_queries import TemporalQueryBuilder
 
         mid = _memory_id("My therapist is Dr. Smith.")
 
@@ -399,7 +392,6 @@ class TestTemporalReconstruction:
 
 class TestTenantIsolationInvariants:
     def test_raw_events_and_memories_are_partitioned(self, ml_db):
-        from foresight.capture import get_capture_pipeline
 
         pipeline = get_capture_pipeline()
         pipeline.db_path = str(ml_db)
@@ -446,7 +438,6 @@ class TestTenantIsolationInvariants:
         assert b_mem >= 1
 
     def test_as_of_query_does_not_cross_tenants(self, ml_db):
-        from foresight.temporal_queries import TemporalQueryBuilder
 
         with _conn(ml_db) as conn:
             _store_memory(
@@ -500,7 +491,6 @@ class TestTenantIsolationInvariants:
 
 class TestTombstoneInvariants:
     def test_tombstone_preserves_row_shape_but_nulls_content(self, ml_db):
-        from foresight.capture import get_capture_pipeline
 
         pipeline = get_capture_pipeline()
         pipeline.db_path = str(ml_db)

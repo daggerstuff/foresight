@@ -18,6 +18,7 @@ import itertools
 import json
 import logging
 import math
+import math as _math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,7 +75,6 @@ class RRFConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RRFConfig:
         """Create from dictionary, coercing all values to finite positive floats."""
-        import math as _math
 
         def _num(val: Any, default: float) -> float:
             try:

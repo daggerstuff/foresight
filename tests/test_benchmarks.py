@@ -6,6 +6,7 @@ import json
 
 from foresight.benchmarks import (
     Dataset,
+    ForesightBackend,
     RetrievedMemory,
     Sample,
     Session,
@@ -18,9 +19,11 @@ from foresight.benchmarks import (
     load_dataset,
     load_locomo,
     load_longmemeval,
+    read_hypotheses,
     run_benchmark,
     score_answer,
     token_f1,
+    write_hypotheses,
 )
 
 
@@ -204,7 +207,6 @@ def test_evaluate_predictions(tmp_path):
 
 
 def test_foresight_backend_roundtrip(tmp_path):
-    from foresight.benchmarks import ForesightBackend
 
     backend = ForesightBackend(db_path=str(tmp_path / "bench.db"))
     sample = _sample()
@@ -228,7 +230,6 @@ def test_report_json_roundtrip(tmp_path):
 
 
 def test_read_hypotheses_single_record(tmp_path):
-    from foresight.benchmarks import read_hypotheses
 
     path = tmp_path / "single.jsonl"
     path.write_text('{"question_id": "1", "hypothesis": "Alice lives in Paris."}\n')
@@ -236,7 +237,6 @@ def test_read_hypotheses_single_record(tmp_path):
 
 
 def test_read_hypotheses_multiline_and_map(tmp_path):
-    from foresight.benchmarks import read_hypotheses
 
     multi = tmp_path / "multi.jsonl"
     multi.write_text('{"question_id": "1", "hypothesis": "A"}\n{"question_id": "2", "hypothesis": "B"}\n')
@@ -248,7 +248,6 @@ def test_read_hypotheses_multiline_and_map(tmp_path):
 
 
 def test_write_hypotheses_roundtrip(tmp_path):
-    from foresight.benchmarks import read_hypotheses, write_hypotheses
 
     path = tmp_path / "out.jsonl"
     write_hypotheses({"1": "A", "2": "B"}, path)

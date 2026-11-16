@@ -10,6 +10,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import os
+
 from foresight.entity_extractor import Entity, EntityExtractor, Relationship
 from foresight.graph_store import GraphStore
 
@@ -19,7 +21,6 @@ def temp_db():
     """Create a temporary database for testing."""
     fd, path = tempfile.mkstemp(suffix=".db")
     yield path
-    import os
 
     os.close(fd)
     os.unlink(path)

@@ -8,10 +8,29 @@ by replacing the database name with ``foresight_test``.  If
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
 import pytest
+
+from foresight import server as server_module
+from foresight.capture import reset_capture_pipeline
+from foresight.connection_pool import reset_pool
+from foresight.event_bus import reset_event_bus
+from foresight.graph_store import reset_graph_store
+from foresight.hybrid_retriever import reset_hybrid_retriever
+from foresight.memory_relationships import reset_memory_relationship_store
+from foresight.server import (
+    _initialize_backend,
+    get_graph_store,
+    get_hybrid_retriever,
+    get_temporal_query_builder,
+    init_db,
+)
+from foresight.subconscious import _context_block_agents
+from foresight.sync import reset_sync_manager
+from foresight.temporal_queries import reset_temporal_query_builder
 
 # Load .env before checking for FORESIGHT_DB_URL so that `uv run pytest`
 # works without prefixing the env var manually.  Walk up from the tests/
@@ -52,18 +71,6 @@ def setup_postgres_backend():
     """Initialize the global Postgres backend once per test session."""
     os.environ["FORESIGHT_DB_URL"] = _TEST_DB_URL
 
-    from foresight import server as server_module
-    from foresight.graph_store import reset_graph_store
-    from foresight.hybrid_retriever import reset_hybrid_retriever
-    from foresight.server import (
-        _initialize_backend,
-        get_graph_store,
-        get_hybrid_retriever,
-        get_temporal_query_builder,
-        init_db,
-    )
-    from foresight.temporal_queries import reset_temporal_query_builder
-
     _initialize_backend()
     init_db()
 
@@ -86,7 +93,6 @@ def setup_postgres_backend():
 
 def _truncate_all_tables() -> None:
     """Truncate every application table in the public schema."""
-    from foresight import server as server_module
 
     backend = server_module.get_backend()
     if backend is None:
@@ -121,63 +127,24 @@ def _truncate_all_tables() -> None:
 
 def _reset_in_memory_singletons() -> None:
     """Reset module-level singletons so tests start from a clean state."""
-    try:
-        from foresight.event_bus import reset_event_bus
-
+    with contextlib.suppress(Exception):
         reset_event_bus()
-    except Exception:
-        pass
-
-    try:
-        from foresight.sync import reset_sync_manager
-
+    with contextlib.suppress(Exception):
         reset_sync_manager()
-    except Exception:
-        pass
-
-    try:
-        from foresight.capture import reset_capture_pipeline
-
+    with contextlib.suppress(Exception):
         reset_capture_pipeline()
-    except Exception:
-        pass
-
-    try:
-        from foresight.connection_pool import reset_pool
-
+    with contextlib.suppress(Exception):
         reset_pool()
-    except Exception:
-        pass
-
-    try:
-        from foresight.memory_relationships import reset_memory_relationship_store
-
+    with contextlib.suppress(Exception):
         reset_memory_relationship_store()
-    except Exception:
-        pass
-
-    try:
-        from foresight.subconscious import _context_block_agents
-
+    with contextlib.suppress(Exception):
         _context_block_agents.clear()
-    except Exception:
-        pass
 
     # Re-wire the Postgres-backed singletons. Tests that exercise SQLite
     # fallback paths call reset_hybrid_retriever()/reset_graph_store() without
     # restoring the backend, leaving a backend-less singleton that silently
     # routes later tests into raw SQLite ("no such table: memories").
     try:
-        from foresight import server as server_module
-        from foresight.graph_store import reset_graph_store
-        from foresight.hybrid_retriever import reset_hybrid_retriever
-        from foresight.server import (
-            get_graph_store,
-            get_hybrid_retriever,
-            get_temporal_query_builder,
-        )
-        from foresight.temporal_queries import reset_temporal_query_builder
-
         backend = server_module.get_backend()
         if backend is not None:
             reset_graph_store()

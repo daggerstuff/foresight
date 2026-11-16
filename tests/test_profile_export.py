@@ -13,7 +13,7 @@ from foresight.profile_export import (
     sign_document,
     verify_document,
 )
-from foresight.server import export_profile as server_export_profile, manage_memories
+from foresight.server import export_profile as server_export_profile, manage_memories, reflect
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 
@@ -84,7 +84,6 @@ def test_export_profile_direct_json():
 
 
 def test_include_derived_layer_after_reflect():
-    from foresight.server import reflect
 
     _store("the deployment freeze starts on fridays", category="fact")
     reflect(question="when does the deployment freeze start?", user_id="_test_user_")

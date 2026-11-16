@@ -18,7 +18,9 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
+from foresight import server as server_module
 from foresight.auth import Role, get_auth_manager
+from foresight.rest_api import _tool_json
 from foresight.server import mcp
 
 TENANT = "_test_"
@@ -59,7 +61,6 @@ def _store_memory(client: TestClient, api_key: str, content: str, **extra: Any) 
 
 def _set_vector_id(memory_id: str) -> None:
     """Archive requires vector_id; the embedding pipeline is out of scope for Phase A."""
-    from foresight import server as server_module
 
     with server_module.get_backend().connection() as conn:
         with conn.cursor() as cur:
@@ -377,7 +378,6 @@ class TestOtherEndpoints:
 
 
 def _user_memory_count(user: str = USER, tenant: str = TENANT) -> int:
-    from foresight import server as server_module
 
     with server_module.get_backend().connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -449,7 +449,6 @@ class TestTemporalAndReprocess:
         assert memory_id in {m["memory_id"] for m in resp.json()}
 
     def test_tool_json_wording_only_applies_to_plain_text(self) -> None:
-        from foresight.rest_api import _tool_json
 
         ok = _tool_json(json.dumps({"ok": True, "memories": [{"content": "not found"}]}))
         assert ok.status_code == HTTPStatus.OK

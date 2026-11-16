@@ -5,12 +5,31 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import socket
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
+import redis as _redis  # type: ignore[import-not-found]
 import typer
 
-from foresight.server import _initialize_backend, get_system_status, init_db
+from foresight.config import raw_retention_enabled
+from foresight.context_cache import get_context_cache
+from foresight.server import (
+    MaintenanceAction,
+    TemporalWindow,
+    _initialize_backend,
+    _parse_as_of,
+    get_backend,
+    get_decay_events,
+    get_system_status,
+    init_db,
+    query_memories_temporal,
+    reprocess_raw_events,
+    run_maintenance,
+    switch_tenant,
+)
+from foresight.telemetry import get_telemetry_store
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="System management, diagnostics, and configuration.")
@@ -243,8 +262,6 @@ def _mask_db_url(url: str) -> str:
     if not url:
         return url
     try:
-        from urllib.parse import urlparse
-
         parsed = urlparse(url)
         host = parsed.hostname or ""
         if parsed.port:
@@ -354,8 +371,6 @@ def doctor(
     redis_url = os.environ.get("FORESIGHT_REDIS_URL", "")
     if redis_url:
         try:
-            import redis as _redis  # type: ignore[import-not-found]
-
             _r = _redis.from_url(redis_url, socket_connect_timeout=0.5)
             _r.ping()
             check("Redis cache", True, "reachable")
@@ -365,7 +380,6 @@ def doctor(
         check("Redis cache", True, "not set (in-process cache fallback)")
 
     # MCP HTTP transport (check if server is listening)
-    import socket
 
     mcp_port = int(os.environ.get("FORESIGHT_PORT", "8764"))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -380,8 +394,6 @@ def doctor(
 
     # Schema version
     try:
-        from foresight.server import get_backend
-
         backend = get_backend()
         if backend is None:
             check("Schema version", True, "backend not initialized")
@@ -423,8 +435,6 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight.server import TemporalWindow, query_memories_temporal
-
         temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:
         temporal = None
@@ -444,9 +454,6 @@ def stats(
 
     # Load telemetry and cache metrics
     try:
-        from foresight.context_cache import get_context_cache
-        from foresight.telemetry import get_telemetry_store
-
         telemetry = get_telemetry_store().get_summary()
         cache_stats = get_context_cache().get_stats()
     except Exception:
@@ -539,7 +546,6 @@ def temporal(
 ):
     """Query memories by time window, trend, or point in time."""
     _init_backend()
-    from foresight.server import TemporalWindow, _parse_as_of, query_memories_temporal
 
     try:
         if as_of is not None:
@@ -641,8 +647,6 @@ def history(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight.server import get_decay_events
-
         raw = get_decay_events(user_id=resolved_uid, limit=limit)
         parsed: dict = json.loads(raw) if isinstance(raw, str) else raw
         events_list: list = parsed.get("events", []) if parsed.get("ok") else []
@@ -685,7 +689,6 @@ def maintenance(
 ):
     """Run memory maintenance (consolidation, contradiction detection, stale archival, reprocess)."""
     _init_backend()
-    from foresight.server import MaintenanceAction, run_maintenance
 
     modes_list = (
         ["consolidate", "contradict", "archive_stale", "synthesize"]
@@ -722,8 +725,6 @@ def reprocess(
     this process decides whether there is anything to replay.
     """
     _init_backend()
-    from foresight.config import raw_retention_enabled
-    from foresight.server import reprocess_raw_events
 
     if not raw_retention_enabled():
         out.warn("FORESIGHT_RAW_RETENTION is off — the raw layer was never written, so this is a no-op.")
@@ -741,7 +742,6 @@ def tenant(
 ):
     """Switch current tenant context."""
     _init_backend()
-    from foresight.server import switch_tenant
 
     result = switch_tenant(tenant_id=tenant_id)
     out.done(f"Switched tenant: {result}")

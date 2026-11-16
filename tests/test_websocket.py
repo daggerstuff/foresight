@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -360,7 +360,6 @@ class TestHeartbeat:
 
         await handler.connect(connection_id="stale-conn")
         conn = handler.get_connection("stale-conn")
-        from datetime import datetime, timedelta
 
         conn.last_heartbeat = datetime.now(UTC) - timedelta(seconds=5)
 

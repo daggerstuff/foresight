@@ -13,27 +13,58 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import Client
 
+import foresight.config as config_module
+import foresight.connection_pool as conn_pool_module
+import foresight.server as server_module
+import foresight.subconscious as subconscious_module
 from foresight.block_registry import MemoryBlockSchema
+from foresight.connection_pool import reset_pool
 from foresight.context_blocks import register_context_block_schema
-from foresight.hybrid_retriever import HybridResult, HybridSearchResult
+from foresight.document_layer import content_hash
+from foresight.entity_extractor import reset_entity_extractor
+from foresight.graph_store import GraphStore, reset_graph_store
+from foresight.hybrid_retriever import HybridResult, HybridSearchResult, reset_hybrid_retriever
+from foresight.reflection_engine import ReflectionReport
 from foresight.server import (
     DEFAULT_CASCADE_DEPTH,
     DEFAULT_CASCADE_LIMIT,
+    AnalysisAction,
     ContextBlockAction,
     CurationRunAction,
+    PostgresPooledConnection,
+    SearchOptions,
+    SystemStatusOptions,
+    VersionAction,
+    _bridge_context_blocks_to_memories,
+    _bridge_transcript_entities,
     _extract_terms,
+    _extract_topical_tags,
     _format_context_blocks_by_injection_point,
+    _handle_version_rollback,
+    _last_injection_stats,
+    _normalize_expires_at,
+    _resume_pending_curation_runs,
     _score_memory_relevance,
+    analyze_memories,
+    get_backend,
+    get_db_connection,
     get_relevant_memories,
+    get_system_status,
     inject_context,
     manage_context_blocks,
     manage_curation_runs,
+    manage_memories,
+    manage_memory_versions,
     mcp,
     memory_status,
+    process_session_transcript,
     query_memories_temporal,
+    rollback_to_version,
     search_memories,
     store_memory,
 )
+from foresight.subconscious import ContextBlockAgent
+from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 from foresight_cli.cli import _decode_tool_result
 
 # _score_memory_relevance sums normalized overlap, importance and decay; a
@@ -44,22 +75,14 @@ MIN_FULL_MATCH_RELEVANCE_SCORE = 1.5
 @pytest.fixture(autouse=True)
 def setup_test_db(monkeypatch):
     """Isolate tenant context and mock sqlite3.connect for the duration of this test."""
-    from foresight.tenant_context import (
-        set_current_account_id,
-        set_current_user_id,
-    )
 
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
-
-    import sqlite3
 
     real_sqlite3_connect = sqlite3.connect
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import PostgresPooledConnection, get_backend
-
             pool = get_backend()._pool
             return PostgresPooledConnection(pool.getconn(), pool)
         return real_sqlite3_connect(database, *args, **kwargs)
@@ -67,8 +90,6 @@ def setup_test_db(monkeypatch):
     monkeypatch.setattr(sqlite3, "connect", mock_sqlite3_connect)
 
     yield
-
-    from foresight.tenant_context import reset_tenant_context
 
     reset_tenant_context()
 
@@ -105,8 +126,6 @@ def test_memories_content_hash_backfill_computes_correct_hash():
                 user_id TEXT DEFAULT 'default', is_ghost INTEGER DEFAULT 0
             )"""
         )
-        from foresight.document_layer import content_hash
-
         test_content = "backfill test content 123"
         expected_hash = content_hash(test_content)
         conn.execute(
@@ -140,7 +159,6 @@ def test_store_memory_uses_content_hash_for_dedup():
     Regression: old code used 'content = ?' exact match. New code uses
     content_hash index for deterministic, index-based dedup.
     """
-    from foresight.server import store_memory
 
     unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:8]
     content = f"hash_dedup_test_{unique_marker}"
@@ -154,15 +172,12 @@ def test_store_memory_uses_content_hash_for_dedup():
 
 def test_store_memory_dedup_increments_activation_count():
     """Duplicate store must bump activation_count, not create a new row."""
-    from foresight.server import store_memory
 
     unique = f"activation_bump_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
     r1 = store_memory(unique)
     assert "Stored" in r1
     r2 = store_memory(unique)
     assert "Duplicate detected" in r2
-
-    from foresight.server import get_db_connection
 
     conn = get_db_connection()
     row = conn.execute(
@@ -199,8 +214,6 @@ def test_store_memory_tenant_isolation_on_dedup():
                 version INTEGER, importance REAL
             )"""
         )
-        from foresight.document_layer import content_hash
-
         shared_content = "cross-tenant dedup test"
         h = content_hash(shared_content)
         now = datetime.now(UTC).isoformat()
@@ -395,7 +408,6 @@ async def test_mcp_synthesize_profile_buckets_and_budget(monkeypatch):
 @contextmanager
 def _patched_context_block_storage(db_path: str) -> Iterator[None]:
     """Point context-block persistence at a test database and isolate agent cache."""
-    import foresight.subconscious as subconscious_module
 
     with (
         patch.object(subconscious_module, "DB_PATH", db_path),
@@ -406,8 +418,6 @@ def _patched_context_block_storage(db_path: str) -> Iterator[None]:
 
 def test_bridge_context_blocks_to_memories():
     """_bridge_context_blocks_to_memories stores extracted blocks as memories."""
-    from foresight.server import _bridge_context_blocks_to_memories
-    from foresight.subconscious import ContextBlockAgent
 
     agent = ContextBlockAgent(user_id="bridge_test_user")
     # Populate some blocks via the agent's normal extraction
@@ -440,8 +450,6 @@ def test_bridge_context_blocks_to_memories():
 
 def test_bridge_context_blocks_dedup():
     """Bridging the same agent state twice should bump, not duplicate."""
-    from foresight.server import _bridge_context_blocks_to_memories
-    from foresight.subconscious import ContextBlockAgent
 
     agent = ContextBlockAgent(user_id="dedup_bridge_user")
     agent._extract_preference("I prefer explicit returns")
@@ -469,9 +477,6 @@ def test_bridge_context_blocks_dedup():
 
 def test_bridge_transcript_entities():
     """_bridge_transcript_entities runs extraction and stores entities."""
-    from foresight.entity_extractor import reset_entity_extractor
-    from foresight.graph_store import GraphStore, reset_graph_store
-    from foresight.server import _bridge_transcript_entities
 
     reset_entity_extractor()
     reset_graph_store()
@@ -1176,7 +1181,6 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
 
 def test_manage_curation_runs_reviewable_output_and_failure_status():
     """Curation runs keep failed output reviewable and persist error metadata."""
-    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_failure_user"
@@ -1228,7 +1232,6 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
 
 def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_output():
     """Successful in-place runs archive the source bank and promote staged entries into it."""
-    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_in_place_user"
@@ -1309,7 +1312,6 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
 
 def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched():
     """Canceled in-place runs do not promote or archive any source memories."""
-    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_cancel_integrity_user"
@@ -1393,7 +1395,6 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
 
 def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
     """Cancellation landing after promotion starts must restore the source bank and keep the run canceled."""
-    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_cancel_promotion_user"
@@ -1492,7 +1493,6 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
 
 def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
     """Startup replay re-enqueues interrupted curation runs and normalizes running->pending."""
-    from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
     now = datetime.now(UTC).isoformat()
@@ -1519,6 +1519,7 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
     with (
         patch("foresight.server.DB_PATH", db_path),
         patch("foresight.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight.sync.get_db_connection", lambda: _mock_db_with_rows(db_path)),
         patch("foresight.server._start_curation_worker", side_effect=_capture_start),
     ):
         _resume_pending_curation_runs()
@@ -1545,7 +1546,6 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
 
 def test_resume_pending_curation_runs_preserves_transcript_payload():
     """Startup replay must keep transcript/session/project payload for interrupted runs."""
-    from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
     now = datetime.now(UTC).isoformat()
@@ -1600,7 +1600,6 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
 
 def test_claim_curation_run_is_atomic_for_duplicate_workers():
     """Only one worker may claim a pending run even if execution is invoked twice."""
-    import foresight.server as server_module
 
     db_path = _make_curation_test_db()
     user_id = "curation_atomic_claim_user"
@@ -1651,7 +1650,6 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
         server_module._execute_curation_run(run["id"], payload)
 
         # Reset tenant context after _execute_curation_run changed it via set_current_tenant_id()
-        from foresight.tenant_context import set_current_account_id
 
         set_current_account_id("_test_")
 
@@ -1817,9 +1815,6 @@ def _make_dict_conn(db_path: str, **kwargs):
 
 def test_handle_version_rollback_respects_tenant_scope():
     """_handle_version_rollback UPDATE must include tenant_id in WHERE clause."""
-    from unittest.mock import MagicMock, patch
-
-    from foresight.server import VersionAction, _handle_version_rollback
 
     mock_conn = MagicMock()
     mock_row = {
@@ -1852,9 +1847,6 @@ def test_handle_version_rollback_respects_tenant_scope():
 
 
 def test_standalone_rollback_to_version_respects_tenant_scope():
-    from unittest.mock import MagicMock, patch
-
-    from foresight.server import rollback_to_version
 
     mock_conn = MagicMock()
     mock_row = {
@@ -1889,9 +1881,6 @@ def test_standalone_rollback_to_version_respects_tenant_scope():
 
 def test_memory_hard_cap_enforcement():
     """Storing memory beyond hard cap returns error."""
-    import os
-    import sqlite3
-    import tempfile
 
     # Create temp DB
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -1918,29 +1907,19 @@ def test_memory_hard_cap_enforcement():
         conn.commit()
         conn.close()
         # Patch config DB_PATH BEFORE importing other modules
-        import foresight.config as config_module
-
         original_db_path = config_module.DB_PATH
         config_module.DB_PATH = db_path
         # Also patch connection_pool's DB_PATH
-        import foresight.connection_pool as conn_pool_module
-
         conn_pool_module.DB_PATH = db_path
-        from foresight.connection_pool import reset_pool
-        from foresight.hybrid_retriever import reset_hybrid_retriever
 
         reset_pool()
         reset_hybrid_retriever()
-        import foresight.server as server_module
-
         server_module._reflection_narrative_cache.clear()
         try:
             # Patch the limit to a small value for testing
             original_limit = server_module.DEFAULT_MAX_MEMORY_PER_TENANT
             server_module.DEFAULT_MAX_MEMORY_PER_TENANT = 5
             try:
-                from foresight.server import store_memory
-
                 for i in range(5):
                     result = store_memory(f"test memory {i}")
                     assert "Error" not in result, f"Should not error at {i}: {result}"
@@ -1962,9 +1941,6 @@ def test_memory_hard_cap_enforcement():
 
 def test_memory_budget_metrics_utilization():
     """memory_budget utilization_pct is calculated correctly."""
-    import json
-
-    from foresight.server import SystemStatusOptions, get_system_status, store_memory
 
     # Store a few memories
     seeded_memory_count = 5
@@ -1979,7 +1955,6 @@ def test_memory_budget_metrics_utilization():
 
 def test_cascade_retrieval_basic():
     """Cascade retrieval returns results when use_cascade is enabled."""
-    from foresight.server import SearchOptions, search_memories
 
     result = search_memories(SearchOptions(query="test", use_cascade=True, limit=5))
     # Should return results (falls back to hybrid since no embeddings)
@@ -1988,7 +1963,6 @@ def test_cascade_retrieval_basic():
 
 def test_cascade_retrieval_respects_limit():
     """Cascade retrieval respects the limit parameter."""
-    from foresight.server import SearchOptions, search_memories
 
     limit = 2
     result = search_memories(SearchOptions(query="test", use_cascade=True, limit=limit))
@@ -1999,7 +1973,6 @@ def test_cascade_retrieval_respects_limit():
 
 def test_search_options_cascade_fields():
     """SearchOptions accepts cascade-related fields."""
-    from foresight.server import SearchOptions
 
     cascade_depth = 3
     cascade_limit = 100
@@ -2019,7 +1992,6 @@ class TestSystemStatusHealth:
 
     def test_injection_stats_tracked(self):
         """inject_context updates _last_injection_stats with metadata."""
-        from foresight.server import _last_injection_stats, inject_context
 
         results = [
             _make_hybrid_result("mem1", "Python type hints discussion", combined_score=0.85),
@@ -2042,7 +2014,6 @@ class TestSystemStatusHealth:
 
     def test_injection_stats_no_memory_content_leak(self):
         """_last_injection_stats does not include raw memory content (privacy-safe)."""
-        from foresight.server import _last_injection_stats, inject_context
 
         results = [
             _make_hybrid_result("mem1", "sensitive clinical note about patient X", combined_score=0.9),
@@ -2066,7 +2037,6 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_stale_count(self):
         """get_system_status returns stale_count metric."""
-        from foresight.server import get_system_status
 
         result = get_system_status()
         data = json.loads(result)
@@ -2075,7 +2045,6 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_by_category(self):
         """get_system_status returns by_category breakdown."""
-        from foresight.server import get_system_status
 
         # Store memories with different categories
         store_memory("fact memory one", category="fact", scope="session")
@@ -2089,7 +2058,6 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_last_injection(self):
         """get_system_status returns last_injection field (may be null)."""
-        from foresight.server import get_system_status
 
         result = get_system_status()
         data = json.loads(result)
@@ -2098,7 +2066,6 @@ class TestSystemStatusHealth:
 
     def test_system_status_no_memory_content_in_output(self):
         """get_system_status output does not include raw memory content (privacy-safe)."""
-        from foresight.server import get_system_status
 
         store_memory("very personal therapeutic session content that should be private")
         result = get_system_status()
@@ -2114,7 +2081,6 @@ class TestSystemStatusHealth:
 
 def test_manage_context_blocks_flat_aliases_and_extra_fields():
     """manage_context_blocks handles block_name, name, block, key aliases and extra fields."""
-    from foresight.server import ContextBlockAction, manage_context_blocks
 
     # Test flat block_name parameter
     res = manage_context_blocks(action="update", block_name="project_context", content="Test context content")
@@ -2141,7 +2107,6 @@ def test_manage_context_blocks_flat_aliases_and_extra_fields():
 
 def test_manage_memories_flat_parameters():
     """manage_memories folds flat parameters like category, scope, tags into store_options and updates."""
-    from foresight.server import manage_memories
 
     res = manage_memories(
         action="store",
@@ -2155,7 +2120,6 @@ def test_manage_memories_flat_parameters():
 
 def test_manage_memory_versions_flat_parameters():
     """manage_memory_versions handles flat action and memory_id parameters."""
-    from foresight.server import VersionAction, manage_memory_versions
 
     # Test with flat arguments for a non-existent ID
     res = manage_memory_versions(action="diff", memory_id="nonexistent_id", version1=1, version2=2)
@@ -2168,8 +2132,6 @@ def test_manage_memory_versions_flat_parameters():
 
 def test_analyze_memories_flat_parameters():
     """analyze_memories handles flat action and period parameters."""
-    from foresight.reflection_engine import ReflectionReport
-    from foresight.server import AnalysisAction, analyze_memories
 
     # Test flat arguments
     with patch("foresight.server.get_reflection_engine") as mock_get_engine:
@@ -2199,14 +2161,12 @@ def test_analyze_memories_flat_parameters():
 
 
 def test_extract_topical_tags_helper():
-    from foresight.server import _extract_topical_tags
 
     tags = _extract_topical_tags("we decided to use postgresql for the database and redis for caching")
     assert any(t in tags for t in ("postgresql", "redis", "database", "caching")), tags
 
 
 def test_normalize_expires_at_helper():
-    from foresight.server import _normalize_expires_at
 
     assert _normalize_expires_at(None) is None
     assert _normalize_expires_at("") is None
@@ -2220,7 +2180,6 @@ def test_normalize_expires_at_helper():
 
 def test_store_memory_type_roundtrip():
     """PIX-4723: memory_type persists to the memories row."""
-    from foresight.server import get_db_connection, manage_memories
 
     marker = hashlib.md5(b"mem_type").hexdigest()[:8]
     res = manage_memories(
@@ -2239,7 +2198,6 @@ def test_store_memory_type_roundtrip():
 
 def test_store_expires_at_roundtrip():
     """PIX-4721: expires_at normalizes to ISO and persists."""
-    from foresight.server import get_db_connection, manage_memories
 
     marker = hashlib.md5(b"expires").hexdigest()[:8]
     res = manage_memories(
@@ -2262,7 +2220,6 @@ def test_store_expires_at_roundtrip():
 
 def test_auto_tag_extracts_topical_tags():
     """PIX-4724: auto_tag=True derives topical tags deterministically."""
-    from foresight.server import get_db_connection, manage_memories
 
     marker = hashlib.md5(b"autotag").hexdigest()[:8]
     res = manage_memories(
@@ -2284,7 +2241,6 @@ def test_auto_tag_extracts_topical_tags():
 
 def test_explicit_tags_win_over_auto_tag():
     """PIX-4724: explicit tags are kept; auto-tagging does not replace them."""
-    from foresight.server import get_db_connection, manage_memories
 
     marker = hashlib.md5(b"explicit").hexdigest()[:8]
     manage_memories(
@@ -2305,7 +2261,6 @@ def test_explicit_tags_win_over_auto_tag():
 
 def test_search_memories_filters_by_category():
     """PIX-4720: list search filters by category."""
-    from foresight.server import SearchOptions, manage_memories, search_memories
 
     marker = hashlib.md5(b"cat").hexdigest()[:8]
     manage_memories(action="store", content=f"alpha {marker}", category="preference", user_id="_test_user_")
@@ -2318,7 +2273,6 @@ def test_search_memories_filters_by_category():
 
 def test_search_memories_filters_by_tags():
     """PIX-4720: list search filters to memories carrying a tag."""
-    from foresight.server import SearchOptions, manage_memories, search_memories
 
     marker = hashlib.md5(b"tagfilter").hexdigest()[:8]
     manage_memories(action="store", content=f"work item {marker}", tags=["work"], user_id="_test_user_")
@@ -2331,7 +2285,6 @@ def test_search_memories_filters_by_tags():
 
 def test_search_memories_excludes_expired():
     """PIX-4721: expired memories are excluded from retrieval."""
-    from foresight.server import SearchOptions, manage_memories, search_memories
 
     marker = hashlib.md5(b"expired_filter").hexdigest()[:8]
     manage_memories(
@@ -2346,7 +2299,6 @@ def test_search_memories_excludes_expired():
 
 def test_process_session_transcript_infer_false_stores_verbatim():
     """PIX-4722: infer=False stores the transcript verbatim as one memory."""
-    from foresight.server import get_db_connection, process_session_transcript
 
     marker = hashlib.md5(b"verbatim").hexdigest()[:8]
     messages = [

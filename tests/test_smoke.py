@@ -1,7 +1,8 @@
 """Smoke test — verifies the foresight package is importable."""
 
+import foresight
+
 
 def test_package_import():
-    import foresight
 
     assert foresight is not None
