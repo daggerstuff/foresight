@@ -29,6 +29,7 @@ from typing import Any
 from .enhanced_synthesizer import EnhancedMemorySynthesizer
 from .memory_types import MemoryObject
 from .reflect import _connect, _fetch_all, _fetch_one
+from .sql_helpers import join_sql_parts
 
 logger = logging.getLogger("foresight_observations")
 
@@ -178,8 +179,12 @@ def _find_observation(
 ) -> dict | None:
     frag, params = _ns_clause(agent_id, project)
     row = _fetch_one(
-        "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND pattern_key = ? "  # nosec B608 - values parameterized; frag is a hardcoded literal
-        f"AND status != 'archived'{frag} ORDER BY version DESC LIMIT 1",
+        join_sql_parts(
+            "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND pattern_key = ? ",
+            "AND status != 'archived'",
+            frag,
+            " ORDER BY version DESC LIMIT 1",
+        ),
         (tenant_id, user_id, pattern_key, *params),
     )
     return _observation_row(row) if row else None
@@ -339,14 +344,20 @@ def list_observations(
     frag, ns_params = _ns_clause(agent_id, project)
     if status == "active":
         rows = _fetch_all(
-            "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status IN ('active','refined') "  # nosec B608 - values parameterized; frag is a hardcoded literal
-            f"{frag} ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
+            join_sql_parts(
+                "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status IN ('active','refined') ",
+                frag,
+                " ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
+            ),
             (tenant_id, user_id, *ns_params, limit),
         )
     else:
         rows = _fetch_all(
-            "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status = ? "  # nosec B608 - values parameterized; frag is a hardcoded literal
-            f"{frag} ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
+            join_sql_parts(
+                "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status = ? ",
+                frag,
+                " ORDER BY confidence DESC, last_refined_at DESC LIMIT ?",
+            ),
             (tenant_id, user_id, status, *ns_params, limit),
         )
     observations = [_observation_row(r) for r in rows]

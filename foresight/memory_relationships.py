@@ -25,6 +25,7 @@ from typing import Any
 
 from .config import DB_PATH
 from .connection_pool import get_pool
+from .sql_helpers import join_sql_parts, placeholders
 from .tenant_context import get_current_account_id
 
 
@@ -303,11 +304,12 @@ class MemoryRelationshipStore:
             clauses.append("relationship_type = ?")
             params.append(relationship_type)
 
-        sql = (
-            "SELECT id, tenant_id, user_id, source_memory_id, target_memory_id, "  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
-            "relationship_type, confidence, metadata, created_at "
-            "FROM memory_relationships WHERE " + " AND ".join(clauses) + " "
-            "ORDER BY created_at DESC"
+        sql = join_sql_parts(
+            "SELECT id, tenant_id, user_id, source_memory_id, target_memory_id, ",
+            "relationship_type, confidence, metadata, created_at ",
+            "FROM memory_relationships WHERE ",
+            " AND ".join(clauses),
+            " ORDER BY created_at DESC",
         )
 
         conn = self._connect()
@@ -399,17 +401,23 @@ class MemoryRelationshipStore:
             if len(node_ids) <= 1:
                 edges: list[MemoryRelationship] = []
             else:
-                placeholders = ",".join("?" for _ in node_ids)
+                node_slots = placeholders(len(node_ids))
                 edge_cur = conn.execute(
-                    f"""
+                    join_sql_parts(
+                        """
                     SELECT id, tenant_id, user_id, source_memory_id,
                            target_memory_id, relationship_type, confidence,
                            metadata, created_at
                     FROM memory_relationships
                     WHERE tenant_id = ? AND user_id = ?
-                      AND (source_memory_id IN ({placeholders})
-                           OR target_memory_id IN ({placeholders}))
-                    """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                      AND (source_memory_id IN (""",
+                        node_slots,
+                        """)
+                           OR target_memory_id IN (""",
+                        node_slots,
+                        """))
+                    """,
+                    ),
                     [tid, user_id, *node_ids, *node_ids],
                 )
                 edges = [

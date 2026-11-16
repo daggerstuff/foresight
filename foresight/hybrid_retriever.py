@@ -55,6 +55,7 @@ from .query_rewrite import (
 from .reranker import get_reranker, rerank_active, score_to_multiplier
 from .rrf_tuning import get_rrf_config
 from .semantic_search import SemanticSearch, SemanticSearchOptions
+from .sql_helpers import join_sql_parts, placeholders
 
 logger = logging.getLogger("foresight_hybrid_retriever")
 
@@ -988,15 +989,22 @@ class HybridRetriever:
         params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
         rows = self._fetch_rows(
-            f"""
+            join_sql_parts(
+                """
             SELECT id, content
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
-            AND ({like_clauses})
-            {ns_frag}
+            AND (""",
+                like_clauses,
+                """
+            )
+            """,
+                ns_frag,
+                """
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
-        """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+        """,
+            ),
             [*params, *ns_params, limit],
         )
 
@@ -1037,7 +1045,10 @@ class HybridRetriever:
 
         def _count() -> int:
             rows = self._fetch_rows(
-                f"SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+                join_sql_parts(
+                    "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+                    ns_frag,
+                ),
                 (user_id, tenant_id, *ns_params),
             )
             return rows[0]["cnt"] if rows else 0
@@ -1049,7 +1060,10 @@ class HybridRetriever:
             return cached
 
         rows = self._fetch_rows(
-            f"SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0{ns_frag}",  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+            join_sql_parts(
+                "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+                ns_frag,
+            ),
             (user_id, tenant_id, *ns_params),
         )
 
@@ -1192,23 +1206,37 @@ class HybridRetriever:
         has_confidence = "confidence" in entity_cols
         has_tenant = "tenant_id" in entity_cols
 
+        confidence_col = ", e.confidence" if has_confidence else ""
+
         if has_tenant:
-            sql = f"""
-                SELECT DISTINCT e.id
-                {", e.confidence" if has_confidence else ""}
+            sql = join_sql_parts(
+                """
+                SELECT DISTINCT e.id""",
+                confidence_col,
+                """
                 FROM memory_entities e
                 WHERE e.user_id = ? AND e.tenant_id = ?
-                  AND ({like_clauses})
-            """  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                  AND (""",
+                like_clauses,
+                """
+                )
+            """,
+            )
             params: list[Any] = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
         else:
-            sql = f"""
-                SELECT DISTINCT e.id
-                {", e.confidence" if has_confidence else ""}
+            sql = join_sql_parts(
+                """
+                SELECT DISTINCT e.id""",
+                confidence_col,
+                """
                 FROM memory_entities e
                 WHERE e.user_id = ?
-                  AND ({like_clauses})
-            """  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                  AND (""",
+                like_clauses,
+                """
+                )
+            """,
+            )
             params = [user_id] + [f"%{t}%" for t in escaped_terms]
 
         entity_rows = self._fetch_rows(sql, params)
@@ -1224,7 +1252,7 @@ class HybridRetriever:
             entity_ids.append(eid)
             entity_conf[eid] = conf
 
-        entity_placeholders = ",".join("?" * len(entity_ids))
+        entity_slots = placeholders(len(entity_ids))
         link_cols = self._detect_columns("memory_entity_links")
         has_relevance = "relevance_score" in link_cols
 
@@ -1234,28 +1262,39 @@ class HybridRetriever:
         )
         ns_frag, ns_params = _namespace_frag(options, alias="m")
         rows = self._fetch_rows(
-            f"""
+            join_sql_parts(
+                """
             SELECT
                 mel.memory_id,
-                COUNT(DISTINCT mel.entity_id) as entity_hits{entity_conf_col},
-                COALESCE(AVG(er.confidence * er.decay_factor), 1.0) as avg_edge_quality{relevance_col}
+                COUNT(DISTINCT mel.entity_id) as entity_hits""",
+                entity_conf_col,
+                """,
+                COALESCE(AVG(er.confidence * er.decay_factor), 1.0) as avg_edge_quality""",
+                relevance_col,
+                """
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id
-                AND m.tenant_id = ? AND m.user_id = ? AND m.is_ghost = 0{ns_frag}
+                AND m.tenant_id = ? AND m.user_id = ? AND m.is_ghost = 0""",
+                ns_frag,
+                """
             LEFT JOIN memory_entities me ON me.id = mel.entity_id
                 AND me.user_id = ?
             LEFT JOIN entity_relationships er ON (
                 (er.source_entity_id = mel.entity_id OR er.target_entity_id = mel.entity_id)
                 AND er.user_id = ?
             )
-            WHERE mel.entity_id IN ({entity_placeholders})
+            WHERE mel.entity_id IN (""",
+                entity_slots,
+                """
+            )
             AND mel.user_id = ?
             GROUP BY mel.memory_id
             ORDER BY
                 entity_hits DESC,
                 avg_edge_quality DESC
             LIMIT ?
-        """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+        """,
+            ),
             [tenant_id, user_id, *ns_params, user_id, user_id, *entity_ids, user_id, limit],
         )
 
@@ -1361,17 +1400,21 @@ class HybridRetriever:
         """
         ns_frag, ns_params = _namespace_frag(options)
         rows = self._fetch_rows(
-            f"""
+            join_sql_parts(
+                """
             SELECT id, importance, current_strength, created_at,
                    activation_count, COALESCE(strength_trend, 'stable') as strength_trend,
                    last_retrieved_at, category
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND importance >= ?
-            AND is_ghost = 0{ns_frag}
+            AND is_ghost = 0""",
+                ns_frag,
+                """
             ORDER BY created_at DESC
             LIMIT ?
-        """,  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+        """,
+            ),
             (user_id, tenant_id, min_importance, *ns_params, limit),
         )
 
@@ -1482,17 +1525,24 @@ class HybridRetriever:
         if not memory_ids:
             return {}
 
-        placeholders = ",".join("?" * len(memory_ids))
+        id_slots = placeholders(len(memory_ids))
         ns_frag, ns_params = _namespace_frag(options)
         rows = self._fetch_rows(
-            f"""
+            join_sql_parts(
+                """
             SELECT id, content, category, importance,
                    strength_trend, created_at, current_strength,
                    is_latest, inferred, superseded_by
             FROM memories
-            WHERE id IN ({placeholders})
-            AND user_id = ? AND tenant_id = ?{ns_frag}
-        """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+            WHERE id IN (""",
+                id_slots,
+                """
+            )
+            AND user_id = ? AND tenant_id = ?""",
+                ns_frag,
+                """
+        """,
+            ),
             [*memory_ids, user_id, tenant_id, *ns_params],
         )
 

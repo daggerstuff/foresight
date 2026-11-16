@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .connection_pool import get_pool
+from .sql_helpers import join_sql_parts
 
 logger = logging.getLogger("foresight_audit")
 
@@ -199,12 +200,13 @@ class AuditLog:
             params.append(event_type)
 
         params.append(limit)
-        sql = (
-            "SELECT tenant_id, user_id, event_type, resource_id, metadata_json, created_at "  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
-            "FROM audit_events "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY created_at DESC, id DESC "
-            "LIMIT ?"
+        sql = join_sql_parts(
+            "SELECT tenant_id, user_id, event_type, resource_id, metadata_json, created_at ",
+            "FROM audit_events ",
+            "WHERE ",
+            " AND ".join(clauses),
+            " ORDER BY created_at DESC, id DESC ",
+            "LIMIT ?",
         )
 
         conn = self._get_conn()
@@ -230,7 +232,7 @@ class AuditLog:
         if event_type is not None:
             clauses.append("event_type = ?")
             params.append(event_type)
-        sql = f"SELECT COUNT(*) AS n FROM audit_events WHERE {' AND '.join(clauses)}"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+        sql = join_sql_parts("SELECT COUNT(*) AS n FROM audit_events WHERE ", " AND ".join(clauses))
         conn = self._get_conn()
         return int(conn.execute(sql, params).fetchone()["n"])
 

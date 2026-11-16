@@ -42,7 +42,6 @@ import contextlib
 import hashlib
 import json
 import os
-import subprocess  # nosec B404 - benchmark runner; fixed argv git call only, no shell
 import sys
 import tempfile
 import time
@@ -55,6 +54,7 @@ from typing import Any, Protocol, cast
 
 from . import config as config_module, connection_pool as conn_pool_module
 from .connection_pool import get_pool, reset_pool
+from .git_info import head_sha
 from .hybrid_retriever import HybridSearchOptions, get_hybrid_retriever, reset_hybrid_retriever
 from .server import _SCHEMA_MIGRATIONS
 from .tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
@@ -933,17 +933,7 @@ def _build_report(
 
 
 def _git_sha() -> str:
-    try:
-        out = subprocess.run(  # nosec B607, B603 - fixed argv list, git rev-parse only, no shell, timeout set
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        return out.stdout.strip() if out.returncode == 0 else "unknown"
-    except Exception:  # pragma: no cover - environment dependent
-        return "unknown"
+    return head_sha()
 
 
 # ---------------------------------------------------------------------------

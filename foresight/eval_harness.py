@@ -368,7 +368,7 @@ class EvalScenario:
     description: str
     query: str
     expected_memory_ids: set[str]
-    pass_condition: str  # Human-readable condition
+    expectation: str  # Human-readable condition
     min_expected: int = 1  # Minimum number of expected memories that should be found
     as_of_offset_hours: int | None = None  # For temporal scenarios: query state as of now + offset
     expected_contains: str | None = None  # Optional substring expected in found memory content
@@ -381,7 +381,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Retrieval finds coding-style preference memory",
         query="What coding style does the user prefer for TypeScript?",
         expected_memory_ids={"pref_concise_typescript", "pref_2space_indent"},
-        pass_condition="Top-3 results include at least one preference memory",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="Top-3 results include at least one preference memory",
         min_expected=1,
     ),
     EvalScenario(
@@ -389,7 +389,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Retrieval finds pending project items",
         query="What's the current project status and what needs to be done?",
         expected_memory_ids={"pending_dashboard", "pending_auth", "pending_refactor"},
-        pass_condition="At least 2 of 3 pending items appear in results",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="At least 2 of 3 pending items appear in results",
         min_expected=2,
     ),
     EvalScenario(
@@ -397,7 +397,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Current facts rank higher than stale facts for same topic",
         query="How does authentication work in this project?",
         expected_memory_ids={"current_auth_approach", "stale_auth_approach"},
-        pass_condition="current_auth_approach ranks higher than stale_auth_approach",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="current_auth_approach ranks higher than stale_auth_approach",
         min_expected=2,
     ),
     EvalScenario(
@@ -405,7 +405,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Entity/file reference retrieval by description",
         query="Where is the database configuration file located?",
         expected_memory_ids={"entity_db_config"},
-        pass_condition="entity_db_config appears in results",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="entity_db_config appears in results",
         min_expected=1,
     ),
     EvalScenario(
@@ -413,7 +413,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Session memory retrieval from recent discussions",
         query="What did we discuss about deployment in the last standup?",
         expected_memory_ids={"session_deploy"},
-        pass_condition="session_deploy appears in results",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="session_deploy appears in results",
         min_expected=1,
     ),
     EvalScenario(
@@ -421,7 +421,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Entity-rich memories rank higher than entity-sparse ones",
         query="What configuration and deployment topics were discussed recently?",
         expected_memory_ids={"entity_rich_session", "entity_sparse_note"},
-        pass_condition="entity_rich_session ranks higher than entity_sparse_note",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="entity_rich_session ranks higher than entity_sparse_note",
         min_expected=2,
     ),
     EvalScenario(
@@ -429,7 +429,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Strengthening priority memories outrank stale ones",
         query="What's the security incident response procedure?",
         expected_memory_ids={"decay_priority_high", "decay_priority_low"},
-        pass_condition="decay_priority_high ranks higher than decay_priority_low",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="decay_priority_high ranks higher than decay_priority_low",
         min_expected=2,
     ),
     EvalScenario(
@@ -437,7 +437,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Point-in-time query returns the pre-supersede fact",
         query="How does the user feel about therapy?",
         expected_memory_ids={"temp_loves_therapy"},
-        pass_condition="temp_loves_therapy is visible as of -60h (before supersede boundary)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="temp_loves_therapy is visible as of -60h (before supersede boundary)",
         min_expected=1,
         as_of_offset_hours=-60,
     ),
@@ -446,7 +446,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Point-in-time query returns the post-supersede fact",
         query="How does the user feel about therapy?",
         expected_memory_ids={"temp_hates_therapy"},
-        pass_condition="temp_hates_therapy is visible as of -12h (after supersede boundary)",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="temp_hates_therapy is visible as of -12h (after supersede boundary)",
         min_expected=1,
         as_of_offset_hours=-12,
     ),
@@ -455,7 +455,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Point-in-time query resolves to pre-edit content via memory_versions",
         query="Who is the user's therapist?",
         expected_memory_ids={"temp_therapist"},
-        pass_condition="temp_therapist content as of -120h is the pre-edit Dr. Smith version",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="temp_therapist content as of -120h is the pre-edit Dr. Smith version",
         min_expected=1,
         as_of_offset_hours=-120,
         expected_contains="Dr. Smith",
@@ -465,7 +465,7 @@ SCENARIOS: list[EvalScenario] = [
         description="Memory derived from raw-event layer is retrievable and traceable",
         query="What display preferences does the user have?",
         expected_memory_ids={"temp_prefers_dark_mode"},
-        pass_condition="temp_prefers_dark_mode is visible and linked to a raw event",  # nosec B106 - kwarg name contains 'pass' (pass_condition); not a credential
+        expectation="temp_prefers_dark_mode is visible and linked to a raw event",
         min_expected=1,
         as_of_offset_hours=0,
         expected_provenance_count=1,
@@ -724,7 +724,7 @@ class EvalHarness:
         ):
             try:
                 mod = __import__(mod_name, fromlist=["DB_PATH"])
-            except Exception:  # pragma: no cover - optional/legacy modules
+            except ImportError:  # pragma: no cover - optional/legacy modules
                 continue
             if not hasattr(mod, "DB_PATH"):
                 continue
@@ -1465,7 +1465,15 @@ def _print_diff(diff: dict[str, Any], json_output: bool) -> None:
         f"  PII change: {diff.get('pii_change', 0):+d}",
     ]
     for sd in diff.get("scenario_diffs", []):
-        icon = {"new_pass": "✓", "new_fail": "✗", "unchanged": "="}.get(sd.get("status_change", ""), "?")  # nosec B105 - status label contains 'pass'; not a credential
+        change = sd.get("status_change", "")
+        if change == "new_pass":
+            icon = "✓"
+        elif change == "new_fail":
+            icon = "✗"
+        elif change == "unchanged":
+            icon = "="
+        else:
+            icon = "?"
         lines.append(
             f"  [{icon}] {sd['scenario_id']}: payload {sd.get('payload_change', 0):+d} chars, "
             f"latency {sd.get('latency_change', 0):+.2f}ms"

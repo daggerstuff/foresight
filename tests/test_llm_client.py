@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import io
 import json
 import logging as stdlib_logging
 import sys
-import urllib.error
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -114,11 +112,17 @@ def test_default_llm_call_propagates_llm_error(monkeypatch: pytest.MonkeyPatch) 
 # ============================================================
 
 
-def _make_urlopen_response(payload: dict[str, Any]) -> MagicMock:
+def _make_httpx_response(payload: dict[str, Any]) -> MagicMock:
     response = MagicMock()
-    response.read.return_value = json.dumps(payload).encode("utf-8")
-    response.__enter__ = MagicMock(return_value=response)
-    response.__exit__ = MagicMock(return_value=False)
+    response.status_code = 200
+    response.text = json.dumps(payload)
+    return response
+
+
+def _make_httpx_error_response(detail: str, status_code: int) -> MagicMock:
+    response = MagicMock()
+    response.status_code = status_code
+    response.text = detail
     return response
 
 
@@ -128,13 +132,14 @@ def test_anthropic_client_complete_success() -> None:
         "id": "msg_123",
         "content": [{"type": "text", "text": "hello world"}],
     }
-    with patch("urllib.request.urlopen", return_value=_make_urlopen_response(payload)) as mock_urlopen:
+    with patch("httpx.post", return_value=_make_httpx_response(payload)) as mock_post:
         out = client.complete("summarize this")
     assert out == "hello world"
-    sent_request = mock_urlopen.call_args.args[0]
-    assert _header_lookup(sent_request.headers, "x-api-key") == "test-key"
-    assert _header_lookup(sent_request.headers, "anthropic-version") == "2023-06-01"
-    body = json.loads(sent_request.data.decode("utf-8"))
+    assert mock_post.call_args.args[0] == "https://api.anthropic.com/v1/messages"
+    sent_headers = mock_post.call_args.kwargs["headers"]
+    assert _header_lookup(sent_headers, "x-api-key") == "test-key"
+    assert _header_lookup(sent_headers, "anthropic-version") == "2023-06-01"
+    body = json.loads(mock_post.call_args.kwargs["content"].decode("utf-8"))
     assert body["model"] == "claude-test"
     assert body["max_tokens"] == DEFAULT_LLM_MAX_TOKENS
     assert body["messages"] == [{"role": "user", "content": "summarize this"}]
@@ -159,15 +164,9 @@ def test_anthropic_client_rejects_missing_api_key() -> None:
 
 def test_anthropic_client_handles_http_error() -> None:
     client = AnthropicClient(api_key="test-key")
-    http_err = urllib.error.HTTPError(
-        url="https://api.anthropic.com/v1/messages",
-        code=500,
-        msg="Internal Server Error",
-        hdrs=MagicMock(),
-        fp=io.BytesIO(b"internal error"),
-    )
+    response = _make_httpx_error_response("internal error", status_code=500)
     with (
-        patch("urllib.request.urlopen", side_effect=http_err),
+        patch("httpx.post", return_value=response),
         pytest.raises(LLMError, match="Anthropic API returned HTTP 500"),
     ):
         client.complete("p")
@@ -175,15 +174,9 @@ def test_anthropic_client_handles_http_error() -> None:
 
 def test_anthropic_client_handles_rate_limit() -> None:
     client = AnthropicClient(api_key="test-key")
-    http_err = urllib.error.HTTPError(
-        url="https://api.anthropic.com/v1/messages",
-        code=429,
-        msg="Too Many Requests",
-        hdrs=MagicMock(),
-        fp=io.BytesIO(b"rate limit"),
-    )
+    response = _make_httpx_error_response("rate limit", status_code=429)
     with (
-        patch("urllib.request.urlopen", side_effect=http_err),
+        patch("httpx.post", return_value=response),
         pytest.raises(LLMRateLimitError, match="Anthropic API rate limit \\(429\\)"),
     ):
         client.complete("p")
@@ -193,7 +186,7 @@ def test_anthropic_client_handles_empty_content() -> None:
     client = AnthropicClient(api_key="test-key")
     payload = {"id": "msg_123", "content": []}
     with (
-        patch("urllib.request.urlopen", return_value=_make_urlopen_response(payload)),
+        patch("httpx.post", return_value=_make_httpx_response(payload)),
         pytest.raises(LLMError, match="no content blocks"),
     ):
         client.complete("p")
@@ -210,12 +203,12 @@ def test_openai_client_complete_success() -> None:
         "id": "chatcmpl-123",
         "choices": [{"message": {"role": "assistant", "content": "hi from openai"}}],
     }
-    with patch("urllib.request.urlopen", return_value=_make_urlopen_response(payload)) as mock_urlopen:
+    with patch("httpx.post", return_value=_make_httpx_response(payload)) as mock_post:
         out = client.complete("summarize this")
     assert out == "hi from openai"
-    sent_request = mock_urlopen.call_args.args[0]
-    assert _header_lookup(sent_request.headers, "Authorization") == "Bearer test-key"
-    body = json.loads(sent_request.data.decode("utf-8"))
+    sent_headers = mock_post.call_args.kwargs["headers"]
+    assert _header_lookup(sent_headers, "Authorization") == "Bearer test-key"
+    body = json.loads(mock_post.call_args.kwargs["content"].decode("utf-8"))
     assert body["model"] == "gpt-test"
     assert body["max_tokens"] == DEFAULT_LLM_MAX_TOKENS
     assert body["messages"] == [{"role": "user", "content": "summarize this"}]
@@ -229,9 +222,9 @@ def test_openai_base_url_resolves_to_chat_completions() -> None:
         base_url="https://integrate.api.nvidia.com/v1",
     )
     payload = {"choices": [{"message": {"content": "ok"}}]}
-    with patch("urllib.request.urlopen", return_value=_make_urlopen_response(payload)) as mock_urlopen:
+    with patch("httpx.post", return_value=_make_httpx_response(payload)) as mock_post:
         client.complete("p")
-    assert mock_urlopen.call_args.args[0].full_url == ("https://integrate.api.nvidia.com/v1/chat/completions")
+    assert mock_post.call_args.args[0] == "https://integrate.api.nvidia.com/v1/chat/completions"
 
 
 @pytest.mark.parametrize(
@@ -270,15 +263,9 @@ def test_openai_client_rejects_missing_api_key() -> None:
 
 def test_openai_client_handles_http_error() -> None:
     client = OpenAIClient(api_key="test-key")
-    http_err = urllib.error.HTTPError(
-        url="https://api.openai.com/v1/chat/completions",
-        code=500,
-        msg="Internal Server Error",
-        hdrs=MagicMock(),
-        fp=io.BytesIO(b"internal error"),
-    )
+    response = _make_httpx_error_response("internal error", status_code=500)
     with (
-        patch("urllib.request.urlopen", side_effect=http_err),
+        patch("httpx.post", return_value=response),
         pytest.raises(LLMError, match="OpenAI API returned HTTP 500"),
     ):
         client.complete("p")
@@ -286,15 +273,9 @@ def test_openai_client_handles_http_error() -> None:
 
 def test_openai_client_handles_rate_limit() -> None:
     client = OpenAIClient(api_key="test-key")
-    http_err = urllib.error.HTTPError(
-        url="https://api.openai.com/v1/chat/completions",
-        code=429,
-        msg="Too Many Requests",
-        hdrs=MagicMock(),
-        fp=io.BytesIO(b"rate limit"),
-    )
+    response = _make_httpx_error_response("rate limit", status_code=429)
     with (
-        patch("urllib.request.urlopen", side_effect=http_err),
+        patch("httpx.post", return_value=response),
         pytest.raises(LLMRateLimitError, match="OpenAI API rate limit \\(429\\)"),
     ):
         client.complete("p")
@@ -304,7 +285,7 @@ def test_openai_client_handles_empty_choices() -> None:
     client = OpenAIClient(api_key="test-key")
     payload = {"id": "chatcmpl-123", "choices": []}
     with (
-        patch("urllib.request.urlopen", return_value=_make_urlopen_response(payload)),
+        patch("httpx.post", return_value=_make_httpx_response(payload)),
         pytest.raises(LLMError, match="no choices"),
     ):
         client.complete("p")

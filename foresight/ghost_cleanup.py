@@ -14,6 +14,13 @@ from .dependent_cleanup import purge_dead_synthesized_from_ids
 
 logger = logging.getLogger("foresight_ghost_cleanup")
 
+# One complete statement per dependent table: the table name is never
+# interpolated, so an unknown table cannot reach the database.
+_ORPHAN_CLEANUP_SQL = {
+    "memory_decay_events": "DELETE FROM memory_decay_events WHERE memory_id NOT IN (SELECT id FROM memories)",
+    "memory_versions": "DELETE FROM memory_versions WHERE memory_id NOT IN (SELECT id FROM memories)",
+}
+
 
 @dataclass
 class CleanupStats:
@@ -134,11 +141,9 @@ class GhostMemoryCleanup:
             stats.ghost_memories_deleted = deleted
 
             # Clean dependents orphaned by the ghost deletes (no FK cascade).
-            for tbl in ("memory_decay_events", "memory_versions"):
+            for tbl, orphan_sql in _ORPHAN_CLEANUP_SQL.items():
                 try:
-                    cursor = conn.execute(
-                        f"DELETE FROM {tbl} WHERE memory_id NOT IN (SELECT id FROM memories)",  # nosec B608 - table names are hardcoded literals
-                    )
+                    cursor = conn.execute(orphan_sql)
                     if cursor.rowcount:
                         logger.info(f"Cleaned {cursor.rowcount} orphaned {tbl} rows")
                 except Exception as e:

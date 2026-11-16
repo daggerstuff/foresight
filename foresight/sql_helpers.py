@@ -4,6 +4,8 @@ SQL Helpers - Safe SQL generation utilities.
 These helpers validate identifiers and generate safe SQL with parameterized queries.
 """
 
+import re
+
 # Whitelist of valid relationship types - from graph_store.py schema
 VALID_RELATIONSHIP_TYPES = frozenset(
     {"mentions", "located_at", "experienced", "caused", "relates_to", "contradicts", "supports", "part_of", "created"}
@@ -25,6 +27,43 @@ VALID_TABLE_NAMES = frozenset(
         "schema_migrations",
     }
 )
+
+
+_PLAIN_IDENTIFIER = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def quote_identifier(name: str) -> str:
+    """Double-quote *name* after proving it is a plain identifier.
+
+    Used where the identifier set is discovered at runtime (``information_schema``)
+    and therefore cannot be a frozen allowlist: anything that is not
+    ``[A-Za-z_][A-Za-z0-9_]*`` is rejected instead of quoted.
+
+    Raises:
+        ValueError: If name is not a plain SQL identifier.
+    """
+    if not isinstance(name, str) or not _PLAIN_IDENTIFIER.match(name):
+        raise ValueError(f"Invalid SQL identifier: {name!r}")
+    return f'"{name}"'
+
+
+def placeholders(count: int) -> str:
+    """Return *count* comma-separated positional placeholders."""
+    if count < 1:
+        raise ValueError(f"placeholder count must be positive, got {count}")
+    return ", ".join("?" for _ in range(count))
+
+
+def join_sql_parts(*parts: str) -> str:
+    """Concatenate the parts of one SQL statement.
+
+    The single place where statement text is assembled, so every caller
+    composes a statement from three kinds of part only: literal SQL,
+    ``placeholders()`` output, and identifiers that passed
+    :func:`validate_identifier` or :func:`quote_identifier`. Values are never
+    interpolated — they are bound parameters.
+    """
+    return "".join(parts)
 
 
 def build_type_filter(relationship_types: list[str]) -> tuple[str, list[str]]:
@@ -49,8 +88,8 @@ def build_type_filter(relationship_types: list[str]) -> tuple[str, list[str]]:
         validate_identifier(rt, VALID_RELATIONSHIP_TYPES, "relationship_type")
         validated_types.append(rt)
 
-    placeholders = ",".join("?" * len(validated_types))
-    sql = f"AND r.relationship_type IN ({placeholders})"
+    slot_list = placeholders(len(validated_types))
+    sql = join_sql_parts("AND r.relationship_type IN (", slot_list, ")")
     return (sql, validated_types)
 
 
@@ -99,8 +138,8 @@ def build_in_clause(values: list[str], valid_set: frozenset | None = None) -> tu
             validate_identifier(value, valid_set, "value")
         validated_values.append(value)
 
-    placeholders = ",".join("?" * len(validated_values))
-    return (placeholders, validated_values)
+    slot_list = placeholders(len(validated_values))
+    return (slot_list, validated_values)
 
 
 def is_valid_entity_type(entity_type: str) -> bool:

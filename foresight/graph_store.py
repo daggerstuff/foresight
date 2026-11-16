@@ -22,7 +22,7 @@ from .backend.base import DatabaseBackend
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_backend, get_pool
 from .entity_extractor import Entity, EntityType, ExtractionResult, Relationship, RelationshipType
-from .sql_helpers import build_type_filter
+from .sql_helpers import build_type_filter, join_sql_parts, placeholders
 from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_graph_store")
@@ -571,7 +571,8 @@ created_at
         _validate_input(user_id, tid)
         type_filter, type_params = build_type_filter(relationship_types or [])
 
-        query = f"""
+        query = join_sql_parts(
+            """
         WITH RECURSIVE graph_traversal AS (
             SELECT
                 id as entity_id,
@@ -599,7 +600,9 @@ created_at
             JOIN entity_relationships r ON (
                 (gt.entity_id = r.source_entity_id OR gt.entity_id = r.target_entity_id)
                 AND r.tenant_id = ?
-                {type_filter}
+                """,
+            type_filter,
+            """
                 AND r.confidence * r.decay_factor >= 0.1
             )
             JOIN memory_entities e ON e.id = CASE
@@ -614,7 +617,8 @@ created_at
         FROM graph_traversal
         WHERE depth > 0
         LIMIT ?
-        """  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+        """,
+        )
         node_rows = self._fetch_rows(
             query,
             [
@@ -657,16 +661,22 @@ created_at
                 batch = node_ids[i : i + batch_size]
                 if not batch:
                     continue
-                placeholders = ",".join("?" * len(batch))
+                slot_list = placeholders(len(batch))
                 batch_edge_rows = self._fetch_rows(
-                    f"""
+                    join_sql_parts(
+                        """
                 SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                 FROM entity_relationships
-                WHERE (source_entity_id IN ({placeholders})
-                OR target_entity_id IN ({placeholders}))
+                WHERE (source_entity_id IN (""",
+                        slot_list,
+                        """)
+                OR target_entity_id IN (""",
+                        slot_list,
+                        """))
                 AND tenant_id = ?
                 AND user_id = ?
-                """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                """,
+                    ),
                     batch + batch + [tid, user_id],
                 )
                 edge_rows.extend(batch_edge_rows)

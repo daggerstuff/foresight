@@ -109,7 +109,7 @@ class TestScenarios:
             assert s.id, "Scenario missing id"
             assert s.query, f"Scenario {s.id} missing query"
             assert s.expected_memory_ids, f"Scenario {s.id} missing expected_memory_ids"
-            assert s.pass_condition, f"Scenario {s.id} missing pass_condition"
+            assert s.expectation, f"Scenario {s.id} missing expectation"
 
     def test_scenario_ids_are_unique(self):
         ids = [s.id for s in SCENARIOS]

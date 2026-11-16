@@ -17,8 +17,6 @@ import logging
 import math
 import os
 import re
-import shutil  # nosec B404 - git lookup only, no shell invocation
-import subprocess as _sp  # nosec B404 - bandit attributes the import to this line; argv-list git call only
 import tempfile
 import threading
 import time
@@ -106,6 +104,7 @@ from .event_bus import (
     sync_progress,
 )
 from .ghost_cleanup import run_ghost_cleanup
+from .git_info import find_git_root
 from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
 from .graph_store import get_graph_store
 from .hooks import (
@@ -179,6 +178,7 @@ from .semantic_search import (
     get_semantic_search,
 )
 from .sensitivity import resolve_is_sensitive
+from .sql_helpers import join_sql_parts, placeholders, quote_identifier
 from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sync_manager
 from .telemetry import get_telemetry_store
 from .temporal_queries import get_temporal_query_builder
@@ -1391,6 +1391,8 @@ without loss of durable context."""
 # otherwise fall back to the legacy API-key AuthMiddleware.
 _oauth_base_url = os.environ.get("FORESIGHT_OAUTH_BASE_URL")
 _oauth_provider = None
+# RFC 7591 token-endpoint auth method for a public client (no client secret).
+_PUBLIC_CLIENT_AUTH_METHOD = "none"
 if _oauth_base_url:
     _oauth_provider = ForesightOAuthProvider(
         base_url=_oauth_base_url,
@@ -1476,7 +1478,7 @@ def _seed_static_oauth_client() -> None:
                     redirect_uris=[AnyUrl(static_redirect_uri)],
                     grant_types=["authorization_code", "refresh_token"],
                     response_types=["code"],
-                    token_endpoint_auth_method="none",
+                    token_endpoint_auth_method=_PUBLIC_CLIENT_AUTH_METHOD,
                     application_type="web",
                 )
             )
@@ -1866,7 +1868,11 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     updates_list.append("updated_at = ?")
     values.append(datetime.now(UTC).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
-    update_sql = f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+    update_sql = join_sql_parts(
+        "UPDATE memories SET ",
+        ", ".join(updates_list),
+        " WHERE id = ? AND user_id = ? AND tenant_id = ?",
+    )
     if _supports_execute_returning(conn):
         updated_row = conn.execute_returning(update_sql, values).fetchone()
     else:
@@ -1924,7 +1930,7 @@ def _delete_memory_dependents(conn, memory_id: str) -> None:
         "memory_embeddings",
         "memory_entity_links",
     ):
-        conn.execute(f"DELETE FROM {table} WHERE memory_id = ?", (memory_id,))  # nosec B608 - table names are hardcoded literals
+        conn.execute(join_sql_parts("DELETE FROM ", quote_identifier(table), " WHERE memory_id = ?"), (memory_id,))
     conn.execute(
         "DELETE FROM memory_relationships WHERE source_memory_id = ? OR target_memory_id = ?",
         (memory_id, memory_id),
@@ -1964,30 +1970,49 @@ def _purge_orphaned_memory_dependents(conn, user_id: str | None = None, tenant_i
     ):
         scope, params = _scope("d", include_user)
         res = conn.execute(
-            f"DELETE FROM {table} AS d WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id){scope}",  # nosec B608 - table names are hardcoded literals
+            join_sql_parts(
+                "DELETE FROM ",
+                quote_identifier(table),
+                " AS d WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id)",
+                scope,
+            ),
             tuple(params),
         )
         stats[table] = getattr(res, "rowcount", 0) or 0
     scope, params = _scope("r")
     res = conn.execute(
-        "DELETE FROM memory_relationships AS r WHERE "
-        "(NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.source_memory_id)"
-        " OR NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.target_memory_id))" + scope,
+        join_sql_parts(
+            "DELETE FROM memory_relationships AS r WHERE ",
+            "(NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.source_memory_id)",
+            " OR NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = r.target_memory_id))",
+            scope,
+        ),
         tuple(params),
     )
     stats["memory_relationships"] = getattr(res, "rowcount", 0) or 0
     scope, params = _scope("d")
     res = conn.execute(
-        "UPDATE document_chunks AS d SET memory_id = NULL WHERE d.memory_id IS NOT NULL "
-        "AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id)" + scope,
+        join_sql_parts(
+            "UPDATE document_chunks AS d SET memory_id = NULL WHERE d.memory_id IS NOT NULL ",
+            "AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.memory_id)",
+            scope,
+        ),
         tuple(params),
     )
     stats["document_chunks"] = getattr(res, "rowcount", 0) or 0
     for col in ("related_memory_id", "superseded_by"):
         scope, params = _scope("d")
         res = conn.execute(
-            f"UPDATE memories AS d SET {col} = NULL WHERE d.{col} IS NOT NULL "  # nosec B608 - column names are hardcoded literals
-            f"AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.{col})" + scope,
+            join_sql_parts(
+                "UPDATE memories AS d SET ",
+                quote_identifier(col),
+                " = NULL WHERE d.",
+                quote_identifier(col),
+                " IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = d.",
+                quote_identifier(col),
+                ")",
+                scope,
+            ),
             tuple(params),
         )
         stats[f"memories.{col}"] = getattr(res, "rowcount", 0) or 0
@@ -2479,9 +2504,13 @@ def search_memories(
         if match_ids:
             now_iso = datetime.now(UTC).isoformat()
             conn = get_db_connection()
-            placeholders = ",".join("?" * len(match_ids))
+            id_slots = placeholders(len(match_ids))
             rows = conn.execute(
-                f"SELECT * FROM memories WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?",  # nosec B608 - values parameterized; IN placeholders generated count-only
+                join_sql_parts(
+                    "SELECT * FROM memories WHERE id IN (",
+                    id_slots,
+                    ") AND user_id = ? AND tenant_id = ?",
+                ),
                 (*match_ids, uid, tenant_id),
             ).fetchall()
             conn.close()
@@ -2509,9 +2538,11 @@ def search_memories(
         frag, fparams = _build_filter_fragments(*filters)
         now_iso = datetime.now(UTC).isoformat()
         row = conn.execute(
-            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
-            + frag
-            + " AND (expires_at IS NULL OR expires_at >= ?)",
+            join_sql_parts(
+                "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                frag,
+                " AND (expires_at IS NULL OR expires_at >= ?)",
+            ),
             (mid, uid, tenant_id, *fparams, now_iso),
         ).fetchone()
         conn.close()
@@ -2592,19 +2623,19 @@ def search_memories(
     expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-        query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
-            + frag
-            + expiry_sql
-            + " LIMIT ? OFFSET ?"
+        query_sql = join_sql_parts(
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'",
+            frag,
+            expiry_sql,
+            " LIMIT ? OFFSET ?",
         )
         params = (uid, tenant_id, f"%{escaped}%", *fparams, now_iso, options.limit, options.offset)
     else:
-        query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
-            + frag
-            + expiry_sql
-            + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        query_sql = join_sql_parts(
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ?",
+            frag,
+            expiry_sql,
+            " ORDER BY created_at DESC LIMIT ? OFFSET ?",
         )
         params = (uid, tenant_id, *fparams, now_iso, options.limit, options.offset)
 
@@ -3295,23 +3326,8 @@ def _detect_git_root() -> str | None:
     without the caller having to discover or pass it.
     """
 
-    git_bin = shutil.which("git")
-    if not git_bin:
-        return None
-
-    try:
-        r = _sp.run(  # nosec B603 - fixed argv list, git resolved via shutil.which, no shell, timeout set
-            [git_bin, "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if r.returncode == 0:
-            return r.stdout.strip() or None
-    except Exception as exc:
-        logger.debug("Failed to detect git root: %s", exc)
-    return None
+    root = find_git_root()
+    return str(root) if root is not None else None
 
 
 @mcp.tool(output_schema=None)
@@ -3589,7 +3605,11 @@ def _update_curation_run(
         return
     conn = get_db_connection()
     conn.execute(
-        f"UPDATE curation_runs SET {', '.join(updates)} WHERE id = ? AND tenant_id = ?",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+        join_sql_parts(
+            "UPDATE curation_runs SET ",
+            ", ".join(updates),
+            " WHERE id = ? AND tenant_id = ?",
+        ),
         (*values, run_id, tenant_id),
     )
     conn.commit()
@@ -8438,7 +8458,8 @@ def _ui_protected(fn):
         identity, err = await _ui_gate(request)
         if err is not None:
             return err
-        assert identity is not None
+        if identity is None:
+            raise RuntimeError("UI gate returned neither an identity nor an error response")
         set_current_user_id(identity["user_id"])
         set_current_account_id(identity["tenant_id"])
         try:

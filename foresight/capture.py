@@ -24,6 +24,7 @@ from typing import Any
 from .config import BANK_ID, raw_retention_enabled
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
+from .sql_helpers import join_sql_parts, placeholders
 from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_capture")
@@ -510,12 +511,13 @@ class CapturePipeline:
         # contract via ON CONFLICT.  Placeholders are SQLite-style; the Postgres
         # adapter translates them to %s automatically.
         cols = "id, tenant_id, user_id, session_id, role, content, position, captured_at, source, metadata, tombstone"
-        placeholders = ", ".join(f"({','.join('?' for _ in range(len(rows[0]) + 1))})" for _ in rows)
+        row_slots = placeholders(len(rows[0]) + 1)
+        values_sql = ", ".join(f"({row_slots})" for _ in rows)
         params: list[Any] = []
         for row in rows:
             params.extend(row)
             params.append(0)  # tombstone = 0
-        sql = f"INSERT INTO raw_events ({cols}) VALUES {placeholders} ON CONFLICT (id) DO NOTHING"
+        sql = join_sql_parts("INSERT INTO raw_events (", cols, ") VALUES ", values_sql, " ON CONFLICT (id) DO NOTHING")
 
         pool = get_pool(self.db_path)
         conn = pool.acquire()
