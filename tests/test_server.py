@@ -1003,6 +1003,7 @@ def _make_curation_test_db():
             importance REAL DEFAULT 1.0, activation_count INTEGER DEFAULT 0,
             decay_rate REAL DEFAULT 0.01, retrieval_count INTEGER DEFAULT 0,
             strength_trend TEXT DEFAULT 'stable', last_retrieved_at TEXT,
+            related_memory_id TEXT, superseded_by TEXT,
             accessed_at TEXT DEFAULT CURRENT_TIMESTAMP
         )"""
     )
@@ -1043,6 +1044,17 @@ def _make_curation_test_db():
             vector_clock TEXT DEFAULT '{}'
         )"""
     )
+    # The memory delete/cleanup sweep touches these dependents; without them the
+    # curation run fails on a missing table instead of reaching the code under test.
+    for table, columns in (
+        ("memory_decay_events", "memory_id TEXT, user_id TEXT, tenant_id TEXT"),
+        ("memory_versions", "memory_id TEXT, tenant_id TEXT"),
+        ("memory_embeddings", "memory_id TEXT, user_id TEXT, tenant_id TEXT"),
+        ("memory_entity_links", "memory_id TEXT, user_id TEXT, tenant_id TEXT"),
+        ("memory_relationships", "source_memory_id TEXT, target_memory_id TEXT, user_id TEXT, tenant_id TEXT"),
+        ("document_chunks", "memory_id TEXT, user_id TEXT, tenant_id TEXT"),
+    ):
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({columns})")
     conn.commit()
     conn.close()
     return tmp.name
