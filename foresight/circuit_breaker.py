@@ -118,9 +118,8 @@ class CircuitBreaker:
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.OPEN
                 self._success_count = 0
-            elif self._state == CircuitState.CLOSED:
-                if self._failure_count >= self.config.failure_threshold:
-                    self._state = CircuitState.OPEN
+            elif self._state == CircuitState.CLOSED and self._failure_count >= self.config.failure_threshold:
+                self._state = CircuitState.OPEN
 
     def reset(self):
         """Reset circuit breaker to initial state."""
