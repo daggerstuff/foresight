@@ -23,3 +23,14 @@ secret:
     - build/
     - node_modules/
     - '*.min.js'
+    # `.github/workflows/publish.yml` pins `POSTGRES_PASSWORD: postgres` on the
+    # throwaway `postgres:17` service container in its `test` job. That is an
+    # ephemeral, job-local fixture reachable only from inside the runner — not
+    # a credential, and not a secret this repository holds. The publish job
+    # authenticates to PyPI with OIDC (`id-token: write`), and the file
+    # references `secrets.*` zero times.
+    #
+    # Scoped to this one file on purpose: a broader pattern would hide real
+    # detections. No trailing slash — that rule applies to entries naming a
+    # directory, and this entry names a single file.
+    - .github/workflows/publish.yml
