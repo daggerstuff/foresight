@@ -11,6 +11,12 @@ import pytest
 from foresight import entity_extractor
 from foresight.entity_extractor import EntityExtractor
 
+# A complete entity + relationship payload does not fit in a 1024-token budget.
+MIN_RESPONSE_TOKEN_BUDGET = 2048
+
+# Slowest observed reasoning-model wall time before the JSON payload lands.
+REASONING_MODEL_MAX_LATENCY_SECONDS = 115.0
+
 _TRUNCATED_RESPONSE = """{
   "entities": [
     {"name": "Chad", "type": "person", "description": "Mentioned in the text", "properties": {}},
@@ -20,6 +26,10 @@ _TRUNCATED_RESPONSE = """{
     {"source": "Chad", "target": "Dayton", "type": "located_at", "confidence": 0.9},
     {"source": "Chad", "target": "Vivi", "type": "mentions", "confidence": 0.5}
 """
+
+# _TRUNCATED_RESPONSE is cut off partway through its third relationship, so only
+# the first two are salvageable.
+EXPECTED_SALVAGED_RELATIONSHIPS = 2
 
 _UNSALVAGEABLE_RESPONSE = '{"entities": [{"name": "Chad"'
 
@@ -95,7 +105,7 @@ def test_parse_llm_response_accepts_truncated_payload() -> None:
     result = _extractor()._parse_llm_response(_TRUNCATED_RESPONSE, "Chad met Vivi in Dayton.")
 
     assert [e.name for e in result.entities] == ["Chad", "Dayton"]
-    assert len(result.relationships) == 2
+    assert len(result.relationships) == EXPECTED_SALVAGED_RELATIONSHIPS
     assert result.relationships[0].relationship_type == "located_at"
 
 
@@ -105,23 +115,24 @@ def test_parse_llm_response_still_raises_on_garbage() -> None:
 
 
 def test_default_max_tokens_leaves_room_for_full_response() -> None:
-    assert EntityExtractor(api_key="test-key").max_tokens >= 2048
+    assert EntityExtractor(api_key="test-key").max_tokens >= MIN_RESPONSE_TOKEN_BUDGET
 
 
 def test_llm_timeout_allows_for_reasoning_models() -> None:
     # Reasoning models take 50-115s; a 60s read timeout degrades to rule-based
     # extraction, which looks like a silent correctness regression.
-    assert entity_extractor._LLM_TIMEOUT_SECONDS >= 120.0
+    assert entity_extractor._LLM_TIMEOUT_SECONDS >= REASONING_MODEL_MAX_LATENCY_SECONDS
 
 
 @pytest.mark.asyncio
 async def test_extraction_requests_configured_token_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    token_budget = 4096
     record = _patch_http(monkeypatch, _TRUNCATED_RESPONSE)
-    extractor = _extractor(max_tokens=4096)
+    extractor = _extractor(max_tokens=token_budget)
 
     await extractor.extract_with_llm("Chad met Vivi in Dayton.")
 
-    assert record["json"]["max_tokens"] == 4096
+    assert record["json"]["max_tokens"] == token_budget
     assert record["url"] == "https://example.test/v1/chat/completions"
 
 

@@ -18,6 +18,13 @@ from foresight.reflection_engine import (
     reset_reflection_engine,
 )
 
+# create_test_db() seeds this many memories for "test_user".
+SEEDED_MEMORY_COUNT = 5
+
+# A gist that only repeats a status word ("improving", "unknown") is a
+# regression; real insight summaries are longer than this.
+MIN_GIST_CHARS = 20
+
 
 @pytest.fixture(autouse=True)
 def cleanup():
@@ -181,7 +188,7 @@ class TestReflectionEngine:
         assert report is not None
         assert isinstance(report, ReflectionReport)
         assert report.period == "weekly"
-        assert report.memories_analyzed >= 5
+        assert report.memories_analyzed >= SEEDED_MEMORY_COUNT
 
     def test_reflect_insufficient_data(self, test_db):
         engine = ReflectionEngine(test_db)
@@ -307,7 +314,7 @@ class TestReflectionEngine:
         assert row is not None
         gist = row[0]
         # Gist should contain at least one insight summary (not just 'improving')
-        assert len(gist) > 20  # More than just 'improving' or 'unknown'
+        assert len(gist) > MIN_GIST_CHARS  # More than just 'improving' or 'unknown'
         # Should contain semicolons if multiple insights
         if len(report.insights) > 1:
             assert ";" in gist

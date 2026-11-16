@@ -73,6 +73,12 @@ def _list_items(limit=None):
     return res
 
 
+def _inferred_list_max_limit():
+    from foresight.server import INFERRED_LIST_MAX_LIMIT
+
+    return INFERRED_LIST_MAX_LIMIT
+
+
 def _insert_memory(
     conn,
     memory_id,
@@ -238,11 +244,12 @@ class TestInferredQueue:
                 _insert_memory(conn, f"inf_{n}", f"inferred fact {n}", created_at=ts)
         finally:
             conn.close()
-        res = _list_items(limit=2)
-        assert res["count"] == 2
-        assert res["limit"] == 2
+        limit = 2
+        res = _list_items(limit=limit)
+        assert res["count"] == limit
+        assert res["limit"] == limit
         assert [i["id"] for i in res["items"]] == ["inf_0", "inf_1"]
-        assert _list_items(limit=100)["limit"] == 50
+        assert _list_items(limit=100)["limit"] == _inferred_list_max_limit()
 
     def test_items_round_trip_content_and_fields(self):
         conn = _pg()

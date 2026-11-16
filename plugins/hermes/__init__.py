@@ -105,6 +105,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Local transcript buffer bounds for distillation.
+TRANSCRIPT_BUFFER_LIMIT = 100
+TRANSCRIPT_BUFFER_KEEP = 60
+
+# Hermes pre-compress checkpoint contract version this provider implements.
+PRE_COMPRESS_CHECKPOINT_API_VERSION = 2
+
 _DEFAULT_URL = "http://127.0.0.1:8764"
 _DEFAULT_GLYPH = "🔮"
 _USER_AGENT = "hermes-foresight/2.0"
@@ -392,7 +399,7 @@ class ForesightMemoryProvider(MemoryProvider):
     """
 
     # Opt in to fail-closed API v2 pre-compression checkpoint contract (#140058)
-    pre_compress_checkpoint_api_version = 2
+    pre_compress_checkpoint_api_version = PRE_COMPRESS_CHECKPOINT_API_VERSION
 
     def __init__(self) -> None:
         self._client: _Client | None = None
@@ -626,8 +633,8 @@ class ForesightMemoryProvider(MemoryProvider):
             transcript.append({"role": "user", "content": user_content})
             transcript.append({"role": "assistant", "content": assistant_content})
             # Bound local transcript buffer
-            if len(transcript) > 100:
-                self._session_transcripts[sid] = transcript[-60:]
+            if len(transcript) > TRANSCRIPT_BUFFER_LIMIT:
+                self._session_transcripts[sid] = transcript[-TRANSCRIPT_BUFFER_KEEP:]
 
         # Prepare messages for distillation
         if messages:

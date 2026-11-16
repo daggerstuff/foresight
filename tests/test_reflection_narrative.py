@@ -166,6 +166,7 @@ def test_narrative_respects_tenant_isolation() -> None:
     must be invoked separately per tenant.
     """
     report = _make_report()
+    tenants = ("tenant_a", "tenant_b")
     captured_calls: list[tuple[str, str, str]] = []
     isolated_cache: dict[str, str] = {}
 
@@ -195,8 +196,8 @@ def test_narrative_respects_tenant_isolation() -> None:
         cache=isolated_cache,
     )
 
-    # LLM invoked exactly twice (once per tenant)
-    assert len(captured_calls) == 2
+    # LLM invoked exactly once per tenant
+    assert len(captured_calls) == len(tenants)
     assert captured_calls[0][1] == "tenant_a"
     assert captured_calls[1][1] == "tenant_b"
 
@@ -212,7 +213,7 @@ def test_narrative_respects_tenant_isolation() -> None:
     keys = list(isolated_cache.keys())
     assert any("tenant_a" in k for k in keys)
     assert any("tenant_b" in k for k in keys)
-    assert len(set(keys)) == 2
+    assert len(set(keys)) == len(tenants)
 
 
 # ============================================================
@@ -266,11 +267,13 @@ def test_narrative_caches_by_report_id_and_tenant() -> None:
         cache=cache,
     )
 
-    assert call_count == 3
+    # Three distinct (report, model) combinations, one LLM call each.
+    distinct_narratives = 3
+    assert call_count == distinct_narratives
     assert out_v1 == out_v1_again
     assert out_v1 != out_v2
     assert out_v1 != out_b
-    assert len(cache) == 3
+    assert len(cache) == distinct_narratives
 
     key_a_v1 = _compute_cache_key(report_a, "claude-4", "t", "u")
     assert key_a_v1 in cache

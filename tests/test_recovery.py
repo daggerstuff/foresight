@@ -8,6 +8,9 @@ import pytest
 
 from foresight.server import generate_recovery_payload
 
+# The rendered payload adds a header and separators on top of the char budget.
+RECOVERY_OVERHEAD_ALLOWANCE = 20
+
 
 @pytest.fixture(autouse=True)
 def setup_test_db(monkeypatch):
@@ -189,10 +192,13 @@ def test_recovery_respects_max_chars_budget():
     )
     conn.close()
 
-    result = generate_recovery_payload(session_id="budget-test", max_chars=200)
+    max_chars = 200
+    result = generate_recovery_payload(session_id="budget-test", max_chars=max_chars)
 
-    # Total output should be <= 200 chars
-    assert len(result) <= 220, f"Expected <= 220 chars, got {len(result)}"
+    # The rendered payload may exceed the budget by the framing overhead only.
+    assert len(result) <= max_chars + RECOVERY_OVERHEAD_ALLOWANCE, (
+        f"Expected <= {max_chars + RECOVERY_OVERHEAD_ALLOWANCE} chars, got {len(result)}"
+    )
 
 
 def test_recovery_dedup_same_content():

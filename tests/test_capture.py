@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import pytest
 
 from foresight.capture import (
+    DECISION_IMPORTANCE,
     CapturedMemory,
     DedupeEngine,
     MemoryExtractor,
@@ -153,7 +154,7 @@ class TestMemoryExtractor:
         assert len(decisions) >= 1
         assert decisions[0].is_immutable is True
         assert decisions[0].scope == "arc"
-        assert decisions[0].importance == 0.7
+        assert decisions[0].importance == DECISION_IMPORTANCE
 
     def test_extract_preference(self):
         msgs = [
@@ -444,8 +445,8 @@ class TestCapturePipeline:
             {"role": "user", "content": "TODO: add monitoring and alerting for the deployment."},
         ]
         stats = pipeline.run("sess_7", msgs, "_test_user_")
-        assert stats.candidates_found >= 5
-        assert stats.stored >= 5
+        assert stats.candidates_found >= len(msgs)
+        assert stats.stored >= len(msgs)
 
     def test_pipeline_empty_messages(self):
         pipeline = get_capture_pipeline()

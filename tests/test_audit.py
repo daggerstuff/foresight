@@ -239,7 +239,7 @@ def test_audit_log_metadata_round_trip(tmp_path: Any) -> None:
         )
         ev = log.query("t1")[0]
         assert ev.metadata["prompt_hash"] == "abc123"
-        assert ev.metadata["latency_ms"] == 12.5
+        assert ev.metadata["latency_ms"] == metadata["latency_ms"]
         assert ev.metadata["tags"] == ["a", "b"]
         assert isinstance(ev.metadata["blob"], str)
         assert "NonJsonable" in ev.metadata["blob"]
@@ -281,8 +281,9 @@ def test_audit_log_limit_truncates(tmp_path: Any) -> None:
                     resource_id=f"r{i}",
                 )
             )
-        events = log.query("t1", limit=2)
-        assert len(events) == 2
+        limit = 2
+        events = log.query("t1", limit=limit)
+        assert len(events) == limit
     finally:
         log.close()
 
@@ -294,8 +295,10 @@ def test_audit_log_limit_truncates(tmp_path: Any) -> None:
 
 def test_audit_log_count(tmp_path: Any) -> None:
     log = AuditLog(str(tmp_path / "audit.db"))
+    generated_count = 3
+    failed_count = 2
     try:
-        for i in range(3):
+        for i in range(generated_count):
             log.record(
                 AuditEvent(
                     tenant_id="t1",
@@ -304,7 +307,7 @@ def test_audit_log_count(tmp_path: Any) -> None:
                     resource_id=f"r{i}",
                 )
             )
-        for i in range(2):
+        for i in range(failed_count):
             log.record(
                 AuditEvent(
                     tenant_id="t1",
@@ -315,9 +318,9 @@ def test_audit_log_count(tmp_path: Any) -> None:
             )
         log.record(AuditEvent(tenant_id="t2", user_id="u1", event_type="x", resource_id="x"))
 
-        assert log.count("t1") == 5
-        assert log.count("t1", event_type=NARRATIVE_GENERATED) == 3
-        assert log.count("t1", event_type=NARRATIVE_FAILED) == 2
+        assert log.count("t1") == generated_count + failed_count
+        assert log.count("t1", event_type=NARRATIVE_GENERATED) == generated_count
+        assert log.count("t1", event_type=NARRATIVE_FAILED) == failed_count
         assert log.count("t1", event_type="nonexistent") == 0
         assert log.count("t2") == 1
     finally:
@@ -334,6 +337,7 @@ def test_audit_log_stats(tmp_path: Any) -> None:
             "last_at": None,
         }
         t0 = 1_700_000_000.0
+        generated_count = 2
         log.record(
             AuditEvent(
                 tenant_id="t1",
@@ -362,8 +366,8 @@ def test_audit_log_stats(tmp_path: Any) -> None:
             )
         )
         s = log.stats("t1")
-        assert s["total"] == 3
-        assert s["by_type"][NARRATIVE_GENERATED] == 2
+        assert s["total"] == generated_count + 1
+        assert s["by_type"][NARRATIVE_GENERATED] == generated_count
         assert s["by_type"][NARRATIVE_FAILED] == 1
         assert s["first_at"] == t0
         assert s["last_at"] == t0 + 20
@@ -426,11 +430,12 @@ def test_audit_log_thread_safe_writes(tmp_path: Any) -> None:
 
 
 def test_event_type_constants_distinct() -> None:
-    seen = {
+    event_types = (
         NARRATIVE_GENERATED,
         NARRATIVE_FAILED,
         NARRATIVE_CACHE_HIT,
         LLM_CALL_SUCCEEDED,
         LLM_CALL_FAILED,
-    }
-    assert len(seen) == 5
+    )
+    seen = set(event_types)
+    assert len(seen) == len(event_types)

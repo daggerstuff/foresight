@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from foresight.backend.postgres_backend import (
+    DEFAULT_MAX_POOL_SIZE,
     PostgresBackend,
     _translate_sql,
 )
@@ -129,4 +130,4 @@ class TestPostgresBackendHelpers:
         stats = backend.stats
         assert stats["idle"] == 0
         assert stats["in_use"] == 0
-        assert stats["max_size"] == 20
+        assert stats["max_size"] == DEFAULT_MAX_POOL_SIZE

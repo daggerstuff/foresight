@@ -580,7 +580,7 @@ class MaintenanceEvalHarness:
         if scenario.id == "S5_all_modes":
             # All 4 modes ran and produced results
             passed = (
-                len(stats.modes_run) >= 4
+                len(stats.modes_run) >= len(config.modes)
                 and stats.duplicates_found > 0
                 and stats.contradictions_found > 0
                 and (stats.stale_archived > 0 or stats.stale_found > 0)

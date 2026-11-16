@@ -14,6 +14,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from foresight.hybrid_retriever import (
+    DECAY_FLOOR_STABLE,
+    DECAY_FLOOR_STALE,
+    DECAY_FLOOR_WEAKENING,
+    MAX_BURST_BOOST,
     HybridRetriever,
     _escape_like,
     _normalize_query,
@@ -21,6 +25,18 @@ from foresight.hybrid_retriever import (
     reset_hybrid_retriever,
 )
 from foresight.server import SearchTrace
+
+# The decay floors pin the multiplier; the band allows for the strength ratio
+# landing above the floor without exceeding the neighbouring trend's floor.
+DECAY_FLOOR_TOLERANCE = 0.05
+
+# Tunable retrieval defaults; changing one is a behaviour change that needs its
+# own benchmark evidence.
+EXPECTED_SEMANTIC_WEIGHT = 0.7
+
+# 1 + 1 * 0.15 base boost, amplified by the 4-hour burst taper at 5 minutes elapsed.
+BURST_RECENT_BOOST_MIN = 1.6
+BURST_RECENT_BOOST_MAX = 1.85
 
 
 @pytest.fixture(autouse=True)
@@ -313,11 +329,12 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search("feeling", "test_user", "default", 2)
+            limit = 2
+            ranking = retriever._semantic_search("feeling", "test_user", "default", limit)
         finally:
             conn.close()
 
-        assert len(ranking) <= 2
+        assert len(ranking) <= limit
 
 
 class TestCosineSimilarity:
@@ -394,11 +411,12 @@ class TestTemporalSearch:
 
     def test_respects_min_importance(self, test_db):
         retriever = HybridRetriever(test_db)
+        min_importance = 0.8
         result = retriever.search(
             "",
             "test_user",
             limit=5,
-            min_importance=0.8,
+            min_importance=min_importance,
             use_keyword=False,
             use_graph=False,
             use_temporal=True,
@@ -406,7 +424,7 @@ class TestTemporalSearch:
         )
 
         for r in result.results:
-            assert r.importance >= 0.8
+            assert r.importance >= min_importance
 
     def test_finds_recent_low_importance_memory(self):
         """Temporal should find recent memories even if they have low importance."""
@@ -572,17 +590,12 @@ class TestDefaultWeights:
 
     def test_semantic_weight_present(self):
         assert "semantic" in HybridRetriever.DEFAULT_WEIGHTS
-        assert HybridRetriever.DEFAULT_WEIGHTS["semantic"] == 0.7
+        assert HybridRetriever.DEFAULT_WEIGHTS["semantic"] == pytest.approx(EXPECTED_SEMANTIC_WEIGHT)
 
     def test_all_signal_weights_present(self):
-        assert len(HybridRetriever.DEFAULT_WEIGHTS) == 5
-        assert set(HybridRetriever.DEFAULT_WEIGHTS.keys()) == {
-            "keyword",
-            "semantic",
-            "vector",
-            "graph",
-            "temporal",
-        }
+        expected_signals = {"keyword", "semantic", "vector", "graph", "temporal"}
+        assert set(HybridRetriever.DEFAULT_WEIGHTS.keys()) == expected_signals
+        assert len(HybridRetriever.DEFAULT_WEIGHTS) == len(expected_signals)
 
 
 class TestSecurityFixes:
@@ -634,9 +647,9 @@ class TestSearchTrace:
         )
         d = trace.to_dict()
         assert d["query"] == "anxiety"
-        assert d["latency_ms"] == 1.23
-        assert d["result_count"] == 3
-        assert d["total_candidates"] == 5
+        assert d["latency_ms"] == trace.latency_ms
+        assert d["result_count"] == trace.result_count
+        assert d["total_candidates"] == trace.total_candidates
         assert d["fast_path"] == "cache"
         assert d["signal_counts"]["fast_path"] == "cache"
 
@@ -814,7 +827,7 @@ class TestTemporalSignalHardening:
         now = datetime.now(UTC)
         boost = retriever._compute_burst_boost(4, None, now)
         # sqrt(4) = 2, base_boost = 1 + 2 * 0.15 = 1.3
-        assert boost == 1.3
+        assert boost == pytest.approx(1.3)
 
     def test_burst_boost_recent_retrieval(self):
         retriever = HybridRetriever(":memory:")
@@ -823,7 +836,7 @@ class TestTemporalSignalHardening:
         boost = retriever._compute_burst_boost(1, recent, now)
         # base = 1 + 1 * 0.15 = 1.15; burst_window 4h now
         # burst = 1 + (1 - 5/240) * 0.5 ≈ 1.49; 1.15 * 1.49 ≈ 1.714
-        assert 1.6 < boost < 1.85
+        assert BURST_RECENT_BOOST_MIN < boost < BURST_RECENT_BOOST_MAX
 
     def test_burst_boost_capped(self):
         retriever = HybridRetriever(":memory:")
@@ -831,20 +844,20 @@ class TestTemporalSignalHardening:
         recent = now.isoformat()
         # High counts with recent retrieval should be capped
         boost = retriever._compute_burst_boost(100, recent, now)
-        assert boost <= 3.0
+        assert boost <= MAX_BURST_BOOST
 
     def test_time_score_default_half_life(self):
         retriever = HybridRetriever(":memory:")
         # At exactly half-life (168h), score should be 0.5
         score = retriever._compute_time_score(168.0, None)
-        assert abs(score - 0.5) < 0.01
+        assert score == pytest.approx(0.5, abs=0.01)
 
     def test_time_score_category_multiplier(self):
         retriever = HybridRetriever(":memory:")
         # 'fact' category has default mult 1.0, same as unscored
         score_fact = retriever._compute_time_score(168.0, "fact")
         score_none = retriever._compute_time_score(168.0, None)
-        assert abs(score_fact - score_none) < 0.01
+        assert score_fact == pytest.approx(score_none, abs=0.01)
 
     def test_time_score_custom_category_longs_half_life(self):
         retriever = HybridRetriever(":memory:", weights={"category_mult_preference": 4.0})
@@ -1038,12 +1051,12 @@ class TestGraphSignalHardening:
             "INSERT INTO memory_entities (id, user_id, name, confidence) VALUES ('e3', ?, 'stress', 0.2)", (uid,)
         )
         # m_high gets e1 + e2 (2 high-conf entities)
-        conn.execute(
-            "INSERT INTO memory_entity_links (memory_id, entity_id, user_id) VALUES ('m_high', 'e1', ?)", (uid,)
-        )
-        conn.execute(
-            "INSERT INTO memory_entity_links (memory_id, entity_id, user_id) VALUES ('m_high', 'e2', ?)", (uid,)
-        )
+        high_conf_entity_ids = ("e1", "e2")
+        for entity_id in high_conf_entity_ids:
+            conn.execute(
+                "INSERT INTO memory_entity_links (memory_id, entity_id, user_id) VALUES ('m_high', ?, ?)",
+                (entity_id, uid),
+            )
         # m_low gets e3 only (1 low-conf entity)
         conn.execute(
             "INSERT INTO memory_entity_links (memory_id, entity_id, user_id) VALUES ('m_low', 'e3', ?)", (uid,)
@@ -1065,7 +1078,7 @@ class TestGraphSignalHardening:
         assert "m_low" in rankings
         # m_high (2 entities x ~0.85 conf x ~high edge qual) >> m_low (1 x 0.2 x 1.0)
         assert rankings["m_high"] < rankings["m_low"]
-        assert hits.get("m_high", 0) >= 2
+        assert hits.get("m_high", 0) >= len(high_conf_entity_ids)
         assert hits.get("m_low", 0) == 1
 
     def test_graph_entity_confidence_empty_db(self):
@@ -1222,9 +1235,8 @@ class TestDecayFloor:
         os.unlink(path)
 
         decayed_result = next(r for r in result.results if r.memory_id == "mem_decayed")
-        # Floor is 0.2, so decay_multiplier should be >= 0.2
-        assert decayed_result.decay_multiplier >= 0.2, (
-            f"decay_multiplier={decayed_result.decay_multiplier} should be >= 0.2"
+        assert decayed_result.decay_multiplier >= DECAY_FLOOR_STABLE, (
+            f"decay_multiplier={decayed_result.decay_multiplier} should be >= {DECAY_FLOOR_STABLE}"
         )
         assert decayed_result.decay_multiplier <= 1.0
 
@@ -1417,8 +1429,10 @@ class TestTrendAwareDecayFloor:
             f"multiplier than stable ({stable_res.decay_multiplier})"
         )
         # Sanity checks
-        assert 0.05 <= stale_res.decay_multiplier <= 0.15, f"Unexpected stale multiplier: {stale_res.decay_multiplier}"
-        assert 0.15 <= stable_res.decay_multiplier <= 0.25, (
+        assert stale_res.decay_multiplier == pytest.approx(DECAY_FLOOR_STALE, abs=DECAY_FLOOR_TOLERANCE), (
+            f"Unexpected stale multiplier: {stale_res.decay_multiplier}"
+        )
+        assert stable_res.decay_multiplier == pytest.approx(DECAY_FLOOR_STABLE, abs=DECAY_FLOOR_TOLERANCE), (
             f"Unexpected stable multiplier: {stable_res.decay_multiplier}"
         )
 
@@ -1472,7 +1486,7 @@ class TestTrendAwareDecayFloor:
         assert weak_res.decay_multiplier > stale_res.decay_multiplier, (
             f"Weakening ({weak_res.decay_multiplier}) should be greater than stale ({stale_res.decay_multiplier})"
         )
-        assert 0.10 <= weak_res.decay_multiplier <= 0.20, (
+        assert weak_res.decay_multiplier == pytest.approx(DECAY_FLOOR_WEAKENING, abs=DECAY_FLOOR_TOLERANCE), (
             f"Unexpected weakening multiplier: {weak_res.decay_multiplier}"
         )
 

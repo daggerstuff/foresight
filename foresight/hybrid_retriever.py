@@ -59,6 +59,16 @@ FAST_PATH_MAX_CACHE_SIZE = 128
 FAST_PATH_EARLY_TERMINATION_RATIO = 2.0
 FAST_PATH_MIN_CANDIDATES = 2
 
+# Recency window and ceiling for the burst boost applied to recently-active memories.
+BURST_WINDOW_HOURS = 4.0
+MAX_BURST_BOOST = 3.0
+
+# Minimum decay multiplier per strength trend, so a decayed memory is penalised
+# proportionally to its trend instead of collapsing toward zero.
+DECAY_FLOOR_STALE = 0.10
+DECAY_FLOOR_WEAKENING = 0.15
+DECAY_FLOOR_STABLE = 0.20
+
 
 def _hours_since(iso_timestamp: str) -> float:
     """Compute hours elapsed between an ISO 8601 timestamp and now."""
@@ -1287,13 +1297,13 @@ class HybridRetriever:
             try:
                 last_ret = datetime.fromisoformat(last_retrieved_at.replace("Z", "+00:00"))
                 hours_since_retrieval = max((now - last_ret).total_seconds() / 3600, 0.0)
-                if hours_since_retrieval < 4.0:
-                    burst_factor = 1.0 + (1.0 - hours_since_retrieval / 4.0) * 0.5
+                if hours_since_retrieval < BURST_WINDOW_HOURS:
+                    burst_factor = 1.0 + (1.0 - hours_since_retrieval / BURST_WINDOW_HOURS) * 0.5
                     base_boost *= burst_factor
             except (ValueError, AttributeError):
                 pass
 
-        return min(base_boost, 3.0)  # cap at 3x
+        return min(base_boost, MAX_BURST_BOOST)
 
     def _compute_time_score(self, hours_old: float, category: str | None) -> float:
         """Compute exponential decay time score with category-aware half-life."""
@@ -1684,11 +1694,11 @@ class HybridRetriever:
                 ratio = current_strength / importance
                 _trend = strength_trend or ""
                 if _trend == "stale":
-                    floor = 0.10
+                    floor = DECAY_FLOOR_STALE
                 elif _trend == "weakening":
-                    floor = 0.15
+                    floor = DECAY_FLOOR_WEAKENING
                 else:
-                    floor = 0.20
+                    floor = DECAY_FLOOR_STABLE
                 decay_multiplier = max(floor, min(1.0, ratio))
             result.decay_multiplier = decay_multiplier
 

@@ -30,6 +30,10 @@ except ImportError:
 _KEY_PREFIX = "foresight"
 _EMBED_TTL = 86400  # 24 hours
 _RATE_WINDOW = 60  # sliding window in seconds
+
+# Callers read "remaining" as headroom. When Redis is unreachable we cannot
+# count the window, so report generous headroom rather than stalling callers.
+UNAVAILABLE_REMAINING_FALLBACK = 9999
 _INVALIDATE_CHANNEL = "foresight:embedding:invalidate"
 
 
@@ -176,14 +180,14 @@ class RedisCompanion:
     async def rate_limit_remaining(self, tenant_id: str, user_id: str, window: int = _RATE_WINDOW) -> int:
         """Return remaining request count in the current window."""
         if not await self._ensure_connected():
-            return 9999
+            return UNAVAILABLE_REMAINING_FALLBACK
         key = _make_rate_key(tenant_id, user_id)
         try:
             cutoff = time.time() - window
             await self._redis.zremrangebyscore(key, 0, cutoff)
             return max(0, int(await self._redis.zcard(key)))
         except Exception:
-            return 9999
+            return UNAVAILABLE_REMAINING_FALLBACK
 
     # ------------------------------------------------------------------
     # Lifecycle

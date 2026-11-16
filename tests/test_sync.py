@@ -118,7 +118,8 @@ class TestOperationQueue:
     def test_peek(self, temp_db):
         """Test peeking at all operations."""
         queue = OperationQueue(db_path=temp_db)
-        for i in range(3):
+        operation_count = 3
+        for i in range(operation_count):
             queue.enqueue(
                 Operation(
                     id=f"op-{i}",
@@ -130,7 +131,7 @@ class TestOperationQueue:
             )
 
         ops = queue.peek()
-        assert len(ops) == 3
+        assert len(ops) == operation_count
 
 
 class TestSyncManager:
@@ -245,18 +246,20 @@ class TestSyncProgress:
 
     def test_progress_to_dict(self):
         """Test progress serialization."""
+        total_operations = 10
+        pending_operations = 5
         progress = SyncProgress(
             status=SyncStatus.SYNCING,
-            total_operations=10,
-            pending_operations=5,
-            synced_operations=5,
+            total_operations=total_operations,
+            pending_operations=pending_operations,
+            synced_operations=total_operations - pending_operations,
             errors=["error1"],
             last_sync=datetime.now(UTC),
         )
         data = progress.to_dict()
         assert data["status"] == "syncing"
-        assert data["total_operations"] == 10
-        assert data["pending_operations"] == 5
+        assert data["total_operations"] == total_operations
+        assert data["pending_operations"] == pending_operations
 
 
 class TestSyncScenarios:
@@ -300,10 +303,12 @@ class TestSyncScenarios:
         manager._queue = OperationQueue(db_path=temp_db)
 
         attempt_count = [0]
+        # The first attempt fails; the retry must succeed.
+        successful_attempt = 2
 
         def flaky_callback(op):
             attempt_count[0] += 1
-            if attempt_count[0] < 2:
+            if attempt_count[0] < successful_attempt:
                 raise Exception("Temporary failure")
             return True
 

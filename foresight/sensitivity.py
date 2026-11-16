@@ -27,6 +27,12 @@ import os
 import re
 from dataclasses import dataclass
 
+# Shortest override keyword accepted from FORESIGHT_SENSITIVITY_KEYWORDS.
+MIN_KEYWORD_CHARS = 3
+
+# Content shorter than this is too thin to classify as sensitive.
+MIN_CONTENT_CHARS_FOR_DETECTION = 20
+
 DEFAULT_CLINICAL_KEYWORDS: tuple[str, ...] = (
     "patient",
     "diagnosis",
@@ -84,7 +90,7 @@ def _load_keywords() -> tuple[str, ...]:
     override = os.environ.get("FORESIGHT_SENSITIVITY_KEYWORDS", "").strip()
     if not override:
         return DEFAULT_CLINICAL_KEYWORDS
-    extras = tuple(k.strip().lower() for k in override.split(",") if k.strip() and len(k.strip()) >= 3)
+    extras = tuple(k.strip().lower() for k in override.split(",") if k.strip() and len(k.strip()) >= MIN_KEYWORD_CHARS)
     if not extras:
         return DEFAULT_CLINICAL_KEYWORDS
     return tuple(sorted(set(DEFAULT_CLINICAL_KEYWORDS) | set(extras)))
@@ -151,7 +157,7 @@ def resolve_is_sensitive(
     if opts_is_sensitive is False:
         return False, None
 
-    if isinstance(content, str) and len(content) < 20:
+    if isinstance(content, str) and len(content) < MIN_CONTENT_CHARS_FOR_DETECTION:
         return False, None
 
     verdict = detect_sensitivity(content)

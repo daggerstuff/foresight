@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from foresight.subconscious import PROJECT_CONTEXT, ContextBlockAgent
+from foresight.subconscious import PROJECT_CONTEXT, SNIPPET_MAX_CHARS, ContextBlockAgent
 
 # ====== Fixtures ======
 
@@ -137,21 +137,18 @@ def test_benign_message_leaves_block_empty():
 def test_multiple_decisions_accumulate():
     """Two separate decisions both append — block grows, not overwrites."""
     agent = ContextBlockAgent()
-    _process(
-        agent,
-        "sess-1",
-        [
-            {"role": "user", "content": "We decided to rename the config module to settings."},
-            {"role": "user", "content": "We refactored the server into a thin entry point."},
-        ],
-    )
+    messages = [
+        {"role": "user", "content": "We decided to rename the config module to settings."},
+        {"role": "user", "content": "We refactored the server into a thin entry point."},
+    ]
+    _process(agent, "sess-1", messages)
 
     content = _project_context_content(agent)
     # Both snippets present (append strategy, not overwrite)
     assert "rename" in content.lower()
     assert "refactored" in content.lower()
-    # Two timestamped entries
-    assert content.count("\n- [") >= 2 or content.count("- [") >= 2
+    # One timestamped entry per message
+    assert content.count("\n- [") >= len(messages) or content.count("- [") >= len(messages)
 
 
 def test_assistant_messages_populate_project_context():
@@ -202,7 +199,7 @@ def test_snippet_truncated_to_200_chars():
     session_close = after_ts.find(") ")
     assert session_close >= 0, f"session metadata missing in line: {after_ts!r}"
     snippet = after_ts[session_close + 2 :]
-    assert len(snippet) <= 200, f"snippet not trimmed: len={len(snippet)}"
+    assert len(snippet) <= SNIPPET_MAX_CHARS, f"snippet not trimmed: len={len(snippet)}"
 
 
 # ====== Tightened-heuristic + source-attribution tests ======

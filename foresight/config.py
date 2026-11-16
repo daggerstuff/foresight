@@ -116,6 +116,10 @@ DEFAULT_BURST_LIMIT = 20  # burst requests
 # FORESIGHT_LLM_MIN_INTERVAL     -- minimum seconds between requests (default: 0.5)
 # FORESIGHT_LLM_MAX_PROMPT_CHARS -- max prompt character length (default: 10000)
 
+# Completion budget the provider adapters send when the caller does not
+# specify one.
+DEFAULT_LLM_MAX_TOKENS = 1024
+
 # Raw transcript retention (Phase 2 / MemLake append-only raw layer)
 # Persist message-level raw events so the derived memory layer can be reprocessed.
 # Default OFF for clinical / sensitive-content deployments.

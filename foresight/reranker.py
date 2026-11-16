@@ -34,6 +34,7 @@ VALID_RERANK_PROVIDERS: frozenset[str] = frozenset({DEFAULT_RERANKER_PROVIDER})
 # highly relevant document gets up to a 1.5x boost and an irrelevant one
 # at least a 0.5x penalty — enough to reorder, never to erase.
 MULTIPLIER_FLOOR = 0.5
+MULTIPLIER_CEIL = MULTIPLIER_FLOOR + 1.0
 
 
 class Reranker(Protocol):

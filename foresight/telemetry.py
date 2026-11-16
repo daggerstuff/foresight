@@ -20,6 +20,9 @@ from typing import Any
 
 logger = logging.getLogger("foresight_telemetry")
 
+# Rolling window of latency samples kept for percentile reporting.
+LATENCY_WINDOW_SIZE = 100
+
 DEFAULT_TELEMETRY_PATH = Path(
     os.environ.get("FORESIGHT_TELEMETRY_PATH", Path.home() / ".config" / "foresight" / "telemetry.json")
 )
@@ -121,10 +124,9 @@ class TelemetryStore:
             self._data.total_tokens_saved += saved
             self._data.total_cost_saved_usd = round(self._data.total_cost_saved_usd + cost_saved, 4)
 
-            # Rolling latency window (keep last 100)
             if latency_ms > 0:
                 self._data.recent_latencies_ms.append(round(latency_ms, 2))
-                if len(self._data.recent_latencies_ms) > 100:
+                if len(self._data.recent_latencies_ms) > LATENCY_WINDOW_SIZE:
                     self._data.recent_latencies_ms.pop(0)
 
             # Surface breakdown

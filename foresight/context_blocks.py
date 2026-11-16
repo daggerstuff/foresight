@@ -23,6 +23,9 @@ from .subconscious import (
 )
 
 DEFAULT_CONTEXT_BLOCKS = DEFAULT_MEMORY_BLOCKS
+
+# Token-set Jaccard similarity above which a preference rule is redundant.
+REDUNDANCY_JACCARD_THRESHOLD = 0.5
 ContextBlock = MemoryBlock
 
 __all__ = [
@@ -198,7 +201,9 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
                     clean = re.sub(r"^\[auto-captured/\w+\]\s*", "", content)
                     words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
                     # Check redundancy against existing rules (Jaccard similarity > 0.5)
-                    is_redundant = any(len(words & s) / max(1, len(words | s)) > 0.5 for s in seen_token_sets)
+                    is_redundant = any(
+                        len(words & s) / max(1, len(words | s)) > REDUNDANCY_JACCARD_THRESHOLD for s in seen_token_sets
+                    )
                     if not is_redundant:
                         seen_token_sets.append(words)
                         unique_rules.append(f"- {clean}")

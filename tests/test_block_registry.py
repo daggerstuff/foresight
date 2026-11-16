@@ -127,12 +127,12 @@ def test_clear_blocks(registry, test_schema):
     registry.register(test_schema)
 
     block1 = registry.create_block("test_block", content="One")
-    registry.set_block("test_block_1", block1)
-
     block2 = registry.create_block("test_block", content="Two")
-    registry.set_block("test_block_2", block2)
+    registered = {"test_block_1": block1, "test_block_2": block2}
+    for name, block in registered.items():
+        registry.set_block(name, block)
 
-    assert len(registry.list_blocks()) == 2
+    assert len(registry.list_blocks()) == len(registered)
 
     registry.clear()
 

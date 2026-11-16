@@ -54,6 +54,8 @@ MAX_USER_ID_LENGTH = 128
 MAX_TENANT_ID_LENGTH = 64
 MAX_MEMORY_ID_LENGTH = 128
 MAX_METADATA_BYTES = 16_384
+MAX_TRAVERSAL_DEPTH = 5
+MAX_TRAVERSAL_LIMIT = 1000
 
 
 class MemoryRelationshipError(ValueError):
@@ -354,10 +356,10 @@ class MemoryRelationshipStore:
         Returns visited memory IDs and the edges traversed.
         """
         _validate_memory_id(root_memory_id, "root_memory_id")
-        if max_depth < 0 or max_depth > 5:
-            raise MemoryRelationshipError("max_depth must be in [0, 5]")
-        if limit < 1 or limit > 1000:
-            raise MemoryRelationshipError("limit must be in [1, 1000]")
+        if max_depth < 0 or max_depth > MAX_TRAVERSAL_DEPTH:
+            raise MemoryRelationshipError(f"max_depth must be in [0, {MAX_TRAVERSAL_DEPTH}]")
+        if limit < 1 or limit > MAX_TRAVERSAL_LIMIT:
+            raise MemoryRelationshipError(f"limit must be in [1, {MAX_TRAVERSAL_LIMIT}]")
         tid = tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)
 

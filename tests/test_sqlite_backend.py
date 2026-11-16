@@ -82,10 +82,11 @@ def test_fetch_one(backend):
 
 def test_execute_many(backend):
     backend.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
-    backend.execute_many("INSERT INTO test (name) VALUES (?)", [("a",), ("b",), ("c",)])
+    names = [("a",), ("b",), ("c",)]
+    backend.execute_many("INSERT INTO test (name) VALUES (?)", names)
 
     rows = backend.fetch("SELECT name FROM test ORDER BY name")
-    assert len(rows) == 3
+    assert len(rows) == len(names)
     assert rows[0]["name"] == "a"
     assert rows[1]["name"] == "b"
     assert rows[2]["name"] == "c"
@@ -94,12 +95,13 @@ def test_execute_many(backend):
 def test_connection_context_manager(backend):
     backend.execute("CREATE TABLE test (val INTEGER)")
 
+    value = 42
     with backend.connection() as conn:
-        conn.execute("INSERT INTO test (val) VALUES (42)")
+        conn.execute("INSERT INTO test (val) VALUES (?)", (value,))
         conn.commit()
 
     row = backend.fetch_one("SELECT val FROM test")
-    assert row["val"] == 42
+    assert row["val"] == value
 
 
 def test_stats(backend):

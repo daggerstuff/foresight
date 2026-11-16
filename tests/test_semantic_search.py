@@ -13,6 +13,9 @@ from unittest.mock import patch
 import pytest
 
 from foresight import semantic_search as sem_mod
+
+# Unit-vector norms are only exact up to float64 rounding.
+UNIT_NORM_TOLERANCE = 1e-9
 from foresight.semantic_search import (
     DEFAULT_PROVIDER,
     LOCAL_HASH_DIM,
@@ -109,7 +112,7 @@ def test_local_hash_embedder_produces_unit_vectors():
     v = embedder.embed("hello world")
     assert len(v) == LOCAL_HASH_DIM
     norm = math.sqrt(sum(x * x for x in v))
-    assert abs(norm - 1.0) < 1e-9
+    assert norm == pytest.approx(1.0, abs=UNIT_NORM_TOLERANCE)
 
 
 def test_local_hash_embedder_similar_texts_have_higher_similarity():
@@ -217,16 +220,20 @@ def test_delete_memory_embedding_returns_zero_when_missing():
 
 def test_search_ranks_relevant_memory_first():
     db = _make_test_db()
+    indexed = (
+        ("m1", "cat kitten feline pet animal"),
+        ("m2", "car engine vehicle highway"),
+        ("m3", "dog puppy canine pet animal"),
+    )
     with _patched_db(db) as store:
-        store.index_memory(memory_id="m1", text="cat kitten feline pet animal", user_id="u1")
-        store.index_memory(memory_id="m2", text="car engine vehicle highway", user_id="u1")
-        store.index_memory(memory_id="m3", text="dog puppy canine pet animal", user_id="u1")
-        result = store.search(query="feline pet", user_id="u1", limit=3)
+        for memory_id, text in indexed:
+            store.index_memory(memory_id=memory_id, text=text, user_id="u1")
+        result = store.search(query="feline pet", user_id="u1", limit=len(indexed))
 
     assert isinstance(result, SemanticSearchResult)
     assert result.query == "feline pet"
     assert result.dimension == LOCAL_HASH_DIM
-    assert len(result.matches) == 3
+    assert len(result.matches) == len(indexed)
     top_ids = [m.memory_id for m in result.matches]
     assert top_ids[0] == "m1"
     assert "m2" in top_ids
@@ -237,8 +244,9 @@ def test_search_respects_min_score_threshold():
     with _patched_db(db) as store:
         store.index_memory(memory_id="m1", text="cat kitten", user_id="u1")
         store.index_memory(memory_id="m2", text="car engine", user_id="u1")
-        result = store.search(query="cat", user_id="u1", limit=10, min_score=0.99)
-    assert all(m.score >= 0.99 for m in result.matches)
+        min_score = 0.99
+        result = store.search(query="cat", user_id="u1", limit=10, min_score=min_score)
+    assert all(m.score >= min_score for m in result.matches)
 
 
 def test_search_rejects_empty_query():
@@ -337,18 +345,19 @@ def test_search_skips_dim_mismatched_rows(monkeypatch):
 
 
 def test_match_and_result_to_dict_shapes():
-    m = SemanticMatch(memory_id="m1", score=0.87, provider=DEFAULT_PROVIDER, dimension=384)
+    dimension = LOCAL_HASH_DIM
+    m = SemanticMatch(memory_id="m1", score=0.87, provider=DEFAULT_PROVIDER, dimension=dimension)
     d = m.to_dict()
     assert d == {
         "memory_id": "m1",
         "score": 0.87,
         "provider": DEFAULT_PROVIDER,
-        "dimension": 384,
+        "dimension": dimension,
     }
 
-    r = SemanticSearchResult(query="q", provider=DEFAULT_PROVIDER, dimension=384, matches=[m])
+    r = SemanticSearchResult(query="q", provider=DEFAULT_PROVIDER, dimension=dimension, matches=[m])
     rd = r.to_dict()
     assert rd["query"] == "q"
     assert rd["provider"] == DEFAULT_PROVIDER
-    assert rd["dimension"] == 384
+    assert rd["dimension"] == dimension
     assert rd["matches"] == [d]

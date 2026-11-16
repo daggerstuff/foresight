@@ -51,6 +51,11 @@ _PII_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
+# Findings are audit evidence, not a data store: never echo more of a match
+# than needed to identify it.
+PII_MATCH_PREVIEW_CHARS = 20
+
+
 def scan_for_pii(text: str) -> list[dict[str, Any]]:
     """Scan text for PII/secret patterns. Returns list of findings."""
     findings: list[dict[str, Any]] = []
@@ -59,7 +64,7 @@ def scan_for_pii(text: str) -> list[dict[str, Any]]:
             findings.append(
                 {
                     "type": label,
-                    "match": match.group()[:20],  # Truncate for safety
+                    "match": match.group()[:PII_MATCH_PREVIEW_CHARS],  # Truncate for safety
                     "position": match.start(),
                 }
             )

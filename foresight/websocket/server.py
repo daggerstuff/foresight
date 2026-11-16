@@ -30,6 +30,10 @@ from .subscriptions import get_subscription_manager
 
 logger = logging.getLogger("foresight_websocket")
 
+# Connection health defaults: ping every interval, drop after the timeout.
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
+DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90.0
+
 
 class ConnectionState(StrEnum):
     """WebSocket connection state."""
@@ -78,8 +82,8 @@ class WebSocketHandler:
     def __init__(
         self,
         auth_callback: Callable[[str], tuple[str, str] | None] | None = None,
-        heartbeat_interval: float = 30.0,
-        heartbeat_timeout: float = 90.0,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
     ):
         self._connections: dict[str, Connection] = {}
         self._auth_callback = auth_callback
@@ -359,8 +363,8 @@ class WebSocketServer:
         self,
         event_bus=None,
         auth_callback: Callable[[str], tuple[str, str] | None] | None = None,
-        heartbeat_interval: float = 30.0,
-        heartbeat_timeout: float = 90.0,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
     ):
         """Initialize WebSocket server.
 

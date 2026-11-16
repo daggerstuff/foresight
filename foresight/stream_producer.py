@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Any
 
 # Optional dependency availability flags
@@ -367,7 +368,7 @@ class KinesisProducer(StreamProducer):
                 PartitionKey=partition_key,
             )
 
-            return response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            return response["ResponseMetadata"]["HTTPStatusCode"] == HTTPStatus.OK
 
         except Exception:
             self._failed_messages.append(

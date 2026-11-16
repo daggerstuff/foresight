@@ -28,6 +28,10 @@ from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_capture")
 
+# Longest headline extracted from a transcript before it is cut short.
+HEADLINE_MAX_CHARS = 240
+ELLIPSIS = "..."
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -174,13 +178,16 @@ _PENDING_PATTERNS = [
     re.compile(r"\baction\s+item\b", re.IGNORECASE),
 ]
 
+# Auto-captured decisions are the strongest signal the extractor emits.
+DECISION_IMPORTANCE = 0.7
+
 # Pattern sets for extraction (category → (patterns, extract_config))
 _CATEGORY_PATTERNS: dict[str, tuple[list[re.Pattern], dict[str, Any]]] = {
     "decision": (
         _DECISION_PATTERNS,
         {
             "scope": "arc",
-            "importance": 0.7,
+            "importance": DECISION_IMPORTANCE,
             "retention": "long_term",
             "tags": ["auto-captured", "decision"],
             "is_immutable": True,
@@ -338,9 +345,8 @@ class MemoryExtractor:
             end += 1
 
         line = text[start:end].strip()
-        # Truncate to 240 chars max
-        if len(line) > 240:
-            line = line[:237] + "..."
+        if len(line) > HEADLINE_MAX_CHARS:
+            line = line[: HEADLINE_MAX_CHARS - len(ELLIPSIS)] + ELLIPSIS
         return line
 
 

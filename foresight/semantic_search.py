@@ -53,6 +53,7 @@ import struct
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any, Protocol
 
 from .config import DB_PATH, DB_URL
@@ -348,7 +349,7 @@ class OpenAIEmbedder:
             )
         except Exception as exc:
             raise SemanticSearchError(f"embedding request failed: {exc}") from exc
-        if response.status_code != 200:
+        if response.status_code != HTTPStatus.OK:
             raise SemanticSearchError(f"embedding request failed: HTTP {response.status_code}: {response.text[:200]}")
         try:
             rows = sorted(response.json()["data"], key=lambda row: row.get("index", 0))
@@ -417,9 +418,13 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
+MAX_VECTOR_DIMENSIONS = 65_535
+MAX_SEARCH_LIMIT = 1000
+
+
 def serialize_vector(vec: list[float]) -> bytes:
     """Pack a float vector into compact little-endian float32 bytes."""
-    if len(vec) > 65_535:
+    if len(vec) > MAX_VECTOR_DIMENSIONS:
         raise SemanticSearchError("vector too large to serialize")
     return struct.pack(f"<{len(vec)}f", *vec)
 
@@ -840,8 +845,8 @@ class SemanticSearch:
 
         if not query or not query.strip():
             raise SemanticSearchError("query must be a non-empty string")
-        if limit < 1 or limit > 1000:
-            raise SemanticSearchError("limit must be in [1, 1000]")
+        if limit < 1 or limit > MAX_SEARCH_LIMIT:
+            raise SemanticSearchError(f"limit must be in [1, {MAX_SEARCH_LIMIT}]")
         if min_score < -1.0 or min_score > 1.0:
             raise SemanticSearchError("min_score must be in [-1.0, 1.0]")
         tid = tenant_id or get_current_account_id()
