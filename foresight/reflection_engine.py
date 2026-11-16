@@ -27,6 +27,27 @@ from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
 
+# Share of memories whose trend must shift before the overall trajectory flips.
+TREND_SHIFT_PCT = 30
+STALE_SHARE_DECLINING = 0.4
+
+# Insight thresholds. These are analysis heuristics, not protocol values: they
+# decide when a trend is strong enough to be worth surfacing as an insight.
+HUB_ENTITY_CONNECTIONS = 3
+MAJOR_HUB_CONNECTIONS = 5
+STALE_SHARE_WARNING = 0.5
+CATEGORY_HEALTH_IMPROVING = 0.3
+CATEGORY_HEALTH_DECLINING = -0.3
+MIN_IMPROVING_CATEGORIES = 2
+MIN_CATEGORY_ROWS = 2
+MIN_CATEGORY_PATTERN_ROWS = 3
+KEYSTONE_EARLY_SHARE = 0.7
+RAPID_WEAKENING_SHARE = 0.5
+URGENT_WEAKENING_SHARE = 0.7
+CONCENTRATION_RISK_SHARE = 0.6
+CONCENTRATION_MIN_MEMORIES = 5
+SUSTAINED_STABLE_SHARE = 0.4
+
 
 def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
     if isinstance(row, Mapping):
@@ -238,9 +259,9 @@ class ReflectionEngine:
         weakening_pct = (trend_counts["weakening"] / total * 100) if total else 0
 
         overall = "stable"
-        if strengthening_pct > 30:
+        if strengthening_pct > TREND_SHIFT_PCT:
             overall = "improving"
-        elif weakening_pct > 30 or trend_counts["stale"] / max(total, 1) > 0.4:
+        elif weakening_pct > TREND_SHIFT_PCT or trend_counts["stale"] / max(total, 1) > STALE_SHARE_DECLINING:
             overall = "declining"
 
         return {
@@ -327,7 +348,7 @@ class ReflectionEngine:
         top_entities = entity_summary.get("top_connected_entities", [])
         memory_ids = [_memory_id(row) for row in rows]
         for entity in top_entities[:3]:
-            if entity["connections"] >= 3:
+            if entity["connections"] >= HUB_ENTITY_CONNECTIONS:
                 # Generate specific action based on entity type
                 action = self._recommend_action_for_entity(entity)
                 insights.append(
@@ -359,7 +380,7 @@ class ReflectionEngine:
         # Stale memory warning with specific recovery plan
         stale_count = counts.get("stale", 0)
         total = trend_summary.get("total_memories", 1)
-        if stale_count / max(total, 1) > 0.5:
+        if stale_count / max(total, 1) > STALE_SHARE_WARNING:
             stale_rows = [r for r in rows if _memory_trend(r) == "stale"]
             stale_categories = {_memory_category(r) for r in stale_rows}
             insights.append(
@@ -420,8 +441,8 @@ class ReflectionEngine:
             }
 
         # Detect cascading improvements (multiple related areas improving)
-        improving_cats = [c for c, d in category_health.items() if d["score"] > 0.3]
-        if len(improving_cats) >= 2:
+        improving_cats = [c for c, d in category_health.items() if d["score"] > CATEGORY_HEALTH_IMPROVING]
+        if len(improving_cats) >= MIN_IMPROVING_CATEGORIES:
             # Find common themes in improving categories
             improving_memories = []
             for cat in improving_cats:
@@ -448,7 +469,11 @@ class ReflectionEngine:
         # Detect resource competition (one strong, one weak)
         for high_cat, high_data in category_health.items():
             for low_cat, low_data in category_health.items():
-                if high_cat != low_cat and high_data["score"] > 0.3 and low_data["score"] < -0.3:
+                if (
+                    high_cat != low_cat
+                    and high_data["score"] > CATEGORY_HEALTH_IMPROVING
+                    and low_data["score"] < CATEGORY_HEALTH_DECLINING
+                ):
                     insights.append(
                         ReflectionInsight(
                             insight_type="pattern",
@@ -500,7 +525,7 @@ class ReflectionEngine:
 
         # Find categories with early strengthening
         for cat, cat_rows in by_category.items():
-            if len(cat_rows) < 2:
+            if len(cat_rows) < MIN_CATEGORY_ROWS:
                 continue
 
             # Check if this category strengthened early and others followed
@@ -512,7 +537,10 @@ class ReflectionEngine:
             early_rows = sorted_cat[: max(1, len(sorted_cat) // 3)]
             strengthening_early = sum(1 for r in early_rows if _memory_trend(r) == "strengthening")
 
-            if strengthening_early >= len(early_rows) * 0.7 and len(cat_rows) >= 3:
+            if (
+                strengthening_early >= len(early_rows) * KEYSTONE_EARLY_SHARE
+                and len(cat_rows) >= MIN_CATEGORY_PATTERN_ROWS
+            ):
                 insights.append(
                     ReflectionInsight(
                         insight_type="breakthrough",
@@ -558,7 +586,7 @@ class ReflectionEngine:
             weakening_count = sum(1 for r in cat_rows if _memory_trend(r) == "weakening")
             total = len(cat_rows)
 
-            if weakening_count / max(total, 1) > 0.5 and total >= 3:
+            if weakening_count / max(total, 1) > RAPID_WEAKENING_SHARE and total >= MIN_CATEGORY_PATTERN_ROWS:
                 recent_weakening = [r for r in cat_rows if _memory_trend(r) == "weakening"][:3]
 
                 insights.append(
@@ -574,7 +602,7 @@ class ReflectionEngine:
                         metadata={
                             "risk_category": cat,
                             "weakening_ratio": weakening_count / total,
-                            "urgency": "high" if weakening_count / total > 0.7 else "medium",
+                            "urgency": "high" if weakening_count / total > URGENT_WEAKENING_SHARE else "medium",
                             "actionable": f"Identify specific stressors in {cat}; consider intervention",
                         },
                     )
@@ -582,10 +610,10 @@ class ReflectionEngine:
 
         # Detect concentration risk
         total_memories = len(rows)
-        if total_memories >= 5:
+        if total_memories >= CONCENTRATION_MIN_MEMORIES:
             for cat, cat_rows in by_category.items():
                 concentration = len(cat_rows) / total_memories
-                if concentration > 0.6:
+                if concentration > CONCENTRATION_RISK_SHARE:
                     insights.append(
                         ReflectionInsight(
                             insight_type="warning",
@@ -632,7 +660,11 @@ class ReflectionEngine:
             total = len(cat_rows)
 
             # Stable areas with some strengthening momentum
-            if stable_count / max(total, 1) > 0.4 and strengthening_count >= 1 and total >= 3:
+            if (
+                stable_count / max(total, 1) > SUSTAINED_STABLE_SHARE
+                and strengthening_count >= 1
+                and total >= MIN_CATEGORY_PATTERN_ROWS
+            ):
                 insights.append(
                     ReflectionInsight(
                         insight_type="breakthrough",
@@ -660,7 +692,7 @@ class ReflectionEngine:
         entity_type = entity.get("type", "concept")
         connections = entity.get("connections", 0)
 
-        if connections >= 5:
+        if connections >= MAJOR_HUB_CONNECTIONS:
             return "leverage"  # Major hub - use as change agent
         if entity_type == "emotion":
             return "review"  # Emotional hub - check for regulation needs

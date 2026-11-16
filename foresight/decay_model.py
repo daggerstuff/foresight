@@ -40,6 +40,9 @@ DEFAULT_MIN_IMPORTANCE = 0.1
 DEFAULT_ACTIVATION_BOOST = 1.2
 DEFAULT_STRENGTHENING_THRESHOLD = 5
 DEFAULT_STALE_THRESHOLD = 0.2
+MAX_ACTIVATION_BOOST = 10.0
+# Activations below this count mark a memory as weakening once it passes its half-life.
+MIN_REINFORCED_ACTIVATIONS = 2
 
 # A memory whose last_decay_at is within this many hours of ``now`` is
 # considered "fresh" and is skipped by apply_decay_batch. This handles
@@ -252,7 +255,7 @@ class MemoryDecayService:
             return "stale"
         if activation_count >= config.strengthening_threshold:
             return "strengthening"
-        if activation_count < 2 and hours_since_decay > config.half_life_hours:
+        if activation_count < MIN_REINFORCED_ACTIVATIONS and hours_since_decay > config.half_life_hours:
             return "weakening"
         return "stable"
 
@@ -342,8 +345,8 @@ class MemoryDecayService:
             raise DecayModelError("half_life_hours must be > 0")
         if not 0.0 <= cfg.min_importance <= 1.0:
             raise DecayModelError("min_importance must be in [0, 1]")
-        if not 0.0 <= cfg.activation_boost <= 10.0:
-            raise DecayModelError("activation_boost must be in [0, 10]")
+        if not 0.0 <= cfg.activation_boost <= MAX_ACTIVATION_BOOST:
+            raise DecayModelError(f"activation_boost must be in [0, {MAX_ACTIVATION_BOOST:g}]")
         if cfg.strengthening_threshold < 0:
             raise DecayModelError("strengthening_threshold must be >= 0")
         if not 0.0 <= cfg.stale_threshold <= 1.0:

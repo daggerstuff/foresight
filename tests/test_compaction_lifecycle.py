@@ -9,6 +9,9 @@ import pytest
 
 from foresight.server import compaction_lifecycle
 
+# Budgeted recovery output may exceed max_chars by this much of framing text.
+RECOVERY_OVERHEAD_ALLOWANCE = 50
+
 
 @pytest.fixture(autouse=True)
 def setup_test_db():
@@ -146,15 +149,16 @@ def test_compaction_lifecycle_respects_max_chars(_mock):
         )
     conn.close()
 
+    max_chars = 200
     result = compaction_lifecycle(
         session_id="compaction-budget-test",
         messages=[{"role": "user", "content": "Test."}],
-        max_chars=200,
+        max_chars=max_chars,
     )
 
     # Recovery payload portion should be within budget (allow small overhead)
     recovery_part = result.split("Recovery Context")[-1] if "Recovery Context" in result else result
-    assert len(recovery_part) <= 250
+    assert len(recovery_part) <= max_chars + RECOVERY_OVERHEAD_ALLOWANCE
 
 
 @patch("foresight.server.process_session_transcript", side_effect=_mock_capture)

@@ -563,10 +563,13 @@ created_at
         tenant_id: str | None = None,
         **kwargs: Any,
     ) -> GraphTraversalResult:
-        max_depth = kwargs.get("max_depth", args[0] if len(args) > 0 else 2)
-        max_results = kwargs.get("max_results", args[1] if len(args) > 1 else 50)
-        relationship_types: list[str] | None = kwargs.get("relationship_types", args[2] if len(args) > 2 else None)
-        tid = tenant_id or kwargs.get("tenant_id", args[3] if len(args) > 3 else None) or get_current_account_id()
+        # Legacy callers pass (max_depth, max_results, relationship_types, tenant_id)
+        # positionally; explicit kwargs win when both are supplied.
+        positional = dict(zip(("max_depth", "max_results", "relationship_types", "tenant_id"), args, strict=False))
+        max_depth = kwargs.get("max_depth", positional.get("max_depth", 2))
+        max_results = kwargs.get("max_results", positional.get("max_results", 50))
+        relationship_types: list[str] | None = kwargs.get("relationship_types", positional.get("relationship_types"))
+        tid = tenant_id or kwargs.get("tenant_id", positional.get("tenant_id")) or get_current_account_id()
         _validate_input(user_id, tid)
         type_filter, type_params = build_type_filter(relationship_types or [])
 

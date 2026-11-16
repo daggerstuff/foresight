@@ -36,16 +36,18 @@ def _curate(**kwargs) -> dict:
 
 def test_curation_creates_observation_with_supporting_ids():
     stamp = datetime.now(UTC).isoformat()
-    _store(f"sleep quality has been poor this week ({stamp})", category="health")
-    _store(f"sleep has been fragmented again last night ({stamp})", category="health")
+    seeded = [
+        _store(f"sleep quality has been poor this week ({stamp})", category="health"),
+        _store(f"sleep has been fragmented again last night ({stamp})", category="health"),
+    ]
 
     result = _curate()
     assert result["ok"] is True
     assert result["observations_created"] >= 1
 
     obs = result["observations"][0]
-    assert len(obs["supporting_memory_ids"]) >= 2
-    assert obs["evidence_count"] >= 2
+    assert len(obs["supporting_memory_ids"]) >= len(seeded)
+    assert obs["evidence_count"] >= len(seeded)
     assert obs["version"] == 1
     assert obs["status"] == "active"
     assert obs["observation_text"]
@@ -69,11 +71,11 @@ def test_followup_curation_refines_without_dropping_evidence():
     assert second["observations_refined"] >= 1
 
     refined = next(o for o in second["observations"] if o["id"] == obs1["id"])
-    assert refined["version"] == 2
+    assert refined["version"] == obs1["version"] + 1
     assert refined["status"] == "refined"
     assert refined["last_refined_at"]
     assert set(refined["supporting_memory_ids"]) == set(ids) | {new_id}
-    assert refined["evidence_count"] == 3
+    assert refined["evidence_count"] == len(set(ids) | {new_id})
 
 
 def test_inject_context_surfaces_patterns_section():
@@ -106,15 +108,17 @@ def test_observations_are_tenant_scoped():
 
 def test_category_filter_scopes_scan():
     stamp = datetime.now(UTC).isoformat()
-    _store(f"alpha one ({stamp})", category="alpha")
-    _store(f"alpha two ({stamp})", category="alpha")
+    alpha_memories = [
+        _store(f"alpha one ({stamp})", category="alpha"),
+        _store(f"alpha two ({stamp})", category="alpha"),
+    ]
     _store(f"beta one ({stamp})", category="beta")
     _store(f"beta two ({stamp})", category="beta")
 
     result = _curate(category="alpha")
     cats = {o["category"] for o in result["observations"]}
     assert cats == {"alpha"}
-    assert result["memories_scanned"] == 2
+    assert result["memories_scanned"] == len(alpha_memories)
 
 
 def test_budgeted_injection_keeps_patterns_in_blocks_lane():

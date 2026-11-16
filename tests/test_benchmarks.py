@@ -86,7 +86,7 @@ def test_load_longmemeval(tmp_path):
     data.write_text(json.dumps(_mini_longmemeval()), encoding="utf-8")
     ds = load_longmemeval(data)
     assert ds.name == "longmemeval"
-    assert len(ds.samples) == 2
+    assert len(ds.samples) == len(_mini_longmemeval())
     first = ds.samples[0]
     assert first.question_id == "1"
     assert first.is_abstention is False
@@ -217,13 +217,14 @@ def test_foresight_backend_roundtrip(tmp_path):
 
 def test_report_json_roundtrip(tmp_path):
     dataset = Dataset(name="locomo", revision="r1", samples=(_sample(),))
-    report = run_benchmark(dataset, _FakeBackend(), cutoffs=(10,), seed=7)
+    seed = 7
+    report = run_benchmark(dataset, _FakeBackend(), cutoffs=(10,), seed=seed)
     path = tmp_path / "report.json"
     report.save(path)
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded["dataset"] == "locomo"
     assert loaded["revision"] == "r1"
-    assert loaded["seed"] == 7
+    assert loaded["seed"] == seed
 
 
 def test_read_hypotheses_single_record(tmp_path):

@@ -73,6 +73,14 @@ _WORK_MEMORIES = [
 ]
 
 
+# Keyword candidates: the three work memories below plus create_test_db()'s
+# mem_5, whose content also contains "work".
+KEYWORD_CANDIDATE_COUNT = len(_WORK_MEMORIES) + 1
+
+# Float64 sigmoid saturation is only approached, never reached exactly.
+SATURATION_TOLERANCE = 0.01
+
+
 def _install_work_memories(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     try:
@@ -160,11 +168,15 @@ class TestRerankGate:
         # inclusive: [0.5, 1.5].
         high = reranker_module.score_to_multiplier(500.0)
         low = reranker_module.score_to_multiplier(-500.0)
-        assert 1.49 < high <= 1.5
-        assert 0.5 <= low < 0.51
+        assert high == pytest.approx(reranker_module.MULTIPLIER_CEIL, abs=SATURATION_TOLERANCE)
+        assert low == pytest.approx(reranker_module.MULTIPLIER_FLOOR, abs=SATURATION_TOLERANCE)
         assert low < high
         # Moderate scores stay strictly inside the band.
-        assert reranker_module.MULTIPLIER_FLOOR < reranker_module.score_to_multiplier(3.0) < 1.5
+        assert (
+            reranker_module.MULTIPLIER_FLOOR
+            < reranker_module.score_to_multiplier(3.0)
+            < reranker_module.MULTIPLIER_CEIL
+        )
 
     def test_multiplier_monotonic_in_score(self):
         low = reranker_module.score_to_multiplier(-3.0)
@@ -291,8 +303,8 @@ class TestRetrieverRerankStage:
         fake = FakeReranker(scores={BOOST_CONTENT: BOOST_SCORE})
         reranked = _search(work_db, monkeypatch, rerank_on=True, reranker=fake)
         assert [r.memory_id for r in reranked.results] == ["mem_work3", "mem_5"]
-        assert reranked.total_candidates == 4
-        assert reranked.signal_counts["keyword"] == 4
+        assert reranked.total_candidates == KEYWORD_CANDIDATE_COUNT
+        assert reranked.signal_counts["keyword"] == KEYWORD_CANDIDATE_COUNT
 
         top = reranked.results[0]
         assert top.rerank_score == pytest.approx(BOOST_SCORE)
@@ -361,7 +373,7 @@ class TestExplainScoreDetails:
         details = result.score_details
         assert details is not None
         assert details["weights"] == {"keyword": 1.0, "semantic": 0.7, "vector": 0.9, "graph": 0.8, "temporal": 0.8}
-        assert details["rrf_k"] == 60.0
+        assert details["rrf_k"] == HybridRetriever.RRF_K
         assert details["min_importance_threshold"] == pytest.approx(0.1)
         assert details["rerank"] == {"enabled": False, "applied": False, "provider": None}
         # Only the keyword signal contributed candidates, so only its weight

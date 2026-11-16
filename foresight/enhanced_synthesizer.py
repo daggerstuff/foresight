@@ -17,10 +17,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .memory_components import MemorySynthesizer
+from .memory_components import MIN_CLUSTER_MEMBERS, MIN_MEMORIES_FOR_SYNTHESIS, MemorySynthesizer
 from .memory_types import MemoryObject, StanceShift
 
 logger = logging.getLogger("foresight_enhanced_synthesizer")
+
+# Confidence a detected contradiction needs before it becomes an insight.
+MIN_CONTRADICTION_CONFIDENCE = 0.7
+
+# R-squared a temporal trend needs before it is treated as a real trend.
+MIN_TREND_R_SQUARED = 0.5
+
+# Points needed before a linear regression is meaningful.
+MIN_REGRESSION_POINTS = 2
 
 # Shared sentiment-opposite pairs used by contradiction/supersede detection.
 # Aliased as EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES below.
@@ -293,7 +302,7 @@ class EnhancedMemorySynthesizer:
             EnhancedSynthesisResult or None if not enough data
         """
         logger.debug("Synthesizing for user: %s", user_id)
-        if len(memories) < 5:
+        if len(memories) < MIN_MEMORIES_FOR_SYNTHESIS:
             return None
 
         try:
@@ -338,7 +347,7 @@ class EnhancedMemorySynthesizer:
         topic_clusters = self._cluster_by_topic(memories)
 
         for topic, cluster in topic_clusters.items():
-            if len(cluster) < 2:
+            if len(cluster) < MIN_CLUSTER_MEMBERS:
                 continue
 
             # Keyword overlap contradiction detection
@@ -431,7 +440,7 @@ class EnhancedMemorySynthesizer:
 
         # Generate insights from contradictions
         for contradiction in contradictions:
-            if contradiction.confidence >= 0.7:
+            if contradiction.confidence >= MIN_CONTRADICTION_CONFIDENCE:
                 insights.append(
                     Insight(
                         statement=self._format_contradiction_insight(contradiction),
@@ -445,7 +454,7 @@ class EnhancedMemorySynthesizer:
 
         # Generate insights from trends
         for trend in temporal_trends:
-            if trend.r_squared >= 0.5:  # Good fit
+            if trend.r_squared >= MIN_TREND_R_SQUARED:  # Good fit
                 insights.append(
                     Insight(
                         statement=self._format_trend_insight(trend),
@@ -537,7 +546,7 @@ class EnhancedMemorySynthesizer:
         Returns:
             Tuple of (slope, r_squared)
         """
-        if len(values) < 2:
+        if len(values) < MIN_REGRESSION_POINTS:
             return 0.0, 0.0
 
         n = len(values)

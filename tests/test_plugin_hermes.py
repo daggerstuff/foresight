@@ -7,11 +7,15 @@ import json
 from unittest.mock import MagicMock, patch
 
 from plugins.hermes import (
+    PRE_COMPRESS_CHECKPOINT_API_VERSION,
     ForesightMemoryProvider,
     _Client,
     register,
 )
 from plugins.hermes.cli import register_cli
+
+# sync_turn records the user turn and the assistant reply.
+SYNC_TURN_MESSAGE_COUNT = 2
 
 
 class TestClient:
@@ -36,11 +40,12 @@ class TestClient:
 
     def test_health_check(self):
         client = _Client(base_url="http://test-server:8764", api_key="", user_id="chad")
+        memory_count = 12
         with patch.object(client, "request") as mock_req:
-            mock_req.return_value = {"ok": True, "result": "Memories (12 found):\n- [123] note"}
+            mock_req.return_value = {"ok": True, "result": f"Memories ({memory_count} found):\n- [123] note"}
             h = client.health()
             assert h["ok"] is True
-            assert h["count"] == 12
+            assert h["count"] == memory_count
             assert "latency_ms" in h
 
     def test_health_failure(self):
@@ -97,14 +102,15 @@ class TestProvider:
         assert isinstance(prov, ForesightMemoryProvider)
         assert prov.name == "foresight"
         assert prov.is_available() is True
-        assert prov.pre_compress_checkpoint_api_version == 2
+        assert prov.pre_compress_checkpoint_api_version == PRE_COMPRESS_CHECKPOINT_API_VERSION
 
     def test_initialize(self, tmp_path, monkeypatch):
         monkeypatch.delenv("FORESIGHT_USER_ID", raising=False)
         monkeypatch.delenv("FORESIGHT_IDENTITY", raising=False)
         prov = ForesightMemoryProvider()
+        max_memories = 7
         cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text("memory:\n  foresight:\n    url: http://custom:9999\n    max_memories: 7\n")
+        cfg_file.write_text(f"memory:\n  foresight:\n    url: http://custom:9999\n    max_memories: {max_memories}\n")
 
         prov.initialize(
             session_id="sess_abc",
@@ -115,7 +121,7 @@ class TestProvider:
 
         assert prov._session_id == "sess_abc"
         assert prov._project_path == "/test/workspace"
-        assert prov._max_memories == 7
+        assert prov._max_memories == max_memories
         assert prov._client is not None
         assert prov._client.base_url == "http://custom:9999"
         # Colon sanitized to underscore for Foresight
@@ -149,7 +155,7 @@ class TestProvider:
             status = prov.recall_status()
             assert status is not None
             assert status.provider_label == "Foresight"
-            assert status.count == 2
+            assert status.count == len(mock_inject["memories"])
             assert status.glyph == "🔮"
 
             # Cache hit for identical query
@@ -171,7 +177,7 @@ class TestProvider:
             _args, kwargs = mock_transcript.call_args
             assert kwargs["session_id"] == "sess_1"
             assert kwargs["project_path"] == "/project"
-            assert len(kwargs["messages"]) == 2
+            assert len(kwargs["messages"]) == SYNC_TURN_MESSAGE_COUNT
             assert kwargs["messages"][0]["content"] == "What is the goal?"
 
     def test_on_pre_compress(self):
@@ -209,11 +215,12 @@ class TestProvider:
         prov.initialize("sess_1")
         assert prov._client is not None
 
-        with patch.object(prov._client, "health", return_value={"ok": True, "latency_ms": 45, "count": 100}):
+        memory_count = 100
+        with patch.object(prov._client, "health", return_value={"ok": True, "latency_ms": 45, "count": memory_count}):
             status = prov.get_status_config({})
             assert status["url"] == prov._client.base_url
             assert "connected ✓ (45ms)" in status["connection"]
-            assert status["memories_in_brain"] == 100
+            assert status["memories_in_brain"] == memory_count
             assert "hands-off proactive recall" in status["mode"]
 
     def test_tools_dispatch(self):
@@ -245,10 +252,11 @@ class TestCLI:
     def test_cli_parser_registered(self):
         parser = argparse.ArgumentParser()
         register_cli(parser)
-        args = parser.parse_args(["search", "fireworks", "--limit", "3"])
+        limit = 3
+        args = parser.parse_args(["search", "fireworks", "--limit", str(limit)])
         assert args.foresight_action == "search"
         assert args.query == "fireworks"
-        assert args.limit == 3
+        assert args.limit == limit
 
     def test_cli_status_command(self, capsys):
         parser = argparse.ArgumentParser()

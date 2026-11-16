@@ -191,6 +191,7 @@ def test_link_memories_creates_relationship():
 def test_link_memories_upserts_on_conflict():
     db = _make_test_db()
     _seed_memories(db, ["src", "dst"])
+    confidence = 0.9
     with _patched_db(db) as store:
         store.link_memories(
             source_memory_id="src",
@@ -207,7 +208,7 @@ def test_link_memories_upserts_on_conflict():
             relationship_type="updates",
             user_id="u1",
             options=LinkMemoriesOptions(
-                confidence=0.9,
+                confidence=confidence,
                 metadata={"v": 2},
             ),
         )
@@ -215,7 +216,7 @@ def test_link_memories_upserts_on_conflict():
         memory_id="src", user_id="u1", direction="out", relationship_type="updates"
     )
     assert len(rels) == 1
-    assert rels[0].confidence == 0.9
+    assert rels[0].confidence == confidence
     assert rels[0].metadata == {"v": 2}
     assert rel2.id == rels[0].id
 
@@ -235,7 +236,7 @@ def test_get_relationships_filters_by_direction():
     assert out[0].target_memory_id == "b"
     assert len(inc) == 1
     assert inc[0].source_memory_id == "c"
-    assert len(both) == 2
+    assert len(both) == len(out) + len(inc)
 
 
 def test_get_relationships_rejects_bad_direction():
@@ -287,16 +288,17 @@ def test_traverse_walks_chain_in_both_directions():
     db = _make_test_db()
     _seed_memories(db, ["a", "b", "c", "d"])
     with _patched_db(db) as store:
-        store.link_memories("a", "b", "extends", user_id="u1")
-        store.link_memories("b", "c", "derives", user_id="u1")
-        store.link_memories("c", "d", "extends", user_id="u1")
+        links = (("a", "b", "extends"), ("b", "c", "derives"), ("c", "d", "extends"))
+        for source, target, relationship_type in links:
+            store.link_memories(source, target, relationship_type, user_id="u1")
         result = store.traverse_memory_graph("a", "u1", max_depth=2)
 
     assert isinstance(result, MemoryGraphTraversal)
     node_ids = {n["memory_id"] for n in result.nodes}
     assert {"a", "b", "c"}.issubset(node_ids)
     assert "d" not in node_ids
-    assert len(result.edges) >= 2
+    # max_depth=2 from "a" reaches b and c, one edge per hop.
+    assert len(result.edges) >= len(links) - 1
 
 
 def test_traverse_depth_zero_returns_only_root():

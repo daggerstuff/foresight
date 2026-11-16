@@ -11,6 +11,12 @@ from typing import Any
 logger = logging.getLogger("foresight_clustering")
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
+
+# Tokens shorter than this carry no topical signal.
+MIN_TOKEN_CHARS = 3
+
+# Smallest group of memories that counts as a cluster.
+DEFAULT_MIN_CLUSTER_SIZE = 2
 _STOP_WORDS = {
     "a",
     "an",
@@ -47,7 +53,7 @@ _STOP_WORDS = {
 def _tokenize(text: str) -> list[str]:
     text = text.lower()
     tokens = _WORD_RE.findall(text)
-    return [token for token in tokens if token not in _STOP_WORDS and len(token) > 2]
+    return [token for token in tokens if token not in _STOP_WORDS and len(token) >= MIN_TOKEN_CHARS]
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -70,7 +76,7 @@ def cluster_memories(
     memories: list[dict[str, Any]],
     *,
     min_similarity: float = 0.25,
-    min_cluster_size: int = 2,
+    min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
     max_clusters: int | None = 20,
 ) -> ClusterResult:
     """Group memories into semantic clusters without requiring embeddings.

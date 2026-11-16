@@ -29,15 +29,20 @@ DEFAULT_RETENTION_TTLS: dict[str, int] = {
     "short_term": 168,  # 7 days
 }
 
+# Retention defaults for the event tables the collector prunes.
+DEFAULT_DECAY_EVENTS_RETENTION_DAYS = 30
+DEFAULT_MAINTENANCE_EVENTS_RETENTION_DAYS = 60
+DEFAULT_MAX_BATCH_SIZE = 500
+
 
 @dataclass
 class GCConfig:
     """Configuration for memory garbage collection."""
 
     retention_ttls: dict[str, int] | None = None
-    decay_events_retention_days: int = 30
-    maintenance_events_retention_days: int = 60
-    max_batch_size: int = 500
+    decay_events_retention_days: int = DEFAULT_DECAY_EVENTS_RETENTION_DAYS
+    maintenance_events_retention_days: int = DEFAULT_MAINTENANCE_EVENTS_RETENTION_DAYS
+    max_batch_size: int = DEFAULT_MAX_BATCH_SIZE
     raw_retention_window_days: int | None = field(default_factory=raw_retention_window_days)
 
     def to_dict(self) -> dict:

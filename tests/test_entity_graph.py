@@ -58,8 +58,9 @@ class TestEntityExtractor:
         extractor = EntityExtractor()
         result = extractor._extract_rules_based("I do CBT and meditation for stress")
 
+        expected_concepts = ("CBT", "meditation")
         concept_entities = [e for e in result.entities if e.entity_type == "concept"]
-        assert len(concept_entities) >= 2  # Should find CBT and meditation
+        assert len(concept_entities) >= len(expected_concepts)
 
     def test_extract_negation(self):
         """Negated emotions should produce 'not_X' entities."""
@@ -158,29 +159,30 @@ class TestGraphStore:
     def test_traverse_graph(self, graph_store):
         """Should traverse connected entities."""
         # Create a simple graph: Person -> experiences -> Anxiety -> relates_to -> Stress
-        graph_store.upsert_entity(Entity(id="entity_person", name="John", entity_type="person"), "test_user")
-        graph_store.upsert_entity(Entity(id="entity_anxiety", name="anxiety", entity_type="emotion"), "test_user")
-        graph_store.upsert_entity(Entity(id="entity_stress", name="stress", entity_type="emotion"), "test_user")
+        for entity in (
+            Entity(id="entity_person", name="John", entity_type="person"),
+            Entity(id="entity_anxiety", name="anxiety", entity_type="emotion"),
+            Entity(id="entity_stress", name="stress", entity_type="emotion"),
+        ):
+            graph_store.upsert_entity(entity, "test_user")
 
-        graph_store.add_relationship(
+        relationships = (
             Relationship(
                 source_entity_id="entity_person", target_entity_id="entity_anxiety", relationship_type="experienced"
             ),
-            "test_user",
-        )
-
-        graph_store.add_relationship(
             Relationship(
                 source_entity_id="entity_anxiety", target_entity_id="entity_stress", relationship_type="relates_to"
             ),
-            "test_user",
         )
+        for relationship in relationships:
+            graph_store.add_relationship(relationship, "test_user")
 
         # Traverse from person
         result = graph_store.traverse_graph("entity_person", "test_user", max_depth=2)
 
-        assert len(result.nodes) >= 2  # Should find anxiety and stress
-        assert len(result.edges) >= 2  # Should find both relationships
+        # Each hop reaches one further entity: anxiety, then stress.
+        assert len(result.nodes) >= len(relationships)
+        assert len(result.edges) >= len(relationships)
 
     def test_link_memory_to_entities(self, graph_store):
         """Should link memories to entities."""

@@ -24,6 +24,9 @@ from .base import DatabaseBackend
 
 logger = logging.getLogger("foresight_postgres_backend")
 
+# Ceiling on concurrent connections the pool will open for one backend.
+DEFAULT_MAX_POOL_SIZE = 20
+
 # ---------------------------------------------------------------------------
 # Dialect translation helpers
 # ---------------------------------------------------------------------------
@@ -90,7 +93,7 @@ class PostgresBackend(DatabaseBackend):
         self,
         dsn: str,
         min_pool_size: int = 2,
-        max_pool_size: int = 20,
+        max_pool_size: int = DEFAULT_MAX_POOL_SIZE,
     ) -> None:
         env_max = os.environ.get("FORESIGHT_DB_POOL_MAX")
         if env_max:

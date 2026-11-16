@@ -23,6 +23,9 @@ from .tenant_context import get_current_account_id
 
 logger = logging.getLogger(__name__)
 
+# Column count of a row from the current (tenant-scoped) events schema.
+EVENT_ROW_COLUMNS = 8
+
 # =============================================================================
 # Event Types
 # =============================================================================
@@ -389,7 +392,7 @@ class SQLiteEventStore(EventStoreBase):
         try:
             # row[1] is tenant_id (not stored in Event dataclass)
             # Handle both old (7 cols) and new (8 cols) schema
-            offset = 1 if len(row) >= 8 else 0  # tenant_id at row[1]
+            offset = 1 if len(row) >= EVENT_ROW_COLUMNS else 0  # tenant_id at row[1]
             return Event(
                 id=row[0],
                 event_type=EventType(row[1 + offset]),

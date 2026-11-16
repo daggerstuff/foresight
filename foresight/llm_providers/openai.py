@@ -13,8 +13,10 @@ import json
 import os
 import urllib.error
 import urllib.request
+from http import HTTPStatus
 from typing import Any
 
+from foresight.config import DEFAULT_LLM_MAX_TOKENS
 from foresight.llm_errors import LLMError, LLMRateLimitError
 
 DEFAULT_MODEL = "gpt-4o-mini"
@@ -62,7 +64,7 @@ class OpenAIClient:
         base_url = os.environ.get("FORESIGHT_LLM_BASE_URL", "").strip()
         return cls(api_key=api_key, model=model, base_url=base_url)
 
-    def complete(self, prompt: str, *, max_tokens: int = 1024) -> str:
+    def complete(self, prompt: str, *, max_tokens: int = DEFAULT_LLM_MAX_TOKENS) -> str:
         if not isinstance(prompt, str) or not prompt:
             raise LLMError("prompt must be a non-empty string")
         if max_tokens < 1:
@@ -90,7 +92,7 @@ class OpenAIClient:
                 payload = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            if exc.code == 429:
+            if exc.code == HTTPStatus.TOO_MANY_REQUESTS:
                 raise LLMRateLimitError(f"OpenAI API rate limit (429): {detail}") from exc
             raise LLMError(f"OpenAI API returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:

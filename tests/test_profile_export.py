@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -61,7 +62,7 @@ def test_export_json_envelope_signed():
     envelope = json.loads(server_export_profile(user_id="_test_user_", format="json"))
 
     assert envelope["signature_alg"] == "HMAC-SHA256"
-    assert len(envelope["signature"]) == 64
+    assert len(envelope["signature"]) == len(hashlib.sha256(b"").hexdigest())
     assert verify_document(envelope["document"], envelope["signature"])
 
 

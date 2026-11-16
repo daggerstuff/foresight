@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from foresight.config import DEFAULT_LLM_MAX_TOKENS
 from foresight.llm_client import (
     LLMConfig,
     LLMError,
@@ -135,7 +136,7 @@ def test_anthropic_client_complete_success() -> None:
     assert _header_lookup(sent_request.headers, "anthropic-version") == "2023-06-01"
     body = json.loads(sent_request.data.decode("utf-8"))
     assert body["model"] == "claude-test"
-    assert body["max_tokens"] == 1024
+    assert body["max_tokens"] == DEFAULT_LLM_MAX_TOKENS
     assert body["messages"] == [{"role": "user", "content": "summarize this"}]
 
 
@@ -216,7 +217,7 @@ def test_openai_client_complete_success() -> None:
     assert _header_lookup(sent_request.headers, "Authorization") == "Bearer test-key"
     body = json.loads(sent_request.data.decode("utf-8"))
     assert body["model"] == "gpt-test"
-    assert body["max_tokens"] == 1024
+    assert body["max_tokens"] == DEFAULT_LLM_MAX_TOKENS
     assert body["messages"] == [{"role": "user", "content": "summarize this"}]
 
 
@@ -443,11 +444,12 @@ def test_tenant_llm_client_retry_on_provider_error(monkeypatch: pytest.MonkeyPat
     client = TenantLLMClient.from_env("t1")
 
     call_count = 0
+    max_attempts = 3
 
-    def flaky_complete(_prompt: str, *, max_tokens: int = 1024) -> str:
+    def flaky_complete(_prompt: str, *, max_tokens: int = DEFAULT_LLM_MAX_TOKENS) -> str:
         nonlocal call_count
         call_count += 1
-        if call_count < 3:
+        if call_count < max_attempts:
             raise LLMProviderError("temporary failure")
         return "success on try " + str(call_count)
 
@@ -455,8 +457,8 @@ def test_tenant_llm_client_retry_on_provider_error(monkeypatch: pytest.MonkeyPat
     fake.complete.side_effect = flaky_complete
     with patch.object(TenantLLMClient, "_build_provider", return_value=fake):
         result = client.generate("prompt", user_id="u1")
-    assert result == "success on try 3"
-    assert call_count == 3
+    assert result == "success on try " + str(max_attempts)
+    assert call_count == max_attempts
 
 
 def test_tenant_llm_client_rate_limit_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -481,16 +483,18 @@ def test_llm_config_from_env_all_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FORESIGHT_LLM_PROVIDER", "openai")
     monkeypatch.setenv("FORESIGHT_LLM_MODEL", "gpt-4o")
     monkeypatch.setenv("FORESIGHT_LLM_API_KEY", "my-global-key")
-    monkeypatch.setenv("FORESIGHT_LLM_MAX_RETRIES", "5")
-    monkeypatch.setenv("FORESIGHT_LLM_TIMEOUT_MS", "45000")
+    max_retries = 5
+    timeout_ms = 45000
+    monkeypatch.setenv("FORESIGHT_LLM_MAX_RETRIES", str(max_retries))
+    monkeypatch.setenv("FORESIGHT_LLM_TIMEOUT_MS", str(timeout_ms))
     monkeypatch.setenv("FORESIGHT_LLM_TENANT_OVERRIDE", "my-test-tenant")
 
     config = LLMConfig.from_env("any-tenant")
     assert config.provider == "openai"
     assert config.model_version == "gpt-4o"
     assert config.api_key == "my-global-key"
-    assert config.max_retries == 5
-    assert config.timeout_ms == 45000
+    assert config.max_retries == max_retries
+    assert config.timeout_ms == timeout_ms
     assert config.tenant_id_override == "my-test-tenant"
 
 

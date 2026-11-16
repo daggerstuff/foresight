@@ -15,7 +15,7 @@ from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, TokenE
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl
 
-from foresight.auth_oauth import MEMORY_ONLY_DB, ForesightOAuthProvider
+from foresight.auth_oauth import ACCESS_TOKEN_TTL, MEMORY_ONLY_DB, ForesightOAuthProvider
 
 
 def _make_provider() -> ForesightOAuthProvider:
@@ -128,7 +128,7 @@ async def test_exchange_authorization_code_issues_tokens():
     token_response = await provider.exchange_authorization_code(client, auth_code)
     assert token_response.access_token
     assert token_response.token_type == "Bearer"
-    assert token_response.expires_in == 3600
+    assert token_response.expires_in == ACCESS_TOKEN_TTL
     assert token_response.refresh_token
     assert "read" in (token_response.scope or "")
     assert "write" in (token_response.scope or "")

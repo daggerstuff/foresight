@@ -120,6 +120,7 @@ from .injection_budget import (
 from .llm_client import TenantLLMClient
 from .llm_errors import LLMError, LLMNotConfiguredError
 from .memory_components import (
+    MIN_MEMORIES_FOR_SYNTHESIS,
     MemoryCrisisTagger,
     MemoryLinker,
     MemorySynthesizer,
@@ -317,6 +318,10 @@ class MemoryUpdateOptions(BaseModel):
     )
 
 
+DEFAULT_CASCADE_DEPTH = 2
+DEFAULT_CASCADE_LIMIT = 100
+
+
 class SearchOptions(BaseModel):
     query_type: Literal["id", "keyword", "list", "semantic"] = Field(
         default="keyword", description="Type of search/retrieval"
@@ -328,8 +333,8 @@ class SearchOptions(BaseModel):
     min_importance: float = Field(default=0.1, description="Minimum importance threshold")
     use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
     use_cascade: bool = Field(default=False, description="Enable cascade search across related entities")
-    cascade_depth: int = Field(default=2, description="Maximum depth for cascade traversal")
-    cascade_limit: int = Field(default=100, description="Maximum results per cascade level")
+    cascade_depth: int = Field(default=DEFAULT_CASCADE_DEPTH, description="Maximum depth for cascade traversal")
+    cascade_limit: int = Field(default=DEFAULT_CASCADE_LIMIT, description="Maximum results per cascade level")
     debug: bool = Field(
         default=False,
         description="Return structured trace with timing and signal metadata instead of formatted results",
@@ -3989,7 +3994,7 @@ def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 
 
 def _build_synthesis_snapshot(rows: list[RowLike], uid: str) -> dict[str, Any] | None:
     """Run the enhanced synthesizer when enough source memories exist."""
-    if len(rows) < 5:
+    if len(rows) < MIN_MEMORIES_FOR_SYNTHESIS:
         return None
     memories: list[MemoryObject] = []
     for row in rows:
@@ -4635,10 +4640,13 @@ _STOP_WORDS = frozenset(
 )
 
 
+MIN_TERM_CHARS = 4
+
+
 def _extract_terms(text: str) -> list[str]:
     """Extract key terms from text by splitting, lowering, and filtering stop words and short tokens."""
     words = text.lower().split()
-    return [w for w in words if len(w) > 3 and w not in _STOP_WORDS]
+    return [w for w in words if len(w) >= MIN_TERM_CHARS and w not in _STOP_WORDS]
 
 
 class _MemoryLike(Protocol):
@@ -4960,6 +4968,10 @@ def _active_observations(
         return []
 
 
+MEMORY_SNIPPET_CHARS = 120
+CONTEXT_BLOCK_SNIPPET_CHARS = 200
+
+
 def _format_injection_output(
     memories: list[HybridResult],
     uid: str,
@@ -4978,8 +4990,8 @@ def _format_injection_output(
     if memories:
         lines.append(f"[Relevant Context - {len(memories)} memories surfaced]")
         for mem in memories:
-            snippet = (mem.content or "")[:120]
-            if len(mem.content or "") > 120:
+            snippet = (mem.content or "")[:MEMORY_SNIPPET_CHARS]
+            if len(mem.content or "") > MEMORY_SNIPPET_CHARS:
                 snippet += "..."
             lines.append(f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}")
 
@@ -4996,7 +5008,9 @@ def _format_injection_output(
                 label = block.get("label", "")
                 content = (block.get("content") or "").strip()
                 if content:
-                    snippet = content[:200] + ("..." if len(content) > 200 else "")
+                    snippet = content[:CONTEXT_BLOCK_SNIPPET_CHARS] + (
+                        "..." if len(content) > CONTEXT_BLOCK_SNIPPET_CHARS else ""
+                    )
                     lines.append(f"  [{label}] {snippet}")
     except Exception:
         # Fall back to term-matched block signals if full block fetch fails
@@ -5324,6 +5338,9 @@ def _fetch_high_confidence_memories(
         conn.close()
 
 
+SESSION_MEMORY_TOP_UP_THRESHOLD = 10
+
+
 def generate_recovery_payload(
     session_id: str,
     user_id: str | None = None,
@@ -5371,7 +5388,7 @@ def generate_recovery_payload(
     session_rows = _fetch_session_memories_raw(uid, tenant_id, limit=20)
 
     project_rows: list[RowLike] = []
-    if len(session_rows) < 10:
+    if len(session_rows) < SESSION_MEMORY_TOP_UP_THRESHOLD:
         project_rows = _fetch_high_confidence_memories(uid, tenant_id, min_importance=0.5, limit=20)
 
     seen_contents: set[str] = set()
@@ -7289,9 +7306,14 @@ def traverse_memory_graph(
 # =============================================================================
 
 
+# The review queue is one page by default and cannot be paged past: it is a
+# triage surface, not a browse surface.
+INFERRED_LIST_MAX_LIMIT = 50
+
+
 def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
     """List inferred memories pending review, supporting-parent count first."""
-    capped = max(1, min(limit if limit is not None else 50, 50))
+    capped = max(1, min(limit if limit is not None else INFERRED_LIST_MAX_LIMIT, INFERRED_LIST_MAX_LIMIT))
     conn = get_db_connection()
     try:
         rows = conn.execute(
@@ -7582,8 +7604,8 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     ).fetchall()
     conn.close()
 
-    if len(rows) < 5:
-        return "Need at least 5 memories for synthesis."
+    if len(rows) < MIN_MEMORIES_FOR_SYNTHESIS:
+        return f"Need at least {MIN_MEMORIES_FOR_SYNTHESIS} memories for synthesis."
 
     memories = []
     for r in rows:

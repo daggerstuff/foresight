@@ -56,6 +56,27 @@ from .server import (
 
 logger = logging.getLogger("foresight_proof_benchmark")
 
+# Scenario pass thresholds on the 0-1 foresight score. Most scenarios use the
+# standard bar; the ones whose baseline is already strong use the strict bar.
+PASS_THRESHOLD_STANDARD = 0.75
+PASS_THRESHOLD_STRICT = 0.80
+
+# proof_09 passes on token compression rather than a recall score.
+TOKEN_REDUCTION_PASS_PCT = 70.0
+
+# proof_11 passes on the share of out-of-domain queries that retrieve nothing.
+NOISE_REJECTION_PASS_RATE = 0.80
+# Any hit above this combined score counts as a false positive for an
+# out-of-domain query.
+NOISE_SCORE_FLOOR = 0.08
+
+# proof_07 latency SLA tiers (p50 milliseconds).
+LATENCY_FAST_MS = 50.0
+LATENCY_SLA_MS = 150.0
+
+# proof_02 scores recall within the top 5 results.
+RECALL_AT_K = 5
+
 
 @dataclass
 class ScenarioProofResult:
@@ -425,7 +446,7 @@ class ProofBenchmarkRunner:
             name="Cross-Session Workflow Constraint Adherence",
             dimension="Continuity",
             description="Evaluates adherence across 6 distinct developer workflow constraints and toolchain policies.",
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
@@ -508,7 +529,7 @@ class ProofBenchmarkRunner:
                 }[key]
                 if target_check:
                     matched_rank = rank_idx
-                    if rank_idx <= 5:
+                    if rank_idx <= RECALL_AT_K:
                         recalled_count += 1
                     break
             if matched_rank:
@@ -531,7 +552,7 @@ class ProofBenchmarkRunner:
                 "Measures Mean Reciprocal Rank (MRR) and Recall@5 for "
                 "technical architecture and infrastructure choices."
             ),
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
@@ -621,7 +642,7 @@ class ProofBenchmarkRunner:
             name="Complex Technical Bug Workaround Retention",
             dimension="Engineering Productivity",
             description="Verifies retrieval accuracy for exact dependency version pins and runtime bug workarounds.",
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
@@ -704,7 +725,7 @@ class ProofBenchmarkRunner:
                 "Evaluates extraction precision, signal recall, and noise "
                 "rejection from multi-turn unstructured conversations."
             ),
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
@@ -761,7 +782,7 @@ class ProofBenchmarkRunner:
                 "Measures trigger detection sensitivity and specificity "
                 "across declarative developer statements and control sentences."
             ),
-            passed=f_score >= 0.80,
+            passed=f_score >= PASS_THRESHOLD_STRICT,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
@@ -814,7 +835,7 @@ class ProofBenchmarkRunner:
                 "Validates continuous indexing and semantic recall of "
                 "codebase commit milestones and architecture shifts."
             ),
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement_factor,
@@ -849,7 +870,7 @@ class ProofBenchmarkRunner:
         avg_lat = sum(times) / len(times)
 
         # Performance score based on sub-150ms SLA
-        f_score = 0.95 if p50 < 50.0 else (0.88 if p50 < 150.0 else 0.80)
+        f_score = 0.95 if p50 < LATENCY_FAST_MS else (0.88 if p50 < LATENCY_SLA_MS else 0.80)
         a_score = 0.0
 
         return ScenarioProofResult(
@@ -859,7 +880,7 @@ class ProofBenchmarkRunner:
             description=(
                 "Measures latency distribution (p50, p90, p99) of hybrid retrieval under FastMCP stateless execution."
             ),
-            passed=f_score >= 0.80,
+            passed=f_score >= PASS_THRESHOLD_STRICT,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=10.0,
@@ -924,7 +945,7 @@ class ProofBenchmarkRunner:
                 "Proves background maintenance consolidates duplicate "
                 "entries and automatically distills clean context blocks."
             ),
-            passed=f_score >= 0.75,
+            passed=f_score >= PASS_THRESHOLD_STANDARD,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=8.5,
@@ -1024,7 +1045,7 @@ class ProofBenchmarkRunner:
         has_pnpm = "pnpm" in injected.lower()
         has_all_facts = has_redis and has_pg and has_pnpm
 
-        passed = reduction_pct >= 70.0 and has_all_facts
+        passed = reduction_pct >= TOKEN_REDUCTION_PASS_PCT and has_all_facts
         f_score = round(reduction_pct / 100.0, 3)  # Real token compression ratio (e.g. 0.884)
         a_score = 0.12  # Amnesia / unpruned baseline efficiency score
 
@@ -1127,7 +1148,7 @@ class ProofBenchmarkRunner:
                 "Proves that an explicit new decision overrides legacy historical "
                 "frequency via recency weighting and active context block dominance."
             ),
-            passed=f_score >= 0.80,
+            passed=f_score >= PASS_THRESHOLD_STRICT,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement,
@@ -1166,7 +1187,7 @@ class ProofBenchmarkRunner:
                 query=q, user_id=self.user_id, options=HybridSearchOptions(limit=5, min_importance=0.5)
             )
             # Strict relevance check: do any high-confidence false positive memories match?
-            false_positives = [m for m in res.results if m.combined_score > 0.08]
+            false_positives = [m for m in res.results if m.combined_score > NOISE_SCORE_FLOOR]
             if len(false_positives) == 0:
                 clean_rejections += 1
 
@@ -1188,7 +1209,7 @@ class ProofBenchmarkRunner:
                 "Evaluates out-of-domain queries to verify relevance thresholds "
                 "reject false positives and prevent context window pollution."
             ),
-            passed=rejection_rate >= 0.80,
+            passed=rejection_rate >= NOISE_REJECTION_PASS_RATE,
             amnesia_score=a_score,
             foresight_score=f_score,
             improvement_factor=improvement,

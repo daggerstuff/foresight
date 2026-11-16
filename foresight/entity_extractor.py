@@ -33,6 +33,7 @@ import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from typing import Any, ClassVar, Literal, cast, get_args
 
 from foresight.llm_providers.openai import chat_completions_url
@@ -44,6 +45,10 @@ logger = logging.getLogger("foresight_entity_extractor")
 # 50-115s for a 4096-token extraction. A shorter read timeout silently degrades
 # to rule-based extraction, so keep this generous.
 _LLM_TIMEOUT_SECONDS = 180.0
+
+# An entity + relationship payload for a long note overruns the old 1024-token
+# budget and comes back truncated.
+DEFAULT_EXTRACTION_MAX_TOKENS = 4096
 
 # Optional httpx dependency for external API calls
 try:
@@ -253,7 +258,7 @@ Output (raw JSON only, no markdown):
         self,
         api_key: str | None = None,
         model: str | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_EXTRACTION_MAX_TOKENS,
         temperature: float = 0.1,
         provider: str | None = None,
         base_url: str | None = None,
@@ -432,7 +437,7 @@ Output (raw JSON only, no markdown):
             status_code = exc.response.status_code
             if status_code in (401, 403):
                 logger.error("LLM auth error (%d): check API key. Falling back to rules.", status_code)
-            elif status_code == 429:
+            elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
                 logger.warning("LLM rate limited (429). Falling back to rules.")
             else:
                 logger.warning("LLM HTTP error (%d): %s. Falling back to rules.", status_code, exc)

@@ -303,10 +303,11 @@ class TestTombstone:
         stats = gc.run(tenant_id=tenant_id, config=GCConfig(raw_retention_window_days=1))
         assert stats.raw_events_tombstoned == 1
 
+        raw_event_ids = ("raw_old", "raw_recent")
         rows_by_id = {
             row["id"]: row for row in _get_raw_event_rows(pipeline.db_path, tenant_id=tenant_id, session_id="sess_gc")
         }
-        assert len(rows_by_id) == 2
+        assert len(rows_by_id) == len(raw_event_ids)
         assert rows_by_id["raw_old"]["tombstone"] == 1
         assert rows_by_id["raw_old"]["content"] is None
         assert rows_by_id["raw_recent"]["tombstone"] == 0

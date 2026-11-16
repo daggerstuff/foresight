@@ -16,6 +16,9 @@ from typing import Any, Literal, TypedDict
 # =============================================================================
 
 RiskLevel = Literal["none", "low", "moderate", "high", "critical"]
+
+# Distinct terms required before a turn is treated as a crisis anomaly.
+MIN_ANOMALY_TERMS = 2
 Urgency = Literal["routine", "elevated", "high", "immediate"]
 
 
@@ -256,7 +259,7 @@ class MentalHealthAnomalyDetector(AnomalyDetector):
                 }
 
         # Determine if anomaly detected
-        is_anomaly = len(detected_terms) >= 2  # Require 2+ terms to reduce false positives
+        is_anomaly = len(detected_terms) >= MIN_ANOMALY_TERMS  # multiple terms reduce false positives
         primary_category = None
         risk_level: RiskLevel = "none"
         urgency: Urgency = "routine"
