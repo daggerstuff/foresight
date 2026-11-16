@@ -36,7 +36,7 @@ def purge_dead_synthesized_from_ids(conn, user_id: str | None = None, tenant_id:
     if tenant_id is not None:
         scope_parts.append("tenant_id = ?")
         scope_params.append(tenant_id)
-    scope = (" WHERE " + " AND ".join(scope_parts)) if scope_parts else ""
+    scope = (" AND " + " AND ".join(scope_parts)) if scope_parts else ""
 
     candidates = conn.execute(
         "SELECT id, synthesized_from FROM memories "
