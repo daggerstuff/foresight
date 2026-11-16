@@ -218,7 +218,8 @@ class MemoryMaintenanceJob:
 
         stats.maintenance_duration_seconds = time.perf_counter() - t0
         logger.info(
-            "Maintenance complete: modes=%s duration=%.2fs dups=%d+%d contr=%d stale=%d low_rel=%d/%d insights=%d enh=[contr=%d tr=%d ins=%d] errors=%d",
+            "Maintenance complete: modes=%s duration=%.2fs dups=%d+%d contr=%d stale=%d "
+            "low_rel=%d/%d insights=%d enh=[contr=%d tr=%d ins=%d] errors=%d",
             stats.modes_run,
             stats.maintenance_duration_seconds,
             stats.duplicates_auto_consolidated,
@@ -321,7 +322,8 @@ class MemoryMaintenanceJob:
         # log captures them even when they short-circuit clustering.
         if not config.sensitive_only:
             sensitive_count_row = conn.execute(
-                "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+                "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? "
+                "AND COALESCE(is_sensitive, 0) = 1",
                 (config.user_id, config.tenant_id),
             ).fetchone()
             sensitive_count = sensitive_count_row["sensitive_count"] if sensitive_count_row else 0
@@ -626,7 +628,8 @@ class MemoryMaintenanceJob:
         # The count here tracks how many sensitive rows were *flagged*, not
         # excluded — use += so earlier modes' counts are preserved.
         sensitive_count_row = conn.execute(
-            "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+            "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? "
+            "AND COALESCE(is_sensitive, 0) = 1",
             (config.user_id, config.tenant_id),
         ).fetchone()
         sensitive_count = sensitive_count_row["sensitive_count"] if sensitive_count_row else 0

@@ -269,7 +269,8 @@ class TenantLLMClient:
             return
 
         logger.info(
-            "[AUDIT] tenant=%s user=%s provider=%s model=%s prompt_hash=%s response_hash=%s latency_ms=%.1f outcome=%s error=%s",
+            "[AUDIT] tenant=%s user=%s provider=%s model=%s prompt_hash=%s response_hash=%s "
+            "latency_ms=%.1f outcome=%s error=%s",
             self._tenant_id,
             user_id,
             self.provider,

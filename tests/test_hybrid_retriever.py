@@ -153,7 +153,8 @@ def create_test_db():
 
     for mid, content, cat, imp, trend, ts in memories:
         conn.execute(
-            "INSERT INTO memories (id, user_id, tenant_id, content, category, importance, strength_trend, created_at, accessed_at) VALUES (?, ?, 'default', ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO memories (id, user_id, tenant_id, content, category, importance, strength_trend, "
+            "created_at, accessed_at) VALUES (?, ?, 'default', ?, ?, ?, ?, ?, ?)",
             (mid, uid, content, cat, imp, trend, ts.isoformat(), ts.isoformat()),
         )
 
@@ -1412,7 +1413,8 @@ class TestTrendAwareDecayFloor:
 
         # Stale floor 0.10, stable floor 0.20
         assert stale_res.decay_multiplier < stable_res.decay_multiplier, (
-            f"Stale ({stale_res.decay_multiplier}) should have lower multiplier than stable ({stable_res.decay_multiplier})"
+            f"Stale ({stale_res.decay_multiplier}) should have lower "
+            f"multiplier than stable ({stable_res.decay_multiplier})"
         )
         # Sanity checks
         assert 0.05 <= stale_res.decay_multiplier <= 0.15, f"Unexpected stale multiplier: {stale_res.decay_multiplier}"

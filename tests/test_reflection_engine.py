@@ -118,7 +118,8 @@ def create_test_db():
 
     for mid, content, cat, imp, trend, ts in memories:
         conn.execute(
-            "INSERT INTO memories (id, user_id, tenant_id, content, category, importance, strength_trend, created_at) VALUES (?, ?, 'default', ?, ?, ?, ?, ?)",
+            "INSERT INTO memories (id, user_id, tenant_id, content, category, importance, strength_trend, "
+            "created_at) VALUES (?, ?, 'default', ?, ?, ?, ?, ?)",
             (mid, uid, content, cat, imp, trend, ts.isoformat()),
         )
 
@@ -137,15 +138,18 @@ def create_test_db():
 
     # Relationships to make anxiety a hub
     conn.execute(
-        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, "
+        "user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_anxiety", "entity_therapy", "relates_to", uid),
     )
     conn.execute(
-        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, "
+        "user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_anxiety", "entity_stress", "relates_to", uid),
     )
     conn.execute(
-        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, "
+        "user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_stress", "entity_therapy", "supports", uid),
     )
 

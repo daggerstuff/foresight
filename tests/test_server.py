@@ -1058,7 +1058,8 @@ def _seed_memory(
         (id, content, tenant_id, scope, retention, category, user_id, bank_id, created_at,
          updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, version,
          importance, activation_count, decay_rate, retrieval_count, strength_trend, last_retrieved_at)
-        VALUES (?, ?, ?, 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, 'stable', NULL)
+        VALUES (?, ?, ?, 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, \
+'stable', NULL)
         ON CONFLICT (id) DO NOTHING""",
         (memory_id, content, tenant_id, user_id, bank_id, now, now),
     )
@@ -2359,7 +2360,8 @@ def test_process_session_transcript_infer_false_stores_verbatim():
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT content, tags, metrics FROM memories WHERE user_id = ? AND tags LIKE ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT content, tags, metrics FROM memories WHERE user_id = ? AND tags LIKE ? ORDER BY created_at DESC "
+        "LIMIT 1",
         ("_test_user_", "%verbatim%"),
     ).fetchone()
     assert row is not None, "expected a verbatim memory to be stored"

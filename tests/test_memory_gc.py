@@ -113,7 +113,8 @@ def _insert_memory(
     created_at: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, is_ghost, created_at) "
+        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, "
+        "is_ghost, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
@@ -139,7 +140,8 @@ def _insert_decay_event(
     created_at: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO memory_decay_events (tenant_id, user_id, memory_id, event_type, old_strength, new_strength, decay_factor, reason, created_at) "
+        "INSERT INTO memory_decay_events (tenant_id, user_id, memory_id, event_type, old_strength, "
+        "new_strength, decay_factor, reason, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             tenant_id,

@@ -842,7 +842,8 @@ class CapturePipeline:
                    (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                     created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from,
                     importance, memory_type)
-                   VALUES (?, ?, ?, 'session', 'short_term', 'episodic', ?, ?, ?, ?, ?, ?, '{}', ?, 0, '[]', ?, 'episodic')
+                   VALUES (?, ?, ?, 'session', 'short_term', 'episodic', ?, ?, ?, ?, ?, ?, '{}', ?, 0, '[]', \
+?, 'episodic')
                    ON CONFLICT (id) DO NOTHING""",
                 (
                     mid,

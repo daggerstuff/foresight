@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS decay_config (
     UNIQUE(user_id, category)
 );
 
-INSERT INTO decay_config (user_id, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, stale_threshold)
+INSERT INTO decay_config (user_id, category, half_life_hours, min_importance, activation_boost, \
+strengthening_threshold, stale_threshold)
 VALUES
     ('default', 'general', 168.0, 0.1, 1.2, 5, 0.2),
     ('default', 'preference', 336.0, 0.1, 1.2, 5, 0.2),
@@ -99,8 +100,10 @@ def initialize_decay_config(db_path: str, user_id: str) -> None:
         conn.execute(
             """
             INSERT INTO decay_config
-            (user_id, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, stale_threshold)
-            SELECT ?, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, stale_threshold
+            (user_id, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, \
+stale_threshold)
+            SELECT ?, category, half_life_hours, min_importance, activation_boost, strengthening_threshold, \
+stale_threshold
             FROM decay_config WHERE user_id = 'default'
             ON CONFLICT (user_id, category) DO NOTHING
         """,

@@ -129,8 +129,10 @@ MIGRATIONS: dict[int, list[str]] = {
             ended_at TEXT,
             archived_at TEXT
         )""",
-        "CREATE INDEX IF NOT EXISTS idx_curation_runs_tenant_user ON curation_runs(tenant_id, user_id, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_curation_runs_status ON curation_runs(tenant_id, user_id, status, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_curation_runs_tenant_user "
+        "ON curation_runs(tenant_id, user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_curation_runs_status "
+        "ON curation_runs(tenant_id, user_id, status, created_at DESC)",
     ],
     4: [
         """CREATE TABLE IF NOT EXISTS context_blocks (
@@ -167,9 +169,12 @@ MIGRATIONS: dict[int, list[str]] = {
             FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
             FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
         )""",
-        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_source ON memory_relationships(tenant_id, user_id, source_memory_id)",
-        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_target ON memory_relationships(tenant_id, user_id, target_memory_id)",
-        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_type ON memory_relationships(tenant_id, user_id, relationship_type)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_source "
+        "ON memory_relationships(tenant_id, user_id, source_memory_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_target "
+        "ON memory_relationships(tenant_id, user_id, target_memory_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_relationships_type "
+        "ON memory_relationships(tenant_id, user_id, relationship_type)",
         "ALTER TABLE memories ADD COLUMN relation_type TEXT",
         "ALTER TABLE memories ADD COLUMN related_memory_id TEXT",
         "CREATE INDEX IF NOT EXISTS idx_memories_relation ON memories(tenant_id, user_id, relation_type)",
@@ -240,7 +245,8 @@ MIGRATIONS: dict[int, list[str]] = {
             reason TEXT,
             created_at TEXT NOT NULL
         )""",
-        "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_lookup ON memory_decay_events (tenant_id, user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_lookup "
+        "ON memory_decay_events (tenant_id, user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_memory_decay_events_memory ON memory_decay_events (memory_id, created_at DESC)",
     ],
     10: [
@@ -610,7 +616,8 @@ MIGRATIONS: dict[int, list[str]] = {
             expires_at TEXT,
             stale INTEGER NOT NULL DEFAULT 0
         )""",
-        "CREATE INDEX IF NOT EXISTS idx_mental_models_lookup ON mental_models(tenant_id, user_id, question_key, namespace_agent_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mental_models_lookup "
+        "ON mental_models(tenant_id, user_id, question_key, namespace_agent_id)",
         "CREATE INDEX IF NOT EXISTS idx_mental_models_expiry ON mental_models(expires_at)",
     ],
     24: [
@@ -685,7 +692,8 @@ MIGRATIONS: dict[int, list[str]] = {
         "DROP TABLE context_blocks",
         "ALTER TABLE context_blocks_v25 RENAME TO context_blocks",
         "CREATE INDEX IF NOT EXISTS idx_context_blocks_lookup ON context_blocks(tenant_id, user_id, updated_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_context_blocks_namespace ON context_blocks(tenant_id, user_id, agent_id, project, visibility)",
+        "CREATE INDEX IF NOT EXISTS idx_context_blocks_namespace "
+        "ON context_blocks(tenant_id, user_id, agent_id, project, visibility)",
     ],
 }
 

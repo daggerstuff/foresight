@@ -87,7 +87,8 @@ def _insert_memory(
     retention: str = "short_term",
 ) -> None:
     conn.execute(
-        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, is_ghost, created_at) "
+        "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, "
+        "is_ghost, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,

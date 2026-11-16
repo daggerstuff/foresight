@@ -353,8 +353,10 @@ class GraphStore:
         """)
         conn.execute("""
             INSERT OR IGNORE INTO entity_relationships_new
-            (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata, created_at)
-            SELECT 'default', user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata, created_at
+            (tenant_id, user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata, \
+created_at)
+            SELECT 'default', user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata, \
+created_at
             FROM entity_relationships
         """)
         conn.execute("DROP TABLE entity_relationships")
