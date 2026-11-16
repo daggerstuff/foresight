@@ -66,21 +66,19 @@ class FastEmbedReranker:
     provider_name = DEFAULT_RERANKER_PROVIDER
 
     def __init__(self, model: str = DEFAULT_RERANKER_MODEL) -> None:
-        from fastembed.rerank.cross_encoder import CrossEncoder
+        # fastembed exposes the cross-encoder as TextCrossEncoder (the name
+        # `CrossEncoder` never existed in the >=0.9 API this extra pins).
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
 
         self.model = model
-        self._encoder = CrossEncoder(model_name=model)
+        self._encoder = TextCrossEncoder(model_name=model)
 
     def rerank(self, query: str, documents: list[str]) -> list[float]:
         if not documents:
             return []
-        items = list(self._encoder.rerank(query, documents))
-        if items and isinstance(items[0], dict):
-            # fastembed yields {"index": int, "score": float}; restore
-            # document order so callers can zip scores with documents.
-            ordered = sorted(items, key=lambda item: item["index"])
-            return [float(item["score"]) for item in ordered]
-        return [float(item) for item in items]
+        # fastembed yields one score per document, in document order, so
+        # callers can zip the scores straight back onto their documents.
+        return [float(score) for score in self._encoder.rerank(query, documents)]
 
 
 _RERANKER_CACHE: dict[str, Reranker] = {}

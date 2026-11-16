@@ -105,6 +105,14 @@ dev = [
   "bandit>=1.9.4",
   "twine>=7.0.0",
   "mypy>=1.11",
+  "argon2-cffi>=25.1.0",
+  "bcrypt>=5.0.0",
+  "pillow>=13.0.0",
+  "pypdf>=6.21.4",
+  "pytesseract>=0.3.13",
+  "psycopg[binary]>=3.3.8",
+  "psycopg-pool>=3.3.3",
+  "fastembed>=0.9.1",
 ]
 
 [tool.ruff]
@@ -208,39 +216,17 @@ force-single-line = false
 # the interpreter running mypy is the conservative choice: it rejects use of
 # stdlib features that only exist on 3.13/3.14 and would break a 3.12 install.
 python_version = "3.12"
-# No strictness flags are set here. The defaults are what the gate has always
-# been measuring conceptually — this section exists so the command runs at all
-# and so the optional-extra imports below resolve, not to redefine the check.
+# `stubs/` supplies a hand-written stub for the one dependency that ships no
+# `py.typed` marker (pytesseract, which has no types-* package on PyPI). This
+# adds type information for that module; it exempts nothing from checking.
+mypy_path = "stubs"
+# No strictness flags and no per-module overrides are set here. The defaults are
+# what the gate measures; this section exists so the command runs at all, not to
+# redefine or narrow what it reports. Every import resolves for real — the
+# optional extras are installed in the dev dependency group.
 warn_unused_configs = true
 warn_redundant_casts = true
 show_error_codes = true
-
-# Optional extras that are deliberately NOT installed in the dev environment.
-# Each is imported behind a try/except (or a lazy in-function import) and has a
-# documented fallback, so a missing stub is expected rather than a defect:
-#   argon2 / bcrypt  — optional password-hashing backends in foresight/auth.py
-#   PIL              — Pillow, pulled in only by the `ocr` extra
-#   pypdf            — `pdf` extra (foresight/document_ingestion.py)
-#   pytesseract      — `ocr` extra (foresight/document_ingestion.py)
-#   fastembed        — `embeddings` extra; ~200MB of onnxruntime and missing
-#                      platform wheels, so it cannot be a dev dependency
-#                      (foresight/semantic_search.py, foresight/reranker.py)
-#   psycopg / psycopg_pool — declared runtime deps, listed for parity with the
-#                      environments where the binary wheel is unavailable
-[[tool.mypy.overrides]]
-module = [
-  "argon2",
-  "bcrypt",
-  "PIL",
-  "pypdf",
-  "pytesseract",
-  "fastembed",
-  "fastembed.*",
-  "psycopg",
-  "psycopg.*",
-  "psycopg_pool",
-]
-ignore_missing_imports = true
 
 [tool.pyright]
 venvPath = "."

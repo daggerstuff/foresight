@@ -5,7 +5,7 @@ Covers:
 - The rerank gate (``foresight.reranker``): env flag parsing, bounded
   score->multiplier mapping, cached/no-op reranker resolution.
 - The ``FastEmbedReranker`` wrapper against a stubbed fastembed package:
-  dict-item ordering, float passthrough, empty docs, model propagation.
+  float passthrough, empty docs, model propagation.
 - The retriever rerank stage: promotion of an under-ranked candidate,
   field/signal_counts population, no-op when disabled or unavailable,
   early-termination suppression, and rerank-state cache-key isolation.
@@ -196,18 +196,19 @@ class TestRerankGate:
 # =============================================================================
 
 
-class _StubCrossEncoder:
-    """Minimal fastembed CrossEncoder double with a deterministic score map."""
+class _StubTextCrossEncoder:
+    """Minimal fastembed TextCrossEncoder double with a deterministic score map.
+
+    Mirrors the real API (fastembed >= 0.9): ``rerank`` yields one float per
+    document, in document order. There is no dict-returning mode to emulate.
+    """
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
-        self.return_dicts = False
         self.calls: list[tuple[str, list[str]]] = []
 
     def rerank(self, query: str, documents: list[str]) -> list:
         self.calls.append((query, list(documents)))
-        if self.return_dicts:
-            return [{"index": i, "score": float(len(documents) - i)} for i in range(len(documents))]
         return [float(i) for i in range(len(documents))]
 
 
@@ -215,7 +216,7 @@ def _install_fastembed_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     fastembed = types.ModuleType("fastembed")
     rerank_pkg = types.ModuleType("fastembed.rerank")
     cross_mod = types.ModuleType("fastembed.rerank.cross_encoder")
-    cross_mod.CrossEncoder = _StubCrossEncoder
+    cross_mod.TextCrossEncoder = _StubTextCrossEncoder
     fastembed.rerank = rerank_pkg
     rerank_pkg.cross_encoder = cross_mod
     monkeypatch.setitem(sys.modules, "fastembed", fastembed)
@@ -235,14 +236,6 @@ class TestFastEmbedReranker:
         _install_fastembed_stub(monkeypatch)
         reranker = reranker_module.FastEmbedReranker()
         assert reranker.rerank("q", ["a", "bb", "ccc"]) == [0.0, 1.0, 2.0]
-
-    def test_dict_items_restored_to_document_order(self, monkeypatch):
-        _install_fastembed_stub(monkeypatch)
-        reranker = reranker_module.FastEmbedReranker()
-        reranker._encoder.return_dicts = True
-        # The stub emits {"index": i, "score": n - i}; scores must come back
-        # aligned with document order (index 0 first), not score order.
-        assert reranker.rerank("q", ["a", "bb", "ccc"]) == [3.0, 2.0, 1.0]
 
     def test_empty_documents_short_circuits_without_calling_encoder(self, monkeypatch):
         _install_fastembed_stub(monkeypatch)
