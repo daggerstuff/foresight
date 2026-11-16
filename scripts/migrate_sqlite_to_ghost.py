@@ -4,6 +4,7 @@ Idempotent: uses INSERT ... ON CONFLICT DO NOTHING for all tables.
 """
 
 import os
+import re
 import sqlite3
 
 import psycopg2
@@ -27,8 +28,25 @@ TABLES = [
 ]
 
 
+_PLAIN_IDENTIFIER = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _quote_identifier(name):
+    """Double-quote *name* after proving it is a plain identifier."""
+    if not isinstance(name, str) or not _PLAIN_IDENTIFIER.match(name):
+        raise ValueError(f"Invalid SQL identifier: {name!r}")
+    return f'"{name}"'
+
+
+def _table(table):
+    """Validate *table* against the migration's closed table list, then quote it."""
+    if table not in TABLES:
+        raise ValueError(f"Refusing to migrate unknown table: {table!r}")
+    return _quote_identifier(table)
+
+
 def get_columns(cursor, table):
-    cursor.execute(f"SELECT c.name FROM pragma_table_info('{table}') c")  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+    cursor.execute("SELECT c.name FROM pragma_table_info(?) c", (table,))
     return [row[0] for row in cursor.fetchall()]
 
 
@@ -42,7 +60,7 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
         print(f"  [SKIP] {table}: no columns found")
         return
 
-    cur_sqlite.execute(f"SELECT * FROM {table}")  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+    cur_sqlite.execute("".join(("SELECT * FROM ", _table(table))))
     rows = cur_sqlite.fetchall()
     if not rows:
         print(f"  [SKIP] {table}: 0 rows")
@@ -62,10 +80,22 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
             return
 
     placeholders = ", ".join(["%s"] * len(cols))
-    col_names = ", ".join(cols)
-    conflict_target = ", ".join(conflict_cols) if conflict_cols else col_names
+    col_names = ", ".join(_quote_identifier(c) for c in cols)
+    conflict_target = ", ".join(_quote_identifier(c) for c in (conflict_cols or cols))
 
-    sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders}) ON CONFLICT ({conflict_target}) DO NOTHING"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+    sql = "".join(
+        (
+            "INSERT INTO ",
+            _table(table),
+            " (",
+            col_names,
+            ") VALUES (",
+            placeholders,
+            ") ON CONFLICT (",
+            conflict_target,
+            ") DO NOTHING",
+        )
+    )
 
     inserted = 0
     skipped = 0

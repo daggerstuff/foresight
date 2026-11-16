@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from http import HTTPStatus
 from typing import Any
+
+import httpx
 
 from foresight.config import DEFAULT_LLM_MAX_TOKENS
 from foresight.llm_errors import LLMError, LLMRateLimitError
@@ -78,25 +78,24 @@ class OpenAIClient:
         if not self._api_url.startswith(("https://", "http://")):
             raise ValueError("Only http/https schemes are permitted")
         data = json.dumps(body).encode("utf-8")
-        request = urllib.request.Request(
-            self._api_url,
-            data=data,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "content-type": "application/json",
-            },
-        )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310 - fixed https:// API endpoint with explicit scheme guard
-                payload = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            if exc.code == HTTPStatus.TOO_MANY_REQUESTS:
-                raise LLMRateLimitError(f"OpenAI API rate limit (429): {detail}") from exc
-            raise LLMError(f"OpenAI API returned HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise LLMError(f"OpenAI API request failed: {exc.reason}") from exc
+            response = httpx.post(
+                self._api_url,
+                content=data,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "content-type": "application/json",
+                },
+                timeout=60.0,
+            )
+        except httpx.HTTPError as exc:
+            raise LLMError(f"OpenAI API request failed: {exc}") from exc
+
+        payload = response.text
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+            raise LLMRateLimitError(f"OpenAI API rate limit (429): {payload}")
+        if response.status_code >= HTTPStatus.BAD_REQUEST:
+            raise LLMError(f"OpenAI API returned HTTP {response.status_code}: {payload}")
 
         try:
             parsed: dict[str, Any] = json.loads(payload)

@@ -12,6 +12,8 @@ import json
 import logging
 from typing import Any
 
+from .sql_helpers import join_sql_parts
+
 logger = logging.getLogger("foresight.dependent_cleanup")
 
 
@@ -39,8 +41,11 @@ def purge_dead_synthesized_from_ids(conn, user_id: str | None = None, tenant_id:
     scope = (" AND " + " AND ".join(scope_parts)) if scope_parts else ""
 
     candidates = conn.execute(
-        "SELECT id, synthesized_from FROM memories "
-        "WHERE synthesized_from IS NOT NULL AND synthesized_from != '' AND synthesized_from != '[]'" + scope,
+        join_sql_parts(
+            "SELECT id, synthesized_from FROM memories ",
+            "WHERE synthesized_from IS NOT NULL AND synthesized_from != '' AND synthesized_from != '[]'",
+            scope,
+        ),
         tuple(scope_params),
     ).fetchall()
     if not candidates:

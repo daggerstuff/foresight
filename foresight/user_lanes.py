@@ -16,6 +16,7 @@ import uuid
 from typing import Any
 
 from foresight.server import get_db_connection
+from foresight.sql_helpers import join_sql_parts, placeholders, quote_identifier
 
 logger = logging.getLogger("foresight.user_lanes")
 
@@ -62,10 +63,17 @@ def _remap_json_ids(value: Any, id_map: dict[str, str], keep_unmapped: bool) -> 
 def _insert_row(conn, table: str, row: dict[str, Any], exclude: set[str] | None = None) -> None:
     exclude = exclude or set()
     cols = [c for c in row if c not in exclude]
-    placeholders = ", ".join("?" for _ in cols)
-    collist = ", ".join(f'"{c}"' for c in cols)
+    quoted_cols = ", ".join(quote_identifier(c) for c in cols)
     conn.execute(
-        f'INSERT INTO "{table}" ({collist}) VALUES ({placeholders})',
+        join_sql_parts(
+            "INSERT INTO ",
+            quote_identifier(table),
+            " (",
+            quoted_cols,
+            ") VALUES (",
+            placeholders(len(cols)),
+            ")",
+        ),
         tuple(row[c] for c in cols),
     )
 
@@ -160,9 +168,14 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             new_row["memory_id"] = mid
             if not dry_run:
                 conn.execute(
-                    'INSERT INTO "memory_embeddings" ({cols}) VALUES ({ph}) ON CONFLICT DO NOTHING'.format(
-                        cols=", ".join(f'"{c}"' for c in new_row),
-                        ph=", ".join("?" for _ in new_row),
+                    join_sql_parts(
+                        "INSERT INTO ",
+                        quote_identifier("memory_embeddings"),
+                        " (",
+                        ", ".join(quote_identifier(c) for c in new_row),
+                        ") VALUES (",
+                        placeholders(len(new_row)),
+                        ") ON CONFLICT DO NOTHING",
                     ),
                     tuple(new_row.values()),
                 )
@@ -208,12 +221,14 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             new_row["entity_id"] = eid
             if not dry_run:
                 conn.execute(
-                    (
-                        'INSERT INTO "memory_entity_links" ({cols}) VALUES ({ph}) '
-                        "ON CONFLICT (memory_id, entity_id) DO NOTHING"
-                    ).format(
-                        cols=", ".join(f'"{c}"' for c in new_row),
-                        ph=", ".join("?" for _ in new_row),
+                    join_sql_parts(
+                        "INSERT INTO ",
+                        quote_identifier("memory_entity_links"),
+                        " (",
+                        ", ".join(quote_identifier(c) for c in new_row),
+                        ") VALUES (",
+                        placeholders(len(new_row)),
+                        ") ON CONFLICT (memory_id, entity_id) DO NOTHING",
                     ),
                     tuple(new_row.values()),
                 )
@@ -475,7 +490,15 @@ def move_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             if table in _SKIP_TABLES:
                 continue
             res = conn.execute(
-                f'UPDATE "{table}" SET "{col}" = ? WHERE "{col}" = ?',  # nosec B608 - identifiers from information_schema
+                join_sql_parts(
+                    "UPDATE ",
+                    quote_identifier(table),
+                    " SET ",
+                    quote_identifier(col),
+                    " = ? WHERE ",
+                    quote_identifier(col),
+                    " = ?",
+                ),
                 (dst_user, src_user),
             )
             n = getattr(res, "rowcount", 0) or 0

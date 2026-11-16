@@ -39,6 +39,7 @@ from .enhanced_synthesizer import get_enhanced_synthesizer
 from .injection_budget import _truncate_to_chars
 from .memory_components import MIN_MEMORIES_FOR_SYNTHESIS
 from .memory_types import EmotionalMetadata, MemoryObject
+from .sql_helpers import join_sql_parts, placeholders
 
 # Importance above which a static memory carries enough affect to annotate.
 HIGH_EMOTIONAL_IMPORTANCE = 0.6
@@ -136,6 +137,11 @@ class ScopeQueryOptions:
     order_by: str = "importance DESC, created_at DESC"
 
 
+# ORDER BY expressions this query may interpolate; anything else is rejected
+# before it can reach the statement.
+_VALID_ORDER_BY = frozenset({"importance DESC, created_at DESC", "created_at DESC"})
+
+
 # Block labels used for each profile layer
 _STATIC_BLOCK_LABELS = [USER_PREFERENCES]
 _DYNAMIC_BLOCK_LABELS = [PROJECT_CONTEXT, SESSION_PATTERNS, PENDING_ITEMS]
@@ -200,24 +206,34 @@ def _query_memories_by_scope(
     conn = pool.acquire()
     try:
         params: list[Any] = [user_id, tenant_id]
-        scope_placeholders = ",".join("?" for _ in scopes)
+        scope_slots = placeholders(len(scopes))
         params.extend(scopes)
 
         retention_clause = ""
         if retentions:
-            ret_placeholders = ",".join("?" for _ in retentions)
-            retention_clause = f"AND retention IN ({ret_placeholders})"
+            retention_clause = join_sql_parts("AND retention IN (", placeholders(len(retentions)), ")")
             params.extend(retentions)
 
+        if options.order_by not in _VALID_ORDER_BY:
+            raise ValueError(f"Invalid order_by: {options.order_by!r}")
+
         rows = conn.execute(
-            f"""SELECT content, category, tags, importance, strength_trend, scope,
+            join_sql_parts(
+                """SELECT content, category, tags, importance, strength_trend, scope,
                         retention, created_at
                  FROM memories
                  WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0
-                   AND scope IN ({scope_placeholders})
-                   {retention_clause}
-                 ORDER BY {options.order_by}
-                 LIMIT ?""",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                   AND scope IN (""",
+                scope_slots,
+                """)
+                   """,
+                retention_clause,
+                """
+                 ORDER BY """,
+                options.order_by,
+                """
+                 LIMIT ?""",
+            ),
             (*params, options.limit),
         ).fetchall()
     finally:

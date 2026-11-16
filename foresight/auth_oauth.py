@@ -243,12 +243,12 @@ class ForesightOAuthProvider(OAuthProvider):
                 "code_json",
                 now,
             )
-            token_query = "SELECT token, kind, token_json, expires_at FROM oauth_tokens"
+            tokens_sql = "SELECT token, kind, token_json, expires_at FROM oauth_tokens"
             self._load_table(
-                conn, token_query, AccessToken, self._access_tokens, "token", "token_json", now, kind_key="access"
+                conn, tokens_sql, AccessToken, self._access_tokens, "token", "token_json", now, kind_key="access"
             )
             self._load_table(
-                conn, token_query, RefreshToken, self._refresh_tokens, "token", "token_json", now, kind_key="refresh"
+                conn, tokens_sql, RefreshToken, self._refresh_tokens, "token", "token_json", now, kind_key="refresh"
             )
         except Exception as exc:
             logger.warning("OAuth store reload failed (continuing memory-only): %s", exc)

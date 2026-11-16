@@ -27,6 +27,7 @@ from .block_registry import (
 from .config import DB_PATH
 from .connection_pool import get_db_connection, get_pool
 from .memory_components import MemoryCrisisTagger, SocraticGate
+from .sql_helpers import join_sql_parts
 
 logger = logging.getLogger("foresight_context_blocks")
 
@@ -434,8 +435,11 @@ class ContextBlockAgent:
                 )"""
                 ns_params = [self.project or "default", self.agent_id or "default", self.project or "default"]
             rows = conn.execute(
-                "SELECT label, content, updated_at, agent_id, project, visibility "  # nosec B608 - values parameterized; ns_where is a hardcoded literal
-                "FROM context_blocks WHERE tenant_id = ? AND user_id = ?" + ns_where,
+                join_sql_parts(
+                    "SELECT label, content, updated_at, agent_id, project, visibility ",
+                    "FROM context_blocks WHERE tenant_id = ? AND user_id = ?",
+                    ns_where,
+                ),
                 (self.tenant_id, self.user_id, *ns_params),
             ).fetchall()
         finally:

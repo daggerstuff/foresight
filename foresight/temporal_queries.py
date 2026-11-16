@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
+from .sql_helpers import join_sql_parts, placeholders
 from .tenant_context import get_current_account_id
 
 if True:  # TYPE_CHECKING-compatible import guard for backend protocol
@@ -189,7 +190,8 @@ class TemporalQueryBuilder:
         ns_frag, ns_params = self._ns_frag(agent_id, project)
 
         if category:
-            sql = f"""
+            sql = join_sql_parts(
+                """
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
@@ -197,23 +199,30 @@ class TemporalQueryBuilder:
                 WHERE user_id = ? AND tenant_id = ?
                 AND created_at >= ?
                 AND importance >= ?
-                AND category = ?{ns_frag}
+                AND category = ?""",
+                ns_frag,
+                """
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
-            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+            """,
+            )
             base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, category, *ns_params, limit]
         else:
-            sql = f"""
+            sql = join_sql_parts(
+                """
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
                 WHERE user_id = ? AND tenant_id = ?
                 AND created_at >= ?
-                AND importance >= ?{ns_frag}
+                AND importance >= ?""",
+                ns_frag,
+                """
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
-            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+            """,
+            )
             base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, *ns_params, limit]
 
         try:
@@ -300,7 +309,8 @@ class TemporalQueryBuilder:
         # target_iso: the first snapshot recorded after it (snapshots are
         # written *before* a change overwrites the row content, so a
         # snapshot at time S > T holds the content valid up to S, i.e. at T).
-        sql = f"""
+        sql = join_sql_parts(
+            """
             SELECT
                 m.id, m.content, m.importance, m.strength_trend,
                 m.activation_count, m.created_at, m.accessed_at, m.category,
@@ -317,8 +327,11 @@ class TemporalQueryBuilder:
             AND m.created_at <= ?
             AND COALESCE(m.valid_from, m.created_at) <= ?
             AND (m.valid_until IS NULL OR m.valid_until > ?)
-            AND m.importance > ?{ns_frag}
-        """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+            AND m.importance > ?""",
+            ns_frag,
+            """
+        """,
+        )
         base_params = [
             target_iso,
             user_id,
@@ -400,29 +413,37 @@ class TemporalQueryBuilder:
         tenant_id = get_current_account_id()
         ns_frag, ns_params = self._ns_frag(agent_id, project)
         if category:
-            sql = f"""
+            sql = join_sql_parts(
+                """
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
                 WHERE user_id = ? AND tenant_id = ?
                 AND strength_trend = ?
-                AND category = ?{ns_frag}
+                AND category = ?""",
+                ns_frag,
+                """
                 ORDER BY created_at DESC
                 LIMIT ?
-            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+            """,
+            )
             base_params = [user_id, tenant_id, trend, category, *ns_params, limit]
         else:
-            sql = f"""
+            sql = join_sql_parts(
+                """
                 SELECT
                     id, content, importance, strength_trend,
                     activation_count, created_at, accessed_at, category
                 FROM memories
                 WHERE user_id = ? AND tenant_id = ?
-                AND strength_trend = ?{ns_frag}
+                AND strength_trend = ?""",
+                ns_frag,
+                """
                 ORDER BY created_at DESC
                 LIMIT ?
-            """  # nosec B608 - values parameterized; ns_frag is a hardcoded literal
+            """,
+            )
             base_params = [user_id, tenant_id, trend, *ns_params, limit]
 
         try:
@@ -633,13 +654,17 @@ class TemporalQueryBuilder:
         if not memory_ids:
             return {}
         tenant_id = get_current_account_id()
-        placeholders = ",".join("?" * len(memory_ids))
+        id_slots = placeholders(len(memory_ids))
         rows = self._fetch_rows(
-            f"""
+            join_sql_parts(
+                """
                 SELECT id, created_at, activation_count
                 FROM memories
-                WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?
-            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                WHERE id IN (""",
+                id_slots,
+                """) AND user_id = ? AND tenant_id = ?
+            """,
+            ),
             [*memory_ids, user_id, tenant_id],
         )
 

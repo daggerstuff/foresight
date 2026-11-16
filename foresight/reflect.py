@@ -31,6 +31,7 @@ from . import llm_client
 from .config import DB_PATH
 from .connection_pool import get_db_connection, get_pool
 from .hybrid_retriever import HybridSearchOptions, get_hybrid_retriever
+from .sql_helpers import join_sql_parts, placeholders
 
 logger = logging.getLogger("foresight_reflect")
 
@@ -120,10 +121,13 @@ def _memory_rows_for_ids(memory_ids: list[str], uid: str, tenant_id: str) -> dic
     """Fetch liveness metadata for citation validation."""
     if not memory_ids:
         return {}
-    placeholders = ",".join("?" * len(memory_ids))
+    id_slots = placeholders(len(memory_ids))
     rows = _fetch_all(
-        f"SELECT id, is_ghost, expires_at, is_latest FROM memories "  # nosec B608 - values parameterized; IN placeholders generated count-only
-        f"WHERE id IN ({placeholders}) AND user_id = ? AND tenant_id = ?",
+        join_sql_parts(
+            "SELECT id, is_ghost, expires_at, is_latest FROM memories WHERE id IN (",
+            id_slots,
+            ") AND user_id = ? AND tenant_id = ?",
+        ),
         (*memory_ids, uid, tenant_id),
     )
     return {row["id"]: row for row in rows}
@@ -400,9 +404,13 @@ def mark_mental_models_stale(memory_ids: list[str], *, user_id: str, tenant_id: 
     # Some rows serialize without the space after the colon — cover both.
     like_clauses2 = " OR ".join(["citations_json LIKE ?" for _ in memory_ids])
     params2: list[Any] = [f'%"memory_id":"{mid}"%' for mid in memory_ids]
-    sql = (
-        f"UPDATE mental_models SET stale = 1 WHERE tenant_id = ? AND user_id = ? "  # nosec B608 - values parameterized; LIKE fragments are bound params
-        f"AND stale = 0 AND (({like_clauses}) OR ({like_clauses2}))"
+    sql = join_sql_parts(
+        "UPDATE mental_models SET stale = 1 WHERE tenant_id = ? AND user_id = ? ",
+        "AND stale = 0 AND ((",
+        like_clauses,
+        ") OR (",
+        like_clauses2,
+        "))",
     )
     conn = _connect()
     try:

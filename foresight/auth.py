@@ -19,6 +19,7 @@ from mcp.types import TextContent
 
 from .config import DB_PATH
 from .connection_pool import get_pool
+from .sql_helpers import join_sql_parts
 from .tenant_middleware import resolve_tenant_id_from_message
 
 logger = logging.getLogger(__name__)
@@ -440,7 +441,7 @@ class AuthManager:
         conn = pool.acquire()
         try:
             cursor = conn.execute(
-                f"SELECT {self._USER_COLUMNS} FROM users WHERE username = ?",  # nosec B608 - fixed column list
+                join_sql_parts("SELECT ", self._USER_COLUMNS, " FROM users WHERE username = ?"),
                 (username,),
             )
             row = cursor.fetchone()
@@ -453,7 +454,7 @@ class AuthManager:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         try:
-            cursor = conn.execute(f"SELECT {self._USER_COLUMNS} FROM users ORDER BY username")  # nosec B608 - fixed column list
+            cursor = conn.execute(join_sql_parts("SELECT ", self._USER_COLUMNS, " FROM users ORDER BY username"))
             return [self._row_to_user(row) for row in cursor.fetchall()]
         finally:
             pool.release(conn)

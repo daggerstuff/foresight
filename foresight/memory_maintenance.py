@@ -40,6 +40,7 @@ from .event_bus import EventType
 from .memory_components import MIN_MEMORIES_FOR_SYNTHESIS
 from .memory_types import EmotionalMetadata, MemoryObject
 from .sensitivity import resolve_is_sensitive
+from .sql_helpers import join_sql_parts, placeholders
 
 logger = logging.getLogger("foresight_maintenance")
 
@@ -255,19 +256,23 @@ class MemoryMaintenanceJob:
         self, conn: Any, config: MaintenanceConfig, extra_where: str = "", extra_params: tuple = ()
     ) -> list[dict[str, Any]]:
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
-        where = f"user_id = ? AND tenant_id = ? AND {sensitivity_filter}{extra_where}"  # nosec B608: sensitivity_filter is hardcoded, not user input
+        where = join_sql_parts("user_id = ? AND tenant_id = ? AND ", sensitivity_filter, extra_where)
         params = (config.user_id, config.tenant_id, *extra_params)
         cursor = conn.execute(
-            f"""
+            join_sql_parts(
+                """
             SELECT id, user_id, tenant_id, scope, retention, content, tags,
                    category, importance, strength_trend, created_at,
                    activation_count, is_ghost, synthesized_from,
                    emotional_context, metrics, COALESCE(is_sensitive, 0) AS is_sensitive
             FROM memories
-            WHERE {where}
+            WHERE """,
+                where,
+                """
             ORDER BY created_at DESC
             LIMIT ?
-            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+            """,
+            ),
             [*params, config.batch_size],
         )
         rows = cursor.fetchall()
@@ -448,9 +453,13 @@ class MemoryMaintenanceJob:
 
         # Fetch all other memories' content in a single query
         if other_ids:
-            placeholders = ",".join("?" for _ in other_ids)
+            other_slots = placeholders(len(other_ids))
             rows = conn.execute(
-                f"SELECT id, content FROM memories WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                join_sql_parts(
+                    "SELECT id, content FROM memories WHERE id IN (",
+                    other_slots,
+                    ") AND tenant_id = ? AND user_id = ?",
+                ),
                 (*other_ids, config.tenant_id, config.user_id),
             ).fetchall()
 
@@ -562,18 +571,19 @@ class MemoryMaintenanceJob:
 
         # Ghost all other memories in a single query
         if other_ids:
-            placeholders = ",".join("?" for _ in other_ids)
+            other_slots = placeholders(len(other_ids))
             gist_values = [(other_ids[0][:200] if other_ids else "")] * len(other_ids)
             synthesized_from_values = [str([*list(existing_synth), mid]) for mid in other_ids]
 
             # Build the SET clause for the UPDATE
-            set_clause = "is_ghost = 1, gist = CASE id "
-            for _i, _mid in enumerate(other_ids):
-                set_clause += "WHEN ? THEN ? "
-            set_clause += "END, synthesized_from = CASE id "
-            for _i, _mid in enumerate(other_ids):
-                set_clause += "WHEN ? THEN ? "
-            set_clause += "END"
+            set_parts: list[str] = ["is_ghost = 1, gist = CASE id "]
+            for _mid in other_ids:
+                set_parts.append("WHEN ? THEN ? ")
+            set_parts.append("END, synthesized_from = CASE id ")
+            for _mid in other_ids:
+                set_parts.append("WHEN ? THEN ? ")
+            set_parts.append("END")
+            set_clause = "".join(set_parts)
 
             # Prepare parameters
             params = []
@@ -588,7 +598,13 @@ class MemoryMaintenanceJob:
             params = where_params + params
 
             conn.execute(
-                f"UPDATE memories SET {set_clause} WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+                join_sql_parts(
+                    "UPDATE memories SET ",
+                    set_clause,
+                    " WHERE id IN (",
+                    other_slots,
+                    ") AND tenant_id = ? AND user_id = ?",
+                ),
                 params,
             )
 
@@ -816,18 +832,22 @@ class MemoryMaintenanceJob:
     def _find_stale_candidates(self, conn: Any, config: MaintenanceConfig) -> list[StaleCandidate]:
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
         cursor = conn.execute(
-            f"""
+            join_sql_parts(
+                """
             SELECT id, importance,
                    COALESCE(strength_trend, 'stable') as strength_trend,
                    content
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND is_ghost = 0
-            AND {sensitivity_filter}
+            AND """,
+                sensitivity_filter,
+                """
             AND (importance <= ? OR strength_trend = 'stale')
             ORDER BY importance ASC, created_at ASC
             LIMIT ?
-            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+            """,
+            ),
             (
                 config.user_id,
                 config.tenant_id,
@@ -876,19 +896,23 @@ class MemoryMaintenanceJob:
         cutoff = (datetime.now(UTC) - timedelta(days=config.low_relevance_min_age_days)).isoformat()
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
         cursor = conn.execute(
-            f"""
+            join_sql_parts(
+                """
             SELECT id, content, importance, activation_count, retention, created_at
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND is_ghost = 0
-            AND {sensitivity_filter}
+            AND """,
+                sensitivity_filter,
+                """
             AND importance <= ?
             AND COALESCE(activation_count, 0) <= ?
             AND created_at < ?
             AND retention NOT IN ('permanent')
             ORDER BY importance ASC, activation_count ASC, created_at ASC
             LIMIT ?
-            """,  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
+            """,
+            ),
             (
                 config.user_id,
                 config.tenant_id,

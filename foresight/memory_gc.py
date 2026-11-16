@@ -20,8 +20,26 @@ from psycopg import errors as psycopg_errors
 from .config import DB_PATH, DB_URL, raw_retention_window_days
 from .connection_pool import get_pool
 from .dependent_cleanup import purge_dead_synthesized_from_ids
+from .sql_helpers import join_sql_parts
 
 logger = logging.getLogger("foresight_memory_gc")
+
+# One complete statement per dependent table and per self-referencing column:
+# the identifier is never interpolated, so it cannot carry anything unexpected.
+_ORPHAN_DEPENDENT_SQL = {
+    "memory_decay_events": "DELETE FROM memory_decay_events WHERE memory_id NOT IN (SELECT id FROM memories)",
+    "memory_versions": "DELETE FROM memory_versions WHERE memory_id NOT IN (SELECT id FROM memories)",
+}
+_ORPHAN_COLUMN_SQL = {
+    "related_memory_id": (
+        "UPDATE memories SET related_memory_id = NULL WHERE related_memory_id IS NOT NULL "
+        "AND related_memory_id NOT IN (SELECT id FROM memories)"
+    ),
+    "superseded_by": (
+        "UPDATE memories SET superseded_by = NULL WHERE superseded_by IS NOT NULL "
+        "AND superseded_by NOT IN (SELECT id FROM memories)"
+    ),
+}
 
 # Retention TTLs in hours
 DEFAULT_RETENTION_TTLS: dict[str, int] = {
@@ -306,11 +324,9 @@ class MemoryGC:
 
             # 4c: Remaining dependents — decay events, versions, relationships,
             # chunk memory pointers, and intra-memories self-references.
-            for tbl in ("memory_decay_events", "memory_versions"):
+            for orphan_sql in _ORPHAN_DEPENDENT_SQL.values():
                 try:
-                    cursor = conn.execute(
-                        f"DELETE FROM {tbl} WHERE memory_id NOT IN (SELECT id FROM memories)",  # nosec B608 - table names are hardcoded literals
-                    )
+                    cursor = conn.execute(orphan_sql)
                     stats.orphan_dependents_cleaned += cursor.rowcount or 0
                 except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
                     pass
@@ -327,11 +343,8 @@ class MemoryGC:
                     "UPDATE document_chunks SET memory_id = NULL "
                     "WHERE memory_id IS NOT NULL AND memory_id NOT IN (SELECT id FROM memories)"
                 )
-                for col in ("related_memory_id", "superseded_by"):
-                    conn.execute(
-                        f"UPDATE memories SET {col} = NULL WHERE {col} IS NOT NULL "  # nosec B608 - column names are hardcoded literals
-                        f"AND {col} NOT IN (SELECT id FROM memories)"
-                    )
+                for clear_sql in _ORPHAN_COLUMN_SQL.values():
+                    conn.execute(clear_sql)
                 try:
                     stats.orphan_dependents_cleaned += purge_dead_synthesized_from_ids(conn) or 0
                 except Exception as e:
@@ -403,11 +416,10 @@ def tombstone_raw_events(
         clauses.append("captured_at < ?")
         params.append(older_than)
 
-    sql = f"""
-        UPDATE raw_events
-        SET tombstone = 1, content = NULL, metadata = '{{}}'
-        WHERE {" AND ".join(clauses)}
-    """
+    sql = join_sql_parts(
+        "UPDATE raw_events SET tombstone = 1, content = NULL, metadata = '{}' WHERE ",
+        " AND ".join(clauses),
+    )
 
     try:
         cursor = conn.execute(sql, tuple(params))
