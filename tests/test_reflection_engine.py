@@ -5,7 +5,7 @@ Tests for reflection engine.
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -103,7 +103,7 @@ def create_test_db():
  )
  """)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     uid = "test_user"
 
     # Mix of trends for interesting analysis

@@ -154,9 +154,9 @@ def pg_db(monkeypatch):
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import PostgresPooledConnection, _global_backend
+            from foresight.server import PostgresPooledConnection, get_backend
 
-            pool = _global_backend._pool
+            pool = get_backend()._pool
             return PostgresPooledConnection(pool.getconn(), pool)
         return real_sqlite3_connect(database, *args, **kwargs)
 

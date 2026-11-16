@@ -152,7 +152,7 @@ def _active_postgres_pool() -> Any | None:
     try:
         import foresight.server as _server
 
-        backend = getattr(_server, "_global_backend", None)
+        backend = _server.get_backend()
     except Exception:  # pragma: no cover - defensive
         return None
     if backend is None:

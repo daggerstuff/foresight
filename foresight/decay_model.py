@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .config import DB_PATH, DB_URL
@@ -453,7 +453,7 @@ class MemoryDecayService:
             new_strength = min(1.0, old_strength * boost)
             new_strength = max(config.min_importance, new_strength)
             new_activation_count = row["activation_count"] + 1
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             trend = self._compute_trend(
                 new_strength=new_strength,
                 activation_count=new_activation_count,
@@ -523,7 +523,7 @@ class MemoryDecayService:
         self._validate_ids(user_id, tid)
         if batch_size <= 0:
             raise DecayModelError("batch_size must be > 0")
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         now_iso = now.isoformat()
         stats = DecayStats()
         conn = self._connect()
@@ -642,7 +642,7 @@ class MemoryDecayService:
                 params.new_strength,
                 params.decay_factor,
                 params.reason,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 

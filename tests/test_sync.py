@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -251,7 +251,7 @@ class TestSyncProgress:
             pending_operations=5,
             synced_operations=5,
             errors=["error1"],
-            last_sync=datetime.now(timezone.utc),
+            last_sync=datetime.now(UTC),
         )
         data = progress.to_dict()
         assert data["status"] == "syncing"

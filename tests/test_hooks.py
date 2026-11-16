@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from foresight.event_bus import Event, EventType, get_event_bus, reset_event_bus
@@ -23,7 +23,7 @@ def _make_event() -> Event:
     return Event(
         id=f"evt-{uuid.uuid4()}",
         event_type=EventType.MEMORY_STORED,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         actor="tester",
         entity_id="memory-1",
         payload={"value": "hello"},

@@ -1,7 +1,7 @@
 """Tests for PIX-3954 capture pipeline (SessionClassifier, MemoryExtractor, DedupeEngine, CapturePipeline)."""
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -241,7 +241,7 @@ class TestDedupeEngine:
         pool = get_pool(db_path=str(DB_PATH))
         conn = pool.acquire()
         try:
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             stored_content = f"[auto-captured/{category}] {content}"
             h = _content_hash(stored_content)
             mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]

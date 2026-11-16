@@ -10,7 +10,7 @@ import os
 import re
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from fastmcp.server.middleware import Middleware as _Middleware
@@ -58,7 +58,7 @@ class User:
     email: str
     role: Role
     is_active: bool = True
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_login: datetime | None = None
     # Hashed password (Argon2, bcrypt, or PBKDF2-SHA256)
     password_hash: str = ""
@@ -77,7 +77,7 @@ _VALID_TENANT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 def _utcnow() -> datetime:
     """Return a timezone-aware UTC timestamp."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _env_truthy(value: str | None) -> bool:
@@ -101,7 +101,7 @@ def _parse_db_timestamp(value: str | None) -> datetime | None:
         return None
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
     return parsed
 
 

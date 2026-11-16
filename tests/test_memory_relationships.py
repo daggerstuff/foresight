@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -67,7 +67,7 @@ def _make_test_db() -> str:
 
 def _seed_memories(db_path: str, ids: list[str], tenant_id: str = "t1", user_id: str = "u1") -> None:
     conn = sqlite3.connect(db_path)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     for mid in ids:
         conn.execute(
             "INSERT OR IGNORE INTO memories (id, content, tenant_id, user_id, created_at) VALUES (?, ?, ?, ?, ?)",

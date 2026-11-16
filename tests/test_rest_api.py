@@ -60,7 +60,7 @@ def _set_vector_id(memory_id: str) -> None:
     """Archive requires vector_id; the embedding pipeline is out of scope for Phase A."""
     from foresight import server as server_module
 
-    with server_module._global_backend.connection() as conn:
+    with server_module.get_backend().connection() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE memories SET vector_id = %s WHERE id = %s", (f"vec_{memory_id}", memory_id))
         conn.commit()
@@ -375,7 +375,7 @@ class TestOtherEndpoints:
 def _user_memory_count(user: str = USER, tenant: str = TENANT) -> int:
     from foresight import server as server_module
 
-    with server_module._global_backend.connection() as conn, conn.cursor() as cur:
+    with server_module.get_backend().connection() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT COUNT(*) FROM memories WHERE tenant_id = %s AND user_id = %s",
             (tenant, user),

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from foresight.memory_maintenance import (
     MaintenanceConfig,
@@ -99,7 +99,7 @@ def _insert_memory(
             strength_trend,
             is_ghost,
             is_sensitive,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()

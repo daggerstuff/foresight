@@ -20,7 +20,7 @@ import logging
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .config import DB_PATH
@@ -207,7 +207,7 @@ class MemoryRelationshipStore:
         meta = _validate_metadata(options.metadata)
 
         rel_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         conn = self._connect()
         try:
             conn.execute(

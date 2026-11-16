@@ -18,7 +18,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .config import BANK_ID, raw_retention_enabled
@@ -388,7 +388,7 @@ class DedupeEngine:
             ).fetchone()
 
             if row is not None:
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 conn.execute(
                     """UPDATE memories SET activation_count = activation_count + 1, updated_at = ?
                        WHERE id = ?""",
@@ -566,7 +566,7 @@ class CapturePipeline:
         """
         stats = CaptureStats()
         tid = tenant_id or get_current_account_id()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Phase 0: Persist raw observations before any derivation so the transcript
         # can be reprocessed later even if classification/extraction skips it.
@@ -884,7 +884,7 @@ class CapturePipeline:
         else:
             messages = text_or_messages
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         # In-flight messages are not a real session transcript, but a stable
         # synthetic session id lets them participate in the raw layer deterministically.
         synthetic_session_id = hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()[:16]
@@ -964,18 +964,28 @@ class CapturePipeline:
 # Convenience helpers
 # ---------------------------------------------------------------------------
 
-_pipeline_instance: CapturePipeline | None = None
+
+class _CapturePipelineSingleton:
+    """Process-wide slot holding the single CapturePipeline instance."""
+
+    instance: CapturePipeline | None = None
+
+    @classmethod
+    def get(cls) -> CapturePipeline:
+        if cls.instance is None:
+            cls.instance = CapturePipeline()
+        return cls.instance
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.instance = None
 
 
 def get_capture_pipeline() -> CapturePipeline:
     """Return the process-singleton CapturePipeline."""
-    global _pipeline_instance
-    if _pipeline_instance is None:
-        _pipeline_instance = CapturePipeline()
-    return _pipeline_instance
+    return _CapturePipelineSingleton.get()
 
 
 def reset_capture_pipeline() -> None:
     """Reset singleton (test-only helper)."""
-    global _pipeline_instance
-    _pipeline_instance = None
+    _CapturePipelineSingleton.reset()

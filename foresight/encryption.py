@@ -253,16 +253,25 @@ class ForesightEncryptionEngine:
         }
 
 
-# Module-level singleton
-_DEFAULT_ENCRYPTION_ENGINE: ForesightEncryptionEngine | None = None
+class _DefaultEncryptionEngineSingleton:
+    """Process-wide slot holding the single ForesightEncryptionEngine instance."""
+
+    instance: ForesightEncryptionEngine | None = None
+
+    @classmethod
+    def get(cls) -> ForesightEncryptionEngine:
+        if cls.instance is None:
+            cls.instance = ForesightEncryptionEngine()
+        return cls.instance
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.instance = None
 
 
 def get_encryption_engine() -> ForesightEncryptionEngine:
     """Retrieve the global ForesightEncryptionEngine instance."""
-    global _DEFAULT_ENCRYPTION_ENGINE
-    if _DEFAULT_ENCRYPTION_ENGINE is None:
-        _DEFAULT_ENCRYPTION_ENGINE = ForesightEncryptionEngine()
-    return _DEFAULT_ENCRYPTION_ENGINE
+    return _DefaultEncryptionEngineSingleton.get()
 
 
 def encrypt_if_enabled(

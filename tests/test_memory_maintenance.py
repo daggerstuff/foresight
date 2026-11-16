@@ -5,7 +5,7 @@ Covers all four modes: consolidate, contradict, archive_stale, synthesize.
 
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from foresight.memory_maintenance import (
     DUPLICATE_OVERLAP_HIGH,
@@ -99,7 +99,7 @@ def _insert_memory(
             importance,
             strength_trend,
             is_ghost,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()

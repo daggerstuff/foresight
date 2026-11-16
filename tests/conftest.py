@@ -67,33 +67,36 @@ def setup_postgres_backend():
     _initialize_backend()
     init_db()
 
-    if server_module._global_backend is not None:
+    backend = server_module.get_backend()
+    if backend is not None:
         reset_graph_store()
         reset_hybrid_retriever()
         reset_temporal_query_builder()
-        get_hybrid_retriever(backend=server_module._global_backend)
-        get_graph_store(backend=server_module._global_backend)
-        get_temporal_query_builder(backend=server_module._global_backend)
+        get_hybrid_retriever(backend=backend)
+        get_graph_store(backend=backend)
+        get_temporal_query_builder(backend=backend)
 
     yield
 
     # Clean up backend at session end
-    if server_module._global_backend is not None:
-        server_module._global_backend.close()
+    backend = server_module.get_backend()
+    if backend is not None:
+        backend.close()
 
 
 def _truncate_all_tables() -> None:
     """Truncate every application table in the public schema."""
     from foresight import server as server_module
 
-    if server_module._global_backend is None:
+    backend = server_module.get_backend()
+    if backend is None:
         return
 
     # Get list of tables in the connection's current schema (the app tables
     # live in `public`, not a dedicated `foresight_test` schema). Keep the
     # schema_migrations bookkeeping table intact so init_db() stays idempotent
     # across tests that call it directly.
-    rows = server_module._global_backend.fetch(
+    rows = backend.fetch(
         """
         SELECT table_name
         FROM information_schema.tables
@@ -109,7 +112,7 @@ def _truncate_all_tables() -> None:
 
     # Truncate all tables in a single statement so Postgres resolves FK order.
     # CASCADE ensures dependent rows in related tables are also removed.
-    with server_module._global_backend.connection() as conn:
+    with backend.connection() as conn:
         with conn.cursor() as cur:
             table_list = ", ".join(f'"{t}"' for t in tables)
             cur.execute(f"TRUNCATE {table_list} CASCADE")
@@ -175,13 +178,14 @@ def _reset_in_memory_singletons() -> None:
         )
         from foresight.temporal_queries import reset_temporal_query_builder
 
-        if server_module._global_backend is not None:
+        backend = server_module.get_backend()
+        if backend is not None:
             reset_graph_store()
             reset_hybrid_retriever()
             reset_temporal_query_builder()
-            get_hybrid_retriever(backend=server_module._global_backend)
-            get_graph_store(backend=server_module._global_backend)
-            get_temporal_query_builder(backend=server_module._global_backend)
+            get_hybrid_retriever(backend=backend)
+            get_graph_store(backend=backend)
+            get_temporal_query_builder(backend=backend)
     except Exception:
         pass
 

@@ -3,7 +3,7 @@ Tests for enhanced memory synthesizer.
 """
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -60,7 +60,7 @@ class TestContradictionDetection:
         """Should extract intensity from memories."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        memory = create_memory("Test", datetime.now(timezone.utc), intensity=0.75)
+        memory = create_memory("Test", datetime.now(UTC), intensity=0.75)
         value = synthesizer._extract_metric_value([memory])
 
         assert value == 0.75
@@ -74,9 +74,9 @@ class TestTemporalTrendAnalysis:
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [
-            create_memory("Feeling anxious", datetime.now(timezone.utc), intensity=0.8, tags=["anxiety"]),
-            create_memory("High stress", datetime.now(timezone.utc), intensity=0.7, tags=["stress"]),
-            create_memory("Less anxiety", datetime.now(timezone.utc), intensity=0.4, tags=["anxiety"]),
+            create_memory("Feeling anxious", datetime.now(UTC), intensity=0.8, tags=["anxiety"]),
+            create_memory("High stress", datetime.now(UTC), intensity=0.7, tags=["stress"]),
+            create_memory("Less anxiety", datetime.now(UTC), intensity=0.4, tags=["anxiety"]),
         ]
 
         clusters = synthesizer._cluster_by_topic(memories)
@@ -89,9 +89,9 @@ class TestTemporalTrendAnalysis:
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [
-            create_memory("Work anxiety is increasing", datetime.now(timezone.utc), intensity=0.8),
-            create_memory("Family stress is high", datetime.now(timezone.utc), intensity=0.7),
-            create_memory("Therapy for anxiety helps", datetime.now(timezone.utc), intensity=0.4),
+            create_memory("Work anxiety is increasing", datetime.now(UTC), intensity=0.8),
+            create_memory("Family stress is high", datetime.now(UTC), intensity=0.7),
+            create_memory("Therapy for anxiety helps", datetime.now(UTC), intensity=0.4),
         ]
 
         clusters = synthesizer._cluster_by_topic(memories)
@@ -165,7 +165,7 @@ class TestTemporalTrendAnalysis:
         """Should detect direct_conflict via keyword overlap + opposite sentiment."""
         synthesizer = EnhancedMemorySynthesizer()
 
-        base_time = datetime.now(timezone.utc)
+        base_time = datetime.now(UTC)
         historic = [
             create_memory("I love my therapy sessions", base_time - timedelta(days=30), intensity=0.5),
         ]
@@ -274,8 +274,8 @@ class TestEnhancedSynthesis:
         synthesizer = EnhancedMemorySynthesizer()
 
         memories = [
-            create_memory("Memory 1", datetime.now(timezone.utc), intensity=0.5),
-            create_memory("Memory 2", datetime.now(timezone.utc), intensity=0.6),
+            create_memory("Memory 1", datetime.now(UTC), intensity=0.5),
+            create_memory("Memory 2", datetime.now(UTC), intensity=0.6),
         ]
 
         # synthesize is async, so we need to run it

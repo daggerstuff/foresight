@@ -13,7 +13,7 @@ import logging
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .config import DB_PATH, DB_URL
@@ -148,7 +148,7 @@ class TemporalService:
 
         # Calculate hours elapsed
         created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         hours_elapsed = (now - created).total_seconds() / 3600
 
         # Apply category multiplier to half-life
@@ -261,7 +261,7 @@ class TemporalService:
 
             # Calculate trend
             created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             hours_elapsed = (now - created).total_seconds() / 3600
 
             trend = self._calculate_trend(new_importance, new_activation_count, hours_elapsed, config)
@@ -386,7 +386,7 @@ class TemporalService:
                         conn.execute("COMMIT")
                         break
 
-                    now = datetime.now(timezone.utc).isoformat()
+                    now = datetime.now(UTC).isoformat()
                     for memory_id, importance, created_at, activation_count, category in memories:
                         new_importance, trend = self.calculate_decay(
                             importance=importance,

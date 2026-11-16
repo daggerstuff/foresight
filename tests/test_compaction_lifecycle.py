@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -32,7 +32,7 @@ def _mock_capture(session_id, messages, **kwargs):
 
 def _insert_memory(conn, memory_id: str, content: str, **overrides):
     """Insert a memory row with sensible defaults."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn.execute(
         """INSERT INTO memories
         (id, content, content_hash, tenant_id, user_id, scope, retention, category,

@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -132,7 +132,7 @@ def _insert_memory(
             current_strength,
             last_decay_at,
             activation_count,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()
@@ -459,7 +459,7 @@ def test_reinforce_memory_sets_trend_to_strengthening_at_threshold():
 
 def test_apply_decay_batch_decays_old_memory():
     db = _make_test_db()
-    old_ts = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
+    old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     mid = _insert_memory(
         db,
         importance=0.5,
@@ -477,7 +477,7 @@ def test_apply_decay_batch_decays_old_memory():
 
 def test_apply_decay_batch_skips_fresh_memory():
     db = _make_test_db()
-    fresh_ts = datetime.now(timezone.utc).isoformat()
+    fresh_ts = datetime.now(UTC).isoformat()
     _insert_memory(
         db,
         importance=0.5,
@@ -502,7 +502,7 @@ def test_apply_decay_batch_skips_memory_never_decayed():
 
 def test_apply_decay_batch_respects_batch_size():
     db = _make_test_db()
-    old_ts = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
+    old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     for _ in range(5):
         _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=old_ts)
     with _patched_service(db) as svc:
@@ -512,7 +512,7 @@ def test_apply_decay_batch_respects_batch_size():
 
 def test_apply_decay_batch_is_tenant_isolated():
     db = _make_test_db()
-    old_ts = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
+    old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     _insert_memory(db, user_id="u1", tenant_id="tA", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
     _insert_memory(db, user_id="u1", tenant_id="tB", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
     with _patched_service(db) as svc:
@@ -522,7 +522,7 @@ def test_apply_decay_batch_is_tenant_isolated():
 
 def test_apply_decay_batch_is_user_isolated():
     db = _make_test_db()
-    old_ts = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
+    old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     _insert_memory(db, user_id="alice", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
     _insert_memory(db, user_id="bob", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
     with _patched_service(db) as svc:
@@ -537,7 +537,7 @@ def test_apply_decay_batch_rejects_zero_batch_size():
 
 def test_apply_decay_batch_floors_at_min_importance():
     db = _make_test_db()
-    very_old = (datetime.now(timezone.utc) - timedelta(hours=10000)).isoformat()
+    very_old = (datetime.now(UTC) - timedelta(hours=10000)).isoformat()
     mid = _insert_memory(
         db,
         importance=0.5,
@@ -564,7 +564,7 @@ def test_get_decay_events_returns_empty_for_no_events():
 
 def test_decay_batch_records_events():
     db = _make_test_db()
-    old_ts = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
+    old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     mid = _insert_memory(
         db,
         importance=0.5,
@@ -602,12 +602,8 @@ def test_reinforce_records_event():
 
 def test_get_decay_events_filters_by_memory():
     db = _make_test_db()
-    mid1 = _insert_memory(
-        db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(timezone.utc).isoformat()
-    )
-    mid2 = _insert_memory(
-        db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(timezone.utc).isoformat()
-    )
+    mid1 = _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
+    mid2 = _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
     with _patched_service(db) as svc:
         svc.reinforce_memory(mid1, "u1", "default")
         svc.reinforce_memory(mid2, "u1", "default")
@@ -618,7 +614,7 @@ def test_get_decay_events_filters_by_memory():
 
 def test_get_decay_events_limit_caps_results():
     db = _make_test_db()
-    mid = _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(timezone.utc).isoformat())
+    mid = _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
     with _patched_service(db) as svc:
         for _ in range(5):
             svc.reinforce_memory(mid, "u1", "default")
@@ -753,7 +749,7 @@ def test_singleton_thread_safe():
 
 def test_reinforce_then_decay_drops_strength():
     db = _make_test_db()
-    old_ts = (datetime.now(timezone.utc) - timedelta(hours=1000)).isoformat()
+    old_ts = (datetime.now(UTC) - timedelta(hours=1000)).isoformat()
     mid = _insert_memory(
         db,
         importance=0.5,
@@ -767,7 +763,7 @@ def test_reinforce_then_decay_drops_strength():
     assert result["current_strength"] == pytest.approx(0.72, abs=1e-3)
     assert result["activation_count"] == 2
 
-    even_older = (datetime.now(timezone.utc) - timedelta(hours=2000)).isoformat()
+    even_older = (datetime.now(UTC) - timedelta(hours=2000)).isoformat()
     with _patched_service(db) as svc:
         conn = sqlite3.connect(db)
         conn.execute(

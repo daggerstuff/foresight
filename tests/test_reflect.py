@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -33,7 +33,7 @@ def _reflect(question: str, **kwargs) -> dict:
 
 
 def test_reflect_returns_cited_answer():
-    content = f"The user's favorite editor is neovim ({datetime.now(timezone.utc).isoformat()})"
+    content = f"The user's favorite editor is neovim ({datetime.now(UTC).isoformat()})"
     memory_id = _store(content)
 
     payload = _reflect("What is the user's favorite editor?")
@@ -59,7 +59,7 @@ def test_reflect_extractive_fallback_without_llm(monkeypatch):
 
     monkeypatch.setattr(llm_client, "default_llm_call", _boom)
 
-    _store(f"Foresight stores derived memories in postgres ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"Foresight stores derived memories in postgres ({datetime.now(UTC).isoformat()})")
     payload = _reflect("Where are derived memories stored?")
 
     assert payload["synthesized_by"] == "extractive"
@@ -74,7 +74,7 @@ def test_reflect_no_memories_is_graceful():
 
 
 def test_reflect_tenant_isolation():
-    _store(f"secret project falcon plans ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"secret project falcon plans ({datetime.now(UTC).isoformat()})")
 
     # Same question under a different user sees nothing.
     other = json.loads(reflect(question="secret project falcon plans", user_id="_other_user_"))
@@ -82,7 +82,7 @@ def test_reflect_tenant_isolation():
 
 
 def test_reflect_include_archived_flag_accepted():
-    _store(f"archived candidate memory ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"archived candidate memory ({datetime.now(UTC).isoformat()})")
     payload = _reflect("archived candidate memory", include_archived=True)
     assert payload["answer"]
 
@@ -92,22 +92,22 @@ def test_reflect_records_telemetry(monkeypatch, tmp_path):
     monkeypatch.setenv("FORESIGHT_TELEMETRY_PATH", str(store_path))
     from foresight import telemetry
 
-    telemetry._GLOBAL_TELEMETRY_STORE = telemetry.TelemetryStore(store_path)
+    telemetry.set_telemetry_store(telemetry.TelemetryStore(store_path))
     try:
-        _store(f"telemetry probe memory ({datetime.now(timezone.utc).isoformat()})")
+        _store(f"telemetry probe memory ({datetime.now(UTC).isoformat()})")
         _reflect("telemetry probe memory")
         summary = telemetry.get_telemetry_store().get_summary()
         assert summary["reflect_calls"] >= 1
         assert summary["reflect_cache_misses"] >= 1
     finally:
-        telemetry._GLOBAL_TELEMETRY_STORE = None
+        telemetry.set_telemetry_store(None)
 
 
 # ====== Phase 2: mental models ======
 
 
 def test_reflect_second_identical_question_is_cached():
-    _store(f"cached reflection target ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"cached reflection target ({datetime.now(UTC).isoformat()})")
 
     first = _reflect("What is the cached reflection target?")
     assert first["cached"] is False
@@ -124,7 +124,7 @@ def test_reflect_cache_hit_costs_zero_retrieval(monkeypatch):
     from foresight.hybrid_retriever import get_hybrid_retriever
 
     retriever = get_hybrid_retriever()
-    _store(f"zero cost probe ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"zero cost probe ({datetime.now(UTC).isoformat()})")
     _reflect("zero cost probe")
 
     def _boom(*args, **kwargs):
@@ -136,7 +136,7 @@ def test_reflect_cache_hit_costs_zero_retrieval(monkeypatch):
 
 
 def test_mental_models_are_tenant_scoped():
-    _store(f"scoped model memory ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"scoped model memory ({datetime.now(UTC).isoformat()})")
     _reflect("scoped model memory")
 
     other = _reflect("scoped model memory", user_id="_other_user_")
@@ -146,7 +146,7 @@ def test_mental_models_are_tenant_scoped():
 def test_manage_mental_models_list_refresh_delete():
     from foresight.server import manage_mental_models
 
-    _store(f"managed model memory ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"managed model memory ({datetime.now(UTC).isoformat()})")
     first = _reflect("managed model memory")
     model_id = first["mental_model_id"]
 
@@ -168,7 +168,7 @@ def test_manage_mental_models_list_refresh_delete():
 def test_stale_mental_model_self_heals(monkeypatch):
     from foresight import reflect as reflect_mod
 
-    _store(f"self heal memory ({datetime.now(timezone.utc).isoformat()})")
+    _store(f"self heal memory ({datetime.now(UTC).isoformat()})")
     first = _reflect("self heal memory")
     assert first["citations"], first
     assert first["mental_model_id"]
