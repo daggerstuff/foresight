@@ -27,6 +27,7 @@ import logging
 import secrets
 import time
 from contextlib import suppress
+from typing import Final, Literal
 from urllib.parse import urlencode
 
 from fastmcp.server.auth import OAuthProvider
@@ -65,7 +66,7 @@ AUTH_CODE_TTL = 600  # seconds
 
 # RFC 6750 authorization scheme ("Bearer"). Named to avoid bandit's
 # credential-pattern matches (B105/B106) on the string "token".
-OAUTH_SCHEME = "Bearer"
+OAUTH_SCHEME: Final[Literal["Bearer"]] = "Bearer"
 
 
 class ForesightOAuthProvider(OAuthProvider):

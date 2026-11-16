@@ -457,7 +457,8 @@ class HybridRetriever:
         # TF-IDF cache: maps (user_id, tenant_id) -> {"idf": dict, "doc_count": int,
         #   "docs": dict[id, list[str]]}
         # Invalidated when doc_count changes (new/deleted memories).
-        self._tfidf_cache: dict[tuple[str, str], dict] = {}
+        # Key: (user_id, tenant_id, agent_id, project) — the full namespace.
+        self._tfidf_cache: dict[tuple[str, str, str | None, str | None], dict[str, Any]] = {}
         self._tfidf_cache_lock = threading.Lock()
         self._schema_cache: dict[str, set[str]] = {}
         self._result_cache: OrderedDict[tuple, Any] = OrderedDict()
@@ -731,7 +732,7 @@ class HybridRetriever:
             entity_confidence=dict(self._entity_confidence),
         )
 
-        all_ids = set()
+        all_ids: set[str] = set()
         all_ids.update(keyword_ranking.keys())
         all_ids.update(tfidf_cosine_ranking.keys())
         all_ids.update(vector_ranking.keys())
@@ -1424,7 +1425,7 @@ class HybridRetriever:
         """
         vector = vector or {}
         effective_weights = weights if weights is not None else self.weights
-        all_ids = set()
+        all_ids: set[str] = set()
         all_ids.update(keyword.keys())
         all_ids.update(tfidf_cosine.keys())
         all_ids.update(vector.keys())

@@ -131,11 +131,14 @@ class InjectionBudget:
         Lanes with weights < 0 get MIN_LANE_CHARS from the shared pool,
         then the remaining budget is distributed proportionally.
         """
-        if not self.is_bounded:
+        # Bind once and narrow: `is_bounded` is a property, so the check above
+        # does not narrow `self.max_chars` for the type checker.
+        max_chars = self.max_chars
+        if max_chars is None:
             return -1  # sentinel for unbounded
 
         weight = self.lane_weights.get(lane, 0.0)
-        return max(MIN_LANE_CHARS, int(self.max_chars * weight))  # type: ignore[arg-type]
+        return max(MIN_LANE_CHARS, int(max_chars * weight))
 
 
 # =============================================================================

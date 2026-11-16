@@ -303,11 +303,11 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             ).fetchall()
         }
         for row in cb_rows:
-            ckey = (row["tenant_id"], row["label"], row["agent_id"], row["project"])
-            if ckey in dst_cb:
+            cb_key = (row["tenant_id"], row["label"], row["agent_id"], row["project"])
+            if cb_key in dst_cb:
                 bump("context_blocks", skipped=1)
                 continue
-            dst_cb.add(ckey)
+            dst_cb.add(cb_key)
             new_row = dict(row)
             new_row["user_id"] = dst_user
             if not dry_run:
@@ -353,11 +353,11 @@ def copy_user_lane(src_user: str, dst_user: str, dry_run: bool = False) -> dict[
             if not did:
                 bump("document_chunks", skipped=1)
                 continue
-            ckey = (did, row["chunk_index"])
-            if ckey in dst_chunks:
+            chunk_key = (did, row["chunk_index"])
+            if chunk_key in dst_chunks:
                 bump("document_chunks", skipped=1)
                 continue
-            dst_chunks.add(ckey)
+            dst_chunks.add(chunk_key)
             new_row = dict(row)
             new_row.pop("id", None)  # serial PK
             new_row["user_id"] = dst_user

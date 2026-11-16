@@ -406,8 +406,12 @@ def _tool_json(result: str, *, success_status: int = 200) -> JSONResponse:
 
 async def _validated_body(request: Request, model: type[BaseModel]) -> tuple[Any, JSONResponse | None]:
     body, err = await _parse_json_body(request)
-    if err:
+    if err is not None:
         return None, err
+    if body is None:
+        # Unreachable given _parse_json_body's contract, but it is what lets the
+        # type checker see `body` as a mapping at the call below.
+        return None, _error(400, "Request body must be a JSON object")
     try:
         return model(**body), None
     except Exception as exc:
@@ -1039,9 +1043,10 @@ async def _handle_profile_export(request: Request) -> Response:
     if tenant_err:
         return tenant_err
 
-    fmt = request.query_params.get("format", "json")
-    if fmt not in ("json", "markdown"):
+    raw_fmt = request.query_params.get("format", "json")
+    if raw_fmt not in ("json", "markdown"):
         return _error(400, "format must be 'json' or 'markdown'")
+    fmt: Literal["json", "markdown"] = "json" if raw_fmt == "json" else "markdown"
     agent_id = request.query_params.get("agent_id") or None
     project = request.query_params.get("project") or None
 

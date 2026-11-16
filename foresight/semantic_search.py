@@ -829,19 +829,13 @@ class SemanticSearch:
         if options is None:
             options = SemanticSearchOptions()
 
-        # Apply overrides
-        options_dict = {
-            "tenant_id": options.tenant_id,
-            "limit": options.limit,
-            "min_score": options.min_score,
-            "provider": options.provider,
-        }
-        options_dict.update(overrides)
-
-        tenant_id = options_dict["tenant_id"]
-        limit = options_dict["limit"]
-        min_score = options_dict["min_score"]
-        provider = options_dict["provider"]
+        # Apply overrides. Read each option out explicitly rather than merging
+        # into an untyped dict: a dict literal here widens every value to
+        # `float | int | str | None` and the comparisons below lose their types.
+        tenant_id: str | None = overrides.get("tenant_id", options.tenant_id)
+        limit: int = overrides.get("limit", options.limit)
+        min_score: float = overrides.get("min_score", options.min_score)
+        provider: str | None = overrides.get("provider", options.provider)
 
         if not query or not query.strip():
             raise SemanticSearchError("query must be a non-empty string")

@@ -375,7 +375,9 @@ def mental_model_citations_valid(model: dict, *, user_id: str, tenant_id: str, i
     citations = model.get("citations") or []
     if not citations:
         return True
-    ids = [c.get("memory_id") for c in citations if isinstance(c, dict) and c.get("memory_id")]
+    # memory_id is a UUID string in storage; str() pins that for the checker
+    # (the raw values are untyped dict entries).
+    ids: list[str] = [str(c["memory_id"]) for c in citations if isinstance(c, dict) and c.get("memory_id")]
     if not ids:
         return True
     rows = _memory_rows_for_ids(ids, user_id, tenant_id)

@@ -17,7 +17,7 @@ Includes:
 # - Compliance exporters for HIPAA, SOC2, GDPR -- Removed
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .block_registry import (
     DEFAULT_BLOCK_SCHEMAS as DEFAULT_BLOCK_SCHEMAS,
@@ -123,7 +123,13 @@ from .graph_store import (
 
 # Hooks module requires fastmcp — make optional so core modules
 # (triggers, event_bus, etc.) remain importable without it.
-try:
+#
+# The type-checking view is the real module: the ImportError fallback below
+# rebinds these names to a stub class, which a checker cannot express as the
+# same symbol. Declaring the imports under TYPE_CHECKING keeps both the runtime
+# fallback and the real signatures, instead of degrading the exported types to
+# Any for every consumer.
+if TYPE_CHECKING:
     from .hooks import (
         HookExecutor as HookExecutor,
         HookRegistration as HookRegistration,
@@ -136,26 +142,40 @@ try:
         register_hook as register_hook,
         unregister_hook as unregister_hook,
     )
-except ImportError:
+else:
+    try:
+        from .hooks import (
+            HookExecutor as HookExecutor,
+            HookRegistration as HookRegistration,
+            HookRegistryBase as HookRegistryBase,
+            HookType as HookType,
+            PostgresHookRegistry as PostgresHookRegistry,
+            SQLiteHookRegistry as SQLiteHookRegistry,
+            get_hook_executor as get_hook_executor,
+            list_hooks as list_hooks,
+            register_hook as register_hook,
+            unregister_hook as unregister_hook,
+        )
+    except ImportError:
 
-    class _HookStub:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-            raise ImportError(f"{self.__class__.__name__} requires fastmcp. Install with: pip install fastmcp")
+        class _HookStub:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                raise ImportError(f"{self.__class__.__name__} requires fastmcp. Install with: pip install fastmcp")
 
-    HookExecutor = HookRegistration = HookRegistryBase = HookType = _HookStub
-    PostgresHookRegistry = SQLiteHookRegistry = _HookStub
+        HookExecutor = HookRegistration = HookRegistryBase = HookType = _HookStub
+        PostgresHookRegistry = SQLiteHookRegistry = _HookStub
 
-    def get_hook_executor(*_args: Any, **_kwargs: Any) -> Any:
-        raise ImportError("get_hook_executor requires fastmcp. Install with: pip install fastmcp")
+        def get_hook_executor(*_args: Any, **_kwargs: Any) -> Any:
+            raise ImportError("get_hook_executor requires fastmcp. Install with: pip install fastmcp")
 
-    def list_hooks(*_args: Any, **_kwargs: Any) -> Any:
-        raise ImportError("list_hooks requires fastmcp. Install with: pip install fastmcp")
+        def list_hooks(*_args: Any, **_kwargs: Any) -> Any:
+            raise ImportError("list_hooks requires fastmcp. Install with: pip install fastmcp")
 
-    def register_hook(*_args: Any, **_kwargs: Any) -> Any:
-        raise ImportError("register_hook requires fastmcp. Install with: pip install fastmcp")
+        def register_hook(*_args: Any, **_kwargs: Any) -> Any:
+            raise ImportError("register_hook requires fastmcp. Install with: pip install fastmcp")
 
-    def unregister_hook(*_args: Any, **_kwargs: Any) -> Any:
-        raise ImportError("unregister_hook requires fastmcp. Install with: pip install fastmcp")
+        def unregister_hook(*_args: Any, **_kwargs: Any) -> Any:
+            raise ImportError("unregister_hook requires fastmcp. Install with: pip install fastmcp")
 
 
 # Server module requires fastmcp — make optional so core modules

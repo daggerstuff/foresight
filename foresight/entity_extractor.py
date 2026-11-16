@@ -50,8 +50,7 @@ try:
     import httpx
 
     HAS_HTTPX = True
-except Exception:
-    httpx = None
+except Exception:  # pragma: no cover - httpx is a declared dependency
     HAS_HTTPX = False
 
 EntityType = Literal["person", "place", "concept", "event", "emotion", "object"]
@@ -418,7 +417,7 @@ Output (raw JSON only, no markdown):
         Returns:
             ExtractionResult with entities and relationships.
         """
-        if not HAS_HTTPX or httpx is None:
+        if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed. Install it with 'pip install httpx'")
 
         try:
@@ -445,7 +444,7 @@ Output (raw JSON only, no markdown):
 
     async def _extract_anthropic(self, prompt: str, content: str) -> ExtractionResult:
         """Extract entities via Anthropic Messages API."""
-        if httpx is None:
+        if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed")
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -472,7 +471,7 @@ Output (raw JSON only, no markdown):
 
     async def _extract_openai_compat(self, prompt: str, content: str) -> ExtractionResult:
         """Extract entities via OpenAI-compatible API (NVIDIA NIM, Azure, etc.)."""
-        if httpx is None:
+        if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed")
         api_url = chat_completions_url(self.base_url)
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_SECONDS) as client:
