@@ -808,7 +808,7 @@ def get_graph_store(db_path: str | None = None, backend: DatabaseBackend | None 
                 try:
                     from .server import get_backend
                 except Exception:
-                    pass
+                    logger.debug("foresight.server not importable yet; no process backend to reuse")
                 else:
                     active_backend = get_backend()
                     if active_backend is not None:
