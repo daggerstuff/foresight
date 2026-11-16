@@ -8,7 +8,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 # =============================================================================
@@ -151,8 +151,8 @@ class MemoryBlock:
 
     schema: MemoryBlockSchema
     content: str = ""
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: int = 0
 
     def update_content(self, new_content: str) -> None:
@@ -168,7 +168,7 @@ class MemoryBlock:
             # Synthesize would require LLM - for now just replace
             self.content = new_content
 
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
         self.version += 1
 
     def is_empty(self) -> bool:

@@ -6,7 +6,7 @@ import os
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -112,7 +112,7 @@ def create_test_db():
     """)
 
     # Insert test data
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     uid = "test_user"
 
     memories = [
@@ -421,7 +421,7 @@ class TestTemporalSearch:
             )
         """)
         uid = "test_user"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         conn.execute(
             "INSERT INTO memories (id, user_id, content, importance, created_at) "
             "VALUES ('old_important', ?, 'old important memory', 0.9, ?)",
@@ -804,20 +804,20 @@ class TestTemporalSignalHardening:
 
     def test_burst_boost_no_activations(self):
         retriever = HybridRetriever(":memory:")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         boost = retriever._compute_burst_boost(0, None, now)
         assert boost == 1.0
 
     def test_burst_boost_with_activations(self):
         retriever = HybridRetriever(":memory:")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         boost = retriever._compute_burst_boost(4, None, now)
         # sqrt(4) = 2, base_boost = 1 + 2 * 0.15 = 1.3
         assert boost == 1.3
 
     def test_burst_boost_recent_retrieval(self):
         retriever = HybridRetriever(":memory:")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recent = (now - timedelta(minutes=5)).isoformat()
         boost = retriever._compute_burst_boost(1, recent, now)
         # base = 1 + 1 * 0.15 = 1.15; burst_window 4h now
@@ -826,7 +826,7 @@ class TestTemporalSignalHardening:
 
     def test_burst_boost_capped(self):
         retriever = HybridRetriever(":memory:")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recent = now.isoformat()
         # High counts with recent retrieval should be capped
         boost = retriever._compute_burst_boost(100, recent, now)
@@ -866,7 +866,7 @@ class TestTemporalSignalHardening:
                 category TEXT, is_ghost INTEGER DEFAULT 0
             )
         """)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # mem_a: high importance but low current_strength
         # mem_b: lower importance but high current_strength
         conn.execute(
@@ -910,7 +910,7 @@ class TestTemporalSignalHardening:
                 category TEXT, is_ghost INTEGER DEFAULT 0
             )
         """)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for mid, trend in [("m_a", "strengthening"), ("m_b", "stable"), ("m_c", "weakening")]:
             conn.execute(
                 "INSERT INTO memories (id, user_id, content, importance, strength_trend, created_at) "
@@ -957,7 +957,7 @@ class TestDecayCrossCutting:
             )
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Both memories have identical content (same keyword matching), same importance
         # but mem_fresh has high current_strength, mem_decayed has low current_strength
         conn.execute(
@@ -1205,7 +1205,7 @@ class TestDecayFloor:
             )
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Memory with importance=0.9 but current_strength=0.01 (decayed to near zero)
         # Without floor, decay_multiplier would be ≈ 0.01 — nearly full suppression.
         conn.execute(
@@ -1243,7 +1243,7 @@ class TestDecayFloor:
             )
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         conn.execute(
             "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
             "VALUES ('m1', ?, 'memory content here', 0.8, 0.5, ?)",
@@ -1316,7 +1316,7 @@ class TestTemporalCategories:
             )
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         conn.execute(
             "INSERT INTO memories (id, user_id, content, category, importance, current_strength, created_at) "
             "VALUES ('m1', ?, 'preference memory', 'preference', 0.8, 0.8, ?)",
@@ -1388,7 +1388,7 @@ class TestTrendAwareDecayFloor:
             )
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Both severely decayed (strength=0.01) — only trend differs
         conn.execute(
             "INSERT INTO memories (id, user_id, content, importance, current_strength, strength_trend, created_at) "
@@ -1436,7 +1436,7 @@ class TestTrendAwareDecayFloor:
             )
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         conn.execute(
             "INSERT INTO memories (id, user_id, content, importance, current_strength, strength_trend, created_at) "
             "VALUES ('m_weak', ?, 'anxiety therapy session today', 0.8, 0.01, 'weakening', ?)",
@@ -1510,7 +1510,7 @@ class TestEntitySalienceBoost:
             );
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Memory with 2 high-confidence entity links
         conn.execute(
             "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
@@ -1586,7 +1586,7 @@ class TestEntitySalienceBoost:
             )
         """)
         uid = "u1"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         conn.execute(
             "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
             "VALUES ('m1', ?, 'memory content here', 0.8, 0.8, ?)",

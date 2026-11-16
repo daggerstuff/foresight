@@ -22,7 +22,7 @@ import sqlite3
 import sys
 import tempfile
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -76,7 +76,7 @@ _WORK_MEMORIES = [
 def _install_work_memories(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for mid, content, minutes_ago in _WORK_MEMORIES:
             ts = (now - timedelta(minutes=minutes_ago)).isoformat()
             conn.execute(

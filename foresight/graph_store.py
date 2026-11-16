@@ -806,11 +806,13 @@ def get_graph_store(db_path: str | None = None, backend: DatabaseBackend | None 
                 # server has already initialised one (lazy import avoids the
                 # server -> graph_store circular import).
                 try:
-                    from .server import _global_backend
+                    from .server import get_backend
                 except Exception:
-                    _global_backend = None
-                if _global_backend is not None:
-                    backend = _global_backend
+                    pass
+                else:
+                    active_backend = get_backend()
+                    if active_backend is not None:
+                        backend = active_backend
             if db_path is None and backend is None:
                 raise RuntimeError("db_path or DB_PATH or backend required")
             _state["graph_store"] = GraphStore(db_path, backend=backend)

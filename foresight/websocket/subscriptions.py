@@ -9,7 +9,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -42,7 +42,7 @@ class Subscription:
     connection_id: str
     event_types: set[EventType] = field(default_factory=set)
     entity_filter: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: SubscriptionStatus = SubscriptionStatus.ACTIVE
 
     def matches_event(self, event_type: EventType, entity_id: str | None = None) -> bool:
@@ -187,7 +187,7 @@ class SubscriptionManager:
                     "type": "event",
                     "subscription_id": subscription.id,
                     "event_type": event_type.value,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                     "payload": payload,
                 }
                 await send_func(subscription.connection_id, message)

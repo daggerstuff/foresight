@@ -380,12 +380,13 @@ def doctor(
 
     # Schema version
     try:
-        from foresight.server import _global_backend
+        from foresight.server import get_backend
 
-        if _global_backend is None:
+        backend = get_backend()
+        if backend is None:
             check("Schema version", True, "backend not initialized")
-        elif hasattr(_global_backend, "fetch"):
-            row = _global_backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
+        elif hasattr(backend, "fetch"):
+            row = backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
             if row:
                 version = row[0][0] if isinstance(row[0], (list, tuple)) else row[0].get("version", "?")
                 check("Schema version", True, f"v{version}")

@@ -29,7 +29,7 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from .memory_maintenance import (
@@ -475,7 +475,7 @@ class MaintenanceEvalHarness:
         """Create core schema and seed fixture memories. Returns count inserted."""
         self._apply_patches()
         conn = self._get_connection()
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
 
         count = 0
         for mem in ALL_FIXTURES:
@@ -637,7 +637,7 @@ class MaintenanceEvalHarness:
         }
 
         return MaintenanceEvalReport(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             scenarios=results,
             summary=summary,
         )

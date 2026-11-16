@@ -6,7 +6,7 @@ Restored from src/lib/ai/memory/ - Socratic Gate, Crisis Tagger, Synthesizer, Li
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .crisis_detection import AnomalyDetector, get_anomaly_detector
 from .memory_types import GateDecision, GateResult, MemoryObject, StanceShift, SynthesisResult
@@ -248,7 +248,7 @@ class MemorySynthesizer:
 
     def _calculate_importance(self, memory: MemoryObject) -> float:
         """Calculates importance based on recency and intensity."""
-        now = datetime.now(timezone.utc).timestamp() * 1000
+        now = datetime.now(UTC).timestamp() * 1000
         ts = memory.timestamp.replace("Z", "+00:00")
         try:
             memory_time = datetime.fromisoformat(ts).timestamp() * 1000

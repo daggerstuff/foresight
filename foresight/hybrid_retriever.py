@@ -39,7 +39,7 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from .backend.base import DatabaseBackend
@@ -64,7 +64,7 @@ def _hours_since(iso_timestamp: str) -> float:
     """Compute hours elapsed between an ISO 8601 timestamp and now."""
     try:
         created = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
-        return max((datetime.now(timezone.utc) - created).total_seconds() / 3600, 0.01)
+        return max((datetime.now(UTC) - created).total_seconds() / 3600, 0.01)
     except (ValueError, AttributeError):
         return 168.0
 
@@ -791,7 +791,7 @@ class HybridRetriever:
         top_ids = [mid for mid, _ in merged[:fetch_window]]
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id, options)
         if has_filters:
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             memories = {mid: row for mid, row in memories.items() if _row_matches_filters(row, options, now_iso)}
 
         results = self._build_results(
@@ -1365,7 +1365,7 @@ class HybridRetriever:
         if not rows:
             return {}
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         scored = []
 
         for row in rows:

@@ -36,7 +36,11 @@ EXCLUDED_MODULES = frozenset(
     }
 )
 
-_loaded = False
+
+class _BootstrapState:
+    """Tracks whether the sourceless-import bootstrap has already run."""
+
+    loaded = False
 
 
 def _discover_pyc_files() -> dict[str, Path]:
@@ -121,8 +125,7 @@ def ensure_loaded() -> None:
 
     Safe to call multiple times — only runs once.
     """
-    global _loaded
-    if _loaded:
+    if _BootstrapState.loaded:
         return
 
     pyc_map = _discover_pyc_files()
@@ -235,7 +238,7 @@ def ensure_loaded() -> None:
     ]:
         _sync_init_exports(pkg)
 
-    _loaded = True
+    _BootstrapState.loaded = True
 
 
 def _sync_init_exports(package_name: str) -> None:

@@ -47,7 +47,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -524,7 +524,7 @@ class ForesightBackend:
         import hashlib
 
         conn = self._connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         count = 0
         try:
             for session in sessions:
@@ -924,7 +924,7 @@ def _build_report(
         seed=seed,
         git_sha=_git_sha(),
         embedding_provider=os.environ.get("FORESIGHT_EMBEDDING_PROVIDER", "auto"),
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         n_samples=len(results),
         n_abstention=len(abstention),
         overall=overall,

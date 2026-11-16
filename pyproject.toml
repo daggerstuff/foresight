@@ -154,9 +154,7 @@ select = [
 ]
 # PLC0415: function-level imports are an intentional pattern here — the MCP
 # server lazily imports heavy subsystems to keep startup fast.
-# PLW0603: module-singleton accessors (get_pool, get_event_bus, …) are the
-# established state-management pattern across this codebase.
-ignore = ["E501", "UP017", "PLR2004", "PLC0415", "PLR0917", "PLW0603"]
+ignore = ["E501", "PLR2004", "PLC0415"]
 
 [tool.ruff.lint.pylint]
 max-args = 10

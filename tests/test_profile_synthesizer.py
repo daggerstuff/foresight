@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from foresight import profile_synthesizer as ps_mod, subconscious as sub_mod
@@ -81,7 +81,7 @@ class MemorySeed:
 def _seed_memory(conn: sqlite3.Connection, seed: MemorySeed) -> str:
     """Insert a test memory row and return its ID."""
     mid = f"mem_{abs(hash(seed.content))}"
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn.execute(
         """INSERT OR IGNORE INTO memories
         (id, content, tenant_id, scope, retention, category, user_id,
@@ -113,7 +113,7 @@ def _seed_context_block(
     user_id: str = "test_user",
 ) -> None:
     """Insert a test context block row."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn.execute(
         """INSERT OR REPLACE INTO context_blocks
         (tenant_id, user_id, label, content, updated_at)

@@ -134,16 +134,26 @@ class ContextCache:
             }
 
 
-# Global singleton instance
-_GLOBAL_CONTEXT_CACHE: ContextCache | None = None
-_CACHE_INIT_LOCK = threading.Lock()
+class _ContextCacheSingleton:
+    """Process-wide slot holding the single ContextCache instance."""
+
+    instance: ContextCache | None = None
+    lock = threading.Lock()
+
+    @classmethod
+    def get(cls) -> ContextCache:
+        if cls.instance is None:
+            with cls.lock:
+                if cls.instance is None:
+                    cls.instance = ContextCache()
+        return cls.instance
+
+    @classmethod
+    def reset(cls) -> None:
+        with cls.lock:
+            cls.instance = None
 
 
 def get_context_cache() -> ContextCache:
     """Get or create global ContextCache singleton."""
-    global _GLOBAL_CONTEXT_CACHE
-    if _GLOBAL_CONTEXT_CACHE is None:
-        with _CACHE_INIT_LOCK:
-            if _GLOBAL_CONTEXT_CACHE is None:
-                _GLOBAL_CONTEXT_CACHE = ContextCache()
-    return _GLOBAL_CONTEXT_CACHE
+    return _ContextCacheSingleton.get()

@@ -52,7 +52,7 @@ import re
 import struct
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from .config import DB_PATH, DB_URL
@@ -672,7 +672,7 @@ class SemanticSearch:
             raise SemanticSearchError(str(exc)) from exc
 
         blob = serialize_vector(vec)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         ann = self._pgvector_ready and embedder.dimension == ANN_DIM
         conn = self._connect()
         try:

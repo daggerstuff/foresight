@@ -13,7 +13,7 @@ Designed to run frequently alongside heavy maintenance operations.
 import logging
 import sqlite3
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from psycopg import errors as psycopg_errors
 
@@ -99,7 +99,7 @@ class MemoryGC:
         Returns:
             GCStats with per-phase deletion counts
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         cfg = config or GCConfig()
         ttls = cfg.retention_ttls if cfg.retention_ttls is not None else DEFAULT_RETENTION_TTLS
         stats = GCStats()
@@ -338,7 +338,7 @@ class MemoryGC:
         finally:
             pool.release(conn)
 
-        stats.gc_duration_seconds = (datetime.now(timezone.utc) - start_time).total_seconds()
+        stats.gc_duration_seconds = (datetime.now(UTC) - start_time).total_seconds()
 
         logger.info(
             f"GC complete: deleted {stats.expired_memories_deleted}/{stats.expired_memories_found} "

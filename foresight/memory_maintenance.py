@@ -28,7 +28,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .clustering import cluster_memories
@@ -460,7 +460,7 @@ class MemoryMaintenanceJob:
             current_version = 0
         next_version = current_version + 1
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         version_id = str(uuid.uuid4())
         try:
             prim_meta = conn.execute(
@@ -604,12 +604,10 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(f"{cand.cluster_id}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
-                        :16
-                    ],
+                    hashlib.sha256(f"{cand.cluster_id}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16],
                     cand.memory_ids[0][:8],
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "maintenance_job",
                     cand.cluster_id,
                     str(payload),
@@ -761,11 +759,11 @@ class MemoryMaintenanceJob:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     hashlib.sha256(
-                        f"{cand.memory_id_a}{cand.memory_id_b}{datetime.now(timezone.utc).isoformat()}".encode()
+                        f"{cand.memory_id_a}{cand.memory_id_b}{datetime.now(UTC).isoformat()}".encode()
                     ).hexdigest()[:16],
                     tenant_id,
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "maintenance_job",
                     cand.memory_id_a[:8],
                     json.dumps(payload),
@@ -857,7 +855,7 @@ class MemoryMaintenanceJob:
         if config.sensitive_only and getattr(config, "tool_access", None) != "observe":
             raise ValueError("sensitive_only prune_low_relevance requires tool_access=observe to prevent PHI loss")
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=config.low_relevance_min_age_days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=config.low_relevance_min_age_days)).isoformat()
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
         cursor = conn.execute(
             f"""
@@ -964,12 +962,10 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(f"{insight.topic}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
-                        :16
-                    ],
+                    hashlib.sha256(f"{insight.topic}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16],
                     tenant_id,
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "maintenance_job",
                     insight.member_ids[0][:8] if insight.member_ids else "unknown",
                     json.dumps(payload),
@@ -1079,12 +1075,10 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(
-                        f"{event_type}{entity_id}{datetime.now(timezone.utc).isoformat()}".encode()
-                    ).hexdigest()[:16],
+                    hashlib.sha256(f"{event_type}{entity_id}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16],
                     tenant_id,
                     event_type,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     "enhanced_synthesizer",
                     entity_id,
                     json.dumps(payload),

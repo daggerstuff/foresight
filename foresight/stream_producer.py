@@ -19,7 +19,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -193,9 +193,9 @@ class KafkaProducer(StreamProducer):
                 "original_topic": topic,
                 "original_event": event.to_dict(),
                 "error": error,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
         try:
             producer = self._get_producer()

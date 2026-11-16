@@ -19,7 +19,7 @@ import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .config import DB_PATH, DB_URL
@@ -163,8 +163,8 @@ class ReflectionEngine:
             raise ValueError(f"Invalid period '{period}'. Must be one of: {', '.join(valid_periods)}")
 
         hours = {"daily": 24, "weekly": 168, "monthly": 720, "quarterly": 2160}.get(period, 168)
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        now = datetime.now(timezone.utc)
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        now = datetime.now(UTC)
 
         conn = self._get_connection()
         try:
@@ -712,7 +712,7 @@ class ReflectionEngine:
     ) -> None:
         """Store reflection report as a memory for continuity."""
         try:
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             content = f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
 
             # Build gist from insight summaries for quick retrieval

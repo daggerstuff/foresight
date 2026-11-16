@@ -23,7 +23,7 @@ import uuid
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -186,11 +186,27 @@ DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
 # Last injection tracking for system status visibility (PIX-3955)
 _last_injection_stats: dict[str, Any] = {}
 
-# Global database backend (set during main() startup, PIX-3994)
-_global_backend: Any = None
 
-# Global Redis companion (set during main() startup, PIX-3995)
-_redis_companion: RedisCompanion | None = None
+class _BackendHolder:
+    """Process-wide slot for the database backend (set during main() startup, PIX-3994)."""
+
+    instance: Any = None
+
+
+def get_backend() -> Any:
+    """Return the active database backend, or ``None`` before startup."""
+    return _BackendHolder.instance
+
+
+class _RedisCompanionHolder:
+    """Process-wide slot for the Redis companion (set during main() startup, PIX-3995)."""
+
+    instance: RedisCompanion | None = None
+
+
+def get_redis_companion() -> RedisCompanion | None:
+    """Return the active Redis companion, or ``None`` when Redis is disabled."""
+    return _RedisCompanionHolder.instance
 
 
 # Global narrative cache instance for metrics (lazy initialization)
@@ -556,7 +572,7 @@ def _normalize_expires_at(value: str | float | int | None) -> str | None:
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+            return datetime.fromtimestamp(value, tz=UTC).isoformat()
         except (ValueError, OSError, OverflowError):
             return None
     if isinstance(value, str):
@@ -567,7 +583,7 @@ def _normalize_expires_at(value: str | float | int | None) -> str | None:
             return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
         except ValueError:
             with contextlib.suppress(ValueError):
-                return datetime.fromtimestamp(float(text), tz=timezone.utc).isoformat()
+                return datetime.fromtimestamp(float(text), tz=UTC).isoformat()
             return None
     return None
 
@@ -1010,19 +1026,20 @@ def get_db_connection(db_path: str | None = None):
         A connection-like object with ``execute()``, ``fetchone()``,
         ``fetchall()``, ``commit()``, and ``close()``.
     """
-    if _global_backend is None:
+    backend = get_backend()
+    if backend is None:
         raise RuntimeError(
             "Database backend not initialized. Call _initialize_backend() first "
             "(requires FORESIGHT_DB_URL). Foresight is Postgres-only; no SQLite fallback."
         )
-    if _global_backend.backend_type != "postgresql":
+    if backend.backend_type != "postgresql":
         raise RuntimeError(
-            f"Database backend is '{_global_backend.backend_type}', expected 'postgresql'. "
+            f"Database backend is '{backend.backend_type}', expected 'postgresql'. "
             "Foresight is Postgres-only; no SQLite fallback."
         )
     _log = logging.getLogger("foresight.db")
     _log.debug("get_db_connection: using PostgresBackend pool")
-    pool = _global_backend._pool
+    pool = backend._pool
     conn = pool.getconn()
     return PostgresPooledConnection(conn, pool)
 
@@ -1038,7 +1055,7 @@ def _seed_default_tenant(conn) -> None:
         VALUES (?, 'Default tenant', ?, ?, ?, '{}')
         ON CONFLICT (id) DO NOTHING
         """,
-        (DEFAULT_TENANT_ID, DEFAULT_RATE_LIMIT, DEFAULT_BURST_LIMIT, datetime.now(timezone.utc).isoformat()),
+        (DEFAULT_TENANT_ID, DEFAULT_RATE_LIMIT, DEFAULT_BURST_LIMIT, datetime.now(UTC).isoformat()),
     )
 
 
@@ -1083,7 +1100,7 @@ def init_db(backend=None):
                     version,
                     backend.backend_type,
                 )
-                backend.set_version(version, datetime.now(timezone.utc).isoformat())
+                backend.set_version(version, datetime.now(UTC).isoformat())
                 continue
 
             if version == PGVECTOR_MIGRATION and not ensure_pgvector_extension(backend):
@@ -1091,7 +1108,7 @@ def init_db(backend=None):
                     "Schema v%s: pgvector unavailable, skipping ANN statements (version recorded)",
                     version,
                 )
-                backend.set_version(version, datetime.now(timezone.utc).isoformat())
+                backend.set_version(version, datetime.now(UTC).isoformat())
                 continue
 
             for stmt in _SCHEMA_MIGRATIONS[version]:
@@ -1106,7 +1123,7 @@ def init_db(backend=None):
                     ):
                         continue
                     raise
-            backend.set_version(version, datetime.now(timezone.utc).isoformat())
+            backend.set_version(version, datetime.now(UTC).isoformat())
 
         # Ensure the built-in default tenant always exists so tenant switches are stable.
         # Use ON CONFLICT DO NOTHING (works on both SQLite 3.24+ and PostgreSQL)
@@ -1121,7 +1138,7 @@ def init_db(backend=None):
                 DEFAULT_TENANT_ID,
                 DEFAULT_RATE_LIMIT,
                 DEFAULT_BURST_LIMIT,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 
@@ -1150,10 +1167,9 @@ def _initialize_backend() -> None:
     If the URL is set but the connection fails, the server aborts with a
     clear error message.  If the URL is unset, a ``RuntimeError`` is raised.
 
-    Idempotent: if ``_global_backend`` is already set, this is a no-op.
+    Idempotent: if a backend is already installed, this is a no-op.
     """
-    global _global_backend
-    if _global_backend is not None:
+    if get_backend() is not None:
         return
     if not os.environ.get("FORESIGHT_DB_URL"):
         raise RuntimeError(
@@ -1164,7 +1180,7 @@ def _initialize_backend() -> None:
     try:
         backend = create_backend()
         backend.connect()
-        _global_backend = backend
+        _BackendHolder.instance = backend
         logger.info("Database backend initialised (type=%s)", type(backend).__name__)
     except Exception:
         logger.exception(
@@ -1179,16 +1195,15 @@ def _initialize_redis() -> None:
     """Create and connect the global RedisCompanion (PIX-3995).
 
     If ``REDIS_URL`` is set, creates a ``RedisCompanion`` and eagerly
-    connects.  The companion is stored as ``_redis_companion`` and
+    connects.  The companion is stored in ``_RedisCompanionHolder`` and
     gracefully degrades if Redis is unreachable.
     """
-    global _redis_companion
     if not REDIS_URL:
         logger.debug("No REDIS_URL set; RedisCompanion disabled")
         return
     companion = RedisCompanion(REDIS_URL)
     _run_async(companion._ensure_connected())  # eager connect
-    _redis_companion = companion
+    _RedisCompanionHolder.instance = companion
 
 
 # Initialize database on module load - deferred to runtime in main()
@@ -1283,7 +1298,7 @@ def create_version_snapshot(memory_id: str, data: dict) -> str:
             tenant_id,
             data["content"],
             version,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             tags_json,
             emo_json,
             met_json,
@@ -1350,7 +1365,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
             version_row["emotional_context"],
             version_row["metrics"],
             new_version,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             memory_id,
             uid,
             tenant_id,
@@ -1749,15 +1764,15 @@ def _cleanup_background_systems() -> None:
             _SERVER_STATE["sync_manager"] = None
 
     # Close database backend
-    global _global_backend
-    if _global_backend is not None:
+    backend = get_backend()
+    if backend is not None:
         try:
-            _global_backend.close()
+            backend.close()
             logger.info("Database backend closed")
         except Exception as e:
             logger.error(f"Error closing database backend: {e}")
         finally:
-            _global_backend = None
+            _BackendHolder.instance = None
 
     # Release all pooled connections
     try:
@@ -1816,7 +1831,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
         conn.close()
         return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
-    memory_id = hashlib.sha256(f"{content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+    memory_id = hashlib.sha256(f"{content}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16]
     content_h = _content_hash(content)
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
@@ -1829,7 +1844,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
             "WHERE id = ? AND user_id = ? AND tenant_id = ?"
         )
-        update_params = (datetime.now(timezone.utc).isoformat(), existing["id"], uid, tenant_id)
+        update_params = (datetime.now(UTC).isoformat(), existing["id"], uid, tenant_id)
         if _supports_execute_returning(conn):
             conn.execute_returning(update_sql, update_params).fetchone()
         else:
@@ -1897,8 +1912,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         json.dumps(opts.metrics) if opts.metrics else None,
         opts.importance,
         1,
-        datetime.now(timezone.utc).isoformat(),
-        datetime.now(timezone.utc).isoformat(),
+        datetime.now(UTC).isoformat(),
+        datetime.now(UTC).isoformat(),
         json.dumps(memory.tags),
         1 if is_sensitive_bit else 0,
         sensitivity_reason,
@@ -2039,7 +2054,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         conn.close()
         return "No updates provided."
     updates_list.append("updated_at = ?")
-    values.append(datetime.now(timezone.utc).isoformat())
+    values.append(datetime.now(UTC).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
     update_sql = f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; SQL identifiers are hardcoded literals
     if _supports_execute_returning(conn):
@@ -2276,6 +2291,7 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
 @mcp.tool(output_schema=None)
 def manage_memories(
     options: MemoryAction | None = None,
+    *,
     user_id: str | None = None,
     action: Literal["store", "update", "delete", "archive"] | None = None,
     memory_id: str | None = None,
@@ -2492,6 +2508,7 @@ def _trace_retrieval(
 @mcp.tool(output_schema=None)
 def search_memories(
     options: SearchOptions | None = None,
+    *,
     user_id: str | None = None,
     query_type: Literal["id", "keyword", "list", "semantic"] | None = None,
     query: str | None = None,
@@ -2651,7 +2668,7 @@ def search_memories(
         # post-filter over the returned IDs (may return fewer than limit).
         match_ids = [m.memory_id for m in result.matches]
         if match_ids:
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             conn = get_db_connection()
             placeholders = ",".join("?" * len(match_ids))
             rows = conn.execute(
@@ -2681,7 +2698,7 @@ def search_memories(
             return "Error: memory_id or query (as ID) required for id lookup."
         conn = get_db_connection()
         frag, fparams = _build_filter_fragments(*filters)
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         row = conn.execute(
             "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"  # nosec B608 - values parameterized; filter fragments use hardcoded column literals
             + frag
@@ -2764,7 +2781,7 @@ def search_memories(
     # 3. Fallback to basic list/keyword search
     conn = get_db_connection()
     frag, fparams = _build_filter_fragments(*filters, agent_id=options.agent_id, project=options.project)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
@@ -3040,7 +3057,7 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
         return f"Version {options.to_version} not found for memory {options.memory_id}."
 
     version_id = hashlib.sha256(
-        f"{options.memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()
+        f"{options.memory_id}{row['version']}{datetime.now(UTC).isoformat()}".encode()
     ).hexdigest()[:16]
     conn.execute(
         "INSERT INTO memory_versions (id, memory_id, tenant_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -3050,7 +3067,7 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
             tenant_id,
             row["content"],
             row["version"] or 1,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             row["tags"],
             row["emotional_context"],
             row["metrics"],
@@ -3066,7 +3083,7 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
             version_row["emotional_context"],
             version_row["metrics"],
             new_version,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             options.memory_id,
             uid,
             tenant_id,
@@ -3218,6 +3235,7 @@ def _handle_context_block_update(agent, label: str, content: str | None, visibil
 @mcp.tool(output_schema=None)
 def manage_context_blocks(
     options: ContextBlockAction | None = None,
+    *,
     user_id: str | None = None,
     action: Literal["list", "get", "update", "reset", "clear"] | None = None,
     label: str | None = None,
@@ -3335,7 +3353,7 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
     Returns the number of new memories stored.
     """
     stored = 0
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     block_map = [
         (USER_PREFERENCES, "preference"),
         (PENDING_ITEMS, "pending"),
@@ -3852,7 +3870,7 @@ def _promote_in_place_curation(
 ) -> dict[str, Any]:
     """Atomically archive original source rows and promote staged rows into the source bank."""
     archive_bank_id = _curation_archive_bank(run_id, source_bank_id)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         if cancel_event and cancel_event.is_set():
@@ -3901,7 +3919,7 @@ def _restore_in_place_curation(
     staged_ids: list[str],
 ) -> None:
     """Restore source/staging banks if cancellation lands after promotion."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         conn.execute("BEGIN")
@@ -4095,7 +4113,7 @@ def _insert_curation_entries(
     cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """Persist curated output entries into the chosen bank."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     created_ids: list[str] = []
     try:
@@ -4143,7 +4161,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     cancel_event = _get_curation_cancel_event(run_id)
     set_current_tenant_id(tenant_id)
     queue = OperationQueue(DB_PATH)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     if not _claim_curation_run(run_id, tenant_id, now):
         return
     _publish_curation_status(run_id, "running", actor=uid, source_bank_id=payload["source_bank_id"])
@@ -4239,7 +4257,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
         }
         summary.update(promotion_summary)
         _raise_if_run_canceled(uid, tenant_id, run_id)
-        completed_at = datetime.now(timezone.utc).isoformat()
+        completed_at = datetime.now(UTC).isoformat()
         _update_curation_run(run_id, tenant_id, status="completed", summary=summary, ended_at=completed_at, error={})
         queue.remove(run_id, tenant_id=tenant_id)
         _publish_curation_status(
@@ -4251,7 +4269,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             output_mode=payload["output_mode"],
         )
     except CurationError:
-        ended_at = datetime.now(timezone.utc).isoformat()
+        ended_at = datetime.now(UTC).isoformat()
         row = _fetch_curation_run(uid, tenant_id, run_id)
         if row is None or row["status"] != "canceled":
             _update_curation_run(run_id, tenant_id, status="canceled", ended_at=ended_at)
@@ -4260,7 +4278,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             _update_curation_run(run_id, tenant_id, ended_at=ended_at)
         queue.remove(run_id, tenant_id=tenant_id)
     except Exception as exc:
-        failed_at = datetime.now(timezone.utc).isoformat()
+        failed_at = datetime.now(UTC).isoformat()
         error = {
             "type": exc.__class__.__name__,
             "message": str(exc),
@@ -4293,6 +4311,7 @@ def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
 @mcp.tool(output_schema=None)
 def manage_curation_runs(
     options: CurationRunAction | None = None,
+    *,
     user_id: str | None = None,
     action: Literal["create", "get", "list", "cancel", "archive"] | None = None,
     run_id: str | None = None,
@@ -4361,7 +4380,7 @@ def manage_curation_runs(
             output_bank_id = _curation_run_output_bank(
                 run_id, source_bank_id, options.output_mode, options.output_bank_id
             )
-            created_at = datetime.now(timezone.utc).isoformat()
+            created_at = datetime.now(UTC).isoformat()
             conn = get_db_connection()
             conn.execute(
                 """INSERT INTO curation_runs
@@ -4444,7 +4463,7 @@ def manage_curation_runs(
                     run=_row_to_curation_run(row),
                 )
             else:
-                ended_at = datetime.now(timezone.utc).isoformat()
+                ended_at = datetime.now(UTC).isoformat()
                 _get_curation_cancel_event(options.run_id).set()
                 _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
                 OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
@@ -4462,7 +4481,7 @@ def manage_curation_runs(
                     run=_row_to_curation_run(row),
                 )
             else:
-                archived_at = datetime.now(timezone.utc).isoformat()
+                archived_at = datetime.now(UTC).isoformat()
                 _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
                 res = _tool_response(
                     ok=True,
@@ -4625,7 +4644,7 @@ def _score_memory_relevance(
     try:
         created = datetime.fromisoformat(created_str)
         if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+            created = created.replace(tzinfo=UTC)
         age_hours = max((now - created).total_seconds() / 3600, 0)
     except (ValueError, TypeError):
         age_hours = 0
@@ -4745,7 +4764,7 @@ def inject_context(
     # Track last injection for system status visibility (PIX-3955)
     _last_injection_stats.update(
         {
-            "last_run_at": datetime.now(timezone.utc).isoformat(),
+            "last_run_at": datetime.now(UTC).isoformat(),
             "query_length": len(conversation_text),
             "latency_ms": round(latency_ms, 2),
             "memories_fetched": len(hybrid_result.results),
@@ -5119,6 +5138,7 @@ def _context_block_notes_for_terms(
 
 def get_relevant_memories(
     query: str,
+    *,
     user_id: str | None = None,
     limit: int = 5,
     min_relevance: float = 0.01,
@@ -5564,11 +5584,12 @@ def _run_decay_sweep() -> int:
     ``current_strength``, ``strength_trend``, and ``last_decay_at``.
     Returns the number of rows updated.
     """
-    if _global_backend is None:
+    backend = get_backend()
+    if backend is None:
         logger.debug("Decay sweep skipped: no backend initialised")
         return 0
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     sql = """
         WITH decay_calc AS (
@@ -5605,7 +5626,7 @@ def _run_decay_sweep() -> int:
     """
 
     try:
-        with _global_backend.connection() as conn:
+        with backend.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (now_iso, now_iso))
                 updated = cur.rowcount
@@ -5738,13 +5759,14 @@ def _start_sync_thread() -> None:
 
 def _run_scheduled_maintenance_gc() -> None:
     """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
-    if _global_backend is None:
+    backend = get_backend()
+    if backend is None:
         logger.warning("Maintenance/GC skipped: no backend initialised")
         return
 
     pairs: list[tuple[str, str, str]] = []
     try:
-        with _global_backend.connection() as conn, conn.cursor() as cur:
+        with backend.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT DISTINCT user_id, tenant_id, COALESCE(bank_id, 'default') AS bank_id "
                 "FROM memories WHERE is_ghost = 0 OR is_ghost IS NULL"
@@ -5763,7 +5785,7 @@ def _run_scheduled_maintenance_gc() -> None:
 
     ghost_tenants: set[str] = set()
     try:
-        with _global_backend.connection() as conn, conn.cursor() as cur:
+        with backend.connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT DISTINCT tenant_id FROM memories WHERE tenant_id IS NOT NULL")
             for row in cur.fetchall():
                 row_dict = dict(row) if not isinstance(row, dict) else row
@@ -5916,10 +5938,11 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
     # Eagerly initialise services with the backend so lazy singletons
     # already have it when tool handlers call get_*() without args.
-    if _global_backend is not None:
-        get_hybrid_retriever(backend=_global_backend)
-        get_graph_store(backend=_global_backend)
-        get_temporal_query_builder(backend=_global_backend)
+    backend = get_backend()
+    if backend is not None:
+        get_hybrid_retriever(backend=backend)
+        get_graph_store(backend=backend)
+        get_temporal_query_builder(backend=backend)
 
     _resume_pending_curation_runs()
     _start_decay_sweep_thread()
@@ -6089,7 +6112,7 @@ def _parse_as_of(value: str) -> datetime:
     except ValueError as exc:
         raise ValueError(f"Invalid as_of {value!r}: expected an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -6464,6 +6487,7 @@ def memory_status(
 
 def store_memory(
     content: str,
+    *,
     user_id: str | None = None,
     category: str = "fact",
     scope: str = "session",
@@ -7278,7 +7302,7 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
 
 def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
     """Promote an inferred memory to a stated fact (clears the ranking penalty)."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -7309,7 +7333,7 @@ def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
 
 def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: str | None) -> str:
     """Soft-forget a rejected inferred memory (recoverable via undo)."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -7342,7 +7366,7 @@ def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: s
 
 def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
     """Reverse approve/decline and return the memory to the review queue."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
         row = conn.execute(

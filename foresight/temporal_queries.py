@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from .config import DB_PATH, DB_URL
@@ -149,7 +149,7 @@ class TemporalQueryBuilder:
         if unit not in hours_by_unit:
             raise ValueError(f"Invalid timeframe unit: {parts[1]!r}")
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=amount * hours_by_unit[unit])
+        cutoff = datetime.now(UTC) - timedelta(hours=amount * hours_by_unit[unit])
         return cutoff.isoformat()
 
     @staticmethod
@@ -178,7 +178,7 @@ class TemporalQueryBuilder:
         """Get memories from a time window."""
         tenant_id = get_current_account_id()
         window_hours = self._get_window_hours(window)
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
         ns_frag, ns_params = self._ns_frag(agent_id, project)
 
         if category:
@@ -637,7 +637,7 @@ class TemporalQueryBuilder:
         )
 
         scores = {}
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for row in rows:
             memory_id = row["id"]
             created_at_str = row["created_at"]

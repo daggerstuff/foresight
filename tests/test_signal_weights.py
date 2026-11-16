@@ -11,7 +11,7 @@ import os
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -71,7 +71,7 @@ def _create_test_db() -> str:
     """)
 
     uid = "signal_weights_user"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # ``old_match`` is keyword-relevant but old; ``recent_miss`` is recent but
     # contains none of the query terms. This makes keyword and temporal rankings

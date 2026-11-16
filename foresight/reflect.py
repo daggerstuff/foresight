@@ -24,7 +24,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger("foresight_reflect")
@@ -225,7 +225,7 @@ def reflect(
         ),
     )
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     candidates = result.results[: max(1, int(max_memories))]
     rows = _memory_rows_for_ids([r.memory_id for r in candidates], user_id, tenant_id)
     live_ids = {mid for mid, row in rows.items() if _is_live(row, now_iso, include_archived)}
@@ -286,7 +286,7 @@ def lookup_mental_model(
     agent_id: str | None = None,
 ) -> dict | None:
     """Fetch a non-expired mental model for (tenant, user, question_key, agent lane)."""
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     if agent_id is None:
         row = _fetch_one(
             "SELECT * FROM mental_models WHERE tenant_id = ? AND user_id = ? AND question_key = ? "
@@ -305,7 +305,7 @@ def lookup_mental_model(
 
 
 def touch_mental_model(model_id: str) -> None:
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     _execute(
         "UPDATE mental_models SET hit_count = hit_count + 1, last_hit_at = ? WHERE id = ?",
         (now_iso, model_id),
@@ -322,7 +322,7 @@ def store_mental_model(
 ) -> str:
     """Upsert a mental model for a reflect result. Returns the model id."""
     qkey = question_key(question)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     now_iso = now.isoformat()
     expires_at = (now + timedelta(days=mental_model_ttl_days())).isoformat()
     citations_json = json.dumps(result.get("citations", []))
@@ -381,7 +381,7 @@ def mental_model_citations_valid(model: dict, *, user_id: str, tenant_id: str, i
     if not ids:
         return True
     rows = _memory_rows_for_ids(ids, user_id, tenant_id)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     for mid in ids:
         if not _is_live(rows.get(mid), now_iso, include_archived):
             return False

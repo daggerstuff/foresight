@@ -194,15 +194,31 @@ class TelemetryStore:
             }
 
 
-_GLOBAL_TELEMETRY_STORE: TelemetryStore | None = None
-_TELEMETRY_LOCK = threading.Lock()
+class _TelemetryStoreSingleton:
+    """Process-wide slot holding the single TelemetryStore instance."""
+
+    instance: TelemetryStore | None = None
+    lock = threading.Lock()
+
+    @classmethod
+    def get(cls) -> TelemetryStore:
+        if cls.instance is None:
+            with cls.lock:
+                if cls.instance is None:
+                    cls.instance = TelemetryStore()
+        return cls.instance
+
+    @classmethod
+    def set(cls, store: TelemetryStore | None) -> None:
+        with cls.lock:
+            cls.instance = store
 
 
 def get_telemetry_store() -> TelemetryStore:
     """Get or create global TelemetryStore singleton."""
-    global _GLOBAL_TELEMETRY_STORE
-    if _GLOBAL_TELEMETRY_STORE is None:
-        with _TELEMETRY_LOCK:
-            if _GLOBAL_TELEMETRY_STORE is None:
-                _GLOBAL_TELEMETRY_STORE = TelemetryStore()
-    return _GLOBAL_TELEMETRY_STORE
+    return _TelemetryStoreSingleton.get()
+
+
+def set_telemetry_store(store: TelemetryStore | None) -> None:
+    """Replace (or clear, with ``None``) the global TelemetryStore instance."""
+    _TelemetryStoreSingleton.set(store)

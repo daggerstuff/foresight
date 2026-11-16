@@ -1,6 +1,6 @@
 """Tests for Phase 2 — MemLake append-only raw layer, provenance, reprocess, tombstone."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -258,8 +258,8 @@ class TestTombstone:
         user_id = "_test_user_"
 
         # Simulate raw events captured three days ago and three minutes ago.
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
-        recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+        recent_ts = (datetime.now(UTC) - timedelta(minutes=3)).isoformat()
 
         pool = get_pool(pipeline.db_path)
         conn = pool.acquire()

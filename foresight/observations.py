@@ -22,7 +22,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .reflect import _connect, _fetch_all, _fetch_one
@@ -44,7 +44,7 @@ def _execute(sql: str, params: tuple | list = ()) -> None:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _observation_row(row: dict) -> dict[str, Any]:
@@ -319,7 +319,7 @@ def _recency_factor(last_refined_at: str | None, now: datetime) -> float:
     try:
         refined = datetime.fromisoformat(str(last_refined_at).replace("Z", "+00:00"))
         if refined.tzinfo is None:
-            refined = refined.replace(tzinfo=timezone.utc)
+            refined = refined.replace(tzinfo=UTC)
         age_days = max((now - refined).total_seconds() / 86400.0, 0.0)
     except (ValueError, TypeError):
         return 0.5
@@ -350,7 +350,7 @@ def list_observations(
             (tenant_id, user_id, status, *ns_params, limit),
         )
     observations = [_observation_row(r) for r in rows]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     observations.sort(
         key=lambda o: o["confidence"] * _recency_factor(o.get("last_refined_at"), now),
         reverse=True,

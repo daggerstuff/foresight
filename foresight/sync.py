@@ -15,7 +15,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -88,7 +88,7 @@ class Operation:
     entity_type: str
     entity_id: str
     payload: dict[str, Any]
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     retry_count: int = 0
     last_attempt: datetime | None = None
     vector_clock: VectorClock = field(default_factory=VectorClock)
@@ -403,12 +403,12 @@ class SyncManager:
                     self._queue.remove(operation.id)
                     synced += 1
 
-                self._last_sync = datetime.now(timezone.utc)
+                self._last_sync = datetime.now(UTC)
 
             except Exception as e:
                 # Retry with exponential backoff
                 operation.retry_count += 1
-                operation.last_attempt = datetime.now(timezone.utc)
+                operation.last_attempt = datetime.now(UTC)
                 self._queue.enqueue(operation)  # Re-enqueue with updated retry count
                 errors.append(f"Operation {operation.id} failed: {e}")
                 logger.warning(f"Operation {operation.id} failed (attempt {operation.retry_count}): {e}")

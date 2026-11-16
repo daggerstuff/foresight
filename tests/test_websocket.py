@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+from datetime import UTC
 from unittest.mock import patch
 
 import pytest
@@ -354,9 +355,9 @@ class TestHeartbeat:
 
         await handler.connect(connection_id="stale-conn")
         conn = handler.get_connection("stale-conn")
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        conn.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=5)
+        conn.last_heartbeat = datetime.now(UTC) - timedelta(seconds=5)
 
         server._running = True
         task = asyncio.create_task(server._heartbeat_loop())

@@ -6,7 +6,7 @@ resource exhaustion from accumulated archived data.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from .config import DB_PATH, DB_URL
 from .connection_pool import get_pool
@@ -67,7 +67,7 @@ class GhostMemoryCleanup:
         Returns:
             CleanupStats with deletion statistics
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         stats = CleanupStats()
 
         cutoff_date = start_time - timedelta(days=self.ghost_ttl_days)
@@ -183,7 +183,7 @@ class GhostMemoryCleanup:
         finally:
             pool.release(conn)
 
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
         stats.cleanup_duration_seconds = (end_time - start_time).total_seconds()
 
         logger.info(
@@ -226,7 +226,7 @@ class GhostMemoryCleanup:
             )
             row = cursor.fetchone()
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             cutoff_7 = (now - timedelta(days=7)).isoformat()
             cutoff_30 = (now - timedelta(days=30)).isoformat()
             cutoff_90 = (now - timedelta(days=90)).isoformat()

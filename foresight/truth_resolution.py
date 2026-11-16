@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .encryption import decrypt_if_encrypted
 from .enhanced_synthesizer import compute_overlap_score, find_sentiment_conflict
@@ -134,7 +134,7 @@ def detect_and_mark_supersessions(
     ).fetchall()
 
     matches: list[SupersessionMatch] = []
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     for row in rows or []:
         old_content = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
         detection = detect_supersession(new_content, old_content)

@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -539,7 +539,7 @@ class TestTombstoneInvariants:
 
 def _iso_ago(*, minutes=0, seconds=0):
     """Return an ISO-8601 timestamp in the past without needing math in tests."""
-    dt = datetime.now(timezone.utc) - timedelta(minutes=minutes, seconds=seconds)
+    dt = datetime.now(UTC) - timedelta(minutes=minutes, seconds=seconds)
     return dt.replace(microsecond=0).isoformat()
 
 
@@ -549,4 +549,4 @@ def _iso_between(start: str, end: str) -> str:
     e = datetime.fromisoformat(end)
     assert s < e
     mid = s + (e - s) / 2
-    return mid.replace(tzinfo=timezone.utc).isoformat()
+    return mid.replace(tzinfo=UTC).isoformat()

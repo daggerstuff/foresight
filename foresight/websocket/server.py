@@ -17,7 +17,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -47,8 +47,8 @@ class Connection:
     id: str
     send: Callable[[str], Any]
     close: Callable[[], Any]
-    connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    connected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
     state: ConnectionState = ConnectionState.CONNECTING
     user_id: str | None = None
     tenant_id: str | None = None
@@ -116,7 +116,7 @@ class WebSocketHandler:
             # Restore existing connection
             conn = existing
             conn.state = ConnectionState.CONNECTED
-            conn.last_heartbeat = datetime.now(timezone.utc)
+            conn.last_heartbeat = datetime.now(UTC)
             logger.info("Reconnected connection: %s", connection_id)
 
             # Replay missed events from buffer
@@ -134,7 +134,7 @@ class WebSocketHandler:
                                 "type": "event_replay",
                                 "event_type": ev.get("event_type"),
                                 "payload": ev,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "timestamp": datetime.now(UTC).isoformat(),
                             }
                         )
                     except Exception as e:
@@ -236,10 +236,10 @@ class WebSocketHandler:
         if action == "ping":
             connection = self._connections.get(connection_id)
             if connection:
-                connection.last_heartbeat = datetime.now(timezone.utc)
+                connection.last_heartbeat = datetime.now(UTC)
             return {
                 "type": "pong",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "connection_id": connection_id,
             }
 
@@ -284,7 +284,7 @@ class WebSocketHandler:
     async def cleanup_stale_connections(self, timeout_seconds: int = 300) -> list[str]:
         """Remove connections that haven't sent heartbeat."""
         removed = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for conn_id, conn in list(self._connections.items()):
             if conn.state == ConnectionState.DISCONNECTED:
@@ -481,7 +481,7 @@ class WebSocketServer:
                 if not self._running:
                     break
 
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 for conn_id, conn in list(self.handler._connections.items()):
                     if conn.state in (ConnectionState.DISCONNECTED,):
                         continue
@@ -562,7 +562,7 @@ class WebSocketServer:
             "type": "event",
             "event_type": event_type,
             "payload": payload,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # Parse event_type back to an EventType enum for subscription matching

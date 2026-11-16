@@ -19,7 +19,7 @@ import logging
 import os
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -301,7 +301,7 @@ class ProofBenchmarkRunner:
         surfaces = self._check_surface_readiness()
 
         return ProductionProofReport(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             total_scenarios=total,
             passed_scenarios=passed,
             success_rate_pct=(passed / total) * 100.0 if total else 0.0,

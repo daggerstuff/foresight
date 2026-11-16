@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import importlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from foresight.backend.backend_migrations import ensure_schema_migrations_table
@@ -38,5 +38,5 @@ def run_migrations(backend: DatabaseBackend) -> None:
         if version not in applied:
             mod = importlib.import_module(module_path)
             mod.migrate(backend)
-            backend.set_version(version, datetime.now(timezone.utc).isoformat())
+            backend.set_version(version, datetime.now(UTC).isoformat())
             logger.info(f"Applied migration {version}")

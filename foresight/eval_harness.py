@@ -31,7 +31,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 logger = logging.getLogger("foresight_eval")
@@ -731,7 +731,7 @@ class EvalHarness:
         self._apply_patches()
         self._conn = None
         conn = self._get_connection()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         count = 0
         for mem in FIXTURE_MEMORIES:
@@ -742,9 +742,9 @@ class EvalHarness:
             created_at = now
             offset = mem.get("created_at_offset_hours")
             if offset is not None:
-                created_at = datetime.now(timezone.utc).__class__.fromtimestamp(
+                created_at = datetime.now(UTC).__class__.fromtimestamp(
                     now.timestamp() + (offset or 0) * 3600,
-                    tz=timezone.utc,
+                    tz=UTC,
                 )
             created_at_iso = created_at.isoformat()
             updated_at_iso = created_at.isoformat()
@@ -1160,7 +1160,7 @@ class EvalHarness:
         offset_hours = scenario.as_of_offset_hours
         if offset_hours is None:
             raise ValueError("temporal scenario requires as_of_offset_hours to be set")
-        as_of = datetime.now(timezone.utc) + timedelta(hours=offset_hours)
+        as_of = datetime.now(UTC) + timedelta(hours=offset_hours)
 
         t0 = time.perf_counter()
         builder = TemporalQueryBuilder(db_path=self.db_path)
@@ -1270,7 +1270,7 @@ class EvalHarness:
         }
 
         return EvalReport(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             scenarios=results,
             summary=summary,
         )

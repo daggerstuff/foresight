@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,9 +52,9 @@ def setup_test_db(monkeypatch):
 
     def mock_sqlite3_connect(database, *args, **kwargs):
         if database == "postgres":
-            from foresight.server import PostgresPooledConnection, _global_backend
+            from foresight.server import PostgresPooledConnection, get_backend
 
-            pool = _global_backend._pool
+            pool = get_backend()._pool
             return PostgresPooledConnection(pool.getconn(), pool)
         return real_sqlite3_connect(database, *args, **kwargs)
 
@@ -69,14 +69,14 @@ def setup_test_db(monkeypatch):
 
 def test_store_memory():
     # Use unique content to avoid dedup collision with previous runs
-    unique = f"test_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'store_test').hexdigest()[:8]}"
+    unique = f"test_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'store_test').hexdigest()[:8]}"
     result = store_memory(unique)
     assert "Stored" in result
 
 
 def test_store_memory_dedup():
     """Storing identical content should bump activation, not create duplicate."""
-    content = f"dedup_test_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'dedup_unique').hexdigest()[:8]}"
+    content = f"dedup_test_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'dedup_unique').hexdigest()[:8]}"
     result1 = store_memory(content)
     assert "Stored" in result1
     result2 = store_memory(content)
@@ -136,7 +136,7 @@ def test_store_memory_uses_content_hash_for_dedup():
     """
     from foresight.server import store_memory
 
-    unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:8]
+    unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:8]
     content = f"hash_dedup_test_{unique_marker}"
 
     result1 = store_memory(content)
@@ -150,7 +150,7 @@ def test_store_memory_dedup_increments_activation_count():
     """Duplicate store must bump activation_count, not create a new row."""
     from foresight.server import store_memory
 
-    unique = f"activation_bump_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
+    unique = f"activation_bump_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
     r1 = store_memory(unique)
     assert "Stored" in r1
     r2 = store_memory(unique)
@@ -194,7 +194,7 @@ def test_store_memory_tenant_isolation_on_dedup():
 
         shared_content = "cross-tenant dedup test"
         h = content_hash(shared_content)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         for tenant, mid in [("tenant-a", "mem-a-1"), ("tenant-b", "mem-b-1")]:
             conn.execute(
@@ -522,7 +522,7 @@ def _make_inject_test_db(memories=None):
                     m.get("tenant_id", "default"),
                     m.get("user_id", "inject_test_user"),
                     m.get("importance", 1.0),
-                    m.get("created_at", datetime.now(timezone.utc).isoformat()),
+                    m.get("created_at", datetime.now(UTC).isoformat()),
                     m.get("is_ghost", 0),
                 ),
             )
@@ -546,7 +546,7 @@ def _make_hybrid_result(memory_id, content, combined_score=0.8, **kwargs):
         category=kwargs.get("category", "fact"),
         importance=kwargs.get("importance", 1.0),
         strength_trend=kwargs.get("strength_trend", "stable"),
-        created_at=kwargs.get("created_at", datetime.now(timezone.utc).isoformat()),
+        created_at=kwargs.get("created_at", datetime.now(UTC).isoformat()),
         keyword_score=kwargs.get("keyword_score", 0.0),
         tfidf_cosine_score=kwargs.get("tfidf_cosine_score", 0.0),
         semantic_score=kwargs.get("semantic_score", 0.0),
@@ -771,7 +771,7 @@ def test_format_context_blocks_by_injection_point_groups_by_schema():
 
 def test_score_memory_relevance():
     """_score_memory_relevance combines overlap, importance, and recency."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Create a mock row-like object using a dict wrapped to behave like Row
     class FakeRow:
@@ -793,7 +793,7 @@ def test_score_memory_relevance():
 
 def test_score_memory_relevance_old_memory():
     """Older memories get lower recency scores."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     old_time = (now - timedelta(days=30)).isoformat()
 
     class FakeRow:
@@ -824,7 +824,7 @@ def test_score_memory_relevance_old_memory():
 
 def test_manage_context_blocks_update_reset_clear_cycle():
     """The renamed block manager preserves the continuity block semantics."""
-    user_id = f"context_block_test_{datetime.now(timezone.utc).timestamp()}"
+    user_id = f"context_block_test_{datetime.now(UTC).timestamp()}"
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
 
@@ -883,8 +883,8 @@ def test_manage_context_blocks_update_reset_clear_cycle():
 
 def test_registered_context_block_schema_allows_validated_custom_block():
     """Custom schemas can create validated non-default context blocks."""
-    label = f"custom_notes_{datetime.now(timezone.utc).timestamp()}".replace(".", "_")
-    user_id = f"custom_block_user_{datetime.now(timezone.utc).timestamp()}"
+    label = f"custom_notes_{datetime.now(UTC).timestamp()}".replace(".", "_")
+    user_id = f"custom_block_user_{datetime.now(UTC).timestamp()}"
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
 
@@ -941,7 +941,7 @@ def test_registered_context_block_schema_allows_validated_custom_block():
 
 def test_manage_context_blocks_are_tenant_isolated():
     """Same user ID gets separate persisted context blocks per tenant."""
-    user_id = f"tenant_isolation_user_{datetime.now(timezone.utc).timestamp()}"
+    user_id = f"tenant_isolation_user_{datetime.now(UTC).timestamp()}"
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
 
@@ -1052,7 +1052,7 @@ def _seed_memory(
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn.execute(
         """INSERT INTO memories
         (id, content, tenant_id, scope, retention, category, user_id, bank_id, created_at,
@@ -1485,7 +1485,7 @@ def test_resume_pending_curation_runs_requeues_pending_and_running_rows():
     from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = sqlite3.connect(db_path)
     conn.execute(
         """INSERT INTO curation_runs
@@ -1538,7 +1538,7 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
     from foresight.server import _resume_pending_curation_runs
 
     db_path = _make_curation_test_db()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     transcript_bundle = [{"role": "user", "content": "Remember this detail"}]
     conn = sqlite3.connect(db_path)
     conn.execute(

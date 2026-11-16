@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -35,7 +35,7 @@ def _curate(**kwargs) -> dict:
 
 
 def test_curation_creates_observation_with_supporting_ids():
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     _store(f"sleep quality has been poor this week ({stamp})", category="health")
     _store(f"sleep has been fragmented again last night ({stamp})", category="health")
 
@@ -52,7 +52,7 @@ def test_curation_creates_observation_with_supporting_ids():
 
 
 def test_followup_curation_refines_without_dropping_evidence():
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     ids = [
         _store(f"therapy session went well on monday ({stamp})", category="therapy"),
         _store(f"therapy homework completed again ({stamp})", category="therapy"),
@@ -77,7 +77,7 @@ def test_followup_curation_refines_without_dropping_evidence():
 
 
 def test_inject_context_surfaces_patterns_section():
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     _store(f"deadline pressure keeps building up ({stamp})", category="work")
     _store(f"work deadline stress recurring daily ({stamp})", category="work")
     _curate()
@@ -89,7 +89,7 @@ def test_inject_context_surfaces_patterns_section():
 
 
 def test_observations_are_tenant_scoped():
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     _store(f"private pattern alpha ({stamp})", category="secret")
     _store(f"private pattern beta ({stamp})", category="secret")
     _curate()
@@ -105,7 +105,7 @@ def test_observations_are_tenant_scoped():
 
 
 def test_category_filter_scopes_scan():
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     _store(f"alpha one ({stamp})", category="alpha")
     _store(f"alpha two ({stamp})", category="alpha")
     _store(f"beta one ({stamp})", category="beta")
@@ -118,7 +118,7 @@ def test_category_filter_scopes_scan():
 
 
 def test_budgeted_injection_keeps_patterns_in_blocks_lane():
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     _store(f"budget pattern one ({stamp})", category="budgetcat")
     _store(f"budget pattern two ({stamp})", category="budgetcat")
     _curate()
