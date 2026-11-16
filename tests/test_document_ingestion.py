@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import importlib
 
 import pytest
 
@@ -15,15 +16,41 @@ from foresight.document_ingestion import (
 
 
 def _block_imports(monkeypatch, *names: str) -> None:
+    """Make ``names`` unimportable by both import mechanisms the code uses.
+
+    ``foresight.document_ingestion`` binds ``pypdf`` through a plain
+    ``from pypdf import ...`` and ``pytesseract`` through
+    ``importlib.import_module`` at its guarded call site.
+    ``importlib.import_module`` resolves the top-level module through
+    ``importlib._bootstrap`` rather than ``builtins.__import__``, so patching
+    only the latter does not block it at lookup time. It happens to fail today
+    anyway, but only because pytesseract's own package-internal imports route
+    through ``builtins.__import__`` — an implementation detail of the
+    dependency, not a contract this test should lean on. Both entry points are
+    patched, and each delegates to the real implementation for every other
+    module so unrelated lazy imports keep working.
+    """
     real_import = builtins.__import__
+    real_import_module = importlib.import_module
+
+    def _root(name: str) -> str:
+        return name.split(".", maxsplit=1)[0]
+
+    def _blocked(name: str) -> ImportError:
+        return ImportError(f"blocked optional dependency: {_root(name)}")
 
     def fake_import(name, *args, **kwargs):
-        root = name.split(".")[0]
-        if root in names:
-            raise ImportError(f"blocked optional dependency: {root}")
+        if _root(name) in names:
+            raise _blocked(name)
         return real_import(name, *args, **kwargs)
 
+    def fake_import_module(name, *args, **kwargs):
+        if _root(name) in names:
+            raise _blocked(name)
+        return real_import_module(name, *args, **kwargs)
+
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
 
 def test_detect_document_kind():

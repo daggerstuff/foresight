@@ -214,10 +214,13 @@ force-single-line = false
 # the interpreter running mypy is the conservative choice: it rejects use of
 # stdlib features that only exist on 3.13/3.14 and would break a 3.12 install.
 python_version = "3.12"
-# `stubs/` supplies a hand-written stub for the one dependency that ships no
-# `py.typed` marker (pytesseract, which has no types-* package on PyPI). This
-# adds type information for that module; it exempts nothing from checking.
-mypy_path = "stubs"
+# `pytesseract` ships no `py.typed` marker and there is no `types-pytesseract`
+# distribution on PyPI, so no stub package exists to install. Rather than
+# fabricate a stub for it, the one guarded call site in
+# `foresight/document_ingestion.py` binds it with `importlib.import_module`,
+# which mypy reads as `Any`. The import stays inside the function's
+# `try/except ImportError` so the `foresight[ocr]` extra remains genuinely
+# optional: text and PDF ingestion must not require it.
 # No strictness flags and no per-module overrides are set here. The defaults are
 # what the gate measures; this section exists so the command runs at all, not to
 # redefine or narrow what it reports. Every import resolves for real — the
