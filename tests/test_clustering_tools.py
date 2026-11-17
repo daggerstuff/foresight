@@ -19,7 +19,14 @@ from foresight.clustering import (
 )
 from foresight.connection_pool import get_pool, reset_pool
 from foresight.graph_store import get_graph_store, reset_graph_store
-from foresight.server import _upsert_cluster_results, init_db, query_clusters, run_clustering, store_memory
+from foresight.server import (
+    StoreMemoryParams,
+    _upsert_cluster_results,
+    init_db,
+    query_clusters,
+    run_clustering,
+    store_memory,
+)
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 from tests._sqlite_backend import SqliteBackend
 
@@ -288,18 +295,18 @@ def seed_memories(server_env):
     """Seed test memories for clustering tests."""
 
     # Group A: anxiety-themed memories
-    store_memory("I feel very anxious about my job interview tomorrow", user_id="test_user")
-    store_memory("My anxiety has been getting worse lately", user_id="test_user")
-    store_memory("The anxiety before presentations is overwhelming", user_id="test_user")
+    store_memory(StoreMemoryParams(content="I feel very anxious about my job interview tomorrow", user_id="test_user"))
+    store_memory(StoreMemoryParams(content="My anxiety has been getting worse lately", user_id="test_user"))
+    store_memory(StoreMemoryParams(content="The anxiety before presentations is overwhelming", user_id="test_user"))
 
     # Group B: happiness-themed memories
-    store_memory("I feel happy when I spend time with my family", user_id="test_user")
-    store_memory("Happiness comes from small moments in life", user_id="test_user")
-    store_memory("Being happy is a choice I make every day", user_id="test_user")
+    store_memory(StoreMemoryParams(content="I feel happy when I spend time with my family", user_id="test_user"))
+    store_memory(StoreMemoryParams(content="Happiness comes from small moments in life", user_id="test_user"))
+    store_memory(StoreMemoryParams(content="Being happy is a choice I make every day", user_id="test_user"))
 
     # Group C: unrelated filler
-    store_memory("The weather is nice today", user_id="test_user")
-    store_memory("I need to buy groceries later", user_id="test_user")
+    store_memory(StoreMemoryParams(content="The weather is nice today", user_id="test_user"))
+    store_memory(StoreMemoryParams(content="I need to buy groceries later", user_id="test_user"))
 
     # Fix: store_memory uses content_hash dedup, ensure unique content
     # by not re-using same content across calls

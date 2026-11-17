@@ -13,7 +13,7 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 logger = logging.getLogger(__name__)
 
-from foresight.server import ContextBlockAction, init_db, manage_context_blocks
+from foresight.server import ContextBlockAction, ManageContextBlocksParams, init_db, manage_context_blocks
 
 BLOCK_LABELS = [
     "guidance",
@@ -80,7 +80,7 @@ class BlocksScreen(Screen):
         """Load blocks from Foresight in background thread."""
         try:
             init_db()
-            result = manage_context_blocks(options=ContextBlockAction(action="list"))
+            result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list")))
             blocks = []
             if isinstance(result, str):
                 try:
@@ -127,7 +127,9 @@ class BlocksScreen(Screen):
             detail = self.query_one("#block-detail", Static)
             color = LABEL_COLORS.get(item.block_label, "#6c9fff")
             try:
-                result = manage_context_blocks(options=ContextBlockAction(action="get", label=item.block_label))
+                result = manage_context_blocks(
+                    ManageContextBlocksParams(options=ContextBlockAction(action="get", label=item.block_label))
+                )
                 if isinstance(result, str):
                     payload = json.loads(result)
                     content = payload.get("content", "(empty)") if isinstance(payload, dict) else result
@@ -156,7 +158,11 @@ class BlocksScreen(Screen):
             if content:
                 try:
                     init_db()
-                    manage_context_blocks(options=ContextBlockAction(action="update", label=label, content=content))
+                    manage_context_blocks(
+                        ManageContextBlocksParams(
+                            options=ContextBlockAction(action="update", label=label, content=content)
+                        )
+                    )
                     detail.update(f"[{color} bold]{label}[/]\n\n{content}")
                     input_widget.value = ""
                     self.refresh_data()
@@ -166,7 +172,9 @@ class BlocksScreen(Screen):
         elif event.button.id == "btn-reset":
             try:
                 init_db()
-                manage_context_blocks(options=ContextBlockAction(action="reset", label=label))
+                manage_context_blocks(
+                    ManageContextBlocksParams(options=ContextBlockAction(action="reset", label=label))
+                )
                 detail.update(f"[{color} bold]{label}[/]\n\n(Reset to default)")
                 self.refresh_data()
             except Exception as e:
@@ -175,7 +183,9 @@ class BlocksScreen(Screen):
         elif event.button.id == "btn-clear-block":
             try:
                 init_db()
-                manage_context_blocks(options=ContextBlockAction(action="clear", label=label))
+                manage_context_blocks(
+                    ManageContextBlocksParams(options=ContextBlockAction(action="clear", label=label))
+                )
                 detail.update(f"[{color} bold]{label}[/]\n\n(Cleared)")
                 self.refresh_data()
             except Exception as e:

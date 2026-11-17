@@ -24,6 +24,7 @@ from foresight.memory_relationships import reset_memory_relationship_store
 from foresight.server import (
     INFERRED_LIST_MAX_LIMIT,
     InferredAction,
+    ManageInferredParams,
     PostgresPooledConnection,
     curate_review_prompt,
     get_backend,
@@ -70,7 +71,7 @@ def _pg():
 
 def _tool(action, **kwargs):
 
-    return manage_inferred(action=action, **kwargs)
+    return manage_inferred(ManageInferredParams(action=action, **kwargs))
 
 
 def _list_items(limit=None):
@@ -501,7 +502,7 @@ class TestScoping:
 class TestManageInferredDispatch:
     def test_no_action_or_options_errors(self):
 
-        res = json.loads(manage_inferred())
+        res = json.loads(manage_inferred(ManageInferredParams()))
         assert res["ok"] is False
         assert "either 'options' or 'action' must be provided" in res["error"]["message"]
 
@@ -518,7 +519,9 @@ class TestManageInferredDispatch:
         finally:
             conn.close()
 
-        res = json.loads(manage_inferred(options=InferredAction(action="list", limit=5), user_id=UID))
+        res = json.loads(
+            manage_inferred(ManageInferredParams(options=InferredAction(action="list", limit=5), user_id=UID))
+        )
         assert res["ok"] is True
         assert res["count"] == 1
 

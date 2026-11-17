@@ -46,7 +46,12 @@ from .backend.schema_ddl import MIGRATIONS as _SCHEMA_MIGRATIONS
 from .connection_pool import get_pool, reset_pool
 from .hybrid_retriever import reset_hybrid_retriever
 from .memory_relationships import reset_memory_relationship_store
-from .server import get_relevant_memories as grm_fn, inject_context as ic_fn
+from .server import (
+    GetRelevantMemoriesParams,
+    InjectContextParams,
+    get_relevant_memories as grm_fn,
+    inject_context as ic_fn,
+)
 from .temporal_queries import TemporalFilters, TemporalQueryBuilder
 from .tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
@@ -1077,12 +1082,14 @@ class EvalHarness:
             # because fixture memories are short and produce low RRF scores.
             t0 = time.perf_counter()
             result_str = ic_fn(
-                conversation_text=scenario.query,
-                user_id=self.user_id,
-                max_memories=20,
-                min_relevance=0.01,
-                include_details=True,
-                max_chars=budget_chars,
+                InjectContextParams(
+                    conversation_text=scenario.query,
+                    user_id=self.user_id,
+                    max_memories=20,
+                    min_relevance=0.01,
+                    include_details=True,
+                    max_chars=budget_chars,
+                )
             )
             latency_ms = (time.perf_counter() - t0) * 1000
 
@@ -1095,10 +1102,12 @@ class EvalHarness:
             # Also run get_relevant_memories for structured metrics
             t1 = time.perf_counter()
             grm_str = grm_fn(
-                query=scenario.query,
-                user_id=self.user_id,
-                limit=10,
-                min_relevance=0.01,
+                GetRelevantMemoriesParams(
+                    query=scenario.query,
+                    user_id=self.user_id,
+                    limit=10,
+                    min_relevance=0.01,
+                )
             )
             grm_latency = (time.perf_counter() - t1) * 1000
             grm_result = json.loads(grm_str)

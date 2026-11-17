@@ -5,6 +5,8 @@ from __future__ import annotations
 import typer
 
 from foresight.server import (
+    GetRelevantMemoriesParams,
+    SetDecayConfigParams,
     _initialize_backend,
     apply_memory_decay,
     generate_recovery_payload,
@@ -73,13 +75,15 @@ def config_set(
     """Set decay configuration for a category."""
     _init_and_user(user_id)
     result = set_decay_config(
-        category=category,
-        half_life_hours=half_life_hours,
-        min_importance=min_importance,
-        activation_boost=activation_boost,
-        strengthening_threshold=strengthening_threshold,
-        stale_threshold=stale_threshold,
-        user_id=user_id,
+        SetDecayConfigParams(
+            category=category,
+            half_life_hours=half_life_hours,
+            min_importance=min_importance,
+            activation_boost=activation_boost,
+            strengthening_threshold=strengthening_threshold,
+            stale_threshold=stale_threshold,
+            user_id=user_id,
+        )
     )
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)
@@ -161,10 +165,12 @@ def relevant(
     """Return structured list of relevant memories for a query."""
     _init_and_user(user_id)
     result = get_relevant_memories(
-        query=query,
-        limit=limit,
-        min_relevance=min_relevance,
-        user_id=user_id,
+        GetRelevantMemoriesParams(
+            query=query,
+            limit=limit,
+            min_relevance=min_relevance,
+            user_id=user_id,
+        )
     )
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)

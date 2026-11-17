@@ -13,7 +13,7 @@ from textual.widgets import Label, Static
 
 logger = logging.getLogger(__name__)
 
-from foresight.server import get_system_status, init_db
+from foresight.server import GetSystemStatusParams, get_system_status, init_db
 
 
 class StatCard(Static):
@@ -63,7 +63,7 @@ class DashboardScreen(Screen):
         """Refresh dashboard data in a background thread."""
         try:
             init_db()
-            result = get_system_status()
+            result = get_system_status(GetSystemStatusParams())
 
             details: dict = {}
             if isinstance(result, str):

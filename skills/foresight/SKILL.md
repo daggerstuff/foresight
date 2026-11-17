@@ -261,7 +261,7 @@ _and_ build memory over time — with no user action required.
 
 5. **Capture stated preferences immediately** — "I prefer X", "always use Y",
    "don't do Z" → call
-   `manage_context_blocks(action='update', label='user_preferences', content='<preference>')`
+   `manage_context_blocks(params={'action': 'update', 'label': 'user_preferences', 'content': '<preference>'})`
    silently.
 6. **Store decisions and key facts** — one-sentence summary, `scope='arc'`,
    `category='decision'` or `'fact'`, `retention='long_term'`.
@@ -299,16 +299,21 @@ just types naturally and the memory is stored.
 
 ## 6. Tool reference
 
+Every tool below takes a single `params` object, and `fastmcp` nests it on the
+wire: the `arguments` payload is `{"params": {...}}`, never a flat argument map.
+The examples show the `params` contents; wrap them as `{"params": {...}}` when
+you build the call.
+
 ### `inject_context` — retrieve relevant memories for the current conversation
 
 ```
-inject_context(
-  conversation_text = "<current message or recent conversation>",
-  max_memories      = 5,      # default 5
-  min_relevance     = 0.3,    # default 0.3; lower = more results
-  max_chars         = 4000,   # set to budget output size
-  include_details   = False,  # True → JSON with structured memories + budget breakdown
-)
+inject_context(params={
+  "conversation_text": "<current message or recent conversation>",
+  "max_memories": 5,
+  "min_relevance": 0.3,       # lower = more results
+  "max_chars": 4000,          # set to budget output size
+  "include_details": False,   # True → JSON with structured memories + budget breakdown
+})
 ```
 
 Returns a formatted string of relevant memories and context block signals.
@@ -322,22 +327,24 @@ normal and safe to ignore.
 ```python
 # Store
 manage_memories(
-    action="store",
-    content="User prefers TypeScript and wants tests for every function.",
-    store_options={
-        "category": "preference",  # fact | preference | event | observation | pending | pattern
-        "scope": "trait",  # session | arc | trait | fact
-        "retention": "long_term",  # ephemeral | short_term | long_term | permanent
-        "importance": 0.8,  # 0.0–1.0
-    },
+    params={
+        "action": "store",
+        "content": "User prefers TypeScript and wants tests for every function.",
+        "store_options": {
+            "category": "preference",  # fact | preference | event | observation | pending | pattern
+            "scope": "trait",  # session | arc | trait | fact
+            "retention": "long_term",  # ephemeral | short_term | long_term | permanent
+            "importance": 0.8,  # 0.0–1.0
+        },
+    }
 )
 
 # Update
-manage_memories(action="update", memory_id="<id>", updates={"content": "..."})
+manage_memories(params={"action": "update", "memory_id": "<id>", "updates": {"content": "..."}})
 
 # Delete or archive
-manage_memories(action="delete", memory_id="<id>")
-manage_memories(action="archive", memory_id="<id>")
+manage_memories(params={"action": "delete", "memory_id": "<id>"})
+manage_memories(params={"action": "archive", "memory_id": "<id>"})
 ```
 
 **Scope guide:**
@@ -364,16 +371,16 @@ manage_memories(action="archive", memory_id="<id>")
 
 ```python
 # Keyword / hybrid search (recommended for most lookups)
-search_memories(query_type="keyword", query="postgres migration", limit=10)
+search_memories(params={"query_type": "keyword", "query": "postgres migration", "limit": 10})
 
 # Hybrid with graph traversal
-search_memories(query_type="keyword", query="...", use_hybrid=True, use_cascade=True)
+search_memories(params={"query_type": "keyword", "query": "...", "use_hybrid": True, "use_cascade": True})
 
 # List all memories
-search_memories(query_type="list", limit=20, offset=0)
+search_memories(params={"query_type": "list", "limit": 20, "offset": 0})
 
 # Fetch one by ID
-search_memories(query_type="id", memory_id="<id>")
+search_memories(params={"query_type": "id", "memory_id": "<id>"})
 ```
 
 ---
@@ -389,15 +396,17 @@ Three built-in blocks are always injected alongside memories during retrieval:
 | `session_patterns` | Recurring patterns observed across sessions |
 
 ```python
-manage_context_blocks(action="list")  # show all blocks
-manage_context_blocks(action="get", label="user_preferences")  # read one
+manage_context_blocks(params={"action": "list"})  # show all blocks
+manage_context_blocks(params={"action": "get", "label": "user_preferences"})  # read one
 manage_context_blocks(
-    action="update",
-    label="user_preferences",  # write
-    content="Prefers concise answers. TypeScript only.",
+    params={
+        "action": "update",
+        "label": "user_preferences",  # write
+        "content": "Prefers concise answers. TypeScript only.",
+    }
 )
-manage_context_blocks(action="clear", label="pending_items")  # empty it
-manage_context_blocks(action="reset", label="session_patterns")  # restore default
+manage_context_blocks(params={"action": "clear", "label": "pending_items"})  # empty it
+manage_context_blocks(params={"action": "reset", "label": "session_patterns"})  # restore default
 ```
 
 **When to update:**
@@ -415,12 +424,14 @@ context blocks into memories, and extracts entities into the graph.
 
 ```python
 process_session_transcript(
-    session_id="2026-07-23-alice",  # stable, human-readable ID
-    messages=[
-        {"role": "user", "content": "..."},
-        {"role": "assistant", "content": "..."},
-    ],
-    project_path="/path/to/project",  # optional; improves extraction
+    params={
+        "session_id": "2026-07-23-alice",  # stable, human-readable ID
+        "messages": [
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "content": "..."},
+        ],
+        "project_path": "/path/to/project",  # optional; improves extraction
+    }
 )
 ```
 
@@ -432,13 +443,13 @@ deduplicates.
 ### `query_memories_temporal` — fetch by time window or trend
 
 ```python
-query_memories_temporal(window="week", limit=20)  # this week
-query_memories_temporal(window="today", category="preference")  # today, filtered
-query_memories_temporal(trend="rising", limit=10)  # gaining activation
+query_memories_temporal(params={"window": "week", "limit": 20})  # this week
+query_memories_temporal(params={"window": "today", "category": "preference"})  # today, filtered
+query_memories_temporal(params={"trend": "rising", "limit": 10})  # gaining activation
 
 # Bitemporal point-in-time: what memory was true at that instant. Overrides
 # window/trend, and a malformed instant is rejected rather than ignored.
-query_memories_temporal(as_of="2026-03-01T00:00:00Z")
+query_memories_temporal(params={"as_of": "2026-03-01T00:00:00Z"})
 ```
 
 Use `as_of` when you must not contaminate an answer with anything recorded
@@ -473,11 +484,11 @@ High-impact changes are staged for review, never auto-applied.
 
 ```python
 # Start (use 'observe' first — safest)
-manage_curation_runs(action="create", policy_mode="preserve", tool_access="observe")
+manage_curation_runs(params={"action": "create", "policy_mode": "preserve", "tool_access": "observe"})
 
-manage_curation_runs(action="get", run_id="<id>")  # check status
-manage_curation_runs(action="list")  # recent runs
-manage_curation_runs(action="cancel", run_id="<id>")  # cancel
+manage_curation_runs(params={"action": "get", "run_id": "<id>"})  # check status
+manage_curation_runs(params={"action": "list"})  # recent runs
+manage_curation_runs(params={"action": "cancel", "run_id": "<id>"})  # cancel
 ```
 
 Run occasionally, not every session. `preserve` + `observe` is always safe. Use
@@ -489,8 +500,8 @@ understanding it modifies memories permanently.
 ### `get_system_status` — health and statistics
 
 ```python
-get_system_status()
-get_system_status(include_trends=True, timeframe="30 days")
+get_system_status(params={})
+get_system_status(params={"include_trends": True, "timeframe": "30 days"})
 ```
 
 Returns memory count by scope, last capture time, maintenance stats, cache
@@ -548,7 +559,7 @@ foresight security rotate-key    # zero-loss key rotation
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Server won't start — `FORESIGHT_DB_URL` missing | Export it or pass inline: `FORESIGHT_DB_URL=... uvx foresight-server`                                                                               |
 | `foresight doctor` shows DB failure             | Verify DSN: `psql "$FORESIGHT_DB_URL" -c '\l'`                                                                                                      |
-| Tools return empty results                      | Check `FORESIGHT_IDENTITY` — without it, user_id is empty and all queries miss. Run `search_memories(query_type="list")` to confirm store has data. |
+| Tools return empty results                      | Check `FORESIGHT_IDENTITY` — without it, user_id is empty and all queries miss. Run `search_memories(params={"query_type": "list"})` to confirm store has data. |
 | MCP client can't connect                        | Confirm `FORESIGHT_HOST=0.0.0.0` when connecting from a remote client; check port matches `FORESIGHT_PORT`.                                         |
 | Port already in use                             | Kill stale process: `pkill -f foresight-server`. Or change `FORESIGHT_PORT`.                                                                        |
-| `inject_context` always returns no results      | Store is empty. Start with `manage_memories(action="store", ...)` or run `process_session_transcript`.                                              |
+| `inject_context` always returns no results      | Store is empty. Start with `manage_memories(params={"action": "store", ...})` or run `process_session_transcript`.                                              |

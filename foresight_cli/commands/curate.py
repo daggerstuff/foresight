@@ -8,7 +8,13 @@ from typing import Any
 
 import typer
 
-from foresight.server import CurationRunAction, _initialize_backend, init_db, manage_curation_runs
+from foresight.server import (
+    CurationRunAction,
+    ManageCurationRunsParams,
+    _initialize_backend,
+    init_db,
+    manage_curation_runs,
+)
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage async Foresight curation runs.")
@@ -96,18 +102,20 @@ def create(
         bundle = json.loads(transcript_bundle_file.read_text())
 
     result = manage_curation_runs(
-        options=CurationRunAction(
-            action="create",
-            source_bank_id=source_bank_id,
-            output_bank_id=output_bank_id,
-            policy_mode=policy,
-            tool_access=access,
-            output_mode=mode,
-            instructions=instructions,
-            transcript_bundle=bundle,
-            session_id=session_id,
-            project_path=None,
-        ),
+        ManageCurationRunsParams(
+            options=CurationRunAction(
+                action="create",
+                source_bank_id=source_bank_id,
+                output_bank_id=output_bank_id,
+                policy_mode=policy,
+                tool_access=access,
+                output_mode=mode,
+                instructions=instructions,
+                transcript_bundle=bundle,
+                session_id=session_id,
+                project_path=None,
+            ),
+        )
     )
     _emit(result)
 
@@ -119,7 +127,7 @@ def get_run(
 ):
     """Get details of a curation run."""
     _init_and_user(user_id)
-    result = manage_curation_runs(options=CurationRunAction(action="get", run_id=run_id))
+    result = manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="get", run_id=run_id)))
     _emit(result)
 
 
@@ -130,7 +138,7 @@ def list_runs(
 ):
     """List recent curation runs."""
     _init_and_user(user_id)
-    result = manage_curation_runs(options=CurationRunAction(action="list", limit=limit))
+    result = manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="list", limit=limit)))
     _emit(result)
 
 
@@ -141,7 +149,7 @@ def cancel_cmd(
 ):
     """Cancel a pending or running curation run."""
     _init_and_user(user_id)
-    result = manage_curation_runs(options=CurationRunAction(action="cancel", run_id=run_id))
+    result = manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="cancel", run_id=run_id)))
     _emit(result)
 
 
@@ -152,5 +160,5 @@ def archive_cmd(
 ):
     """Archive a completed, failed, or canceled curation run."""
     _init_and_user(user_id)
-    result = manage_curation_runs(options=CurationRunAction(action="archive", run_id=run_id))
+    result = manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="archive", run_id=run_id)))
     _emit(result)

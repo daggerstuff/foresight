@@ -8,6 +8,10 @@ import pytest
 
 from foresight.server import (
     USER_ID,
+    InjectContextParams,
+    ManageContextBlocksParams,
+    ManageMemoriesParams,
+    SearchMemoriesParams,
     inject_context,
     manage_context_blocks,
     manage_memories,
@@ -25,7 +29,7 @@ def setup_test_ctx():
 
 
 def _store(content: str, **kwargs) -> str:
-    result = manage_memories(action="store", content=content, category="fact", **kwargs)
+    result = manage_memories(ManageMemoriesParams(action="store", content=content, category="fact", **kwargs))
     match = re.search(r"Stored memory (\S+)\.", result)
     assert match, result
     return match.group(1)
@@ -37,8 +41,8 @@ def test_agents_cannot_see_each_others_memories():
     _store(f"private note for agent A: {marker_a}", agent_id="agent-a")
     _store(f"private note for agent B: {marker_b}", agent_id="agent-b")
 
-    res_a = search_memories(query="private note", agent_id="agent-a")
-    res_b = search_memories(query="private note", agent_id="agent-b")
+    res_a = search_memories(SearchMemoriesParams(query="private note", agent_id="agent-a"))
+    res_b = search_memories(SearchMemoriesParams(query="private note", agent_id="agent-b"))
 
     assert marker_a in res_a
     assert marker_b not in res_a
@@ -51,7 +55,7 @@ def test_default_lane_visible_to_all_agents():
     _store(f"shared note everyone can see: {marker}")
 
     for agent in ("agent-a", "agent-b"):
-        res = search_memories(query="shared note", agent_id=agent)
+        res = search_memories(SearchMemoriesParams(query="shared note", agent_id=agent))
         assert marker in res
 
 
@@ -61,7 +65,7 @@ def test_unscoped_search_sees_all_lanes():
     _store(f"namespaced memory alpha {marker_a}", agent_id="agent-a")
     _store(f"namespaced memory beta {marker_b}", agent_id="agent-b")
 
-    res = search_memories(query="namespaced memory")
+    res = search_memories(SearchMemoriesParams(query="namespaced memory"))
     assert marker_a in res
     assert marker_b in res
 
@@ -72,8 +76,8 @@ def test_project_lane_isolation():
     _store(f"project scoped memory {marker_p1}", project="proj-1")
     _store(f"project scoped memory {marker_p2}", project="proj-2")
 
-    res_p1 = search_memories(query="project scoped memory", project="proj-1")
-    res_p2 = search_memories(query="project scoped memory", project="proj-2")
+    res_p1 = search_memories(SearchMemoriesParams(query="project scoped memory", project="proj-1"))
+    res_p2 = search_memories(SearchMemoriesParams(query="project scoped memory", project="proj-2"))
 
     assert marker_p1 in res_p1
     assert marker_p2 not in res_p1
@@ -85,8 +89,8 @@ def test_inject_context_respects_namespace():
     marker_a = f"inject-agent-a-{USER_ID}"
     _store(f"injection candidate zebra {marker_a}", agent_id="agent-a")
 
-    out_a = inject_context(conversation_text="zebra injection candidate", agent_id="agent-a")
-    out_b = inject_context(conversation_text="zebra injection candidate", agent_id="agent-b")
+    out_a = inject_context(InjectContextParams(conversation_text="zebra injection candidate", agent_id="agent-a"))
+    out_b = inject_context(InjectContextParams(conversation_text="zebra injection candidate", agent_id="agent-b"))
 
     assert marker_a in out_a
     assert marker_a not in out_b
@@ -97,26 +101,30 @@ def test_private_context_block_isolated_shared_block_visible():
     shared = f"team-wide-pref-{USER_ID}"
 
     manage_context_blocks(
-        action="update",
-        label="user_preferences",
-        content=f"PRIVATE {priv}",
-        agent_id="agent-a",
-        project="proj-x",
-        visibility="private",
+        ManageContextBlocksParams(
+            action="update",
+            label="user_preferences",
+            content=f"PRIVATE {priv}",
+            agent_id="agent-a",
+            project="proj-x",
+            visibility="private",
+        )
     )
     # Second block under a different label stays private to agent B's lane check
     manage_context_blocks(
-        action="update",
-        label="project_context",
-        content=f"SHARED {shared}",
-        agent_id="agent-a",
-        project="proj-x",
-        visibility="shared",
+        ManageContextBlocksParams(
+            action="update",
+            label="project_context",
+            content=f"SHARED {shared}",
+            agent_id="agent-a",
+            project="proj-x",
+            visibility="shared",
+        )
     )
 
-    list_a = manage_context_blocks(action="list", agent_id="agent-a", project="proj-x")
-    list_b = manage_context_blocks(action="list", agent_id="agent-b", project="proj-x")
-    list_p2 = manage_context_blocks(action="list", agent_id="agent-a", project="proj-y")
+    list_a = manage_context_blocks(ManageContextBlocksParams(action="list", agent_id="agent-a", project="proj-x"))
+    list_b = manage_context_blocks(ManageContextBlocksParams(action="list", agent_id="agent-b", project="proj-x"))
+    list_p2 = manage_context_blocks(ManageContextBlocksParams(action="list", agent_id="agent-a", project="proj-y"))
 
     assert priv in list_a
     assert priv not in list_b

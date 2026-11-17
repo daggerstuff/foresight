@@ -13,35 +13,29 @@ curation workflows.
 ### store_memory
 
 ```python
-def store_memory(
-    content: str,
-    user_id: str | None = None,
-    category: str = "fact",
-    scope: str = "session",
-    retention: str = "short_term",
-    importance: float = 0.5,
-    emotional_context: dict | None = None,
-    metrics: dict | None = None,
-) -> str
+def store_memory(params: StoreMemoryParams) -> str
 ```
 
-Stores a new memory record.
+Stores a new memory record. `StoreMemoryParams` carries `content` plus the
+same store options `manage_memories` accepts (`category`, `scope`, `retention`,
+`importance`, `emotional_context`, `metrics`, `relation_type`,
+`related_memory_id`, `tags`, `expires_at`, `memory_type`, `auto_tag`,
+`user_id`).
+
+```python
+from foresight import StoreMemoryParams, store_memory
+
+store_memory(StoreMemoryParams(content="Prefers concise replies", category="preference"))
+```
 
 ### query_memories
 
 ```python
-def query_memories(
-    query: str,
-    *,
-    user_id: str | None = None,
-    limit: int = 10,
-    use_hybrid: bool = True,
-    min_importance: float = 0.1,
-    offset: int = 0,
-) -> str
+def query_memories(params: QueryMemoriesParams) -> str
 ```
 
-Searches memories by text and ranking signals.
+Searches memories by text and ranking signals. `QueryMemoriesParams` carries
+`query`, `limit`, `use_hybrid`, `min_importance`, `offset`, and `user_id`.
 
 ### list_memories
 
@@ -70,19 +64,12 @@ Retrieves one memory by ID.
 ### update_memory
 
 ```python
-def update_memory(
-    memory_id: str,
-    *,
-    user_id: str | None = None,
-    content: str | None = None,
-    category: str | None = None,
-    scope: str | None = None,
-    retention: str | None = None,
-    tags: list[str] | None = None,
-) -> str
+def update_memory(params: UpdateMemoryParams) -> str
 ```
 
-Updates memory content or metadata.
+Updates memory content or metadata. `UpdateMemoryParams` carries `memory_id`
+plus `content`, `category`, `scope`, `retention`, `tags`, `relation_type`,
+`related_memory_id`, and `user_id`.
 
 ### delete_memory
 
@@ -211,14 +198,13 @@ class ContextBlockAction(BaseModel):
 ### manage_context_blocks
 
 ```python
-def manage_context_blocks(
-    options: ContextBlockAction,
-    user_id: str | None = None,
-) -> str
+def manage_context_blocks(params: ManageContextBlocksParams) -> str
 ```
 
 Manages context blocks through the same action-oriented contract exposed by the
-MCP server.
+MCP server. `ManageContextBlocksParams` carries `action`, `label` (with the
+`block_name` / `block_type` / `name` / `block` / `block_id` / `key` aliases),
+`content`, `agent_id`, `project`, `visibility`, and `user_id`.
 
 Returns a JSON envelope string such as:
 
@@ -251,13 +237,13 @@ class CurationRunAction(BaseModel):
 ### manage_curation_runs
 
 ```python
-def manage_curation_runs(
-    options: CurationRunAction,
-    user_id: str | None = None,
-) -> str
+def manage_curation_runs(params: ManageCurationRunsParams) -> str
 ```
 
-Creates and manages asynchronous curation runs.
+Creates and manages asynchronous curation runs. `ManageCurationRunsParams`
+carries `action`, `run_id`, `source_bank_id`, `output_bank_id`, `policy_mode`,
+`tool_access`, `output_mode`, `instructions`, `run_clustering`,
+`transcript_bundle`, `session_id`, `project_path`, and `user_id`.
 
 ### Behavior notes
 
@@ -284,6 +270,96 @@ Tool responses are JSON envelope strings:
   }
 }
 ```
+
+## Migration: parameter objects
+
+Every MCP tool and public Python entry point on this page now takes exactly one
+parameter object instead of a long keyword list. Field names, defaults,
+validation, error messages, and return values are unchanged — only the calling
+convention moved.
+
+The MCP wire schema changes with it. `fastmcp` **nests** a single model
+parameter under the parameter name rather than flattening its fields, so the
+advertised `inputSchema` for each affected tool is
+`{"type": "object", "properties": {"params": {...}}, "required": ["params"]}`.
+Arguments go inside `params`:
+
+```jsonc
+// before
+{"name": "manage_memories", "arguments": {"action": "store", "content": "..."}}
+
+// after
+{"name": "manage_memories", "arguments": {"params": {"action": "store", "content": "..."}}}
+```
+
+### `manage_memories`
+
+```python
+# before
+manage_memories(action="store", content="Prefers concise replies", category="preference")
+
+# after
+manage_memories(ManageMemoriesParams(action="store", content="Prefers concise replies", category="preference"))
+```
+
+The nested `options` and `updates` payloads are unchanged and still accepted
+alongside the flat fields:
+
+```python
+manage_memories(ManageMemoriesParams(options=MemoryAction(action="delete", memory_id=mid)))
+```
+
+### `search_memories`
+
+```python
+# before
+search_memories(query="gym routine", limit=5, agent_id="agent-a")
+
+# after
+search_memories(SearchMemoriesParams(query="gym routine", limit=5, agent_id="agent-a"))
+```
+
+### `inject_context`
+
+```python
+# before
+inject_context(conversation_text=message, max_memories=5)
+
+# after
+inject_context(InjectContextParams(conversation_text=message, max_memories=5))
+```
+
+Over MCP the same call is `{"params": {"conversation_text": "...", "max_memories": 5}}`.
+
+### Parameter object per entry point
+
+| Entry point                    | Parameter object                |
+| ------------------------------ | ------------------------------- |
+| `manage_memories`              | `ManageMemoriesParams`          |
+| `search_memories`              | `SearchMemoriesParams`          |
+| `manage_context_blocks`        | `ManageContextBlocksParams`     |
+| `manage_curation_runs`         | `ManageCurationRunsParams`      |
+| `inject_context`               | `InjectContextParams`           |
+| `query_memories_temporal`      | `QueryMemoriesTemporalParams`   |
+| `synthesize_profile`           | `SynthesizeProfileParams`       |
+| `manage_memory_versions`       | `ManageMemoryVersionsParams`    |
+| `reflect`                      | `ReflectParams`                 |
+| `manage_mental_models`         | `ManageMentalModelsParams`      |
+| `process_session_transcript`   | `ProcessSessionTranscriptParams`|
+| `capture_in_flight_memory`     | `CaptureInFlightMemoryParams`   |
+| `get_system_status`            | `GetSystemStatusParams`         |
+| `ingest_document_file`         | `IngestDocumentFileParams`      |
+| `link_memories`                | `LinkMemoriesParams`            |
+| `manage_inferred`              | `ManageInferredParams`          |
+| `analyze_memories`             | `AnalyzeMemoriesParams`         |
+| `store_memory`                 | `StoreMemoryParams`             |
+| `get_relevant_memories`        | `GetRelevantMemoriesParams`     |
+| `update_memory`                | `UpdateMemoryParams`            |
+| `set_decay_config`             | `SetDecayConfigParams`          |
+| `create_document`              | `CreateDocumentParams`          |
+| `query_memories`               | `QueryMemoriesParams`           |
+
+All twenty-three objects are re-exported from the `foresight` package.
 
 ## Migration note
 

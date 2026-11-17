@@ -13,7 +13,13 @@ import sys
 from importlib.metadata import PackageNotFoundError
 
 from .config import load_dotenv_walkup
-from .server import _initialize_backend, get_system_status, init_db, main as run_server
+from .server import (
+    GetSystemStatusParams,
+    _initialize_backend,
+    get_system_status,
+    init_db,
+    main as run_server,
+)
 
 
 def main() -> None:
@@ -28,7 +34,7 @@ def main() -> None:
     if "--health" in sys.argv:
         init_db()
         _initialize_backend()
-        result = get_system_status()
+        result = get_system_status(GetSystemStatusParams())
         if "--json" in sys.argv:
             payload = _json.loads(result) if isinstance(result, str) else result
             sys.stdout.write(f"{_json.dumps(payload)}\n")
