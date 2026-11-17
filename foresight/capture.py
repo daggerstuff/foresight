@@ -653,12 +653,10 @@ class CapturePipeline:
         if opts.infer is False:
             return self._run_verbatim(ref, messages, now, opts)
 
-        # Phases 1-2: Classify, then extract.
         candidates = self._extract_candidates(session_id, messages, opts, raw_event_ids, stats)
         if not candidates:
             return stats
 
-        # Phase 3-4: Dedupe and persist.
         candidate_map = self._dedupe_candidates(candidates, user_id, tid, stats)
         self._persist_candidates(candidate_map, _PersistContext(user_id=user_id, tenant_id=tid, now=now), stats)
 
@@ -793,12 +791,8 @@ class CapturePipeline:
         )
         conn.commit()
 
-        # MemLake provenance: link stored memory back to the raw observation(s).
-        # For a regex-extracted candidate this is a single message; verbatim
-        # transcripts may link to many raw events.
         self._link_provenance(conn, mid, candidate.raw_event_id, ctx.tenant_id, ctx.now)
 
-        # Link near duplicates via direct INSERT (same connection avoids FK issues)
         if dedupe.status == "NEAR_DUPLICATE" and dedupe.existing_id and dedupe.existing_id != mid:
             rel_id = hashlib.sha256(f"{mid}-derives-{dedupe.existing_id}".encode()).hexdigest()[:16]
             conn.execute(
@@ -809,9 +803,6 @@ class CapturePipeline:
                    ON CONFLICT (id) DO NOTHING""",
                 (rel_id, ctx.tenant_id, ctx.user_id, mid, dedupe.existing_id, ctx.now),
             )
-            # PIX-4702: a memory written with a derives edge was
-            # synthesized from the source memory, not stated —
-            # flag it inferred so the retriever can down-rank it.
             conn.execute(
                 "UPDATE memories SET inferred = 1, updated_at = ? WHERE id = ?",
                 (ctx.now, mid),
