@@ -499,6 +499,15 @@ def _raw_event_replay_sql(tid: str, user_id: str, opts: ReprocessOptions) -> tup
     return sql + " ORDER BY session_id, position, captured_at", params
 
 
+@dataclass(frozen=True)
+class _PersistContext:
+    """The per-run identity and timestamp every persisted row is stamped with."""
+
+    user_id: str
+    tenant_id: str
+    now: str
+
+
 class CapturePipeline:
     """Orchestrate the add-only capture flow for a session transcript."""
 
@@ -605,7 +614,7 @@ class CapturePipeline:
         )
         conn.commit()
 
-    def run(  # noqa: PLR0912,PLR0915
+    def run(
         self,
         session_id: str,
         messages: list[dict],
@@ -644,24 +653,65 @@ class CapturePipeline:
         if opts.infer is False:
             return self._run_verbatim(ref, messages, now, opts)
 
-        # Phase 1: Classify
+        # Phases 1-2: Classify, then extract.
+        candidates = self._extract_candidates(session_id, messages, opts, raw_event_ids, stats)
+        if not candidates:
+            return stats
+
+        # Phase 3-4: Dedupe and persist.
+        candidate_map = self._dedupe_candidates(candidates, user_id, tid, stats)
+        self._persist_candidates(candidate_map, _PersistContext(user_id=user_id, tenant_id=tid, now=now), stats)
+
+        logger.info(
+            "Session %s: %d candidates → %d stored, %d duplicates, %d near-dups",
+            session_id,
+            stats.candidates_found,
+            stats.stored,
+            stats.duplicates,
+            stats.near_duplicates,
+        )
+        return stats
+
+    def _extract_candidates(
+        self,
+        session_id: str,
+        messages: list[dict],
+        opts: CaptureOptions,
+        raw_event_ids: list[str | None],
+        stats: CaptureStats,
+    ) -> list[CapturedMemory]:
+        """Classify the transcript and extract memory candidates from it.
+
+        Returns an empty list when the session is skipped or nothing is
+        extractable, recording the reason on ``stats`` in both cases.
+        """
         skip, reason = self.classifier.should_skip(messages)
         if skip:
             stats.skipped = True
             stats.skip_reason = reason
             logger.info("Session %s skipped: %s", session_id, reason)
-            return stats
+            return []
 
-        # Phase 2: Extract
         candidates = self.extractor.extract(messages, instructions=opts.instructions, raw_event_ids=raw_event_ids)
         stats.candidates_found = len(candidates)
 
         if not candidates:
             logger.info("Session %s: no candidates extracted", session_id)
-            return stats
+            return []
+        return candidates
 
-        # Phase 3-4: Dedupe and persist
-        pool = get_pool(self.db_path)
+    def _dedupe_candidates(
+        self,
+        candidates: list[CapturedMemory],
+        user_id: str,
+        tid: str,
+        stats: CaptureStats,
+    ) -> dict[str, list[tuple[CapturedMemory, DedupeResult]]]:
+        """Group candidates by category, counting exact and near duplicates.
+
+        Near duplicates are kept — they are stored as new memories and linked to
+        their predecessor with a ``derives`` edge.
+        """
         candidate_map: dict[str, list[tuple[CapturedMemory, DedupeResult]]] = {
             "decision": [],
             "preference": [],
@@ -684,83 +734,93 @@ class CapturePipeline:
 
             candidate_map[candidate.category].append((candidate, dedupe))
 
-        # Persist candidates
+        return candidate_map
+
+    def _persist_candidates(
+        self,
+        candidate_map: dict[str, list[tuple[CapturedMemory, DedupeResult]]],
+        ctx: _PersistContext,
+        stats: CaptureStats,
+    ) -> None:
+        """Write every deduped candidate to the memories table on one connection."""
+        pool = get_pool(self.db_path)
         conn = pool.acquire()
         try:
             for _category, items in candidate_map.items():
                 if not items:
                     continue
                 for candidate, dedupe in items:
-                    content = f"[auto-captured/{candidate.category}] {candidate.content}"
-                    h = _content_hash(content)
-                    mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
-
-                    conn.execute(
-                        """INSERT INTO memories
-                           (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
-                            created_at, updated_at, tags, emotional_context, metrics,
-                            is_ghost, synthesized_from, importance)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
-                           ON CONFLICT (id) DO NOTHING""",
-                        (
-                            mid,
-                            content,
-                            h,
-                            candidate.scope,
-                            candidate.retention,
-                            candidate.category,
-                            user_id,
-                            BANK_ID,
-                            tid,
-                            now,
-                            now,
-                            json.dumps(candidate.tags),
-                            candidate.importance,
-                        ),
-                    )
-                    conn.commit()
-
-                    # MemLake provenance: link stored memory back to the raw observation(s).
-                    # For a regex-extracted candidate this is a single message; verbatim
-                    # transcripts may link to many raw events.
-                    self._link_provenance(conn, mid, candidate.raw_event_id, tid, now)
-
-                    # Link near duplicates via direct INSERT (same connection avoids FK issues)
-                    if dedupe.status == "NEAR_DUPLICATE" and dedupe.existing_id and dedupe.existing_id != mid:
-                        rel_id = hashlib.sha256(f"{mid}-derives-{dedupe.existing_id}".encode()).hexdigest()[:16]
-                        conn.execute(
-                            """INSERT INTO memory_relationships
-                               (id, tenant_id, user_id, source_memory_id, target_memory_id,
-                                relationship_type, confidence, metadata, created_at)
-                               VALUES (?, ?, ?, ?, ?, 'derives', 1.0, '{}', ?)
-                               ON CONFLICT (id) DO NOTHING""",
-                            (rel_id, tid, user_id, mid, dedupe.existing_id, now),
-                        )
-                        # PIX-4702: a memory written with a derives edge was
-                        # synthesized from the source memory, not stated —
-                        # flag it inferred so the retriever can down-rank it.
-                        conn.execute(
-                            "UPDATE memories SET inferred = 1, updated_at = ? WHERE id = ?",
-                            (now, mid),
-                        )
-                        conn.commit()
-
-                    if dedupe.status != "DUPLICATE":
-                        stats.stored += 1
-                        stats.stored_items.append((candidate.category, candidate.content))
+                    self._persist_candidate(conn, candidate, dedupe, ctx, stats)
         finally:
             pool.release(conn)
             conn.close()
 
-        logger.info(
-            "Session %s: %d candidates → %d stored, %d duplicates, %d near-dups",
-            session_id,
-            stats.candidates_found,
-            stats.stored,
-            stats.duplicates,
-            stats.near_duplicates,
+    def _persist_candidate(
+        self,
+        conn: Any,
+        candidate: CapturedMemory,
+        dedupe: DedupeResult,
+        ctx: _PersistContext,
+        stats: CaptureStats,
+    ) -> None:
+        """Insert one candidate, link its provenance, and record any derives edge."""
+        content = f"[auto-captured/{candidate.category}] {candidate.content}"
+        h = _content_hash(content)
+        mid = hashlib.sha256(f"{content}{ctx.now}".encode()).hexdigest()[:16]
+
+        conn.execute(
+            """INSERT INTO memories
+               (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
+                created_at, updated_at, tags, emotional_context, metrics,
+                is_ghost, synthesized_from, importance)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
+               ON CONFLICT (id) DO NOTHING""",
+            (
+                mid,
+                content,
+                h,
+                candidate.scope,
+                candidate.retention,
+                candidate.category,
+                ctx.user_id,
+                BANK_ID,
+                ctx.tenant_id,
+                ctx.now,
+                ctx.now,
+                json.dumps(candidate.tags),
+                candidate.importance,
+            ),
         )
-        return stats
+        conn.commit()
+
+        # MemLake provenance: link stored memory back to the raw observation(s).
+        # For a regex-extracted candidate this is a single message; verbatim
+        # transcripts may link to many raw events.
+        self._link_provenance(conn, mid, candidate.raw_event_id, ctx.tenant_id, ctx.now)
+
+        # Link near duplicates via direct INSERT (same connection avoids FK issues)
+        if dedupe.status == "NEAR_DUPLICATE" and dedupe.existing_id and dedupe.existing_id != mid:
+            rel_id = hashlib.sha256(f"{mid}-derives-{dedupe.existing_id}".encode()).hexdigest()[:16]
+            conn.execute(
+                """INSERT INTO memory_relationships
+                   (id, tenant_id, user_id, source_memory_id, target_memory_id,
+                    relationship_type, confidence, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'derives', 1.0, '{}', ?)
+                   ON CONFLICT (id) DO NOTHING""",
+                (rel_id, ctx.tenant_id, ctx.user_id, mid, dedupe.existing_id, ctx.now),
+            )
+            # PIX-4702: a memory written with a derives edge was
+            # synthesized from the source memory, not stated —
+            # flag it inferred so the retriever can down-rank it.
+            conn.execute(
+                "UPDATE memories SET inferred = 1, updated_at = ? WHERE id = ?",
+                (ctx.now, mid),
+            )
+            conn.commit()
+
+        if dedupe.status != "DUPLICATE":
+            stats.stored += 1
+            stats.stored_items.append((candidate.category, candidate.content))
 
     def reprocess(
         self,

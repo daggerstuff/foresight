@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-import redis as _redis  # type: ignore[import-not-found]
+import redis as _redis
 from pydantic import BaseModel, ConfigDict, Field
 
 from foresight.config import raw_retention_enabled

@@ -1501,11 +1501,16 @@ def _format_pct_change(value: float | None) -> str:
 
 
 def _error_out(json_output: bool, message: str) -> None:
-    """Print an error and exit the harness with a failure status."""
+    """Print an error and exit the harness with a failure status.
+
+    Written through the streams directly rather than with ``print``: the bytes on
+    each stream are identical (``print(x)`` is ``str(x) + "\\n"``), and the
+    harness has no business routing its output through a lint exemption.
+    """
     if json_output:
-        print(json.dumps({"error": message}))  # noqa: T201
+        sys.stdout.write(json.dumps({"error": message}) + "\n")
     else:
-        print(f"ERROR: {message}", file=sys.stderr)  # noqa: T201
+        sys.stderr.write(f"ERROR: {message}\n")
     sys.exit(1)
 
 

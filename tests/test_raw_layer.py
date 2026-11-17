@@ -126,7 +126,8 @@ class TestRawRetention:
 
 
 class TestCapturePersistence:
-    def test_capture_persists_raw_events_when_retention_enabled(self, raw_retention_enabled):  # noqa: ARG002
+    @pytest.mark.usefixtures("raw_retention_enabled")
+    def test_capture_persists_raw_events_when_retention_enabled(self):
         pipeline = get_capture_pipeline()
         assert pipeline.db_path is not None
         stats = pipeline.run("sess_on", _LATENCY_DECISIONS, "_test_user_", tenant_id="_test_")
@@ -134,7 +135,8 @@ class TestCapturePersistence:
 
         assert _count_raw_events(pipeline.db_path, tenant_id="_test_", user_id="_test_user_") == len(_LATENCY_DECISIONS)
 
-    def test_provenance_roundtrip(self, raw_retention_enabled):  # noqa: ARG002
+    @pytest.mark.usefixtures("raw_retention_enabled")
+    def test_provenance_roundtrip(self):
         pipeline = get_capture_pipeline()
         msgs = [
             {"role": "user", "content": "I prefer to write unit tests before implementing new features."},
@@ -163,7 +165,8 @@ class TestCapturePersistence:
         for msg in msgs:
             assert msg["content"] in contents
 
-    def test_reprocess_is_idempotent(self, raw_retention_enabled):  # noqa: ARG002
+    @pytest.mark.usefixtures("raw_retention_enabled")
+    def test_reprocess_is_idempotent(self):
         pipeline = get_capture_pipeline()
         sess_id = "sess_reprocess"
         stats1 = pipeline.run(sess_id, _LATENCY_DECISIONS, "_test_user_", tenant_id="_test_")
@@ -180,7 +183,8 @@ class TestCapturePersistence:
         assert _count_raw_events(pipeline.db_path, tenant_id="_test_", user_id="_test_user_") == initial_raw
         assert self._count_memories(pipeline.db_path, tenant_id="_test_") == initial_memories
 
-    def test_tenant_isolation(self, raw_retention_enabled):  # noqa: ARG002
+    @pytest.mark.usefixtures("raw_retention_enabled")
+    def test_tenant_isolation(self):
         pipeline = get_capture_pipeline()
         msgs = [
             {"role": "user", "content": "Tenant A keeps raw events isolated from others."},
@@ -220,7 +224,8 @@ class TestCapturePersistence:
 
 
 class TestTombstone:
-    def test_tombstone_raw_events_nulls_content_but_keeps_row_shape(self, raw_retention_enabled):  # noqa: ARG002
+    @pytest.mark.usefixtures("raw_retention_enabled")
+    def test_tombstone_raw_events_nulls_content_but_keeps_row_shape(self):
         pipeline = get_capture_pipeline()
         msgs = [
             {"role": "user", "content": "This sensitive message should be erasable."},
@@ -250,7 +255,8 @@ class TestTombstone:
         finally:
             pool.release(conn)
 
-    def test_gc_tombstones_raw_events_past_retention_window(self, raw_retention_enabled):  # noqa: ARG002
+    @pytest.mark.usefixtures("raw_retention_enabled")
+    def test_gc_tombstones_raw_events_past_retention_window(self):
         pipeline = get_capture_pipeline()
         tenant_id = "_test_"
         user_id = "_test_user_"
