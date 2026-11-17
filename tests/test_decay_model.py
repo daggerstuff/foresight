@@ -8,6 +8,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from foresight.decay_model import (
     DEFAULT_STALE_THRESHOLD,
     DEFAULT_STRENGTHENING_THRESHOLD,
     DecayConfig,
+    DecayConfigOptions,
     DecayModelError,
     DecayStats,
     MemoryDecayService,
@@ -105,16 +107,21 @@ def _patched_service(db_path: str) -> Iterator[MemoryDecayService]:
             reset_decay_model()
 
 
-def _insert_memory(
-    db_path: str,
-    user_id: str = "u1",
-    tenant_id: str = "default",
-    importance: float = 0.5,
-    current_strength: float | None = None,
-    last_decay_at: str | None = None,
-    activation_count: int = 0,
-    category: str = "general",
-) -> str:
+@dataclass(frozen=True)
+class _MemoryRow:
+    """Non-identity columns of one seeded ``memories`` row."""
+
+    user_id: str = "u1"
+    tenant_id: str = "default"
+    importance: float = 0.5
+    current_strength: float | None = None
+    last_decay_at: str | None = None
+    activation_count: int = 0
+    category: str = "general"
+
+
+def _insert_memory(db_path: str, row: _MemoryRow | None = None) -> str:
+    row = row or _MemoryRow()
     mid = f"mem-{uuid.uuid4().hex[:8]}"
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -124,14 +131,14 @@ def _insert_memory(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             mid,
-            tenant_id,
-            user_id,
+            row.tenant_id,
+            row.user_id,
             f"content-{mid}",
-            category,
-            importance,
-            current_strength,
-            last_decay_at,
-            activation_count,
+            row.category,
+            row.importance,
+            row.current_strength,
+            row.last_decay_at,
+            row.activation_count,
             datetime.now(UTC).isoformat(),
         ),
     )
@@ -308,8 +315,7 @@ def test_set_decay_config_upserts_row():
             user_id="u1",
             tenant_id="default",
             category="general",
-            half_life_hours=half_life_hours,
-            min_importance=min_importance,
+            options=DecayConfigOptions(half_life_hours=half_life_hours, min_importance=min_importance),
         )
         assert cfg.half_life_hours == half_life_hours
         assert cfg.min_importance == min_importance
@@ -321,27 +327,27 @@ def test_set_decay_config_upserts_row():
 
 def test_set_decay_config_validates_half_life_positive():
     with _patched_service(_make_test_db()) as svc, pytest.raises(DecayModelError, match="half_life_hours"):
-        svc.set_decay_config("u1", "default", "general", half_life_hours=0)
+        svc.set_decay_config("u1", "default", "general", DecayConfigOptions(half_life_hours=0))
 
 
 def test_set_decay_config_validates_min_importance_range():
     with _patched_service(_make_test_db()) as svc, pytest.raises(DecayModelError, match="min_importance"):
-        svc.set_decay_config("u1", "default", "general", min_importance=1.5)
+        svc.set_decay_config("u1", "default", "general", DecayConfigOptions(min_importance=1.5))
 
 
 def test_set_decay_config_validates_activation_boost_range():
     with _patched_service(_make_test_db()) as svc, pytest.raises(DecayModelError, match="activation_boost"):
-        svc.set_decay_config("u1", "default", "general", activation_boost=20.0)
+        svc.set_decay_config("u1", "default", "general", DecayConfigOptions(activation_boost=20.0))
 
 
 def test_set_decay_config_validates_strengthening_threshold():
     with _patched_service(_make_test_db()) as svc, pytest.raises(DecayModelError, match="strengthening_threshold"):
-        svc.set_decay_config("u1", "default", "general", strengthening_threshold=-1)
+        svc.set_decay_config("u1", "default", "general", DecayConfigOptions(strengthening_threshold=-1))
 
 
 def test_set_decay_config_validates_stale_threshold():
     with _patched_service(_make_test_db()) as svc, pytest.raises(DecayModelError, match="stale_threshold"):
-        svc.set_decay_config("u1", "default", "general", stale_threshold=-0.1)
+        svc.set_decay_config("u1", "default", "general", DecayConfigOptions(stale_threshold=-0.1))
 
 
 # ---------------------------------------------------------------------------
@@ -361,11 +367,13 @@ def test_get_memory_strength_round_trip():
     activation_count = 3
     mid = _insert_memory(
         db,
-        user_id="u1",
-        importance=importance,
-        current_strength=current_strength,
-        activation_count=activation_count,
-        category="general",
+        _MemoryRow(
+            user_id="u1",
+            importance=importance,
+            current_strength=current_strength,
+            activation_count=activation_count,
+            category="general",
+        ),
     )
     with _patched_service(db) as svc:
         result = svc.get_memory_strength(mid, "u1", "default")
@@ -392,10 +400,12 @@ def test_reinforce_memory_boosts_strength():
     current_strength = 0.4
     mid = _insert_memory(
         db,
-        user_id="u1",
-        importance=0.8,
-        current_strength=current_strength,
-        activation_count=0,
+        _MemoryRow(
+            user_id="u1",
+            importance=0.8,
+            current_strength=current_strength,
+            activation_count=0,
+        ),
     )
     with _patched_service(db) as svc:
         result = svc.reinforce_memory(mid, "u1", "default")
@@ -410,9 +420,11 @@ def test_reinforce_memory_clamps_to_one():
     db = _make_test_db()
     mid = _insert_memory(
         db,
-        importance=0.95,
-        current_strength=0.95,
-        activation_count=0,
+        _MemoryRow(
+            importance=0.95,
+            current_strength=0.95,
+            activation_count=0,
+        ),
     )
     with _patched_service(db) as svc:
         result = svc.reinforce_memory(mid, "u1", "default")
@@ -423,9 +435,11 @@ def test_reinforce_memory_uses_explicit_boost():
     db = _make_test_db()
     mid = _insert_memory(
         db,
-        importance=0.5,
-        current_strength=0.5,
-        activation_count=0,
+        _MemoryRow(
+            importance=0.5,
+            current_strength=0.5,
+            activation_count=0,
+        ),
     )
     with _patched_service(db) as svc:
         result = svc.reinforce_memory(mid, "u1", "default", activation_boost=2.0)
@@ -436,9 +450,11 @@ def test_reinforce_memory_respects_min_importance():
     db = _make_test_db()
     mid = _insert_memory(
         db,
-        importance=0.05,
-        current_strength=0.05,
-        activation_count=0,
+        _MemoryRow(
+            importance=0.05,
+            current_strength=0.05,
+            activation_count=0,
+        ),
     )
     activation_boost = 0.1
     with _patched_service(db) as svc:
@@ -450,9 +466,11 @@ def test_reinforce_memory_sets_trend_to_strengthening_at_threshold():
     db = _make_test_db()
     mid = _insert_memory(
         db,
-        importance=0.8,
-        current_strength=0.8,
-        activation_count=4,
+        _MemoryRow(
+            importance=0.8,
+            current_strength=0.8,
+            activation_count=4,
+        ),
     )
     with _patched_service(db) as svc:
         result = svc.reinforce_memory(mid, "u1", "default")
@@ -469,9 +487,11 @@ def test_apply_decay_batch_decays_old_memory():
     old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     mid = _insert_memory(
         db,
-        importance=0.5,
-        current_strength=0.5,
-        last_decay_at=old_ts,
+        _MemoryRow(
+            importance=0.5,
+            current_strength=0.5,
+            last_decay_at=old_ts,
+        ),
     )
     with _patched_service(db) as svc:
         stats = svc.apply_decay_batch("u1", "default")
@@ -487,9 +507,11 @@ def test_apply_decay_batch_skips_fresh_memory():
     fresh_ts = datetime.now(UTC).isoformat()
     _insert_memory(
         db,
-        importance=0.5,
-        current_strength=0.5,
-        last_decay_at=fresh_ts,
+        _MemoryRow(
+            importance=0.5,
+            current_strength=0.5,
+            last_decay_at=fresh_ts,
+        ),
     )
     with _patched_service(db) as svc:
         stats = svc.apply_decay_batch("u1", "default")
@@ -500,7 +522,7 @@ def test_apply_decay_batch_skips_fresh_memory():
 
 def test_apply_decay_batch_skips_memory_never_decayed():
     db = _make_test_db()
-    _insert_memory(db, importance=0.5, current_strength=None, last_decay_at=None)
+    _insert_memory(db, _MemoryRow(importance=0.5, current_strength=None, last_decay_at=None))
     with _patched_service(db) as svc:
         stats = svc.apply_decay_batch("u1", "default")
     assert stats.processed == 1
@@ -512,7 +534,7 @@ def test_apply_decay_batch_respects_batch_size():
     old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     memory_count = 5
     for _ in range(memory_count):
-        _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=old_ts)
+        _insert_memory(db, _MemoryRow(importance=0.5, current_strength=0.5, last_decay_at=old_ts))
     with _patched_service(db) as svc:
         stats = svc.apply_decay_batch("u1", "default", batch_size=2)
     assert stats.updated == memory_count
@@ -521,8 +543,12 @@ def test_apply_decay_batch_respects_batch_size():
 def test_apply_decay_batch_is_tenant_isolated():
     db = _make_test_db()
     old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
-    _insert_memory(db, user_id="u1", tenant_id="tA", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
-    _insert_memory(db, user_id="u1", tenant_id="tB", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
+    _insert_memory(
+        db, _MemoryRow(user_id="u1", tenant_id="tA", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
+    )
+    _insert_memory(
+        db, _MemoryRow(user_id="u1", tenant_id="tB", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
+    )
     with _patched_service(db) as svc:
         stats = svc.apply_decay_batch("u1", "tA")
     assert stats.updated == 1
@@ -531,8 +557,8 @@ def test_apply_decay_batch_is_tenant_isolated():
 def test_apply_decay_batch_is_user_isolated():
     db = _make_test_db()
     old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
-    _insert_memory(db, user_id="alice", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
-    _insert_memory(db, user_id="bob", importance=0.5, current_strength=0.5, last_decay_at=old_ts)
+    _insert_memory(db, _MemoryRow(user_id="alice", importance=0.5, current_strength=0.5, last_decay_at=old_ts))
+    _insert_memory(db, _MemoryRow(user_id="bob", importance=0.5, current_strength=0.5, last_decay_at=old_ts))
     with _patched_service(db) as svc:
         stats = svc.apply_decay_batch("alice", "default")
     assert stats.updated == 1
@@ -548,9 +574,11 @@ def test_apply_decay_batch_floors_at_min_importance():
     very_old = (datetime.now(UTC) - timedelta(hours=10000)).isoformat()
     mid = _insert_memory(
         db,
-        importance=0.5,
-        current_strength=0.001,
-        last_decay_at=very_old,
+        _MemoryRow(
+            importance=0.5,
+            current_strength=0.001,
+            last_decay_at=very_old,
+        ),
     )
     with _patched_service(db) as svc:
         svc.apply_decay_batch("u1", "default")
@@ -575,9 +603,11 @@ def test_decay_batch_records_events():
     old_ts = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
     mid = _insert_memory(
         db,
-        importance=0.5,
-        current_strength=0.5,
-        last_decay_at=old_ts,
+        _MemoryRow(
+            importance=0.5,
+            current_strength=0.5,
+            last_decay_at=old_ts,
+        ),
     )
     with _patched_service(db) as svc:
         svc.apply_decay_batch("u1", "default")
@@ -596,9 +626,11 @@ def test_reinforce_records_event():
     current_strength = 0.4
     mid = _insert_memory(
         db,
-        importance=0.8,
-        current_strength=current_strength,
-        activation_count=0,
+        _MemoryRow(
+            importance=0.8,
+            current_strength=current_strength,
+            activation_count=0,
+        ),
     )
     with _patched_service(db) as svc:
         svc.reinforce_memory(mid, "u1", "default")
@@ -611,8 +643,12 @@ def test_reinforce_records_event():
 
 def test_get_decay_events_filters_by_memory():
     db = _make_test_db()
-    mid1 = _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
-    mid2 = _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
+    mid1 = _insert_memory(
+        db, _MemoryRow(importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
+    )
+    mid2 = _insert_memory(
+        db, _MemoryRow(importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
+    )
     with _patched_service(db) as svc:
         svc.reinforce_memory(mid1, "u1", "default")
         svc.reinforce_memory(mid2, "u1", "default")
@@ -623,7 +659,9 @@ def test_get_decay_events_filters_by_memory():
 
 def test_get_decay_events_limit_caps_results():
     db = _make_test_db()
-    mid = _insert_memory(db, importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
+    mid = _insert_memory(
+        db, _MemoryRow(importance=0.5, current_strength=0.5, last_decay_at=datetime.now(UTC).isoformat())
+    )
     with _patched_service(db) as svc:
         for _ in range(5):
             svc.reinforce_memory(mid, "u1", "default")
@@ -670,10 +708,12 @@ def test_reinforce_memory_is_tenant_isolated():
     db = _make_test_db()
     mid = _insert_memory(
         db,
-        user_id="u1",
-        tenant_id="tA",
-        importance=0.8,
-        current_strength=0.4,
+        _MemoryRow(
+            user_id="u1",
+            tenant_id="tA",
+            importance=0.8,
+            current_strength=0.4,
+        ),
     )
     with _patched_service(db) as svc:
         result = svc.reinforce_memory(mid, "u1", "tB")
@@ -687,9 +727,11 @@ def test_get_memory_strength_is_user_isolated():
     db = _make_test_db()
     mid = _insert_memory(
         db,
-        user_id="alice",
-        importance=0.5,
-        current_strength=0.5,
+        _MemoryRow(
+            user_id="alice",
+            importance=0.5,
+            current_strength=0.5,
+        ),
     )
     with _patched_service(db) as svc:
         assert svc.get_memory_strength(mid, "bob", "default") is None
@@ -703,7 +745,7 @@ def test_decay_config_is_tenant_scoped():
             user_id="u1",
             tenant_id="tA",
             category="general",
-            half_life_hours=half_life_hours,
+            options=DecayConfigOptions(half_life_hours=half_life_hours),
         )
         cfg_a = svc.get_decay_config("u1", "tA", "general")
         cfg_b = svc.get_decay_config("u1", "tB", "general")
@@ -763,10 +805,12 @@ def test_reinforce_then_decay_drops_strength():
     old_ts = (datetime.now(UTC) - timedelta(hours=1000)).isoformat()
     mid = _insert_memory(
         db,
-        importance=0.5,
-        current_strength=0.5,
-        last_decay_at=old_ts,
-        activation_count=0,
+        _MemoryRow(
+            importance=0.5,
+            current_strength=0.5,
+            last_decay_at=old_ts,
+            activation_count=0,
+        ),
     )
     reinforce_count = 2
     with _patched_service(db) as svc:

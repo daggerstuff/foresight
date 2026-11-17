@@ -59,6 +59,7 @@ def config_get(
 
 @app.command("config-set")
 def config_set(
+    *,
     category: str = typer.Option("general", "--category", "-c", help="Memory category"),
     half_life_hours: float | None = typer.Option(None, "--half-life", help="New Ebbinghaus half-life in hours"),
     min_importance: float | None = typer.Option(None, "--min-importance", help="Floor for current_strength"),

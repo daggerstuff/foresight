@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from plugins.hermes import (
     PRE_COMPRESS_CHECKPOINT_API_VERSION,
     ForesightMemoryProvider,
+    MemoryWrite,
     _Client,
     register,
 )
@@ -205,9 +206,7 @@ class TestProvider:
                 prov._memwrite_thread.join(timeout=2.0)
             mock_store.assert_called_once_with(
                 "Prefer pnpm",
-                category="preference",
-                importance=0.7,
-                tags=["built-in-mirror", "target:user"],
+                MemoryWrite(category="preference", importance=0.7, tags=["built-in-mirror", "target:user"]),
             )
 
     def test_status_config(self):

@@ -18,6 +18,7 @@ from foresight.eval_harness import (
     SCENARIOS,
     EvalHarness,
     EvalReport,
+    EvalRunOptions,
     ScenarioResult,
     run_eval,
     scan_for_pii,
@@ -410,7 +411,7 @@ class TestEdgeCases:
 class TestRunEval:
     def test_run_eval_returns_report(self):
 
-        report = run_eval(db_path=":memory:", budget_chars=2000)
+        report = run_eval(EvalRunOptions(db_path=":memory:", budget_chars=2000))
         assert isinstance(report, EvalReport)
         assert len(report.scenarios) == len(SCENARIOS)
         assert report.summary["total"] == len(SCENARIOS)
@@ -422,9 +423,11 @@ class TestRunEval:
             report_path = f.name
         try:
             run_eval(
-                db_path=":memory:",
-                report_path=report_path,
-                budget_chars=2000,
+                EvalRunOptions(
+                    db_path=":memory:",
+                    report_path=report_path,
+                    budget_chars=2000,
+                )
             )
             assert os.path.exists(report_path)
             with open(report_path) as f:
@@ -461,7 +464,7 @@ class TestRunEval:
         stderr_calls: list[str] = []
         info_calls: list[str] = []
 
-        monkeypatch.setattr(eval_harness_module, "run_eval", lambda **_: report)
+        monkeypatch.setattr(eval_harness_module, "run_eval", lambda *_, **__: report)
         monkeypatch.setattr(eval_cmd.out, "get_settings", lambda: SimpleNamespace(mode="human"))
         monkeypatch.setattr(eval_cmd.out, "done", done_calls.append)
         monkeypatch.setattr(eval_cmd.out, "stderr", lambda message, style=None: stderr_calls.append(message))
@@ -523,14 +526,16 @@ class TestReportPersistence:
             baseline_path = f.name
         try:
             # Generate baseline
-            run_eval(db_path=":memory:", save_baseline=baseline_path, budget_chars=2000)
+            run_eval(EvalRunOptions(db_path=":memory:", save_baseline=baseline_path, budget_chars=2000))
             assert os.path.exists(baseline_path)
 
             # Run comparison against baseline
             report = run_eval(
-                db_path=":memory:",
-                compare_path=baseline_path,
-                budget_chars=2000,
+                EvalRunOptions(
+                    db_path=":memory:",
+                    compare_path=baseline_path,
+                    budget_chars=2000,
+                )
             )
             assert isinstance(report, EvalReport)
             assert report.summary["total"] == len(SCENARIOS)
@@ -547,12 +552,14 @@ class TestReportPersistence:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as report_file:
             report_path = report_file.name
         try:
-            run_eval(db_path=":memory:", save_baseline=baseline_path, budget_chars=2000)
+            run_eval(EvalRunOptions(db_path=":memory:", save_baseline=baseline_path, budget_chars=2000))
             run_eval(
-                db_path=":memory:",
-                compare_path=baseline_path,
-                report_path=report_path,
-                budget_chars=2000,
+                EvalRunOptions(
+                    db_path=":memory:",
+                    compare_path=baseline_path,
+                    report_path=report_path,
+                    budget_chars=2000,
+                )
             )
 
             persisted_report = EvalReport.load(report_path)
@@ -567,9 +574,11 @@ class TestReportPersistence:
     def test_compare_missing_baseline_does_not_crash(self):
 
         report = run_eval(
-            db_path=":memory:",
-            compare_path="/nonexistent/baseline.json",
-            budget_chars=2000,
+            EvalRunOptions(
+                db_path=":memory:",
+                compare_path="/nonexistent/baseline.json",
+                budget_chars=2000,
+            )
         )
         assert isinstance(report, EvalReport)
 
@@ -579,7 +588,7 @@ class TestReportPersistence:
             f.write("not json")
             bad_path = f.name
         try:
-            report = run_eval(db_path=":memory:", compare_path=bad_path, budget_chars=2000)
+            report = run_eval(EvalRunOptions(db_path=":memory:", compare_path=bad_path, budget_chars=2000))
             assert isinstance(report, EvalReport)
         finally:
             if os.path.exists(bad_path):

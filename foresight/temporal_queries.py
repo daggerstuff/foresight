@@ -80,6 +80,23 @@ class TemporalQueryResult:
     combined_score: float = 0.0  # Vector + time combined
 
 
+@dataclass(frozen=True)
+class TemporalFilters:
+    """Narrowing options shared by every temporal query.
+
+    ``category``/``min_importance`` filter the rows; ``limit`` caps the window
+    and trend reads; ``agent_id``/``project`` restrict the namespace lane. All
+    five are optional, so they travel together rather than as a tail of
+    same-shaped keywords.
+    """
+
+    category: str | None = None
+    min_importance: float = 0.1
+    limit: int = 50
+    agent_id: str | None = None
+    project: str | None = None
+
+
 class TemporalQueryBuilder:
     """
     Builder for temporal memory queries.
@@ -177,19 +194,16 @@ class TemporalQueryBuilder:
         user_id: str,
         window: TimeWindow,
         *,
-        limit: int = 50,
-        min_importance: float = 0.1,
-        category: str | None = None,
-        agent_id: str | None = None,
-        project: str | None = None,
+        filters: TemporalFilters | None = None,
     ) -> list[TemporalQueryResult]:
         """Get memories from a time window."""
+        filters = filters or TemporalFilters()
         tenant_id = get_current_account_id()
         window_hours = self._get_window_hours(window)
         cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
-        ns_frag, ns_params = self._ns_frag(agent_id, project)
+        ns_frag, ns_params = self._ns_frag(filters.agent_id, filters.project)
 
-        if category:
+        if filters.category:
             sql = join_sql_parts(
                 """
                 SELECT
@@ -206,7 +220,15 @@ class TemporalQueryBuilder:
                 LIMIT ?
             """,
             )
-            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, category, *ns_params, limit]
+            base_params = [
+                user_id,
+                tenant_id,
+                cutoff.isoformat(),
+                filters.min_importance,
+                filters.category,
+                *ns_params,
+                filters.limit,
+            ]
         else:
             sql = join_sql_parts(
                 """
@@ -223,7 +245,7 @@ class TemporalQueryBuilder:
                 LIMIT ?
             """,
             )
-            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance, *ns_params, limit]
+            base_params = [user_id, tenant_id, cutoff.isoformat(), filters.min_importance, *ns_params, filters.limit]
 
         try:
             rows = self._fetch_rows(sql, base_params)
@@ -232,7 +254,7 @@ class TemporalQueryBuilder:
                 raise
             if not _is_missing_tenant_column_error(e):
                 raise
-            if category:
+            if filters.category:
                 sql_no_tenant = """
                     SELECT
                         id, content, importance, strength_trend,
@@ -245,7 +267,7 @@ class TemporalQueryBuilder:
                     ORDER BY importance DESC, created_at DESC
                     LIMIT ?
                 """
-                params = [user_id, cutoff.isoformat(), min_importance, category, limit]
+                params = [user_id, cutoff.isoformat(), filters.min_importance, filters.category, filters.limit]
             else:
                 sql_no_tenant = """
                     SELECT
@@ -258,7 +280,7 @@ class TemporalQueryBuilder:
                     ORDER BY importance DESC, created_at DESC
                     LIMIT ?
                 """
-                params = [user_id, cutoff.isoformat(), min_importance, limit]
+                params = [user_id, cutoff.isoformat(), filters.min_importance, filters.limit]
             rows = self._fetch_rows(sql_no_tenant, params)
 
         return [
@@ -279,10 +301,8 @@ class TemporalQueryBuilder:
         self,
         user_id: str,
         target_date: datetime,
-        category: str | None = None,
-        min_importance: float = 0.1,
-        agent_id: str | None = None,
-        project: str | None = None,
+        *,
+        filters: TemporalFilters | None = None,
     ) -> list[TemporalQueryResult]:
         """Get memories as of a specific time (point-in-time state reconstruction).
 
@@ -301,9 +321,10 @@ class TemporalQueryBuilder:
           *after* T; with no such snapshot, the current row content was
           already live at T.
         """
+        filters = filters or TemporalFilters()
         tenant_id = get_current_account_id()
         target_iso = target_date.isoformat()
-        ns_frag, ns_params = self._ns_frag(agent_id, project, prefix="m.")
+        ns_frag, ns_params = self._ns_frag(filters.agent_id, filters.project, prefix="m.")
 
         # The version subquery selects the content snapshot that was live at
         # target_iso: the first snapshot recorded after it (snapshots are
@@ -339,12 +360,12 @@ class TemporalQueryBuilder:
             target_iso,
             target_iso,
             target_iso,
-            min_importance,
+            filters.min_importance,
             *ns_params,
         ]
-        if category:
+        if filters.category:
             sql += " AND m.category = ?"
-            base_params.append(category)
+            base_params.append(filters.category)
         sql += " ORDER BY m.created_at DESC"
 
         try:
@@ -356,7 +377,7 @@ class TemporalQueryBuilder:
                 raise
             # Legacy schema without tenant_id predates the bitemporal
             # columns too — fall back to the pre-interval query shape.
-            if category:
+            if filters.category:
                 sql_no_tenant = """
                     SELECT
                         id, content, importance, strength_trend,
@@ -368,7 +389,7 @@ class TemporalQueryBuilder:
                     AND category = ?
                     ORDER BY created_at DESC
                 """
-                params = [user_id, target_iso, min_importance, category]
+                params = [user_id, target_iso, filters.min_importance, filters.category]
             else:
                 sql_no_tenant = """
                     SELECT
@@ -380,7 +401,7 @@ class TemporalQueryBuilder:
                     AND importance > ?
                     ORDER BY created_at DESC
                 """
-                params = [user_id, target_iso, min_importance]
+                params = [user_id, target_iso, filters.min_importance]
             rows = self._fetch_rows(sql_no_tenant, params)
 
         results = []
@@ -404,15 +425,14 @@ class TemporalQueryBuilder:
         self,
         user_id: str,
         trend: str,
-        limit: int = 50,
-        category: str | None = None,
-        agent_id: str | None = None,
-        project: str | None = None,
+        *,
+        filters: TemporalFilters | None = None,
     ) -> list[TemporalQueryResult]:
         """Get memories by trend."""
+        filters = filters or TemporalFilters()
         tenant_id = get_current_account_id()
-        ns_frag, ns_params = self._ns_frag(agent_id, project)
-        if category:
+        ns_frag, ns_params = self._ns_frag(filters.agent_id, filters.project)
+        if filters.category:
             sql = join_sql_parts(
                 """
                 SELECT
@@ -428,7 +448,7 @@ class TemporalQueryBuilder:
                 LIMIT ?
             """,
             )
-            base_params = [user_id, tenant_id, trend, category, *ns_params, limit]
+            base_params = [user_id, tenant_id, trend, filters.category, *ns_params, filters.limit]
         else:
             sql = join_sql_parts(
                 """
@@ -444,7 +464,7 @@ class TemporalQueryBuilder:
                 LIMIT ?
             """,
             )
-            base_params = [user_id, tenant_id, trend, *ns_params, limit]
+            base_params = [user_id, tenant_id, trend, *ns_params, filters.limit]
 
         try:
             rows = self._fetch_rows(sql, base_params)
@@ -453,7 +473,7 @@ class TemporalQueryBuilder:
                 raise
             if not _is_missing_tenant_column_error(e):
                 raise
-            if category:
+            if filters.category:
                 sql_no_tenant = """
                     SELECT
                         id, content, importance, strength_trend,
@@ -465,7 +485,7 @@ class TemporalQueryBuilder:
                     ORDER BY created_at DESC
                     LIMIT ?
                 """
-                params = [user_id, trend, category, limit]
+                params = [user_id, trend, filters.category, filters.limit]
             else:
                 sql_no_tenant = """
                     SELECT
@@ -477,7 +497,7 @@ class TemporalQueryBuilder:
                     ORDER BY created_at DESC
                     LIMIT ?
                 """
-                params = [user_id, trend, limit]
+                params = [user_id, trend, filters.limit]
             rows = self._fetch_rows(sql_no_tenant, params)
 
         return [

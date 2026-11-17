@@ -171,22 +171,28 @@ class GridSearchResult:
         }
 
 
+@dataclass(frozen=True)
+class WeightRanges:
+    """Search ranges for one grid search, each as a ``(min, max, step)`` triple."""
+
+    keyword: tuple[float, float, float] = (0.5, 2.0, 0.5)
+    tfidf: tuple[float, float, float] = (0.3, 1.0, 0.2)
+    graph: tuple[float, float, float] = (0.4, 1.2, 0.2)
+    temporal: tuple[float, float, float] = (0.2, 1.0, 0.2)
+    entity: tuple[float, float, float] | None = None
+
+
 def grid_search_weights(
-    keyword_range: tuple[float, float, float] = (0.5, 2.0, 0.5),
-    tfidf_range: tuple[float, float, float] = (0.3, 1.0, 0.2),
-    graph_range: tuple[float, float, float] = (0.4, 1.2, 0.2),
-    temporal_range: tuple[float, float, float] = (0.2, 1.0, 0.2),
-    entity_range: tuple[float, float, float] | None = None,
+    ranges: WeightRanges | None = None,
+    *,
     evaluate_fn: Callable[[dict[str, float]], float] | None = None,
 ) -> GridSearchResult:
     """
     Grid search for optimal RRF weights.
 
     Args:
-        keyword_range: (min, max, step) for keyword weight
-        tfidf_range: (min, max, step) for tfidf_cosine weight
-        graph_range: (min, max, step) for graph weight
-        temporal_range: (min, max, step) for temporal weight
+        ranges: ``(min, max, step)`` search ranges per weight; see
+            :class:`WeightRanges`.
         evaluate_fn: Function that takes weights dict and returns score
 
     Returns:
@@ -196,11 +202,14 @@ def grid_search_weights(
         evaluate_fn should be provided for actual tuning.
     Without it, returns placeholder results.
     """
-    keyword_values = list(frange(keyword_range[0], keyword_range[1] + 0.001, keyword_range[2]))
-    tfidf_values = list(frange(tfidf_range[0], tfidf_range[1] + 0.001, tfidf_range[2]))
-    graph_values = list(frange(graph_range[0], graph_range[1] + 0.001, graph_range[2]))
-    temporal_values = list(frange(temporal_range[0], temporal_range[1] + 0.001, temporal_range[2]))
-    entity_values = list(frange(entity_range[0], entity_range[1] + 0.001, entity_range[2])) if entity_range else [0.0]
+    ranges = ranges or WeightRanges()
+    keyword_values = list(frange(ranges.keyword[0], ranges.keyword[1] + 0.001, ranges.keyword[2]))
+    tfidf_values = list(frange(ranges.tfidf[0], ranges.tfidf[1] + 0.001, ranges.tfidf[2]))
+    graph_values = list(frange(ranges.graph[0], ranges.graph[1] + 0.001, ranges.graph[2]))
+    temporal_values = list(frange(ranges.temporal[0], ranges.temporal[1] + 0.001, ranges.temporal[2]))
+    entity_values = (
+        list(frange(ranges.entity[0], ranges.entity[1] + 0.001, ranges.entity[2])) if ranges.entity else [0.0]
+    )
 
     all_combinations = list(
         itertools.product(keyword_values, tfidf_values, graph_values, temporal_values, entity_values)

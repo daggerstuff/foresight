@@ -12,6 +12,7 @@ app = typer.Typer(help="Run the evaluation harness (PIX-3953).")
 
 @app.command()
 def run(
+    *,
     db_path: str | None = typer.Option(None, "--db-path", help="Path to temp database (default: auto tempfile)"),
     report: str | None = typer.Option(None, "--report", "-r", help="Write JSON report to file"),
     budget: int = typer.Option(2000, "--budget", "-b", help="Character budget for injection payloads"),
@@ -29,12 +30,14 @@ def run(
     and PII safety.
     """
     report_obj = eval_harness.run_eval(
-        db_path=db_path,
-        report_path=report,
-        budget_chars=budget,
-        compare_path=compare,
-        save_baseline=save_baseline,
-        json_output=json_output or out.get_settings().mode == "json",
+        eval_harness.EvalRunOptions(
+            db_path=db_path,
+            report_path=report,
+            budget_chars=budget,
+            compare_path=compare,
+            save_baseline=save_baseline,
+            json_output=json_output or out.get_settings().mode == "json",
+        )
     )
 
     passed = report_obj.summary["passed"]

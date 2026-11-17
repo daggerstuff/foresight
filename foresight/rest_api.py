@@ -32,7 +32,7 @@ from starlette.responses import JSONResponse, Response
 from . import server
 from .auth import User, _should_require_api_key, get_auth_manager
 from .config import DEFAULT_ACCOUNT_ID, DEFAULT_USER_ID, raw_retention_enabled
-from .document_ingestion import DocumentIngestionError, ingest_document_file
+from .document_ingestion import DocumentIngestionError, DocumentIngestOptions, ingest_document_file
 from .tenant_context import (
     reset_tenant_context,
     set_current_account_id,
@@ -922,20 +922,18 @@ async def _handle_ingest_document_file(request: Request) -> Response:
     if err:
         return err
 
-    ingest_kwargs: dict[str, Any] = {
-        "path": body.path,
-        "title": body.title,
-        "user_id": user_id,
-        "source": body.source,
-        "metadata": body.metadata,
-    }
-    if body.char_budget is not None:
-        ingest_kwargs["char_budget"] = body.char_budget
+    ingest_options = DocumentIngestOptions(
+        title=body.title,
+        user_id=user_id,
+        source=body.source,
+        char_budget=body.char_budget,
+        metadata=body.metadata,
+    )
 
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
-        result = await run_in_threadpool(ingest_document_file, **ingest_kwargs)
+        result = await run_in_threadpool(ingest_document_file, body.path, ingest_options)
     except DocumentIngestionError as exc:
         return _error(422, str(exc))
     finally:

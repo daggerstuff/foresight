@@ -9,6 +9,7 @@ import pytest
 
 from foresight.document_ingestion import (
     DocumentIngestionError,
+    DocumentIngestOptions,
     detect_document_kind,
     extract_text,
     ingest_document_file,
@@ -127,7 +128,7 @@ def test_ingest_document_file_pdf_source_default(tmp_path, monkeypatch):
     monkeypatch.setattr("foresight.document_ingestion.extract_text", fake_extract)
     monkeypatch.setattr("foresight.server.create_document", fake_create_document)
 
-    ingest_document_file(str(f), title="My Paper")
+    ingest_document_file(str(f), DocumentIngestOptions(title="My Paper"))
     assert captured["kind"] == "pdf"
     assert captured["title"] == "My Paper"
     assert captured["source"] == "pdf"

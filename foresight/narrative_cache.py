@@ -12,12 +12,28 @@ import hashlib
 import json
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .connection_pool import get_db_connection
 
 DEFAULT_MAX_ENTRIES = 10_000
 DEFAULT_TTL_SECONDS = 604_800
+
+
+@dataclass(frozen=True)
+class NarrativeScope:
+    """The tenant/user/model/insights identity a cached narrative belongs to.
+
+    Four values that are always supplied together and are all plain strings;
+    passing them loose lets a caller put a user's narrative under another
+    user's model version without any type error.
+    """
+
+    tenant_id: str
+    user_id: str
+    model_version: str
+    insights_hash: str
 
 
 class NarrativeCache:
@@ -115,33 +131,28 @@ class NarrativeCache:
             finally:
                 conn.close()
 
-    def put(
-        self,
-        report_id: str,
-        narrative: str,
-        *,
-        tenant_id: str,
-        user_id: str,
-        model_version: str,
-        insights_hash: str,
-    ) -> None:
+    def put(self, report_id: str, narrative: str, scope: NarrativeScope) -> None:
         """Insert or replace a cached narrative and enforce size bounds."""
         self._validate_parts(
             report_id=report_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            model_version=model_version,
-            insights_hash=insights_hash,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            model_version=scope.model_version,
+            insights_hash=scope.insights_hash,
         )
         if not isinstance(narrative, str):
             raise TypeError("narrative must be a string")
 
+        tenant_id = scope.tenant_id
+        user_id = scope.user_id
+        model_version = scope.model_version
+        insights_hash = scope.insights_hash
         cache_key = self._cache_key(
-            tenant_id=tenant_id,
-            user_id=user_id,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
             report_id=report_id,
-            model_version=model_version,
-            insights_hash=insights_hash,
+            model_version=scope.model_version,
+            insights_hash=scope.insights_hash,
         )
         now = time.time()
 

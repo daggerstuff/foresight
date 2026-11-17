@@ -32,6 +32,7 @@ Stores a new memory record.
 ```python
 def query_memories(
     query: str,
+    *,
     user_id: str | None = None,
     limit: int = 10,
     use_hybrid: bool = True,
@@ -71,6 +72,7 @@ Retrieves one memory by ID.
 ```python
 def update_memory(
     memory_id: str,
+    *,
     user_id: str | None = None,
     content: str | None = None,
     category: str | None = None,

@@ -39,6 +39,7 @@ def _init_and_user(user_id_override: str | None = None):
 
 @app.command()
 def store(
+    *,
     content: str = typer.Argument(..., help="Memory content to store"),
     scope: str = typer.Option("session", "--scope", "-s", help="Memory scope (session/arc/trait/fact)"),
     retention: str = typer.Option(
@@ -102,6 +103,7 @@ def query(
 
 @app.command()
 def update(
+    *,
     memory_id: str = typer.Argument(..., help="Memory ID"),
     content: str | None = typer.Option(None, "--content", "-c", help="New content"),
     category: str | None = typer.Option(None, "--category", help="New category"),
@@ -150,6 +152,7 @@ def reinforce(
 
 @app.command()
 def search(
+    *,
     query_text: str = typer.Argument(..., help="Search query"),
     mode: str = typer.Option("keyword", "--mode", "-m", help="Search mode: keyword, semantic, hybrid"),
     limit: int = typer.Option(10, "--limit", "-l", help="Number of results"),

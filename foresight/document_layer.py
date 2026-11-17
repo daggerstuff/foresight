@@ -519,30 +519,16 @@ class DocumentStore:
         title: str,
         content: str,
         user_id: str,
-        source: str = "note",
-        tenant_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET,
-        memory_id_for_chunk: Any = None,
-        *,
         options: DocumentCreateOptions | None = None,
     ) -> tuple[Document, list[DocumentChunk]]:
         """Persist a new document and its extracted chunks.
 
-        `memory_id_for_chunk` is optional: if callable, it is invoked
+        ``options.memory_id_for_chunk`` is optional: if callable, it is invoked
         with (chunk_index, text) and must return a memory_id string.
         If a string, it is used for all chunks. If None, chunks are
         stored without a memory_id (extraction stub mode).
         """
-        # Backward compatibility: if options is provided, use it; otherwise build from individual parameters
-        if options is None:
-            options = DocumentCreateOptions(
-                source=source,
-                tenant_id=tenant_id,
-                metadata=metadata,
-                char_budget=char_budget,
-                memory_id_for_chunk=memory_id_for_chunk,
-            )
+        options = options or DocumentCreateOptions()
         self._validate_create_params(title, content, options)
         tid = options.tenant_id or get_current_account_id()
         _validate_user_tenant(user_id, tid)

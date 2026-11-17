@@ -16,6 +16,7 @@ Covers:
 import json
 import sqlite3
 import uuid
+from dataclasses import dataclass
 
 import pytest
 
@@ -83,20 +84,22 @@ def _inferred_list_max_limit():
     return INFERRED_LIST_MAX_LIMIT
 
 
-def _insert_memory(
-    conn,
-    memory_id,
-    content,
-    *,
-    uid=UID,
-    tenant=TENANT,
-    created_at=NOW,
-    inferred=1,
-    is_ghost=0,
-    review_status=None,
-    review_reason=None,
-    importance=0.5,
-):
+@dataclass(frozen=True)
+class _MemoryRow:
+    """Everything about a seeded ``memories`` row except its id and content."""
+
+    uid: str = UID
+    tenant: str = TENANT
+    created_at: str = NOW
+    inferred: int = 1
+    is_ghost: int = 0
+    review_status: str | None = None
+    review_reason: str | None = None
+    importance: float = 0.5
+
+
+def _insert_memory(conn, memory_id, content, row: _MemoryRow | None = None):
+    row = row or _MemoryRow()
     conn.execute(
         """
         INSERT INTO memories
@@ -109,15 +112,15 @@ def _insert_memory(
         (
             memory_id,
             content,
-            tenant,
-            uid,
-            created_at,
-            created_at,
-            is_ghost,
-            inferred,
-            review_status,
-            review_reason,
-            importance,
+            row.tenant,
+            row.uid,
+            row.created_at,
+            row.created_at,
+            row.is_ghost,
+            row.inferred,
+            row.review_status,
+            row.review_reason,
+            row.importance,
         ),
     )
     conn.commit()
@@ -195,11 +198,11 @@ class TestMigrationV16Columns:
 class TestInferredQueue:
     def _seed_ordering_fixture(self, conn):
         for pid in ("par_1", "par_2", "par_3", "par_4"):
-            _insert_memory(conn, pid, f"parent fact {pid}", inferred=0)
-        _insert_memory(conn, "inf_w", "two parents oldest", created_at="2026-09-25T10:00:00+00:00")
-        _insert_memory(conn, "inf_x", "one parent oldest", created_at="2026-09-25T08:00:00+00:00")
-        _insert_memory(conn, "inf_y", "one parent newer", created_at="2026-09-25T09:00:00+00:00")
-        _insert_memory(conn, "inf_z", "no parents newest", created_at="2026-09-25T11:00:00+00:00")
+            _insert_memory(conn, pid, f"parent fact {pid}", _MemoryRow(inferred=0))
+        _insert_memory(conn, "inf_w", "two parents oldest", _MemoryRow(created_at="2026-09-25T10:00:00+00:00"))
+        _insert_memory(conn, "inf_x", "one parent oldest", _MemoryRow(created_at="2026-09-25T08:00:00+00:00"))
+        _insert_memory(conn, "inf_y", "one parent newer", _MemoryRow(created_at="2026-09-25T09:00:00+00:00"))
+        _insert_memory(conn, "inf_z", "no parents newest", _MemoryRow(created_at="2026-09-25T11:00:00+00:00"))
         _add_derives_edge(conn, "inf_w", "par_1")
         _add_derives_edge(conn, "inf_w", "par_2")
         _add_derives_edge(conn, "inf_x", "par_3")
@@ -217,22 +220,26 @@ class TestInferredQueue:
     def test_excludes_non_inferred_declined_ghosted_and_approved(self):
         conn = _pg()
         try:
-            _insert_memory(conn, "inf_pending", "still pending", created_at=NOW)
+            _insert_memory(conn, "inf_pending", "still pending", _MemoryRow(created_at=NOW))
             _insert_memory(
                 conn,
                 "inf_declined",
                 "declined row",
-                review_status="declined",
-                review_reason="bad inference",
+                _MemoryRow(
+                    review_status="declined",
+                    review_reason="bad inference",
+                ),
             )
-            _insert_memory(conn, "inf_ghosted", "ghosted row", is_ghost=1)
-            _insert_memory(conn, "inf_stated", "plain stated fact", inferred=0)
+            _insert_memory(conn, "inf_ghosted", "ghosted row", _MemoryRow(is_ghost=1))
+            _insert_memory(conn, "inf_stated", "plain stated fact", _MemoryRow(inferred=0))
             _insert_memory(
                 conn,
                 "inf_approved",
                 "approved row",
-                inferred=0,
-                review_status="approved",
+                _MemoryRow(
+                    inferred=0,
+                    review_status="approved",
+                ),
             )
         finally:
             conn.close()
@@ -245,7 +252,7 @@ class TestInferredQueue:
             for n, ts in enumerate(
                 ("2026-09-25T10:00:00+00:00", "2026-09-25T09:00:00+00:00", "2026-09-25T08:00:00+00:00")
             ):
-                _insert_memory(conn, f"inf_{n}", f"inferred fact {n}", created_at=ts)
+                _insert_memory(conn, f"inf_{n}", f"inferred fact {n}", _MemoryRow(created_at=ts))
         finally:
             conn.close()
         limit = 2
@@ -314,7 +321,7 @@ class TestInferredApprove:
     def test_approve_non_inferred_errors(self):
         conn = _pg()
         try:
-            _insert_memory(conn, "inf_c", "stated fact", inferred=0)
+            _insert_memory(conn, "inf_c", "stated fact", _MemoryRow(inferred=0))
         finally:
             conn.close()
         res = json.loads(_tool("approve", user_id=UID, memory_id="inf_c"))
@@ -367,7 +374,7 @@ class TestInferredDecline:
     def test_decline_non_inferred_errors(self):
         conn = _pg()
         try:
-            _insert_memory(conn, "inf_f", "stated fact", inferred=0)
+            _insert_memory(conn, "inf_f", "stated fact", _MemoryRow(inferred=0))
         finally:
             conn.close()
         res = json.loads(_tool("decline", user_id=UID, memory_id="inf_f"))
@@ -450,7 +457,9 @@ class TestScoping:
                 conn,
                 "inf_theirs",
                 "their inferred fact",
-                uid="_other_user_",
+                _MemoryRow(
+                    uid="_other_user_",
+                ),
             )
         finally:
             conn.close()
@@ -471,7 +480,9 @@ class TestScoping:
                 conn,
                 "inf_elsewhere",
                 "other tenant inferred fact",
-                tenant="_other_tenant_",
+                _MemoryRow(
+                    tenant="_other_tenant_",
+                ),
             )
         finally:
             conn.close()

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from foresight.memory_maintenance import (
@@ -76,31 +77,33 @@ def _make_test_db() -> str:
     return db_path
 
 
-def _insert_memory(
-    conn,
-    mid: str,
-    content: str,
-    *,
-    importance: float = 0.5,
-    strength_trend: str = "stable",
-    is_ghost: int = 0,
-    user_id: str = "u1",
-    tenant_id: str = "t1",
-    is_sensitive: int = 0,
-) -> None:
+@dataclass(frozen=True)
+class _MemoryRow:
+    """Non-identity columns of one seeded ``memories`` row."""
+
+    importance: float = 0.5
+    strength_trend: str = "stable"
+    is_ghost: int = 0
+    user_id: str = "u1"
+    tenant_id: str = "t1"
+    is_sensitive: int = 0
+
+
+def _insert_memory(conn, mid: str, content: str, row: _MemoryRow | None = None) -> None:
+    row = row or _MemoryRow()
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, content, importance, strength_trend, is_ghost, "
         "is_sensitive, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
-            user_id,
-            tenant_id,
+            row.user_id,
+            row.tenant_id,
             content,
-            importance,
-            strength_trend,
-            is_ghost,
-            is_sensitive,
+            row.importance,
+            row.strength_trend,
+            row.is_ghost,
+            row.is_sensitive,
             datetime.now(UTC).isoformat(),
         ),
     )
@@ -145,9 +148,9 @@ class TestConsolidateSensitiveSkipped:
         conn.row_factory = sqlite3.Row
 
         identical = "prescription dosage change to 5mg daily for patient records"
-        _insert_memory(conn, "mem_s1", identical, is_sensitive=1)
-        _insert_memory(conn, "mem_s2", identical, is_sensitive=1)
-        _insert_memory(conn, "mem_s3", identical, is_sensitive=1)
+        _insert_memory(conn, "mem_s1", identical, _MemoryRow(is_sensitive=1))
+        _insert_memory(conn, "mem_s2", identical, _MemoryRow(is_sensitive=1))
+        _insert_memory(conn, "mem_s3", identical, _MemoryRow(is_sensitive=1))
 
         job = MemoryMaintenanceJob(db_path=db_path)
         stats = job.run(
@@ -182,17 +185,21 @@ class TestArchiveStaleSensitiveSkipped:
             conn,
             "mem_stale_s",
             "diagnostic notes low importance",
-            importance=0.05,
-            strength_trend="stale",
-            is_sensitive=1,
+            _MemoryRow(
+                importance=0.05,
+                strength_trend="stale",
+                is_sensitive=1,
+            ),
         )
         _insert_memory(
             conn,
             "mem_stale_n",
             "low importance non-sensitive",
-            importance=0.05,
-            strength_trend="stale",
-            is_sensitive=0,
+            _MemoryRow(
+                importance=0.05,
+                strength_trend="stale",
+                is_sensitive=0,
+            ),
         )
 
         job = MemoryMaintenanceJob(db_path=db_path)
@@ -226,9 +233,11 @@ class TestArchiveStaleSensitiveSkipped:
             conn,
             "mem_s_target",
             "medication history summary",
-            importance=0.05,
-            strength_trend="stale",
-            is_sensitive=1,
+            _MemoryRow(
+                importance=0.05,
+                strength_trend="stale",
+                is_sensitive=1,
+            ),
         )
 
         job = MemoryMaintenanceJob(db_path=db_path)
@@ -263,13 +272,17 @@ class TestContradictSensitiveSurfaced:
             conn,
             "mem_c1",
             "treatment feels helpful and safe for patient",
-            is_sensitive=1,
+            _MemoryRow(
+                is_sensitive=1,
+            ),
         )
         _insert_memory(
             conn,
             "mem_c2",
             "treatment feels harmful and afraid for patient",
-            is_sensitive=1,
+            _MemoryRow(
+                is_sensitive=1,
+            ),
         )
 
         job = MemoryMaintenanceJob(db_path=db_path)
@@ -303,25 +316,31 @@ class TestTenantIsolation:
             conn,
             "mem_a1",
             "patient prescription notes duplicate",
-            tenant_id="t_clinic",
-            user_id="u_doc",
-            is_sensitive=1,
+            _MemoryRow(
+                tenant_id="t_clinic",
+                user_id="u_doc",
+                is_sensitive=1,
+            ),
         )
         _insert_memory(
             conn,
             "mem_a2",
             "patient prescription notes duplicate",
-            tenant_id="t_clinic",
-            user_id="u_doc",
-            is_sensitive=1,
+            _MemoryRow(
+                tenant_id="t_clinic",
+                user_id="u_doc",
+                is_sensitive=1,
+            ),
         )
         _insert_memory(
             conn,
             "mem_b1",
             "patient prescription notes duplicate",
-            tenant_id="t_other",
-            user_id="u_doc",
-            is_sensitive=0,
+            _MemoryRow(
+                tenant_id="t_other",
+                user_id="u_doc",
+                is_sensitive=0,
+            ),
         )
 
         job = MemoryMaintenanceJob(db_path=db_path)

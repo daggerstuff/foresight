@@ -96,6 +96,7 @@ app.command(name="prove", rich_help_panel="Quick Commands")(benchmark.run)
 @app.callback()
 def callback(
     ctx: typer.Context,
+    *,
     output: OutputMode | None = typer.Option(
         None,
         "--output",

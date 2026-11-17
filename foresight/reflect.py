@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -190,15 +191,27 @@ def _llm_answer(question: str, citations: list[dict], uid: str, tenant_id: str) 
     return cleaned or None
 
 
+@dataclass(frozen=True)
+class UserScope:
+    """Whose memories are being read, and from which namespace lane.
+
+    ``user_id``/``tenant_id`` are the isolation pair every memory query needs;
+    ``agent_id``/``project`` optionally narrow the read to one lane. They are
+    always supplied together, so they travel as one value.
+    """
+
+    user_id: str
+    tenant_id: str
+    agent_id: str | None = None
+    project: str | None = None
+
+
 def reflect(
     question: str,
+    scope: UserScope,
     *,
-    user_id: str,
-    tenant_id: str,
     max_memories: int = 8,
     include_archived: bool = False,
-    agent_id: str | None = None,
-    project: str | None = None,
 ) -> dict[str, Any]:
     """Answer ``question`` from the user's memories with citations.
 
@@ -206,6 +219,10 @@ def reflect(
     ``tokens_used``, ``cached`` and ``synthesized_by`` keys. Never raises
     for retrieval or synthesis failures — degradation is reported in-band.
     """
+    user_id = scope.user_id
+    tenant_id = scope.tenant_id
+    agent_id = scope.agent_id
+    project = scope.project
     t0 = time.perf_counter()
     retriever = get_hybrid_retriever()
     search_options: dict[str, Any] = {}
@@ -454,9 +471,7 @@ def refresh_mental_model(model_id: str, *, user_id: str, tenant_id: str) -> dict
     model = _mental_model_row(row)
     result = reflect(
         model["question_text"],
-        user_id=user_id,
-        tenant_id=tenant_id,
-        agent_id=model.get("namespace_agent_id"),
+        UserScope(user_id=user_id, tenant_id=tenant_id, agent_id=model.get("namespace_agent_id")),
     )
     store_mental_model(
         model["question_text"],

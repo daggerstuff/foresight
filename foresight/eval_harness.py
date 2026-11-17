@@ -47,7 +47,7 @@ from .connection_pool import get_pool, reset_pool
 from .hybrid_retriever import reset_hybrid_retriever
 from .memory_relationships import reset_memory_relationship_store
 from .server import get_relevant_memories as grm_fn, inject_context as ic_fn
-from .temporal_queries import TemporalQueryBuilder
+from .temporal_queries import TemporalFilters, TemporalQueryBuilder
 from .tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 logger = logging.getLogger("foresight_eval")
@@ -1207,7 +1207,7 @@ class EvalHarness:
         rows = builder.get_memories_as_of_time(
             user_id=self.user_id,
             target_date=as_of,
-            min_importance=0.01,
+            filters=TemporalFilters(min_importance=0.01),
         )
         latency_ms = (time.perf_counter() - t0) * 1000
 
@@ -1380,28 +1380,29 @@ class EvalHarness:
 # =============================================================================
 
 
-def run_eval(
-    db_path: str | None = None,
-    report_path: str | None = None,
-    budget_chars: int | None = 2000,
-    json_output: bool = False,
-    compare_path: str | None = None,
-    save_baseline: str | None = None,
-    fail_under: float = 100.0,
-    max_regression_pct: float = 0.0,
-) -> EvalReport:
+@dataclass
+class EvalRunOptions:
+    """Everything one ``run_eval`` invocation needs, as one object.
+
+    All eight knobs are CLI-shaped (paths, a character budget, an output mode,
+    a pass-rate floor), so they describe the run rather than the harness.
+    """
+
+    db_path: str | None = None
+    report_path: str | None = None
+    budget_chars: int | None = 2000
+    json_output: bool = False
+    compare_path: str | None = None
+    save_baseline: str | None = None
+    fail_under: float = 100.0
+    max_regression_pct: float = 0.0
+
+
+def run_eval(options: EvalRunOptions | None = None) -> EvalReport:
     """Run the full evaluation harness and optionally persist the report.
 
     Args:
-        db_path: Path to temp database for fixtures. None = in-memory.
-        report_path: If set, path to write the JSON report.
-        budget_chars: Character budget for budgeted injection.
-        json_output: If True, print JSON report to stdout instead of text.
-        compare_path: Path to a baseline JSON report to diff against.
-        save_baseline: If set, save the report as a baseline JSON at this path.
-        fail_under: Minimum pass rate (%) required for the run to succeed.
-        max_regression_pct: Maximum allowed pass-rate regression (percentage
-            points) versus the committed baseline when ``compare_path`` is set.
+        options: Run configuration; see :class:`EvalRunOptions`.
 
     Returns:
         EvalReport instance.
@@ -1410,6 +1411,10 @@ def run_eval(
         SystemExit: if the pass-rate floor is not met or the baseline regression
             exceeds ``max_regression_pct``.
     """
+    opts = options or EvalRunOptions()
+    db_path = opts.db_path
+    budget_chars = opts.budget_chars
+    json_output = opts.json_output
     harness = EvalHarness(db_path=db_path)
     try:
         count = harness.seed_fixtures()
@@ -1417,34 +1422,34 @@ def run_eval(
         report = harness.run_all(budget_chars=budget_chars)
 
         diff: dict[str, Any] | None = None
-        if compare_path:
+        if opts.compare_path:
             try:
-                baseline = EvalReport.load(compare_path)
+                baseline = EvalReport.load(opts.compare_path)
                 diff = harness.compare_baseline(baseline, report)
                 report.baseline_diff = diff
                 _print_diff(diff, json_output)
             except (FileNotFoundError, json.JSONDecodeError):
                 pass
 
-        if report_path:
-            report.save(report_path)
+        if opts.report_path:
+            report.save(opts.report_path)
 
-        if save_baseline:
-            report.save(save_baseline)
+        if opts.save_baseline:
+            report.save(opts.save_baseline)
 
         pass_rate = report.summary.get("pass_rate_pct", 0.0)
-        if pass_rate < fail_under:
+        if pass_rate < opts.fail_under:
             _error_out(
                 json_output,
-                f"Pass rate {pass_rate:.1f}% is below floor {fail_under:.1f}%",
+                f"Pass rate {pass_rate:.1f}% is below floor {opts.fail_under:.1f}%",
             )
 
         if diff is not None:
             regression = diff.get("pass_rate_change", 0.0)
-            if regression < -max_regression_pct:
+            if regression < -opts.max_regression_pct:
                 _error_out(
                     json_output,
-                    f"Pass-rate regression {-regression:.1f}% exceeds allowed {max_regression_pct:.1f}%",
+                    f"Pass-rate regression {-regression:.1f}% exceeds allowed {opts.max_regression_pct:.1f}%",
                 )
 
         return report
@@ -1546,14 +1551,16 @@ def main() -> None:
 
     logging.basicConfig(level=logging.WARNING)
     run_eval(
-        db_path=args.db_path,
-        report_path=args.report,
-        budget_chars=args.budget,
-        json_output=args.json,
-        compare_path=args.compare,
-        save_baseline=getattr(args, "save_baseline", None),
-        fail_under=args.fail_under,
-        max_regression_pct=args.max_regression_pct,
+        EvalRunOptions(
+            db_path=args.db_path,
+            report_path=args.report,
+            budget_chars=args.budget,
+            json_output=args.json,
+            compare_path=args.compare,
+            save_baseline=getattr(args, "save_baseline", None),
+            fail_under=args.fail_under,
+            max_regression_pct=args.max_regression_pct,
+        )
     )
 
 

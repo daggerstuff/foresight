@@ -310,22 +310,10 @@ class MemoryDecayService:
         user_id: str,
         tenant_id: str | None = None,
         category: str = "general",
-        *,
-        half_life_hours: float | None = None,
-        min_importance: float | None = None,
-        activation_boost: float | None = None,
-        strengthening_threshold: int | None = None,
-        stale_threshold: float | None = None,
         options: DecayConfigOptions | None = None,
     ) -> DecayConfig:
         """Upsert a decay config. None values fall back to defaults."""
-        # Backward compatibility: if options is provided, use it; otherwise build from individual params
-        if options is not None:
-            half_life_hours = options.half_life_hours
-            min_importance = options.min_importance
-            activation_boost = options.activation_boost
-            strengthening_threshold = options.strengthening_threshold
-            stale_threshold = options.stale_threshold
+        opts = options or DecayConfigOptions()
 
         tid = tenant_id or get_current_account_id()
         self._validate_ids(user_id, tid)
@@ -333,13 +321,15 @@ class MemoryDecayService:
             tenant_id=tid,
             user_id=user_id,
             category=category,
-            half_life_hours=(half_life_hours if half_life_hours is not None else DEFAULT_HALF_LIFE_HOURS),
-            min_importance=(min_importance if min_importance is not None else DEFAULT_MIN_IMPORTANCE),
-            activation_boost=(activation_boost if activation_boost is not None else DEFAULT_ACTIVATION_BOOST),
+            half_life_hours=(opts.half_life_hours if opts.half_life_hours is not None else DEFAULT_HALF_LIFE_HOURS),
+            min_importance=(opts.min_importance if opts.min_importance is not None else DEFAULT_MIN_IMPORTANCE),
+            activation_boost=(opts.activation_boost if opts.activation_boost is not None else DEFAULT_ACTIVATION_BOOST),
             strengthening_threshold=(
-                strengthening_threshold if strengthening_threshold is not None else DEFAULT_STRENGTHENING_THRESHOLD
+                opts.strengthening_threshold
+                if opts.strengthening_threshold is not None
+                else DEFAULT_STRENGTHENING_THRESHOLD
             ),
-            stale_threshold=(stale_threshold if stale_threshold is not None else DEFAULT_STALE_THRESHOLD),
+            stale_threshold=(opts.stale_threshold if opts.stale_threshold is not None else DEFAULT_STALE_THRESHOLD),
         )
         if cfg.half_life_hours <= 0:
             raise DecayModelError("half_life_hours must be > 0")

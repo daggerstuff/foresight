@@ -22,6 +22,7 @@ from foresight.hybrid_retriever import (
     VALID_SIGNAL_WEIGHT_KEYS,
     HybridRetriever,
     HybridSearchOptions,
+    Rankings,
     reset_hybrid_retriever,
 )
 
@@ -249,9 +250,10 @@ class TestPerRequestSignalWeights:
         keyword = {"a": 1}
         temporal = {"b": 1, "a": 2}
 
-        default_fusion = retriever._reciprocal_rank_fusion(keyword, {}, {}, temporal, {})
+        default_fusion = retriever._reciprocal_rank_fusion(Rankings(keyword=keyword, temporal=temporal))
         weighted_fusion = retriever._reciprocal_rank_fusion(
-            keyword, {}, {}, temporal, {}, weights={"keyword": 0.0, "temporal": 100.0}
+            Rankings(keyword=keyword, temporal=temporal),
+            weights={"keyword": 0.0, "temporal": 100.0},
         )
 
         # With default weights ``temporal`` (0.8) < ``keyword`` (1.0), ``a``

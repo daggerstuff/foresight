@@ -65,6 +65,18 @@ def _hash_payload(payload: str) -> str:
 
 
 @dataclass(frozen=True)
+class LLMAuditEvent:
+    """One completed LLM call, as recorded in the audit log."""
+
+    user_id: str
+    prompt_hash: str
+    response_hash: str | None
+    latency_ms: float
+    outcome: str
+    error_type: str | None = None
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     """Tenant-isolated LLM configuration.
 
@@ -245,26 +257,18 @@ class TenantLLMClient:
             f"Unknown LLM provider '{provider}'. Set FORESIGHT_LLM_PROVIDER to 'anthropic' or 'openai'."
         )
 
-    def _emit_audit(
-        self,
-        user_id: str,
-        prompt_hash: str,
-        response_hash: str | None,
-        latency_ms: float,
-        outcome: str,
-        error_type: str | None = None,
-    ) -> None:
+    def _emit_audit(self, event: LLMAuditEvent) -> None:
         """Emit an audit event (bypassed in test mode when tenant_id_override is set)."""
         if self._config.tenant_id_override:
             # Test mode: skip audit
             logger.debug(
                 "[TEST MODE] tenant=%s user=%s provider=%s model=%s outcome=%s latency_ms=%.1f",
                 self._tenant_id,
-                user_id,
+                event.user_id,
                 self.provider,
                 self.model,
-                outcome,
-                latency_ms,
+                event.outcome,
+                event.latency_ms,
             )
             return
 
@@ -272,14 +276,14 @@ class TenantLLMClient:
             "[AUDIT] tenant=%s user=%s provider=%s model=%s prompt_hash=%s response_hash=%s "
             "latency_ms=%.1f outcome=%s error=%s",
             self._tenant_id,
-            user_id,
+            event.user_id,
             self.provider,
             self.model,
-            prompt_hash,
-            response_hash or "",
-            latency_ms,
-            outcome,
-            error_type or "",
+            event.prompt_hash,
+            event.response_hash or "",
+            event.latency_ms,
+            event.outcome,
+            event.error_type or "",
         )
 
     def _truncate_prompt(self, prompt: str) -> str:
@@ -374,12 +378,14 @@ class TenantLLMClient:
         finally:
             latency_ms = (time.perf_counter() - start) * 1000.0
             self._emit_audit(
-                user_id=user_id,
-                prompt_hash=prompt_hash,
-                response_hash=response_hash,
-                latency_ms=latency_ms,
-                outcome=outcome,
-                error_type=error_type,
+                LLMAuditEvent(
+                    user_id=user_id,
+                    prompt_hash=prompt_hash,
+                    response_hash=response_hash,
+                    latency_ms=latency_ms,
+                    outcome=outcome,
+                    error_type=error_type,
+                )
             )
 
 

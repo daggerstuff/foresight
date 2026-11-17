@@ -753,17 +753,30 @@ def _percentile(values: Sequence[float], p: float) -> float | None:
 AnswerFn = Callable[[list[RetrievedMemory], str], str]
 
 
+@dataclass(frozen=True)
+class BenchmarkOptions:
+    """Knobs for one benchmark run.
+
+    The identity to score as, the retrieval cutoffs, the RNG seed and the
+    optional answer-generation hook all describe *how* to run; none of them is
+    part of what is being measured, so they travel together.
+    """
+
+    user_id: str = "_bench_user_"
+    tenant_id: str = "_bench_tenant_"
+    cutoffs: Sequence[int] = DEFAULT_CUTOFFS
+    seed: int = 0
+    answer_fn: AnswerFn | None = None
+
+
 def run_benchmark(
     dataset: Dataset,
     backend: MemoryBackend,
-    *,
-    user_id: str = "_bench_user_",
-    tenant_id: str = "_bench_tenant_",
-    cutoffs: Sequence[int] = DEFAULT_CUTOFFS,
-    seed: int = 0,
-    answer_fn: AnswerFn | None = None,
+    options: BenchmarkOptions | None = None,
 ) -> BenchmarkReport:
     """Run ingest -> search -> score against a backend and return a report."""
+    opts = options or BenchmarkOptions()
+    cutoffs = opts.cutoffs
     backend.reset()
     retrieve_limit = max(cutoffs) if cutoffs else 1
     ingested: set[str] = set()
@@ -772,15 +785,15 @@ def run_benchmark(
 
     for sample in dataset.samples:
         if sample.history_id not in ingested:
-            backend.ingest(sample.history_id, sample.sessions, user_id, tenant_id)
+            backend.ingest(sample.history_id, sample.sessions, opts.user_id, opts.tenant_id)
             ingested.add(sample.history_id)
 
         t0 = time.perf_counter()
-        retrieved = backend.retrieve(sample.question, retrieve_limit, user_id, tenant_id)
+        retrieved = backend.retrieve(sample.question, retrieve_limit, opts.user_id, opts.tenant_id)
         latencies.append((time.perf_counter() - t0) * 1000)
 
-        prediction = answer_fn(retrieved, sample.question) if answer_fn else ""
-        answer_scores = score_answer(prediction, sample.answers) if answer_fn else None
+        prediction = opts.answer_fn(retrieved, sample.question) if opts.answer_fn else ""
+        answer_scores = score_answer(prediction, sample.answers) if opts.answer_fn else None
         em = answer_scores["em"] if answer_scores else None
         f1 = answer_scores["f1"] if answer_scores else None
         cont = answer_scores["containment"] if answer_scores else None
@@ -807,13 +820,15 @@ def run_benchmark(
         )
 
     return _build_report(
-        dataset=dataset,
-        backend=backend,
-        results=results,
-        latencies=latencies,
-        cutoffs=tuple(cutoffs),
-        seed=seed,
-        has_answers=answer_fn is not None,
+        _BenchmarkRun(
+            dataset=dataset,
+            backend=backend,
+            cutoffs=tuple(cutoffs),
+            seed=opts.seed,
+            has_answers=opts.answer_fn is not None,
+            results=results,
+            latencies=latencies,
+        )
     )
 
 
@@ -846,42 +861,54 @@ def evaluate_predictions(
             )
         )
     return _build_report(
-        dataset=dataset,
-        backend=NoopBackend(),
-        results=results,
-        latencies=[],
-        cutoffs=tuple(cutoffs),
-        seed=seed,
-        has_answers=True,
-        backend_name=backend_name,
+        _BenchmarkRun(
+            dataset=dataset,
+            backend=NoopBackend(),
+            cutoffs=tuple(cutoffs),
+            seed=seed,
+            has_answers=True,
+            results=results,
+            latencies=[],
+            backend_name=backend_name,
+        )
     )
 
 
-def _build_report(
-    *,
-    dataset: Dataset,
-    backend: MemoryBackend,
-    results: list[SampleResult],
-    latencies: list[float],
-    cutoffs: tuple[int, ...],
-    seed: int,
-    has_answers: bool,
-    backend_name: str | None = None,
-) -> BenchmarkReport:
-    non_abstention = [r for r in results if not r.is_abstention]
-    abstention = [r for r in results if r.is_abstention]
+@dataclass
+class _BenchmarkRun:
+    """A completed run: what was measured, and the measurements themselves.
+
+    ``_build_report`` used to take all eight values as loose keyword arguments,
+    which made the two call sites easy to get wrong (``results`` and
+    ``latencies`` are positional neighbours of the same type). They belong to
+    one run, so they are passed as one run.
+    """
+
+    dataset: Dataset
+    backend: MemoryBackend
+    cutoffs: tuple[int, ...]
+    seed: int
+    has_answers: bool
+    results: list[SampleResult]
+    latencies: list[float]
+    backend_name: str | None = None
+
+
+def _build_report(run: _BenchmarkRun) -> BenchmarkReport:
+    non_abstention = [r for r in run.results if not r.is_abstention]
+    abstention = [r for r in run.results if r.is_abstention]
 
     overall: dict[str, Any] = {
-        "n": len(results),
+        "n": len(run.results),
         "n_abstention": len(abstention),
     }
-    if has_answers:
+    if run.has_answers:
         overall["em"] = _mean([r.em for r in non_abstention if r.em is not None])
         overall["f1"] = _mean([r.f1 for r in non_abstention if r.f1 is not None])
         overall["containment"] = _mean([r.containment for r in non_abstention if r.containment is not None])
-    if abstention and has_answers:
+    if abstention and run.has_answers:
         overall["abstention_accuracy"] = _mean([1.0 if is_refusal(r.prediction) else 0.0 for r in abstention])
-    for cutoff in cutoffs:
+    for cutoff in run.cutoffs:
         scores = [r.evidence_recall.get(str(cutoff), 0.0) for r in non_abstention]
         if scores:
             overall[f"evidence_recall@{cutoff}"] = _mean(scores)
@@ -893,7 +920,7 @@ def _build_report(
     for category in sorted(by_category):
         rows = by_category[category]
         cat_recall: dict[str, float] = {}
-        for cutoff in cutoffs:
+        for cutoff in run.cutoffs:
             scores = [r.evidence_recall.get(str(cutoff), 0.0) for r in rows]
             if scores:
                 cat_recall[str(cutoff)] = _mean(scores) or 0.0
@@ -910,25 +937,25 @@ def _build_report(
         )
 
     return BenchmarkReport(
-        dataset=dataset.name,
-        revision=dataset.revision,
-        backend=backend_name or backend.name,
-        top_k=max(cutoffs) if cutoffs else 0,
-        cutoffs=cutoffs,
-        seed=seed,
+        dataset=run.dataset.name,
+        revision=run.dataset.revision,
+        backend=run.backend_name or run.backend.name,
+        top_k=max(run.cutoffs) if run.cutoffs else 0,
+        cutoffs=run.cutoffs,
+        seed=run.seed,
         git_sha=_git_sha(),
         embedding_provider=os.environ.get("FORESIGHT_EMBEDDING_PROVIDER", "auto"),
         timestamp=datetime.now(UTC).isoformat(),
-        n_samples=len(results),
+        n_samples=len(run.results),
         n_abstention=len(abstention),
         overall=overall,
         per_category=per_category,
         latency={
-            "p50": _percentile(latencies, 0.50),
-            "p95": _percentile(latencies, 0.95),
-            "p99": _percentile(latencies, 0.99),
+            "p50": _percentile(run.latencies, 0.50),
+            "p95": _percentile(run.latencies, 0.95),
+            "p99": _percentile(run.latencies, 0.99),
         },
-        results=results,
+        results=run.results,
     )
 
 
@@ -1042,8 +1069,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = run_benchmark(
                 dataset,
                 backend,
-                cutoffs=cutoffs,
-                seed=args.seed,
+                BenchmarkOptions(cutoffs=cutoffs, seed=args.seed),
             )
         finally:
             backend.close()

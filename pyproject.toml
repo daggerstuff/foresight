@@ -153,9 +153,6 @@ select = [
   "RUF",
 ]
 
-[tool.ruff.lint.pylint]
-max-args = 10
-
 [tool.ruff.lint.per-file-ignores]
 "foresight/server.py" = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "ARG001", "A002"]
 "foresight/profile_export.py" = ["A002"]

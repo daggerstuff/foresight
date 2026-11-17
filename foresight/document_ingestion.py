@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,17 @@ _TEXT_EXTENSIONS = {".txt", ".md", ".text", ".json", ".csv", ".log", ".yaml", ".
 
 class DocumentIngestionError(ValueError):
     """Raised when a document file cannot be read, parsed, or OCR'd."""
+
+
+@dataclass(frozen=True)
+class DocumentIngestOptions:
+    """How an ingested file is labelled and chunked once its text is extracted."""
+
+    title: str | None = None
+    user_id: str | None = None
+    source: str | None = None
+    char_budget: int | None = None
+    metadata: dict[str, Any] | None = None
 
 
 def detect_document_kind(path: str | Path) -> str:
@@ -114,42 +126,36 @@ def _read_text(path: Path) -> str:
 
 def ingest_document_file(
     path: str,
-    title: str | None = None,
-    user_id: str | None = None,
-    source: str | None = None,
-    char_budget: int | None = None,
-    metadata: dict[str, Any] | None = None,
+    options: DocumentIngestOptions | None = None,
 ) -> str:
     """Extract text from a local PDF/image/text file and store it as a document.
 
     Args:
         path: Local filesystem path to the file (self-hosted deployments).
-        title: Human-readable title; defaults to the file stem.
-        user_id: Optional user ID override.
-        source: Document source type; defaults to ``"pdf"`` for PDFs, else ``"document"``.
-        char_budget: Optional soft max chars per chunk (passed to ``create_document``).
-        metadata: Optional JSON-serializable metadata.
+        options: How to label and chunk the resulting document; see
+            :class:`DocumentIngestOptions`.
 
     Returns:
         The JSON string produced by ``create_document``.
     """
+    opts = options or DocumentIngestOptions()
     p = _require_file(path)
     kind = detect_document_kind(p)
     content = extract_text(p)
     if not content:
         raise DocumentIngestionError(f"no text extracted from {p.name}")
 
-    resolved_title = title or p.stem or p.name
-    resolved_source = source or ("pdf" if kind == "pdf" else "document")
+    resolved_title = opts.title or p.stem or p.name
+    resolved_source = opts.source or ("pdf" if kind == "pdf" else "document")
     kwargs: dict[str, Any] = {
         "title": resolved_title,
         "content": content,
-        "user_id": user_id,
+        "user_id": opts.user_id,
         "source": resolved_source,
-        "metadata": metadata,
+        "metadata": opts.metadata,
     }
-    if char_budget is not None:
-        kwargs["char_budget"] = char_budget
+    if opts.char_budget is not None:
+        kwargs["char_budget"] = opts.char_budget
     return server.create_document(**kwargs)
 
 

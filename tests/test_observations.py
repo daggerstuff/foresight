@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 from foresight.observations import list_observations
+from foresight.reflect import UserScope
 from foresight.server import USER_ID, curate_observations as curate_tool, inject_context, manage_memories
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
@@ -96,13 +97,13 @@ def test_observations_are_tenant_scoped():
     _store(f"private pattern beta ({stamp})", category="secret")
     _curate()
 
-    mine = list_observations(user_id=USER_ID, tenant_id=TENANT)
+    mine = list_observations(UserScope(USER_ID, TENANT))
     assert mine
 
-    other = list_observations(user_id="_other_user_", tenant_id=TENANT)
+    other = list_observations(UserScope("_other_user_", TENANT))
     assert other == []
 
-    other_tenant = list_observations(user_id=USER_ID, tenant_id="other-tenant")
+    other_tenant = list_observations(UserScope(USER_ID, "other-tenant"))
     assert other_tenant == []
 
 

@@ -530,6 +530,7 @@ def stats(
 
 @app.command()
 def temporal(
+    *,
     window: str = typer.Option("week", "--window", "-w", help="Time window: today, week, month, year"),
     trend: str | None = typer.Option(
         None, "--trend", "-t", help="Trend filter: stable, strengthening, weakening, stale"
@@ -673,6 +674,7 @@ def history(
 
 @app.command()
 def maintenance(
+    *,
     mode: str = typer.Option(
         "all",
         "--mode",

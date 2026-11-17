@@ -134,7 +134,7 @@ def test_link_rejects_out_of_range_confidence():
             target_memory_id="b",
             relationship_type="updates",
             user_id="u1",
-            confidence=1.5,
+            options=LinkMemoriesOptions(confidence=1.5),
         )
 
 
@@ -157,7 +157,7 @@ def test_link_rejects_oversized_metadata():
                 target_memory_id="b",
                 relationship_type="updates",
                 user_id="u1",
-                metadata=big,
+                options=LinkMemoriesOptions(metadata=big),
             )
 
 
@@ -254,7 +254,7 @@ def test_relationships_are_tenant_isolated():
     _seed_memories(db, ["m1", "m2"], tenant_id="tA", user_id="u1")
     _seed_memories(db, ["m1", "m2"], tenant_id="tB", user_id="u1")
     with _patched_db(db) as store:
-        store.link_memories("m1", "m2", "extends", user_id="u1", tenant_id="tA")
+        store.link_memories("m1", "m2", "extends", user_id="u1", options=LinkMemoriesOptions(tenant_id="tA"))
 
         a_rels = store.get_relationships_for_memory("m1", "u1", tenant_id="tA", direction="out")
         b_rels = store.get_relationships_for_memory("m1", "u1", tenant_id="tB", direction="out")
@@ -268,8 +268,8 @@ def test_relationships_are_user_isolated():
     _seed_memories(db, ["m1", "m2"], user_id="alice")
     _seed_memories(db, ["m1", "m2"], user_id="bob")
     with _patched_db(db) as store:
-        store.link_memories("m1", "m2", "extends", user_id="alice", tenant_id="t1")
-        store.link_memories("m1", "m2", "extends", user_id="bob", tenant_id="t1")
+        store.link_memories("m1", "m2", "extends", user_id="alice", options=LinkMemoriesOptions(tenant_id="t1"))
+        store.link_memories("m1", "m2", "extends", user_id="bob", options=LinkMemoriesOptions(tenant_id="t1"))
 
         alice_rels = store.get_relationships_for_memory("m1", "alice", tenant_id="t1", direction="out")
         bob_rels = store.get_relationships_for_memory("m1", "bob", tenant_id="t1", direction="out")

@@ -217,6 +217,31 @@ def validate_signal_weights(weights: dict[str, float]) -> None:
         )
 
 
+@dataclass(frozen=True)
+class RankingPolicy:
+    """The inputs that make two searches' cached results non-interchangeable.
+
+    A per-request ``signal_weights`` override, a rewritten-query signature and
+    an agent/project lane each change the ranking; results computed under one
+    policy must never be served under another.
+    """
+
+    weights: dict[str, float]
+    rewrite_signature: tuple[str, ...] = ()
+    namespace: tuple[str | None, str | None] = (None, None)
+
+
+@dataclass(frozen=True)
+class RerankStatus:
+    """Outcome of the rerank stage for one search: was it on, and did it run."""
+
+    enabled: bool
+    provider: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {"enabled": self.enabled, "applied": self.provider is not None, "provider": self.provider}
+
+
 @dataclass
 class Rankings:
     """Bundled per-signal rankings and metadata for _build_results."""
@@ -588,9 +613,7 @@ class HybridRetriever:
         query: str,
         user_id: str,
         tenant_id: str,
-        weights: dict[str, float],
-        rewrite_signature: tuple[str, ...] = (),
-        namespace: tuple[str | None, str | None] = (None, None),
+        policy: RankingPolicy,
     ) -> tuple:
         """Cache key includes the rerank-stage state, the effective signal
         weights, and the namespace lane, so cached results are only reused
@@ -604,9 +627,9 @@ class HybridRetriever:
             user_id,
             tenant_id,
             rerank_active(),
-            tuple(sorted(weights.items())),
-            tuple(rewrite_signature),
-            namespace,
+            tuple(sorted(policy.weights.items())),
+            tuple(policy.rewrite_signature),
+            policy.namespace,
         )
 
     def _get_cached_result(self, cache_key: tuple) -> Any | None:
@@ -710,9 +733,11 @@ class HybridRetriever:
             query,
             user_id,
             tenant_id,
-            effective_weights,
-            rewrite_signature,
-            namespace=(options.agent_id, options.project),
+            RankingPolicy(
+                weights=effective_weights,
+                rewrite_signature=rewrite_signature,
+                namespace=(options.agent_id, options.project),
+            ),
         )
 
         if use_cache:
@@ -769,8 +794,7 @@ class HybridRetriever:
                 result.score_details = self._build_score_details(
                     result,
                     options,
-                    rerank_on,
-                    None,
+                    RerankStatus(enabled=rerank_on),
                     effective_weights,
                     {"enabled": rewrite_on, "variants": list(variants)},
                 )
@@ -779,11 +803,13 @@ class HybridRetriever:
             return result
 
         merged = self._reciprocal_rank_fusion(
-            keyword_ranking,
-            tfidf_cosine_ranking,
-            graph_ranking,
-            temporal_ranking,
-            vector_ranking,
+            Rankings(
+                keyword=keyword_ranking,
+                tfidf_cosine=tfidf_cosine_ranking,
+                vector=vector_ranking,
+                graph=graph_ranking,
+                temporal=temporal_ranking,
+            ),
             weights=effective_weights,
         )
 
@@ -839,7 +865,11 @@ class HybridRetriever:
         )
         if options.explain:
             result.score_details = self._build_score_details(
-                result, options, rerank_on, rerank_provider, effective_weights, rewrite_info
+                result,
+                options,
+                RerankStatus(enabled=rerank_on, provider=rerank_provider),
+                effective_weights,
+                rewrite_info,
             )
         if use_cache:
             self._cache_result(cache_key, result)
@@ -929,8 +959,7 @@ class HybridRetriever:
         self,
         result: HybridSearchResult,
         options: HybridSearchOptions,
-        rerank_on: bool,
-        rerank_provider: str | None,
+        rerank: RerankStatus,
         weights: dict[str, float] | None = None,
         rewrite_info: dict[str, object] | None = None,
     ) -> dict[str, object]:
@@ -960,7 +989,7 @@ class HybridRetriever:
             "max_possible_score": round(sum(per_signal_max.values()), 6),
             "per_signal_max": per_signal_max,
             "min_importance_threshold": options.min_importance,
-            "rerank": {"enabled": rerank_on, "applied": rerank_provider is not None, "provider": rerank_provider},
+            "rerank": rerank.to_dict(),
             "query_rewrite": rewrite_info or {"enabled": False, "variants": []},
         }
 
@@ -1461,11 +1490,7 @@ class HybridRetriever:
 
     def _reciprocal_rank_fusion(
         self,
-        keyword: dict[str, int],
-        tfidf_cosine: dict[str, int],
-        graph: dict[str, int],
-        temporal: dict[str, int],
-        vector: dict[str, int] | None = None,
+        ranks: Rankings,
         weights: dict[str, float] | None = None,
     ) -> list[tuple]:
         """
@@ -1473,36 +1498,36 @@ class HybridRetriever:
 
         RRF: score(d) = sum_i(w_i / (k + rank_i(d)))
 
-        `vector` is optional and trailing so existing 4-signal callers
-        (and tests) keep working unchanged.  When ``weights`` is provided,
-        it overrides ``self.weights`` for this fusion.
+        ``ranks`` carries one ranked list per signal; a signal with no
+        candidates is simply an empty dict. When ``weights`` is provided, it
+        overrides ``self.weights`` for this fusion.
 
         Returns list of (memory_id, rrf_score) sorted descending.
         """
-        vector = vector or {}
+        vector = ranks.vector
         effective_weights = weights if weights is not None else self.weights
         all_ids: set[str] = set()
-        all_ids.update(keyword.keys())
-        all_ids.update(tfidf_cosine.keys())
+        all_ids.update(ranks.keyword.keys())
+        all_ids.update(ranks.tfidf_cosine.keys())
         all_ids.update(vector.keys())
-        all_ids.update(graph.keys())
-        all_ids.update(temporal.keys())
+        all_ids.update(ranks.graph.keys())
+        all_ids.update(ranks.temporal.keys())
 
         scores: dict[str, float] = {}
 
         for mid in all_ids:
             score = 0.0
 
-            if mid in keyword:
-                score += effective_weights["keyword"] / (self.rrf_k + keyword[mid])
-            if mid in tfidf_cosine:
-                score += effective_weights["tfidf_cosine"] / (self.rrf_k + tfidf_cosine[mid])
+            if mid in ranks.keyword:
+                score += effective_weights["keyword"] / (self.rrf_k + ranks.keyword[mid])
+            if mid in ranks.tfidf_cosine:
+                score += effective_weights["tfidf_cosine"] / (self.rrf_k + ranks.tfidf_cosine[mid])
             if mid in vector:
                 score += effective_weights.get("vector", 0.9) / (self.rrf_k + vector[mid])
-            if mid in graph:
-                score += effective_weights["graph"] / (self.rrf_k + graph[mid])
-            if mid in temporal:
-                score += effective_weights["temporal"] / (self.rrf_k + temporal[mid])
+            if mid in ranks.graph:
+                score += effective_weights["graph"] / (self.rrf_k + ranks.graph[mid])
+            if mid in ranks.temporal:
+                score += effective_weights["temporal"] / (self.rrf_k + ranks.temporal[mid])
 
             scores[mid] = score
 

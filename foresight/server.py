@@ -40,7 +40,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 
 from . import connection_pool, oauth_store, reflect as reflect_mod
 from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
-from .auth_oauth import ForesightOAuthProvider
+from .auth_oauth import ForesightOAuthProvider, OAuthEndpointOptions
 from .backend import RedisCompanion, create_backend
 from .backend.backend_migrations import (
     ensure_pgvector_extension,
@@ -52,7 +52,7 @@ from .backend.schema_ddl import (
     POSTGRES_ONLY_MIGRATIONS,
 )
 from .block_registry import InjectionPoint, initialize_default_blocks
-from .capture import get_capture_pipeline
+from .capture import CaptureOptions, ReprocessOptions, get_capture_pipeline
 from .clustering import ClusterResult, cluster_memories
 from .config import (
     BANK_ID,
@@ -83,7 +83,7 @@ from .context_cache import get_context_cache
 from .crisis_detection import get_crisis_service
 from .decay_model import DecayConfigOptions, get_decay_model
 from .dependent_cleanup import purge_dead_synthesized_from_ids
-from .document_ingestion import ingest_document_file as _ingest
+from .document_ingestion import DocumentIngestOptions, ingest_document_file as _ingest
 from .document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
     DocumentCreateOptions,
@@ -164,8 +164,10 @@ from .profile_synthesizer import (
 )
 from .proof_benchmark import run_proof_benchmark
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
+from .reflect import UserScope
 from .reflection_engine import get_reflection_engine
 from .reflection_narrative import (
+    NarrativeRequest,
     ReflectionNarrativeError,
     _default_cache as _reflection_narrative_cache,
     generate_insight_narrative,
@@ -181,7 +183,7 @@ from .sensitivity import resolve_is_sensitive
 from .sql_helpers import join_sql_parts, placeholders, quote_identifier
 from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sync_manager
 from .telemetry import get_telemetry_store
-from .temporal_queries import get_temporal_query_builder
+from .temporal_queries import TemporalFilters, get_temporal_query_builder
 from .temporal_service import get_temporal_service
 from .tenant_context import (
     get_current_account_id,
@@ -736,13 +738,33 @@ def _like_escape(value: str) -> str:
     return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
+@dataclass(frozen=True)
+class MemoryFilters:
+    """The PIX-4720 filter bundle shared by every retrieval path.
+
+    The SQL fragment builder and the Python row predicate read exactly the same
+    six columns, so they read them from one value rather than two six-argument
+    lists that had to be kept in step by hand.
+    """
+
+    category: str | list[str] | None = None
+    scope: str | None = None
+    retention: str | None = None
+    bank_id: str | None = None
+    tags: list[str] | None = None
+    memory_type: str | None = None
+
+    def any_set(self) -> bool:
+        """True when at least one filter is active."""
+        return any(
+            value is not None
+            for value in (self.category, self.scope, self.retention, self.bank_id, self.tags, self.memory_type)
+        )
+
+
 def _build_filter_fragments(
-    category: str | list[str] | None,
-    scope: str | None,
-    retention: str | None,
-    bank_id: str | None,
-    tags: list[str] | None,
-    memory_type: str | None,
+    filters: MemoryFilters,
+    *,
     column_prefix: str = "",
     agent_id: str | None = None,
     project: str | None = None,
@@ -752,6 +774,12 @@ def _build_filter_fragments(
     The returned fragment is ready to be appended after an existing WHERE with
     " AND ". Empty string + empty params when no filters are set.
     """
+    category = filters.category
+    scope = filters.scope
+    retention = filters.retention
+    bank_id = filters.bank_id
+    tags = filters.tags
+    memory_type = filters.memory_type
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -800,16 +828,14 @@ def _build_filter_fragments(
     return " AND " + " AND ".join(clauses), params
 
 
-def _memory_matches_filters(
-    row: Mapping[str, Any],
-    category: str | list[str] | None,
-    scope: str | None,
-    retention: str | None,
-    bank_id: str | None,
-    tags: list[str] | None,
-    memory_type: str | None,
-) -> bool:
+def _memory_matches_filters(row: Mapping[str, Any], filters: MemoryFilters) -> bool:
     """Python-side filter predicate for post-filtering fetched memory rows."""
+    category = filters.category
+    scope = filters.scope
+    retention = filters.retention
+    bank_id = filters.bank_id
+    tags = filters.tags
+    memory_type = filters.memory_type
     if category:
         cats = {category} if isinstance(category, str) else set(category)
         if row.get("category") not in cats:
@@ -1396,7 +1422,9 @@ _PUBLIC_CLIENT_AUTH_METHOD = "none"
 if _oauth_base_url:
     _oauth_provider = ForesightOAuthProvider(
         base_url=_oauth_base_url,
-        service_documentation_url=os.environ.get("FORESIGHT_OAUTH_DOCS_URL"),
+        endpoints=OAuthEndpointOptions(
+            service_documentation_url=os.environ.get("FORESIGHT_OAUTH_DOCS_URL"),
+        ),
     )
     # The static external-connector client (FORESIGHT_OAUTH_STATIC_CLIENT_ID
     # etc.) is seeded in main(), after the database backend is initialized —
@@ -1907,7 +1935,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
                 target_memory_id=options.updates.related_memory_id,
                 relationship_type=options.updates.relation_type,
                 user_id=uid,
-                tenant_id=tenant_id,
+                options=LinkMemoriesOptions(tenant_id=tenant_id),
             )
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
@@ -2455,15 +2483,15 @@ def search_memories(
         validate_signal_weights(options.signal_weights)
 
     # PIX-4720 filter bundle, used by every retrieval path.
-    filters = (
-        options.category,
-        options.scope,
-        options.retention,
-        options.bank_id,
-        options.tags,
-        options.memory_type,
+    filters = MemoryFilters(
+        category=options.category,
+        scope=options.scope,
+        retention=options.retention,
+        bank_id=options.bank_id,
+        tags=options.tags,
+        memory_type=options.memory_type,
     )
-    has_filters = any(f is not None for f in filters)
+    has_filters = filters.any_set()
 
     # ── PRE_RETRIEVE hook ──────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
@@ -2520,7 +2548,7 @@ def search_memories(
                 for m in result.matches
                 if (row := by_id.get(m.memory_id))
                 and not _is_expired_row(row, now_iso)
-                and (not has_filters or _memory_matches_filters(row, *filters))
+                and (not has_filters or _memory_matches_filters(row, filters))
             ]
         else:
             result.matches = []
@@ -2535,7 +2563,7 @@ def search_memories(
         if not mid:
             return "Error: memory_id or query (as ID) required for id lookup."
         conn = get_db_connection()
-        frag, fparams = _build_filter_fragments(*filters)
+        frag, fparams = _build_filter_fragments(filters)
         now_iso = datetime.now(UTC).isoformat()
         row = conn.execute(
             join_sql_parts(
@@ -2618,7 +2646,7 @@ def search_memories(
 
     # 3. Fallback to basic list/keyword search
     conn = get_db_connection()
-    frag, fparams = _build_filter_fragments(*filters, agent_id=options.agent_id, project=options.project)
+    frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
     expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
     if options.query:
@@ -2662,6 +2690,7 @@ def search_memories(
 @mcp.tool(output_schema=None)
 def reflect(
     question: str,
+    *,
     user_id: str | None = None,
     max_memories: int = 8,
     include_archived: bool = False,
@@ -2725,12 +2754,9 @@ def reflect(
     try:
         payload = reflect_mod.reflect(
             question,
-            user_id=uid,
-            tenant_id=tenant_id,
+            reflect_mod.UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
             max_memories=max_memories,
             include_archived=include_archived,
-            agent_id=agent_id,
-            project=project,
         )
     except Exception as exc:
         logger.exception("reflect failed")
@@ -2753,6 +2779,7 @@ def reflect(
 
 @mcp.tool(output_schema=None)
 def manage_mental_models(
+    *,
     options: MentalModelAction | None = None,
     user_id: str | None = None,
     action: Literal["list", "refresh", "delete"] | None = None,
@@ -2851,7 +2878,9 @@ def curate_observations(
 
     try:
         result = _curate(
-            user_id=uid, tenant_id=tenant_id, category=category, limit=limit, agent_id=agent_id, project=project
+            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            category=category,
+            limit=limit,
         )
     except Exception as exc:
         logger.exception("curate_observations failed")
@@ -2980,6 +3009,7 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
 
 @mcp.tool(output_schema=None)
 def manage_memory_versions(
+    *,
     options: VersionAction | None = None,
     user_id: str | None = None,
     action: Literal["list", "diff", "rollback"] | None = None,
@@ -3334,6 +3364,7 @@ def _detect_git_root() -> str | None:
 def process_session_transcript(
     session_id: str,
     messages: list[dict],
+    *,
     project_path: str | None = None,
     user_id: str | None = None,
     infer: bool = True,
@@ -3377,8 +3408,7 @@ def process_session_transcript(
         messages=messages,
         user_id=uid,
         tenant_id=tenant_id,
-        infer=infer,
-        instructions=instructions,
+        options=CaptureOptions(infer=infer, instructions=instructions),
     )
 
     # Sync capture-pipeline memories back into context blocks
@@ -3450,6 +3480,7 @@ def capture_triggered_memories(
 @mcp.tool(output_schema=None)
 def capture_in_flight_memory(
     content: str,
+    *,
     category: str = "decision",
     scope: str = "arc",
     importance: float = 0.7,
@@ -3569,18 +3600,31 @@ def _curation_payload_from_row(row: RowLike) -> dict[str, Any]:
     }
 
 
-def _update_curation_run(
-    run_id: str,
-    tenant_id: str,
-    *,
-    status: str | None = None,
-    summary: dict[str, Any] | None = None,
-    error: dict[str, Any] | None = None,
-    started_at: str | None = None,
-    ended_at: str | None = None,
-    archived_at: str | None = None,
-) -> None:
+@dataclass(frozen=True)
+class CurationRunUpdate:
+    """The mutable curation-run fields one transition writes.
+
+    Every field is optional because a transition only touches its own columns;
+    grouping them keeps the sparse-update call sites from reading as an
+    eight-argument positional wall.
+    """
+
+    status: str | None = None
+    summary: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    archived_at: str | None = None
+
+
+def _update_curation_run(run_id: str, tenant_id: str, update: CurationRunUpdate) -> None:
     """Update mutable curation run fields."""
+    status = update.status
+    summary = update.summary
+    error = update.error
+    started_at = update.started_at
+    ended_at = update.ended_at
+    archived_at = update.archived_at
     updates: list[str] = []
     values: list[Any] = []
     if status is not None:
@@ -3680,17 +3724,35 @@ def _delete_existing_curation_outputs(uid: str, tenant_id: str, bank_id: str, ru
         conn.close()
 
 
+@dataclass(frozen=True)
+class CurationPromotion:
+    """The source/staging pair a curation run swaps, plus its run identity.
+
+    ``_promote_in_place_curation`` and ``_restore_in_place_curation`` are
+    inverses over exactly this bundle, so they take it as one value.
+    """
+
+    uid: str
+    tenant_id: str
+    run_id: str
+    source_bank_id: str
+    staging_bank_id: str
+    source_rows: list[RowLike]
+    staged_ids: list[str]
+
+
 def _promote_in_place_curation(
-    uid: str,
-    tenant_id: str,
-    run_id: str,
-    source_bank_id: str,
-    staging_bank_id: str,
-    source_rows: list[RowLike],
-    staged_ids: list[str],
+    promotion: CurationPromotion,
     *,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
+    uid = promotion.uid
+    tenant_id = promotion.tenant_id
+    run_id = promotion.run_id
+    source_bank_id = promotion.source_bank_id
+    staging_bank_id = promotion.staging_bank_id
+    source_rows = promotion.source_rows
+    staged_ids = promotion.staged_ids
     """Atomically archive original source rows and promote staged rows into the source bank."""
     archive_bank_id = _curation_archive_bank(run_id, source_bank_id)
     now = datetime.now(UTC).isoformat()
@@ -3733,14 +3795,13 @@ def _promote_in_place_curation(
     }
 
 
-def _restore_in_place_curation(
-    uid: str,
-    tenant_id: str,
-    source_bank_id: str,
-    staging_bank_id: str,
-    source_rows: list[RowLike],
-    staged_ids: list[str],
-) -> None:
+def _restore_in_place_curation(promotion: CurationPromotion) -> None:
+    uid = promotion.uid
+    tenant_id = promotion.tenant_id
+    source_bank_id = promotion.source_bank_id
+    staging_bank_id = promotion.staging_bank_id
+    source_rows = promotion.source_rows
+    staged_ids = promotion.staged_ids
     """Restore source/staging banks if cancellation lands after promotion."""
     now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
@@ -4033,25 +4094,18 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
 
         promotion_summary: dict[str, Any] = {}
         if payload["output_mode"] == "in_place":
-            promotion_summary = _promote_in_place_curation(
-                uid,
-                tenant_id,
-                run_id,
-                payload["source_bank_id"],
-                payload["output_bank_id"],
-                source_rows,
-                created_ids,
-                cancel_event=cancel_event,
+            promotion = CurationPromotion(
+                uid=uid,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                source_bank_id=payload["source_bank_id"],
+                staging_bank_id=payload["output_bank_id"],
+                source_rows=source_rows,
+                staged_ids=created_ids,
             )
+            promotion_summary = _promote_in_place_curation(promotion, cancel_event=cancel_event)
             if cancel_event.is_set() or _is_run_canceled(uid, tenant_id, run_id):
-                _restore_in_place_curation(
-                    uid,
-                    tenant_id,
-                    payload["source_bank_id"],
-                    payload["output_bank_id"],
-                    source_rows,
-                    created_ids,
-                )
+                _restore_in_place_curation(promotion)
                 raise CurationError("Curation canceled after promotion; restored source bank")
 
         # Run clustering after curation if requested
@@ -4081,7 +4135,9 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
         summary.update(promotion_summary)
         _raise_if_run_canceled(uid, tenant_id, run_id)
         completed_at = datetime.now(UTC).isoformat()
-        _update_curation_run(run_id, tenant_id, status="completed", summary=summary, ended_at=completed_at, error={})
+        _update_curation_run(
+            run_id, tenant_id, CurationRunUpdate(status="completed", summary=summary, ended_at=completed_at, error={})
+        )
         queue.remove(run_id, tenant_id=tenant_id)
         _publish_curation_status(
             run_id,
@@ -4095,10 +4151,10 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
         ended_at = datetime.now(UTC).isoformat()
         row = _fetch_curation_run(uid, tenant_id, run_id)
         if row is None or row["status"] != "canceled":
-            _update_curation_run(run_id, tenant_id, status="canceled", ended_at=ended_at)
+            _update_curation_run(run_id, tenant_id, CurationRunUpdate(status="canceled", ended_at=ended_at))
             _publish_curation_status(run_id, "canceled", actor=uid)
         else:
-            _update_curation_run(run_id, tenant_id, ended_at=ended_at)
+            _update_curation_run(run_id, tenant_id, CurationRunUpdate(ended_at=ended_at))
         queue.remove(run_id, tenant_id=tenant_id)
     except Exception as exc:
         failed_at = datetime.now(UTC).isoformat()
@@ -4106,7 +4162,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "type": exc.__class__.__name__,
             "message": str(exc),
         }
-        _update_curation_run(run_id, tenant_id, status="failed", error=error, ended_at=failed_at)
+        _update_curation_run(run_id, tenant_id, CurationRunUpdate(status="failed", error=error, ended_at=failed_at))
         queue.remove(run_id, tenant_id=tenant_id)
         _publish_curation_status(run_id, "failed", actor=uid, error=error)
     finally:
@@ -4288,7 +4344,7 @@ def manage_curation_runs(
             else:
                 ended_at = datetime.now(UTC).isoformat()
                 _get_curation_cancel_event(options.run_id).set()
-                _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
+                _update_curation_run(options.run_id, tenant_id, CurationRunUpdate(status="canceled", ended_at=ended_at))
                 OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
                 _publish_curation_status(options.run_id, "canceled", actor=uid)
                 res = _tool_response(
@@ -4305,7 +4361,7 @@ def manage_curation_runs(
                 )
             else:
                 archived_at = datetime.now(UTC).isoformat()
-                _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
+                _update_curation_run(options.run_id, tenant_id, CurationRunUpdate(archived_at=archived_at))
                 res = _tool_response(
                     ok=True,
                     action="archive",
@@ -4483,6 +4539,7 @@ def _score_memory_relevance(
 @mcp.tool(output_schema=None)
 def inject_context(
     conversation_text: str,
+    *,
     user_id: str | None = None,
     max_memories: int = 5,
     min_relevance: float = 0.01,
@@ -4630,25 +4687,24 @@ def inject_context(
             logger.debug("auto_capture_in_flight launch failed (non-fatal)", exc_info=True)
 
     budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else None
+    view = InjectionView(
+        memories=memories,
+        uid=uid,
+        tenant_id=tenant_id,
+        terms=terms,
+        agent_id=agent_id,
+        project=project,
+    )
 
-    if budget is not None and budget.is_bounded:
-        budgeted = _format_injection_output_budgeted(
-            memories, uid, tenant_id, terms, budget, agent_id=agent_id, project=project
-        )
-    else:
-        budgeted = None
+    budgeted = _format_injection_output_budgeted(view, budget) if budget is not None and budget.is_bounded else None
 
     if not include_details:
-        res_output = (
-            budgeted.formatted
-            if budgeted is not None
-            else _format_injection_output(memories, uid, tenant_id, terms, agent_id=agent_id, project=project)
-        )
+        res_output = budgeted.formatted if budgeted is not None else _format_injection_output(view)
     else:
         blocks_by_point = _format_context_blocks_by_injection_point(
             uid, tenant_id, terms, agent_id=agent_id, project=project
         )
-        legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms, agent_id=agent_id, project=project)
+        legacy_formatted = _format_injection_output(view)
         payload: dict[str, Any] = {
             "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
             "memories": [m.to_dict() for m in memories],
@@ -4748,7 +4804,9 @@ def _active_observations(
 ) -> list[dict]:
     """Top active observations ranked by confidence * recency (best-effort)."""
     try:
-        return list_observations(user_id=uid, tenant_id=tenant_id, limit=limit, agent_id=agent_id, project=project)
+        return list_observations(
+            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project), limit=limit
+        )
     except Exception:
         logger.debug("observation lookup failed", exc_info=True)
         return []
@@ -4758,14 +4816,29 @@ MEMORY_SNIPPET_CHARS = 120
 CONTEXT_BLOCK_SNIPPET_CHARS = 200
 
 
-def _format_injection_output(
-    memories: list[HybridResult],
-    uid: str,
-    tenant_id: str,
-    terms: list[str],
-    agent_id: str | None = None,
-    project: str | None = None,
-) -> str:
+@dataclass(frozen=True)
+class InjectionView:
+    """The retrieved memories an injection response is rendered from.
+
+    Both the plain and the budgeted renderers read the same five values, so
+    they take one view instead of two parallel argument lists.
+    """
+
+    memories: list[HybridResult]
+    uid: str
+    tenant_id: str
+    terms: list[str]
+    agent_id: str | None = None
+    project: str | None = None
+
+
+def _format_injection_output(view: InjectionView) -> str:
+    memories = view.memories
+    uid = view.uid
+    tenant_id = view.tenant_id
+    terms = view.terms
+    agent_id = view.agent_id
+    project = view.project
     """Format memories and context block signals into a human-readable string.
 
     Always surfaces all non-empty context blocks (not just term-matched ones) so
@@ -4825,15 +4898,13 @@ def _format_injection_output(
     return "\n".join(lines) if lines else ""
 
 
-def _format_injection_output_budgeted(
-    memories: list[HybridResult],
-    uid: str,
-    tenant_id: str,
-    terms: list[str],
-    budget: InjectionBudget,
-    agent_id: str | None = None,
-    project: str | None = None,
-) -> BudgetResult:
+def _format_injection_output_budgeted(view: InjectionView, budget: InjectionBudget) -> BudgetResult:
+    memories = view.memories
+    uid = view.uid
+    tenant_id = view.tenant_id
+    terms = view.terms
+    agent_id = view.agent_id
+    project = view.project
     lane_items: dict[Lane, list[LaneItem]] = {lane: [] for lane in Lane}
 
     block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
@@ -5303,7 +5374,7 @@ def _resume_pending_curation_runs() -> None:
     for row in rows:
         payload = _curation_payload_from_row(row)
         if row["status"] == "running":
-            _update_curation_run(row["id"], row["tenant_id"], status="pending")
+            _update_curation_run(row["id"], row["tenant_id"], CurationRunUpdate(status="pending"))
         OperationQueue(DB_PATH).enqueue(
             Operation(
                 id=row["id"],
@@ -5945,6 +6016,7 @@ def _parse_as_of(value: str) -> datetime:
 
 @mcp.tool(output_schema=None)
 def query_memories_temporal(
+    *,
     options: TemporalWindow | None = None,
     user_id: str | None = None,
     window: Literal["today", "week", "month", "year"] | None = None,
@@ -5994,29 +6066,35 @@ def query_memories_temporal(
         results = builder.get_memories_as_of_time(
             user_id=uid,
             target_date=_parse_as_of(options.as_of),
-            category=options.category,
-            min_importance=0.1,
-            agent_id=options.agent_id,
-            project=options.project,
+            filters=TemporalFilters(
+                category=options.category,
+                min_importance=0.1,
+                agent_id=options.agent_id,
+                project=options.project,
+            ),
         )
     elif options.trend:
         results = builder.get_memories_by_trend(
             user_id=uid,
             trend=options.trend,
-            limit=options.limit,
-            category=options.category,
-            agent_id=options.agent_id,
-            project=options.project,
+            filters=TemporalFilters(
+                category=options.category,
+                limit=options.limit,
+                agent_id=options.agent_id,
+                project=options.project,
+            ),
         )
     else:
         results = builder.get_memories_from_window(
             user_id=uid,
             window=options.window,
-            limit=options.limit,
-            min_importance=0.1,
-            category=options.category,
-            agent_id=options.agent_id,
-            project=options.project,
+            filters=TemporalFilters(
+                category=options.category,
+                min_importance=0.1,
+                limit=options.limit,
+                agent_id=options.agent_id,
+                project=options.project,
+            ),
         )
 
     return json.dumps(
@@ -6038,6 +6116,7 @@ def query_memories_temporal(
 
 @mcp.tool(output_schema=None)
 def get_system_status(
+    *,
     options: SystemStatusOptions | None = None,
     user_id: str | None = None,
     include_trends: bool | None = None,
@@ -6362,6 +6441,7 @@ def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) 
 
 def query_memories(
     query: str,
+    *,
     user_id: str | None = None,
     limit: int = 10,
     use_hybrid: bool = True,
@@ -6388,6 +6468,7 @@ def get_memory(memory_id: str, user_id: str | None = None, min_importance: float
 
 def update_memory(
     memory_id: str,
+    *,
     user_id: str | None = None,
     content: str | None = None,
     category: str | None = None,
@@ -6430,6 +6511,7 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
 
 @mcp.tool(output_schema=None)
 def synthesize_profile(
+    *,
     user_id: str | None = None,
     max_static_memories: int = 20,
     max_dynamic_memories: int = 10,
@@ -6507,7 +6589,7 @@ def export_profile(
     tenant_id = get_current_account_id()
 
     try:
-        return _export(uid, tenant_id, format=format, agent_id=agent_id, project=project)
+        return _export(UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project), format=format)
     except Exception as exc:
         logger.exception("export_profile failed")
         return _tool_error("export_profile", str(exc))
@@ -6619,6 +6701,7 @@ def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
 def create_document(
     title: str,
     content: str,
+    *,
     user_id: str | None = None,
     source: str = "note",
     metadata: dict[str, Any] | None = None,
@@ -6737,6 +6820,7 @@ def delete_document(
 @mcp.tool(output_schema=None)
 def ingest_document_file(
     path: str,
+    *,
     title: str | None = None,
     user_id: str | None = None,
     source: str | None = None,
@@ -6760,12 +6844,14 @@ def ingest_document_file(
 
     try:
         return _ingest(
-            path=path,
-            title=title,
-            user_id=user_id,
-            source=source,
-            char_budget=char_budget,
-            metadata=metadata,
+            path,
+            DocumentIngestOptions(
+                title=title,
+                user_id=user_id,
+                source=source,
+                char_budget=char_budget,
+                metadata=metadata,
+            ),
         )
     except ValueError as exc:
         return f"Error: {exc}"
@@ -6977,6 +7063,7 @@ def link_memories(
     source_memory_id: str,
     target_memory_id: str,
     relationship_type: str,
+    *,
     user_id: str | None = None,
     confidence: float = 1.0,
     metadata: dict[str, Any] | None = None,
@@ -7003,8 +7090,7 @@ def link_memories(
             target_memory_id=target_memory_id,
             relationship_type=relationship_type,
             user_id=uid,
-            confidence=confidence,
-            metadata=metadata,
+            options=LinkMemoriesOptions(confidence=confidence, metadata=metadata),
         )
     except MemoryRelationshipError as exc:
         return f"Error: {exc}"
@@ -7224,6 +7310,7 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
 
 @mcp.tool(output_schema=None)
 def manage_inferred(
+    *,
     options: InferredAction | None = None,
     user_id: str | None = None,
     action: Literal["list", "approve", "decline", "undo"] | None = None,
@@ -7420,6 +7507,7 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
 
 @mcp.tool(output_schema=None)
 def analyze_memories(
+    *,
     options: AnalysisAction | None = None,
     user_id: str | None = None,
     action: Literal["synthesize", "reflect"] | None = None,
@@ -7469,12 +7557,14 @@ def analyze_memories(
                 return llm_client.generate(prompt, user_id=_uid)
 
             narrative = generate_insight_narrative(
-                report,
-                tenant_id=tenant_id,
-                user_id=uid,
-                llm_call=_llm_call,
-                model_version=f"{llm_client.provider}/{llm_client.model}",
-                cache=_reflection_narrative_cache,
+                NarrativeRequest(
+                    report,
+                    tenant_id=tenant_id,
+                    user_id=uid,
+                    llm_call=_llm_call,
+                    model_version=f"{llm_client.provider}/{llm_client.model}",
+                    cache=_reflection_narrative_cache,
+                )
             )
             if narrative:
                 result_dict["narrative"] = narrative
@@ -7613,6 +7703,7 @@ def get_decay_config(
 
 
 def set_decay_config(
+    *,
     user_id: str | None = None,
     tenant_id: str | None = None,
     category: str = "general",
@@ -7719,9 +7810,7 @@ def reprocess_raw_events(
     stats = pipeline.reprocess(
         user_id=uid,
         tenant_id=tid,
-        start_time=window_start,
-        end_time=window_end,
-        infer=True,
+        options=ReprocessOptions(start_time=window_start, end_time=window_end),
     )
     return json.dumps(
         {
@@ -7764,9 +7853,10 @@ def run_maintenance(
         reprocess_stats = pipeline.reprocess(
             user_id=uid,
             tenant_id=tid,
-            start_time=options.reprocess_window_start,
-            end_time=options.reprocess_window_end,
-            infer=True,
+            options=ReprocessOptions(
+                start_time=options.reprocess_window_start,
+                end_time=options.reprocess_window_end,
+            ),
         )
         return json.dumps(
             {

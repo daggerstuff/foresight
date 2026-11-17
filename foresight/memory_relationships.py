@@ -185,20 +185,10 @@ class MemoryRelationshipStore:
         target_memory_id: str,
         relationship_type: str,
         user_id: str,
-        tenant_id: str | None = None,
-        confidence: float = 1.0,
-        metadata: dict[str, Any] | None = None,
-        *,
         options: LinkMemoriesOptions | None = None,
     ) -> MemoryRelationship:
         """Create or update a relationship edge between two memories."""
-        # Backward compatibility: if options is None, build from individual parameters
-        if options is None:
-            options = LinkMemoriesOptions(
-                tenant_id=tenant_id,
-                confidence=confidence,
-                metadata=metadata,
-            )
+        options = options or LinkMemoriesOptions()
         _validate_memory_id(source_memory_id, "source_memory_id")
         _validate_memory_id(target_memory_id, "target_memory_id")
         if source_memory_id == target_memory_id:
@@ -265,7 +255,7 @@ class MemoryRelationshipStore:
             source_memory_id=source_memory_id,
             target_memory_id=target_memory_id,
             relationship_type=relationship_type,
-            confidence=float(confidence),
+            confidence=float(options.confidence),
             metadata=meta,
             created_at=actual_created_at,
         )
