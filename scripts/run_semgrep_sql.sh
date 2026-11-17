@@ -8,6 +8,23 @@
 #   uv run bandit -c pyproject.toml -r foresight foresight_cli scripts plugins
 #
 # ---------------------------------------------------------------------------
+# The gate proves itself before it scans
+# ---------------------------------------------------------------------------
+# A taint rule that reports nothing looks exactly like a rule that finds
+# nothing, and this one has already had a declared source class stop matching
+# while the gate printed "0 findings" and read as coverage. So the committed
+# positive and negative controls in semgrep/controls/ are asserted first, by
+# scripts/check_semgrep_controls.sh, with an exact expected finding count per
+# fixture. If any declared source class, sink method, assembly shape or
+# sanitizer stops behaving as the rule's comments claim, that check fails and
+# this script never reaches the scan.
+#
+# The check is skipped when target paths are passed on the command line, since
+# that form is for looking at a single file and the controls do not depend on
+# the target set. CI invokes this script with no arguments, so CI always runs
+# it.
+#
+# ---------------------------------------------------------------------------
 # Why `uv tool run` and not `uv run`
 # ---------------------------------------------------------------------------
 # semgrep cannot join this project's dependency graph:
@@ -22,8 +39,9 @@
 #
 # So the version is pinned here, at the invocation, and `uv tool run` installs
 # it into an isolated environment. uv.lock stays untouched and the version is
-# still exact and reproducible. Bump SEMGREP_VERSION deliberately, and re-run
-# both controls in the rule header afterwards.
+# still exact and reproducible. Bump SEMGREP_VERSION deliberately: the controls
+# are re-asserted on the next run, so a bump that changes what the rule reports
+# fails there instead of reaching the scan.
 #
 # ---------------------------------------------------------------------------
 # Why the scan is offline with respect to rules
@@ -41,11 +59,17 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${REPO_ROOT}/semgrep/sql-injection.yaml"
 
 # Default to exactly the paths the Bandit step in CI covers. Optional arguments
-# override the set, which is what the positive-control check uses:
-#   scripts/run_semgrep_sql.sh /tmp/fs-semgrep-controls/positive_control.py
+# override the set, which is how a single file is inspected while chasing a
+# finding:
+#   scripts/run_semgrep_sql.sh /tmp/candidate.py
+# Passing targets also skips the control self-test below, because that check
+# asserts the rule against its own fixtures and does not depend on the target
+# set. CI passes no targets, so CI always runs the self-test.
 TARGETS=(foresight foresight_cli scripts plugins)
+TARGETS_OVERRIDDEN=0
 if [[ $# -gt 0 ]]; then
     TARGETS=("$@")
+    TARGETS_OVERRIDDEN=1
 fi
 
 if [[ ! -f "$CONFIG" ]]; then
@@ -66,6 +90,13 @@ cd "$REPO_ROOT"
 # guard runs first and fails fast: the scan can never report coverage it does
 # not have.
 "${REPO_ROOT}/scripts/check_no_embedded_python.sh"
+
+# Then prove the rule still reports what it claims, before scanning anything
+# that matters. `exec` below replaces this process, so the self-test has to run
+# as a separate step ahead of it.
+if [[ "$TARGETS_OVERRIDDEN" -eq 0 ]]; then
+    "${REPO_ROOT}/scripts/check_semgrep_controls.sh"
+fi
 
 exec uv tool run --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
     --config "$CONFIG" \

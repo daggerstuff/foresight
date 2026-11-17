@@ -1,0 +1,74 @@
+"""Negative control: bound parameters and literal statement text.
+
+Correctly parameterised SQL must be silent by construction, not by suppression.
+Every function below takes a live MCP tool parameter -- the same source idiom
+``positive_mcp_tool_params.py.txt`` pins at exactly four findings -- and routes
+it into a sink as a *bound parameter*, or as statement text assembled from
+literals only.
+
+Silence here means "the second argument of a sink is not statement text". It
+does not mean "nothing was scanned": if the tool-parameter source died, the
+positive fixture above would fail, and a tainted value that reached the first
+argument instead would be reported here.
+
+Expected findings: 0.
+"""
+
+import sqlite3
+
+from mcp.server.fastmcp import FastMCP
+
+from foresight.sql_helpers import join_sql_parts, placeholders
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+@mcp.tool()
+def bound_scalar(username: str) -> list:
+    """A source bound as a positional parameter, not statement text."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+    return cur.fetchall()
+
+
+@mcp.tool()
+def bound_list(ids: list) -> list:
+    """A source expanded into an ``IN`` list of placeholders."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t WHERE id IN (" + placeholders(len(ids)) + ")", ids)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def bound_executemany(rows: list) -> None:
+    """A source bound as the batch argument of ``executemany``."""
+    cur = _cursor()
+    cur.executemany("INSERT INTO t (id, label) VALUES (?, ?)", rows)
+
+
+@mcp.tool()
+def literal_statement_with_bound_limit(limit: int) -> list:
+    """Statement text is two literals; the source is bound."""
+    cur = _cursor()
+    cur.execute(join_sql_parts("SELECT * FROM memories WHERE is_ghost = 0", " LIMIT ?"), (limit,))
+    return cur.fetchall()
+
+
+@mcp.tool()
+def literal_only_statement(table: str) -> list:
+    """The source is bound and the statement text never mentions it."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM memories WHERE category = ?", (table,))
+    return cur.fetchall()
+
+
+@mcp.tool()
+def bound_named_parameter(order: str) -> list:
+    """Named placeholders bind the source as a value."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t ORDER BY id", {"order": order})
+    return cur.fetchall()

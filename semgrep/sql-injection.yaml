@@ -14,6 +14,21 @@
 # Run it with `scripts/run_semgrep_sql.sh`. No `p/…` remote ruleset, no account,
 # no `semgrep ci`: the config is vendored so the scan is reproducible offline.
 #
+# ---------------------------------------------------------------------------
+# THE RULE PROVES ITSELF ON EVERY RUN — read before editing it.
+# ---------------------------------------------------------------------------
+# Every declared source class, sink method, assembly shape and sanitizer below
+# has a committed control in `semgrep/controls/`, with an exact expected finding
+# count, asserted by `scripts/check_semgrep_controls.sh` (which
+# `scripts/run_semgrep_sql.sh` runs before the scan). Editing this file without
+# running that check is how a declared class silently stops matching: it has
+# already happened once here (see source class 5), and the gate's "0 findings"
+# line reads as coverage either way.
+#
+# Adding, removing or retargeting a pattern means editing the matching fixture
+# and its expected count in `semgrep/controls/expectations.tsv` in the same
+# commit.
+#
 # KNOWN LIMITATION — read before wiring this into CI.
 # Semgrep's OSS taint engine is intraprocedural: it does not follow a value
 # across a function boundary. A source in `caller()` reaching a sink inside
@@ -24,6 +39,18 @@
 # through an intermediate helper. Keep sinks and statement assembly in the same
 # function as the boundary, or extend this file with a project-specific
 # interprocedural rule when Semgrep Pro is available.
+#
+# The CLI is where that limit bites hardest, and no pattern in this file can fix
+# it. Every `foresight_cli` handler takes a pydantic parameter object
+# (`MemoryExportParams`, `SecurityEncryptAllParams`, …) that was built from the
+# argparse namespace in `foresight_cli/cli.py:238` and handed to the handler at
+# `foresight_cli/cli.py:240`. The value therefore crosses two function
+# boundaries before the handler body sees it, so a source declared here cannot
+# reach it, and declaring `$PARAMS.$FIELD` as a source would only taint a local
+# name that carries no origin. CLI statement text is covered by review and by
+# the fact that all three SQL sinks in `foresight_cli` bind their parameters
+# (`commands/memory.py:293`, `commands/security.py:107,126`), not by this rule.
+# Say so plainly rather than implying the CLI is tainted-tracked.
 rules:
   - id: foresight-sql-injection-tainted-statement-text
     languages:
@@ -117,20 +144,26 @@ rules:
               regex: ^(get|post|put|patch|delete|route|api_route)$
           - focus-metavariable: $...PARAMS
 
-      # 5. CLI arguments. `foresight_cli` is a Typer app, so the parameters of
-      #    an `@app.command` function are argv. `sys.argv` / `os.environ` are
-      #    included for the hand-rolled parsers in `foresight/__main__.py`.
-      - patterns:
-          - pattern: |
-              @$APP.command(...)
-              def $F($...PARAMS):
-                ...
-          - focus-metavariable: $...PARAMS
+      # 5. Process-boundary values in the hand-rolled parser. `foresight_cli` is
+      #    argparse plus pydantic parameter objects, so argv and the environment
+      #    are read directly by `foresight/__main__.py` and the CLI plumbing.
+      #    Both shapes below are live and are pinned by
+      #    semgrep/controls/positive_cli_sources.py.txt.
+      #
+      #    This class used to be written for Typer (`@$APP.command` decorator
+      #    parameters and `$CTX.params[$KEY]`). Typer is gone from this
+      #    repository, both of those patterns matched nothing, and the gate went
+      #    on printing "0 findings" as though the class were covered. They are
+      #    removed rather than kept as decoration: a pattern that cannot match
+      #    is a coverage claim that cannot fail, and this file now has a control
+      #    suite (semgrep/controls/, run by scripts/check_semgrep_controls.sh)
+      #    whose whole purpose is to make a dead class fail loudly. If a
+      #    decorator-based CLI framework comes back, add it here *and* add a
+      #    fixture for it.
       - pattern-either:
           - pattern: sys.argv[$IDX]
           - pattern: os.environ[$KEY]
           - pattern: os.environ.get(...)
-          - pattern: $CTX.params[$KEY]
 
     # ------------------------------------------------------------------
     # Sanitizers — the only ways a value may reach statement text.

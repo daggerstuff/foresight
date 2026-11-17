@@ -1,0 +1,66 @@
+"""Positive control: source class 4 -- HTTP route handler parameters.
+
+A parameter of a function decorated with ``@app.<verb>`` is bound from the
+request by the framework, so it is a taint source in the same sense as an MCP
+tool parameter. The rule's ``$VERB`` alternation names seven decorators; one
+function per decorator appears here so the whole alternation is exercised.
+
+Expected findings: 7.
+"""
+
+import sqlite3
+
+app = object()
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+@app.get("/rows")
+def route_get(table: str) -> None:
+    """``@app.get`` handler parameter."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@app.post("/rows")
+def route_post(table: str) -> None:
+    """``@app.post`` handler parameter."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@app.put("/rows")
+def route_put(table: str) -> None:
+    """``@app.put`` handler parameter."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@app.patch("/rows")
+def route_patch(table: str) -> None:
+    """``@app.patch`` handler parameter."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@app.delete("/rows")
+def route_delete(table: str) -> None:
+    """``@app.delete`` handler parameter."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@app.route("/rows")
+def route_route(table: str) -> None:
+    """``@app.route`` handler parameter."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@app.api_route("/rows", methods=["GET"])
+def route_api_route(table: str) -> None:
+    """``@app.api_route`` handler parameter."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
