@@ -434,6 +434,7 @@ def generate_insight_narrative(request: NarrativeRequest) -> str:
 __all__ = [
     "NARRATIVE_PROMPT_TEMPLATE",
     "LLMCallable",
+    "NarrativeRequest",
     "ReflectionNarrativeError",
     "generate_insight_narrative",
 ]
