@@ -2,26 +2,29 @@
 
 from __future__ import annotations
 
-import typer
+import argparse
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from foresight import eval_harness
+from foresight_cli.parser import CommandSpec
 from foresight_cli.utils import output as out
 
-app = typer.Typer(help="Run the evaluation harness (PIX-3953).")
+
+class EvalRunParams(BaseModel):
+    """Arguments for :func:`run`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    db_path: str | None = Field(default=None, description="Path to temp database (default: auto tempfile)")
+    report: str | None = Field(default=None, description="Write JSON report to file")
+    budget: int = Field(default=2000, description="Character budget for injection payloads")
+    compare: str | None = Field(default=None, description="Path to a baseline JSON report to diff against")
+    save_baseline: str | None = Field(default=None, description="Save the report as a baseline JSON at this path")
+    json_output: bool = Field(default=False, description="Output report as JSON")
 
 
-@app.command()
-def run(
-    *,
-    db_path: str | None = typer.Option(None, "--db-path", help="Path to temp database (default: auto tempfile)"),
-    report: str | None = typer.Option(None, "--report", "-r", help="Write JSON report to file"),
-    budget: int = typer.Option(2000, "--budget", "-b", help="Character budget for injection payloads"),
-    compare: str | None = typer.Option(None, "--compare", "-c", help="Path to a baseline JSON report to diff against"),
-    save_baseline: str | None = typer.Option(
-        None, "--save-baseline", help="Save the report as a baseline JSON at this path"
-    ),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output report as JSON"),
-):
+def run(params: EvalRunParams) -> None:
     """Run the full evaluation harness and print a summary report.
 
     Seeds fixture memories, runs all 7 evaluation scenarios against
@@ -31,12 +34,12 @@ def run(
     """
     report_obj = eval_harness.run_eval(
         eval_harness.EvalRunOptions(
-            db_path=db_path,
-            report_path=report,
-            budget_chars=budget,
-            compare_path=compare,
-            save_baseline=save_baseline,
-            json_output=json_output or out.get_settings().mode == "json",
+            db_path=params.db_path,
+            report_path=params.report,
+            budget_chars=params.budget,
+            compare_path=params.compare,
+            save_baseline=params.save_baseline,
+            json_output=params.json_output or out.get_settings().mode == "json",
         )
     )
 
@@ -86,13 +89,40 @@ def run(
                     f"latency={scenario_diff.get('latency_change', 0):+.2f}ms, "
                     f"status={scenario_diff.get('status_change', 'unchanged')}"
                 )
-        if report:
-            out.info(f"Maintenance eval report written to {report}")
-        if save_baseline:
-            out.info(f"Baseline report written to {save_baseline}")
+        if params.report:
+            out.info(f"Maintenance eval report written to {params.report}")
+        if params.save_baseline:
+            out.info(f"Baseline report written to {params.save_baseline}")
 
 
 def _format_pct_change(value: float | None) -> str:
     if value is None:
         return "N/A"
     return f"{value:+.1f}%"
+
+
+def _run_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db-path", default=None, help="Path to temp database (default: auto tempfile)")
+    parser.add_argument("--report", "-r", default=None, help="Write JSON report to file")
+    parser.add_argument(
+        "--budget",
+        "-b",
+        type=int,
+        default=2000,
+        help="Character budget for injection payloads",
+    )
+    parser.add_argument(
+        "--compare",
+        "-c",
+        default=None,
+        help="Path to a baseline JSON report to diff against",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        default=None,
+        help="Save the report as a baseline JSON at this path",
+    )
+    parser.add_argument("--json", "-j", dest="json_output", action="store_true", help="Output report as JSON")
+
+
+COMMANDS = {"run": CommandSpec(run, EvalRunParams, _run_parser)}

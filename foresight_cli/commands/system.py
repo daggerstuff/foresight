@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import os
@@ -11,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import redis as _redis  # type: ignore[import-not-found]
-import typer
+from pydantic import BaseModel, ConfigDict, Field
 
 from foresight.config import raw_retention_enabled
 from foresight.context_cache import get_context_cache
@@ -32,9 +33,109 @@ from foresight.server import (
     switch_tenant,
 )
 from foresight.telemetry import get_telemetry_store
+from foresight_cli.parser import CommandSpec
 from foresight_cli.utils import config as cfg, output as out
 
-app = typer.Typer(help="System management, diagnostics, and configuration.")
+
+class SystemStatusParams(BaseModel):
+    """Arguments for :func:`status`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemInitParams(BaseModel):
+    """Arguments for :func:`init`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    force: bool = Field(default=False, description="Overwrite existing config")
+    user_id: str | None = Field(default=None, description="Default user ID")
+    bank_id: str | None = Field(default=None, description="Default bank ID")
+
+
+class SystemDoctorParams(BaseModel):
+    """Arguments for :func:`doctor`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemStatsParams(BaseModel):
+    """Arguments for :func:`stats`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemTemporalParams(BaseModel):
+    """Arguments for :func:`temporal`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    window: str = Field(default="week", description="Time window: today, week, month, year")
+    trend: str | None = Field(default=None, description="Trend filter: stable, strengthening, weakening, stale")
+    category: str | None = Field(default=None, description="Category filter")
+    limit: int = Field(default=50, description="Max results")
+    as_of: str | None = Field(default=None, description="ISO-8601 instant for bitemporal reconstruction")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemConfigParams(BaseModel):
+    """Arguments for :func:`config`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    key: str | None = Field(default=None, description="Config key to view/set (e.g. user_id, db_url, bank_id)")
+    value: str | None = Field(default=None, description="Value to set (omit to view current)")
+    reset: bool = Field(default=False, description="Reset config to defaults")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemHistoryParams(BaseModel):
+    """Arguments for :func:`history`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    limit: int = Field(default=10, description="Number of events")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemMaintenanceParams(BaseModel):
+    """Arguments for :func:`maintenance`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    mode: str = Field(
+        default="all",
+        description="Comma-separated modes (consolidate,contradict,archive_stale,synthesize,reprocess) or 'all'",
+    )
+    batch_size: int = Field(default=200, description="Max memories to process per mode")
+    max_runtime: float = Field(default=300, description="Wall-clock budget in seconds")
+    reprocess_window_start: str | None = Field(default=None, description="ISO-8601 start of reprocess window")
+    reprocess_window_end: str | None = Field(default=None, description="ISO-8601 end of reprocess window")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemReprocessParams(BaseModel):
+    """Arguments for :func:`reprocess`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    window_start: str | None = Field(default=None, description="ISO-8601 start of the reprocess window (inclusive)")
+    window_end: str | None = Field(default=None, description="ISO-8601 end of the reprocess window (inclusive)")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class SystemTenantParams(BaseModel):
+    """Arguments for :func:`tenant`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    tenant_id: str = Field(description="Tenant ID to switch to")
 
 
 def _init_backend() -> None:
@@ -50,13 +151,10 @@ def _init_backend() -> None:
     _initialize_backend()
 
 
-@app.command()
-def status(
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def status(params: SystemStatusParams) -> None:
     """Get Foresight system status and health."""
     _init_backend()
-    resolved_uid = cfg.get_user_id(user_id)
+    resolved_uid = cfg.get_user_id(params.user_id)
     result = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
 
     if out.get_settings().mode in ("agent", "json"):
@@ -89,7 +187,6 @@ def status(
         if stale_count is not None:
             pairs.append(("Stale Memories", str(stale_count)))
 
-        # Maintenance stats
         maint = result.get("maintenance_stats")
         if isinstance(maint, dict):
             last_run = maint.get("last_maintenance_run", "")
@@ -98,7 +195,6 @@ def status(
             if last_run:
                 pairs.append(("Last Maintenance", str(last_run)[:19]))
 
-        # Last capture time
         lct = result.get("last_capture_time")
         if lct:
             pairs.append(("Last Capture", str(lct)[:19]))
@@ -118,7 +214,6 @@ def status(
                 title="Memories by Category",
             )
 
-        # Maintenance details
         if isinstance(maint, dict):
             maint_items = []
             for k in (
@@ -144,7 +239,6 @@ def status(
                     title="Maintenance by Type",
                 )
 
-        # Payload budget
         budget = result.get("payload_budget")
         if isinstance(budget, dict):
             budget_items = [f"Min Lane Chars: {budget.get('min_lane_chars', '?')}"]
@@ -154,7 +248,6 @@ def status(
                     budget_items.append(f"{lane_name}: {pct * 100:.0f}%")
             out.bullet_list(budget_items, title="Payload Budget")
 
-        # Last injection stats
         inj = result.get("last_injection")
         if isinstance(inj, dict):
             inj_items = [
@@ -198,7 +291,6 @@ def status(
             if ih_items:
                 out.bullet_list(ih_items, title="Injection Health")
 
-        # Cache / retrieval debug
         cache = result.get("cache_metrics")
         if isinstance(cache, dict):
             debug_items = []
@@ -212,16 +304,11 @@ def status(
         out.stdout(str(result))
 
 
-@app.command()
-def init(
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="Default user ID"),
-    bank_id: str | None = typer.Option(None, "--bank-id", "-b", help="Default bank ID"),
-):
+def init(params: SystemInitParams) -> None:
     """Initialize Foresight (config, DB, directories)."""
     config_dir = cfg.CONFIG_DIR
 
-    if config_dir.exists() and not force:
+    if config_dir.exists() and not params.force:
         out.info(f"Foresight config directory exists at {config_dir}")
         out.info("Use --force to reinitialize")
     else:
@@ -229,23 +316,20 @@ def init(
         cfg.chmod_best_effort(config_dir, 0o700)
         out.done(f"Created config directory: {config_dir}")
 
-    # Write config
     config = cfg.CliConfig.load()
-    if user_id:
-        config.user_id = user_id
-    if bank_id:
-        config.bank_id = bank_id
+    if params.user_id:
+        config.user_id = params.user_id
+    if params.bank_id:
+        config.bank_id = params.bank_id
     config.save()
     out.done(f"Config saved: {cfg.CONFIG_PATH}")
 
-    # Initialize DB
     try:
         _init_backend()
         out.done("Database initialized")
     except Exception as e:
         out.warn(f"Database init issue: {e}")
 
-    # Verify
     health = get_system_status(GetSystemStatusParams(user_id=config.user_id))
     out.info(f"Health check: {health[:100] if isinstance(health, str) else 'OK'}")
 
@@ -278,13 +362,10 @@ def _mask_db_url(url: str) -> str:
         return "***"
 
 
-@app.command()
-def doctor(
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def doctor(params: SystemDoctorParams) -> None:
     """Run comprehensive diagnostics."""
     _init_backend()
-    resolved_uid = cfg.get_user_id(user_id)
+    resolved_uid = cfg.get_user_id(params.user_id)
     config = cfg.ensure_config()
     passed = 0
     failed = 0
@@ -309,37 +390,30 @@ def doctor(
         out.stderr("Foresight Diagnostics", style="bold underline")
         out.stderr("")
 
-    # Python version
     py_ok = sys.version_info >= (3, 11)
     check("Python 3.11+", py_ok, f"Found {sys.version}")
 
-    # Config directory
     check("Config dir exists", cfg.CONFIG_DIR.exists(), str(cfg.CONFIG_DIR))
     check("Config file exists", cfg.CONFIG_PATH.exists(), str(cfg.CONFIG_PATH))
 
-    # DB URL (Postgres-only; no local SQLite file)
     db_url = cfg.get_db_url()
     if db_url:
         check("Database URL configured", True, _mask_db_url(db_url))
     else:
         check("Database URL configured", False, "Set FORESIGHT_DB_URL env var")
 
-    # Config values
     if config.user_id:
         check("User ID configured", True, config.user_id)
     if config.bank_id:
         check("Bank ID configured", True, config.bank_id)
 
-    # Environment
     for env_var in ["FORESIGHT_DB_URL", "FORESIGHT_USER_ID", "FORESIGHT_BANK_ID"]:
         if os.environ.get(env_var):
-            # Mask the database URL so credentials never reach diagnostics output.
             val = os.environ[env_var]
             if env_var == "FORESIGHT_DB_URL":
                 val = _mask_db_url(val)
             warnings.append(f"{env_var}={val}")
 
-    # Test DB connection
     try:
         health = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
         if isinstance(health, str):
@@ -352,7 +426,6 @@ def doctor(
     except Exception as e:
         check("Database responsive", False, str(e))
 
-    # LLM configuration (optional but recommended for synthesis/reflection)
     llm_provider = os.environ.get("FORESIGHT_LLM_PROVIDER", "")
     llm_api_key = os.environ.get("FORESIGHT_LLM_API_KEY", "")
     llm_model = os.environ.get("FORESIGHT_LLM_MODEL", "")
@@ -369,7 +442,6 @@ def doctor(
     else:
         check("LLM provider configured", True, "not set (synthesis/reflection disabled)")
 
-    # Redis (optional companion cache)
     redis_url = os.environ.get("FORESIGHT_REDIS_URL", "")
     if redis_url:
         try:
@@ -380,8 +452,6 @@ def doctor(
             check("Redis cache", False, f"configured but unreachable: {exc!s}")
     else:
         check("Redis cache", True, "not set (in-process cache fallback)")
-
-    # MCP HTTP transport (check if server is listening)
 
     mcp_port = int(os.environ.get("FORESIGHT_PORT", "8764"))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -394,7 +464,6 @@ def doctor(
     finally:
         sock.close()
 
-    # Schema version
     try:
         backend = get_backend()
         if backend is None:
@@ -411,7 +480,6 @@ def doctor(
     except Exception as exc:
         check("Schema version", False, f"check failed: {exc!s}")
 
-    # Summary
     if out.get_settings().mode != "agent":
         out.stderr("")
         if failed == 0:
@@ -425,16 +493,13 @@ def doctor(
             out.info(f"  {w}")
 
     if failed > 0:
-        raise typer.Exit(1)
+        raise SystemExit(1)
 
 
-@app.command()
-def stats(
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def stats(params: SystemStatsParams) -> None:
     """Show memory statistics and trends."""
     _init_backend()
-    resolved_uid = cfg.get_user_id(user_id)
+    resolved_uid = cfg.get_user_id(params.user_id)
 
     try:
         temporal = query_memories_temporal(
@@ -443,7 +508,6 @@ def stats(
     except Exception:
         temporal = None
 
-    # Get status for baseline stats
     health_raw = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
     health: dict[str, Any] = {}
     if isinstance(health_raw, str):
@@ -456,7 +520,6 @@ def stats(
     lct = health.get("last_capture_time")
     budget = health.get("payload_budget")
 
-    # Load telemetry and cache metrics
     try:
         telemetry = get_telemetry_store().get_summary()
         cache_stats = get_context_cache().get_stats()
@@ -485,7 +548,6 @@ def stats(
     mem_count = health.get("memory_count", health.get("count", 0))
     crisis = health.get("crisis_signals", 0)
 
-    # Telemetry & Token Economics Header
     if telemetry:
         out.panel(
             f"[bold cyan]Lifetime Turns Augmented:[/] {telemetry.get('total_turns_augmented', 0):,}\n"
@@ -532,37 +594,27 @@ def stats(
         out.info("No memories yet. Store one with: foresight store 'your first memory'")
 
 
-@app.command()
-def temporal(
-    *,
-    window: str = typer.Option("week", "--window", "-w", help="Time window: today, week, month, year"),
-    trend: str | None = typer.Option(
-        None, "--trend", "-t", help="Trend filter: stable, strengthening, weakening, stale"
-    ),
-    category: str | None = typer.Option(None, "--category", "-c", help="Category filter"),
-    limit: int = typer.Option(50, "--limit", "-l", help="Max results"),
-    as_of: str | None = typer.Option(
-        None,
-        "--as-of",
-        help="ISO-8601 instant. Reconstructs what memory was true at that point in time "
-        "(bitemporal); overrides --window and --trend.",
-    ),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def temporal(params: SystemTemporalParams) -> None:
     """Query memories by time window, trend, or point in time."""
     _init_backend()
 
     try:
-        if as_of is not None:
-            # Validate before querying: TemporalWindow is a plain dataclass, so an
-            # unparseable instant would otherwise surface as a traceback from the tool.
-            _parse_as_of(as_of)
-        options = TemporalWindow(window=window, trend=trend, category=category, limit=limit, as_of=as_of)
+        if params.as_of is not None:
+            _parse_as_of(params.as_of)
+        options = TemporalWindow(
+            window=params.window,
+            trend=params.trend,
+            category=params.category,
+            limit=params.limit,
+            as_of=params.as_of,
+        )
     except (ValueError, TypeError) as exc:
         out.error(f"Invalid temporal query: {exc}")
-        raise typer.Exit(2) from exc
+        raise SystemExit(2) from exc
 
-    result = query_memories_temporal(QueryMemoriesTemporalParams(options=options, user_id=cfg.get_user_id(user_id)))
+    result = query_memories_temporal(
+        QueryMemoriesTemporalParams(options=options, user_id=cfg.get_user_id(params.user_id))
+    )
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)
         return
@@ -588,21 +640,15 @@ def temporal(
         ]
         for m in memories
     ]
-    title = f"Memories as of {as_of}" if as_of else f"Memories ({window})"
+    title = f"Memories as of {params.as_of}" if params.as_of else f"Memories ({params.window})"
     out.print_table(["Memory", "Content", "Category", "Importance", "Trend", "Created"], rows, title=title)
 
 
-@app.command()
-def config(
-    key: str | None = typer.Argument(None, help="Config key to view/set (e.g. user_id, db_url, bank_id)"),
-    value: str | None = typer.Argument(None, help="Value to set (omit to view current)"),
-    reset: bool = typer.Option(False, "--reset", help="Reset config to defaults"),
-    _user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def config(params: SystemConfigParams) -> None:
     """View or modify Foresight configuration."""
     cfg.ensure_config()
 
-    if reset:
+    if params.reset:
         c = cfg.CliConfig()
         c.save()
         out.done("Config reset to defaults")
@@ -610,27 +656,26 @@ def config(
 
     c = cfg.CliConfig.load()
 
-    if key and value:
-        if key == "db_url":
+    if params.key and params.value:
+        if params.key == "db_url":
             out.warn(
                 "db_url is read-only in config; set the FORESIGHT_DB_URL "
                 "environment variable to configure the database."
             )
             return
-        setattr(c, key, value)
+        setattr(c, params.key, params.value)
         c.save()
-        out.done(f"Set {key} = {value}")
+        out.done(f"Set {params.key} = {params.value}")
         return
 
-    if key:
-        val = getattr(c, key, None)
+    if params.key:
+        val = getattr(c, params.key, None)
         if val is not None:
-            out.data(key, val)
+            out.data(params.key, val)
         else:
-            out.error(f"Unknown config key: {key}")
+            out.error(f"Unknown config key: {params.key}")
         return
 
-    # Show all config
     pairs = [
         ("db_url", _mask_db_url(c.db_url)),
         ("user_id", c.user_id),
@@ -642,22 +687,18 @@ def config(
     out.info(f"\nConfig file: {cfg.CONFIG_PATH}")
 
 
-@app.command()
-def history(
-    limit: int = typer.Option(10, "--limit", "-l", help="Number of events"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def history(params: SystemHistoryParams) -> None:
     """View recent memory decay and reinforcement events."""
     _init_backend()
-    resolved_uid = cfg.get_user_id(user_id)
+    resolved_uid = cfg.get_user_id(params.user_id)
 
     try:
-        raw = get_decay_events(user_id=resolved_uid, limit=limit)
+        raw = get_decay_events(user_id=resolved_uid, limit=params.limit)
         parsed: dict = json.loads(raw) if isinstance(raw, str) else raw
         events_list: list = parsed.get("events", []) if parsed.get("ok") else []
     except (json.JSONDecodeError, TypeError, OSError) as e:
         out.error(f"Failed to retrieve history: {e}")
-        raise typer.Exit(1) from e
+        raise SystemExit(1) from e
 
     if out.get_settings().mode == "agent":
         out.print_json({"events": events_list})
@@ -671,45 +712,33 @@ def history(
             strength = ev.get("old_strength", ev.get("strength", "?"))
             ts = ev.get("timestamp", ev.get("created_at", "?"))
             rows.append([eid, etype, str(strength), str(ts)[:19]])
-        out.print_table(["Memory", "Event", "Strength", "Timestamp"], rows, title=f"Recent Events (last {limit})")
+        out.print_table(
+            ["Memory", "Event", "Strength", "Timestamp"],
+            rows,
+            title=f"Recent Events (last {params.limit})",
+        )
     else:
         out.info("No events found.")
 
 
-@app.command()
-def maintenance(
-    *,
-    mode: str = typer.Option(
-        "all",
-        "--mode",
-        "-m",
-        help="Comma-separated modes (consolidate,contradict,archive_stale,synthesize,reprocess) or 'all'",
-    ),
-    batch_size: int = typer.Option(200, "--batch-size", help="Max memories to process per mode"),
-    max_runtime: float = typer.Option(300, "--max-runtime", help="Wall-clock budget in seconds"),
-    reprocess_window_start: str | None = typer.Option(
-        None, "--reprocess-start", help="ISO-8601 start of reprocess window"
-    ),
-    reprocess_window_end: str | None = typer.Option(None, "--reprocess-end", help="ISO-8601 end of reprocess window"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def maintenance(params: SystemMaintenanceParams) -> None:
     """Run memory maintenance (consolidation, contradiction detection, stale archival, reprocess)."""
     _init_backend()
 
     modes_list = (
         ["consolidate", "contradict", "archive_stale", "synthesize"]
-        if mode == "all"
-        else [m.strip() for m in mode.split(",")]
+        if params.mode == "all"
+        else [m.strip() for m in params.mode.split(",")]
     )
     result = run_maintenance(
         options=MaintenanceAction(
             modes=modes_list,
-            batch_size=batch_size,
-            max_runtime_seconds=max_runtime,
-            reprocess_window_start=reprocess_window_start,
-            reprocess_window_end=reprocess_window_end,
+            batch_size=params.batch_size,
+            max_runtime_seconds=params.max_runtime,
+            reprocess_window_start=params.reprocess_window_start,
+            reprocess_window_end=params.reprocess_window_end,
         ),
-        user_id=user_id,
+        user_id=params.user_id,
     )
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)
@@ -717,12 +746,7 @@ def maintenance(
         out.result_block(result, title="Maintenance Results")
 
 
-@app.command()
-def reprocess(
-    window_start: str | None = typer.Option(None, "--start", help="ISO-8601 start of the reprocess window (inclusive)"),
-    window_end: str | None = typer.Option(None, "--end", help="ISO-8601 end of the reprocess window (inclusive)"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def reprocess(params: SystemReprocessParams) -> None:
     """Rebuild derived memories from the append-only raw-events layer.
 
     Idempotent by construction: replaying a window re-runs classification and
@@ -735,19 +759,124 @@ def reprocess(
     if not raw_retention_enabled():
         out.warn("FORESIGHT_RAW_RETENTION is off — the raw layer was never written, so this is a no-op.")
 
-    result = reprocess_raw_events(window_start=window_start, window_end=window_end, user_id=cfg.get_user_id(user_id))
+    result = reprocess_raw_events(
+        window_start=params.window_start,
+        window_end=params.window_end,
+        user_id=cfg.get_user_id(params.user_id),
+    )
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)
     else:
         out.result_block(result, title="Raw-Event Reprocess")
 
 
-@app.command()
-def tenant(
-    tenant_id: str = typer.Argument(..., help="Tenant ID to switch to"),
-):
+def tenant(params: SystemTenantParams) -> None:
     """Switch current tenant context."""
     _init_backend()
 
-    result = switch_tenant(tenant_id=tenant_id)
+    result = switch_tenant(tenant_id=params.tenant_id)
     out.done(f"Switched tenant: {result}")
+
+
+def _user_id_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _init_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--force", "-f", action="store_true", help="Overwrite existing config")
+    parser.add_argument("--user-id", "-u", default=None, help="Default user ID")
+    parser.add_argument("--bank-id", "-b", default=None, help="Default bank ID")
+
+
+def _temporal_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--window", "-w", default="week", help="Time window: today, week, month, year")
+    parser.add_argument(
+        "--trend",
+        "-t",
+        default=None,
+        help="Trend filter: stable, strengthening, weakening, stale",
+    )
+    parser.add_argument("--category", "-c", default=None, help="Category filter")
+    parser.add_argument("--limit", "-l", type=int, default=50, help="Max results")
+    parser.add_argument(
+        "--as-of",
+        default=None,
+        help="ISO-8601 instant. Reconstructs what memory was true at that point in time "
+        "(bitemporal); overrides --window and --trend.",
+    )
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _config_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "key",
+        nargs="?",
+        default=None,
+        help="Config key to view/set (e.g. user_id, db_url, bank_id)",
+    )
+    parser.add_argument("value", nargs="?", default=None, help="Value to set (omit to view current)")
+    parser.add_argument("--reset", action="store_true", help="Reset config to defaults")
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _history_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--limit", "-l", type=int, default=10, help="Number of events")
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _maintenance_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--mode",
+        "-m",
+        default="all",
+        help="Comma-separated modes (consolidate,contradict,archive_stale,synthesize,reprocess) or 'all'",
+    )
+    parser.add_argument("--batch-size", type=int, default=200, help="Max memories to process per mode")
+    parser.add_argument("--max-runtime", type=float, default=300, help="Wall-clock budget in seconds")
+    parser.add_argument(
+        "--reprocess-start",
+        dest="reprocess_window_start",
+        default=None,
+        help="ISO-8601 start of reprocess window",
+    )
+    parser.add_argument(
+        "--reprocess-end",
+        dest="reprocess_window_end",
+        default=None,
+        help="ISO-8601 end of reprocess window",
+    )
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _reprocess_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--start",
+        dest="window_start",
+        default=None,
+        help="ISO-8601 start of the reprocess window (inclusive)",
+    )
+    parser.add_argument(
+        "--end",
+        dest="window_end",
+        default=None,
+        help="ISO-8601 end of the reprocess window (inclusive)",
+    )
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _tenant_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("tenant_id", help="Tenant ID to switch to")
+
+
+COMMANDS = {
+    "status": CommandSpec(status, SystemStatusParams, _user_id_parser),
+    "init": CommandSpec(init, SystemInitParams, _init_parser),
+    "doctor": CommandSpec(doctor, SystemDoctorParams, _user_id_parser),
+    "stats": CommandSpec(stats, SystemStatsParams, _user_id_parser),
+    "temporal": CommandSpec(temporal, SystemTemporalParams, _temporal_parser),
+    "config": CommandSpec(config, SystemConfigParams, _config_parser),
+    "history": CommandSpec(history, SystemHistoryParams, _history_parser),
+    "maintenance": CommandSpec(maintenance, SystemMaintenanceParams, _maintenance_parser),
+    "reprocess": CommandSpec(reprocess, SystemReprocessParams, _reprocess_parser),
+    "tenant": CommandSpec(tenant, SystemTenantParams, _tenant_parser),
+}

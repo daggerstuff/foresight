@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 
-import typer
+from pydantic import BaseModel, ConfigDict, Field
 
 from foresight.server import (
     ContextBlockAction,
@@ -13,9 +14,53 @@ from foresight.server import (
     init_db,
     manage_context_blocks,
 )
+from foresight_cli.parser import CommandSpec
 from foresight_cli.utils import config as cfg, output as out
 
-app = typer.Typer(help="Manage Foresight context blocks (guidance, preferences, state).")
+
+class BlocksListParams(BaseModel):
+    """Arguments for :func:`list_blocks`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class BlocksGetParams(BaseModel):
+    """Arguments for :func:`get_block`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    label: str = Field(description="Block label (e.g. guidance, preferences, pending_items)")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class BlocksUpdateParams(BaseModel):
+    """Arguments for :func:`update_block`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    label: str = Field(description="Block label")
+    content: str = Field(description="New block content")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class BlocksResetParams(BaseModel):
+    """Arguments for :func:`reset_block`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    label: str = Field(description="Block label to reset")
+    user_id: str | None = Field(default=None, description="User ID override")
+
+
+class BlocksClearParams(BaseModel):
+    """Arguments for :func:`clear_block`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    label: str = Field(description="Block label to clear")
+    user_id: str | None = Field(default=None, description="User ID override")
 
 
 def _init_and_user(user_id_override: str | None = None):
@@ -37,7 +82,7 @@ def _emit(result: str) -> None:
     if not payload.get("ok", False):
         message = payload.get("error", {}).get("message", result)
         out.error(message)
-        raise typer.Exit(1)
+        raise SystemExit(1)
 
     if out.get_settings().mode == "agent":
         out.print_json(payload)
@@ -63,58 +108,80 @@ def _emit(result: str) -> None:
     out.print_json(payload)
 
 
-@app.command("list")
-def list_blocks(
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def list_blocks(params: BlocksListParams) -> None:
     """List non-empty context blocks."""
-    _init_and_user(user_id)
+    _init_and_user(params.user_id)
     result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list")))
     _emit(result)
 
 
-@app.command("get")
-def get_block(
-    label: str = typer.Argument(..., help="Block label (e.g. guidance, preferences, pending_items)"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def get_block(params: BlocksGetParams) -> None:
     """Get a specific context block."""
-    _init_and_user(user_id)
-    result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="get", label=label)))
-    _emit(result)
-
-
-@app.command("update")
-def update_block(
-    label: str = typer.Argument(..., help="Block label"),
-    content: str = typer.Argument(..., help="New block content"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
-    """Update a context block with new content."""
-    _init_and_user(user_id)
+    _init_and_user(params.user_id)
     result = manage_context_blocks(
-        ManageContextBlocksParams(options=ContextBlockAction(action="update", label=label, content=content))
+        ManageContextBlocksParams(options=ContextBlockAction(action="get", label=params.label))
     )
     _emit(result)
 
 
-@app.command("reset")
-def reset_block(
-    label: str = typer.Argument(..., help="Block label to reset"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def update_block(params: BlocksUpdateParams) -> None:
+    """Update a context block with new content."""
+    _init_and_user(params.user_id)
+    result = manage_context_blocks(
+        ManageContextBlocksParams(
+            options=ContextBlockAction(action="update", label=params.label, content=params.content)
+        )
+    )
+    _emit(result)
+
+
+def reset_block(params: BlocksResetParams) -> None:
     """Reset a context block to its default value."""
-    _init_and_user(user_id)
-    result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="reset", label=label)))
+    _init_and_user(params.user_id)
+    result = manage_context_blocks(
+        ManageContextBlocksParams(options=ContextBlockAction(action="reset", label=params.label))
+    )
     _emit(result)
 
 
-@app.command("clear")
-def clear_block(
-    label: str = typer.Argument(..., help="Block label to clear"),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-):
+def clear_block(params: BlocksClearParams) -> None:
     """Clear a context block's content."""
-    _init_and_user(user_id)
-    result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="clear", label=label)))
+    _init_and_user(params.user_id)
+    result = manage_context_blocks(
+        ManageContextBlocksParams(options=ContextBlockAction(action="clear", label=params.label))
+    )
     _emit(result)
+
+
+def _list_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _get_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("label", help="Block label (e.g. guidance, preferences, pending_items)")
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _update_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("label", help="Block label")
+    parser.add_argument("content", help="New block content")
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _reset_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("label", help="Block label to reset")
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+def _clear_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("label", help="Block label to clear")
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+
+
+COMMANDS = {
+    "list": CommandSpec(list_blocks, BlocksListParams, _list_parser),
+    "get": CommandSpec(get_block, BlocksGetParams, _get_parser),
+    "update": CommandSpec(update_block, BlocksUpdateParams, _update_parser),
+    "reset": CommandSpec(reset_block, BlocksResetParams, _reset_parser),
+    "clear": CommandSpec(clear_block, BlocksClearParams, _clear_parser),
+}

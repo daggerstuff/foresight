@@ -5,10 +5,9 @@ from io import StringIO
 from unittest.mock import patch
 
 from rich.console import Console
-from typer.testing import CliRunner
 
 import foresight.__main__ as main_module
-from foresight_cli.cli import app
+from foresight_cli.cli import main as cli_main
 from foresight_cli.commands import system as system_commands
 from foresight_cli.utils import output as out
 
@@ -72,7 +71,7 @@ def test_status_human_formats_payload_budget_weights_and_injection_health():
         patch.object(out, "_stderr_console", Console(file=stderr_buffer, force_terminal=False, color_system=None)),
     ):
         out.configure(mode="human", color=False, pipe_safe=False, verbose=False)
-        system_commands.status(user_id=None)
+        system_commands.status(system_commands.SystemStatusParams(user_id=None))
 
     rendered = stderr_buffer.getvalue()
     assert "Payload Budget" in rendered
@@ -83,7 +82,7 @@ def test_status_human_formats_payload_budget_weights_and_injection_health():
     assert "Fast Path Rate: 75%" in rendered
 
 
-def test_status_json_mode_emits_scriptable_status_payload():
+def test_status_json_mode_emits_scriptable_status_payload(capsys):
     memories_lane_weight = 0.5
     total_runs = 4
     result = {
@@ -105,9 +104,9 @@ def test_status_json_mode_emits_scriptable_status_payload():
         patch("foresight_cli.commands.system._initialize_backend"),
         patch("foresight_cli.commands.system.get_system_status", return_value=json.dumps(result)),
     ):
-        cli_result = CliRunner().invoke(app, ["--output", "json", "status"])
+        exit_code = cli_main(["--output", "json", "status"])
 
-    assert cli_result.exit_code == 0
-    parsed = json.loads(cli_result.stdout)
+    assert exit_code == 0
+    parsed = json.loads(capsys.readouterr().out)
     assert parsed["payload_budget"]["default_lane_weights"]["memories"] == memories_lane_weight
     assert parsed["injection_health"]["total_runs"] == total_runs

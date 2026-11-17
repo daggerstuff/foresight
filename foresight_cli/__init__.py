@@ -1,5 +1,5 @@
 """Foresight CLI - Command-line interface for memory operations."""
 
-from .cli import app
+from .cli import main
 
-__all__ = ["app"]
+__all__ = ["main"]

@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-import typer
+import argparse
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from foresight.proof_benchmark import run_proof_benchmark
+from foresight_cli.parser import CommandSpec
 from foresight_cli.utils import output as out
 
-app = typer.Typer(help="Run the Foresight Production Value & Proof Benchmark Suite.")
+
+class BenchmarkRunParams(BaseModel):
+    """Arguments for :func:`run`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    report: str | None = Field(default=None, description="Write JSON benchmark report to file")
+    json_output: bool = Field(default=False, description="Output benchmark report as raw JSON")
 
 
-@app.command()
-def run(
-    report: str | None = typer.Option(None, "--report", "-r", help="Write JSON benchmark report to file"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output benchmark report as raw JSON"),
-):
+def run(params: BenchmarkRunParams) -> None:
     """Run the Foresight Production Value & Proof Benchmark Suite.
 
     Evaluates:
@@ -29,11 +35,11 @@ def run(
     9. Multi-Surface Integration Matrix (8+ developer tool surfaces)
     """
     report_obj = run_proof_benchmark(
-        json_output=json_output or out.get_settings().mode == "json",
-        report_path=report,
+        json_output=params.json_output or out.get_settings().mode == "json",
+        report_path=params.report,
     )
 
-    if json_output or out.get_settings().mode == "json":
+    if params.json_output or out.get_settings().mode == "json":
         out.print_json(report_obj.to_dict())
     elif out.get_settings().mode == "agent":
         out.data(
@@ -49,5 +55,19 @@ def run(
         )
     else:
         report_obj.print_rich()
-        if report:
-            out.info(f"Benchmark proof report written to {report}")
+        if params.report:
+            out.info(f"Benchmark proof report written to {params.report}")
+
+
+def _run_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--report", "-r", default=None, help="Write JSON benchmark report to file")
+    parser.add_argument(
+        "--json",
+        "-j",
+        dest="json_output",
+        action="store_true",
+        help="Output benchmark report as raw JSON",
+    )
+
+
+COMMANDS = {"run": CommandSpec(run, BenchmarkRunParams, _run_parser)}
