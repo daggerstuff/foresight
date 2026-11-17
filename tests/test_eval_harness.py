@@ -471,12 +471,14 @@ class TestRunEval:
         monkeypatch.setattr(eval_cmd.out, "info", info_calls.append)
 
         eval_cmd.run(
-            db_path=None,
-            report="/tmp/eval.json",
-            budget=1500,
-            json_output=False,
-            compare=None,
-            save_baseline="/tmp/baseline.json",
+            eval_cmd.EvalRunParams(
+                db_path=None,
+                report="/tmp/eval.json",
+                budget=1500,
+                json_output=False,
+                compare=None,
+                save_baseline="/tmp/baseline.json",
+            )
         )
 
         assert done_calls == ["1/1 scenarios passed (100.0%)"]

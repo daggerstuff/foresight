@@ -49,7 +49,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cli = ["typer>=0.29.1", "rich>=15.0.0"]
+cli = ["rich>=15.0.0"]
 tui = ["textual>=8.2.8"]
 redis = ["redis>=8.1.0"]
 # Local sentence embeddings (PIX-4701). Opt-in because fastembed pulls in
@@ -69,7 +69,6 @@ dev = [
   "pytest>=9.2.0",
   "pytest-asyncio>=1.5.0",
   "pytest-cov>=7.1.0",
-  "typer>=0.29.1",
   "rich>=15.0.0",
   "textual>=8.2.8",
   "hatchling>=1.33.0",
@@ -98,7 +97,6 @@ dev = [
   "pytest>=9.2.0",
   "pytest-asyncio>=1.5.0",
   "pytest-cov>=7.1.0",
-  "typer>=0.29.1",
   "rich>=15.0.0",
   "textual>=8.2.8",
   "ruff>=0.17.5",

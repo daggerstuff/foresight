@@ -2,16 +2,46 @@
 
 from __future__ import annotations
 
-import typer
+import argparse
+import getpass
+import sys
+
+from pydantic import BaseModel, ConfigDict, Field
 from rich.console import Console
 from rich.table import Table
 
 from foresight.encryption import get_encryption_engine
 from foresight.server import _initialize_backend, get_db_connection, init_db
+from foresight_cli.parser import CommandSpec
 from foresight_cli.utils import config as cfg, output as out
 
 console = Console()
-app = typer.Typer(help="Manage security, sensitivity policies, and optional AES-256-GCM encryption.")
+
+
+class SecurityStatusParams(BaseModel):
+    """Arguments for :func:`status`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+
+class SecurityEncryptAllParams(BaseModel):
+    """Arguments for :func:`encrypt_all`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="User ID override")
+    tenant_id: str | None = Field(default="default", description="Tenant ID")
+
+
+class SecurityRotateKeyParams(BaseModel):
+    """Arguments for :func:`rotate_key`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    old_key: str | None = Field(default=None, description="Existing master encryption key")
+    new_key: str | None = Field(default=None, description="New master encryption key to migrate to")
+    user_id: str | None = Field(default=None, description="User ID override")
+    tenant_id: str | None = Field(default="default", description="Tenant ID")
 
 
 def _init_backend() -> None:
@@ -19,8 +49,15 @@ def _init_backend() -> None:
     _initialize_backend()
 
 
-@app.command(name="status")
-def status():
+def _prompt_secret(label: str) -> str:
+    try:
+        return getpass.getpass(f"{label}: ")
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("Aborted.\n")
+        raise SystemExit(1) from None
+
+
+def status(params: SecurityStatusParams) -> None:
     """View current encryption status, active algorithm, and security mode."""
     engine = get_encryption_engine()
     st = engine.get_status()
@@ -55,25 +92,21 @@ def status():
         )
 
 
-@app.command(name="encrypt-all")
-def encrypt_all(
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    tenant_id: str | None = typer.Option("default", "--tenant", "-t", help="Tenant ID"),
-):
+def encrypt_all(params: SecurityEncryptAllParams) -> None:
     """Retroactively encrypt all plaintext memories for the active user/tenant."""
     _init_backend()
-    resolved_uid = cfg.get_user_id(user_id)
+    resolved_uid = cfg.get_user_id(params.user_id)
     engine = get_encryption_engine()
 
     if not engine.enabled:
         out.error("Cannot encrypt: No encryption key configured. Set FORESIGHT_ENCRYPTION_KEY.")
-        raise typer.Exit(1)
+        raise SystemExit(1)
 
     conn = get_db_connection()
     try:
         rows = conn.execute(
             "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ?",
-            (resolved_uid, tenant_id),
+            (resolved_uid, params.tenant_id),
         ).fetchall()
 
         encrypted_count = 0
@@ -84,7 +117,12 @@ def encrypt_all(
             if engine.is_encrypted(content):
                 already_encrypted += 1
             else:
-                ciphertext = engine.encrypt(content, tenant_id=tenant_id, user_id=resolved_uid, force=True)
+                ciphertext = engine.encrypt(
+                    content,
+                    tenant_id=params.tenant_id,
+                    user_id=resolved_uid,
+                    force=True,
+                )
                 conn.execute(
                     "UPDATE memories SET content = ? WHERE id = ?",
                     (ciphertext, r["id"]),
@@ -99,18 +137,13 @@ def encrypt_all(
         conn.close()
 
 
-@app.command(name="rotate-key")
-def rotate_key(
-    old_key: str = typer.Option(..., "--old-key", prompt=True, hide_input=True, help="Existing master encryption key"),
-    new_key: str = typer.Option(
-        ..., "--new-key", prompt=True, hide_input=True, help="New master encryption key to migrate to"
-    ),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override"),
-    tenant_id: str | None = typer.Option("default", "--tenant", "-t", help="Tenant ID"),
-):
+def rotate_key(params: SecurityRotateKeyParams) -> None:
     """Re-encrypt all stored memories under a new master encryption key."""
+    old_key = params.old_key if params.old_key is not None else _prompt_secret("Old key")
+    new_key = params.new_key if params.new_key is not None else _prompt_secret("New key")
+
     _init_backend()
-    resolved_uid = cfg.get_user_id(user_id)
+    resolved_uid = cfg.get_user_id(params.user_id)
     conn = get_db_connection()
     try:
         engine = get_encryption_engine()
@@ -118,7 +151,7 @@ def rotate_key(
             old_master_key=old_key,
             new_master_key=new_key,
             conn=conn,
-            tenant_id=tenant_id,
+            tenant_id=params.tenant_id,
             user_id=resolved_uid,
         )
         out.success(f"Key rotation complete: {res['rotated_count']} memories re-encrypted under new key.")
@@ -126,3 +159,22 @@ def rotate_key(
             out.warning(f"Failed to decrypt {res['failed_count']} memories with the provided old key.")
     finally:
         conn.close()
+
+
+def _encrypt_all_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+    parser.add_argument("--tenant", "-t", dest="tenant_id", default="default", help="Tenant ID")
+
+
+def _rotate_key_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--old-key", default=None, help="Existing master encryption key")
+    parser.add_argument("--new-key", default=None, help="New master encryption key to migrate to")
+    parser.add_argument("--user-id", "-u", default=None, help="User ID override")
+    parser.add_argument("--tenant", "-t", dest="tenant_id", default="default", help="Tenant ID")
+
+
+COMMANDS = {
+    "status": CommandSpec(status, SecurityStatusParams),
+    "encrypt-all": CommandSpec(encrypt_all, SecurityEncryptAllParams, _encrypt_all_parser),
+    "rotate-key": CommandSpec(rotate_key, SecurityRotateKeyParams, _rotate_key_parser),
+}

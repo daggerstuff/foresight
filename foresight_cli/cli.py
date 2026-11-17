@@ -10,13 +10,16 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import contextlib
+import sys
 from enum import StrEnum
 
-import typer
+from pydantic import BaseModel, ConfigDict, Field
 
 from foresight.config import load_dotenv_walkup
 
+from . import completion
 from .commands import (
     analysis,
     benchmark,
@@ -32,7 +35,16 @@ from .commands import (
     system,
     users,
 )
+from .parser import SUPPRESS, UsageError, add_command, add_group, new_parser, program_name, register_commands
 from .utils import config as cfg, output as out
+
+ForesightTUI: type | None
+try:
+    from .tui.app import ForesightTUI as _ForesightTUI
+
+    ForesightTUI = _ForesightTUI
+except ImportError:
+    ForesightTUI = None
 
 
 class OutputMode(StrEnum):
@@ -42,111 +54,56 @@ class OutputMode(StrEnum):
 
 
 _DEFAULT_OUTPUT = OutputMode.human
+_OUTPUT_CHOICES = tuple(mode.value for mode in OutputMode)
 
-
-app = typer.Typer(
-    name="foresight",
-    help="Foresight Memory Management — CLI, TUI, and agent tools.",
-    add_completion=True,
-    rich_markup_mode="rich",
-    pretty_exceptions_enable=False,
-    no_args_is_help=True,
-)
-
-# Register command groups
-app.add_typer(memory.app, name="memory", help="Store, retrieve, search memories.")
-app.add_typer(analysis.app, name="analysis", help="Synthesize, reflect, profile, diff, rollback.")
-app.add_typer(blocks.app, name="blocks", help="Manage context blocks.")
-app.add_typer(curate.app, name="curate", help="Manage curation runs.")
-app.add_typer(benchmark.app, name="benchmark", help="Run Production Value & Proof Benchmark Suite.")
-app.add_typer(security.app, name="security", help="Manage security, sensitivity policies, and AES-256-GCM encryption.")
-app.add_typer(users.app, name="user", help="Provision users and API keys for remote/multi-user access.")
-app.add_typer(eval_cmd.app, name="eval", help="Run evaluation harness (PIX-3953).")
-app.add_typer(
-    system.app,
-    name="system",
-    help="System status, init, doctor, config, stats, temporal, history, maintenance, reprocess, tenant.",
-)
-app.add_typer(rrf.app, name="rrf", help="View and tune RRF retrieval weights.")
-app.add_typer(documents.app, name="documents", help="Manage source documents and chunks.")
-app.add_typer(graph.app, name="graph", help="Graph, entity, and clustering operations.")
-app.add_typer(decay.app, name="decay", help="Decay, strength, recovery, and relevance.")
-
-# Top-level shorthand aliases (most common operations)
-app.command(name="store", rich_help_panel="Quick Commands")(memory.store)
-app.command(name="get", rich_help_panel="Quick Commands")(memory.get)
-app.command(name="list", rich_help_panel="Quick Commands")(memory.list_memories)
-app.command(name="query", rich_help_panel="Quick Commands")(memory.query)
-app.command(name="delete", rich_help_panel="Quick Commands")(memory.delete)
-app.command(name="reinforce", rich_help_panel="Quick Commands")(memory.reinforce)
-app.command(name="search", rich_help_panel="Quick Commands")(memory.search)
-app.command(name="export", rich_help_panel="Quick Commands")(memory.export)
-app.command(name="import", rich_help_panel="Quick Commands")(memory.import_memories)
-app.command(name="status", rich_help_panel="Quick Commands")(system.status)
-app.command(name="init", rich_help_panel="Quick Commands")(system.init)
-app.command(name="doctor", rich_help_panel="Quick Commands")(system.doctor)
-app.command(name="stats", rich_help_panel="Quick Commands")(system.stats)
-app.command(name="config", rich_help_panel="Quick Commands")(system.config)
-app.command(name="synthesize", rich_help_panel="Quick Commands")(analysis.synthesize)
-app.command(name="reflect", rich_help_panel="Quick Commands")(analysis.reflect)
-app.command(name="profile", rich_help_panel="Quick Commands")(analysis.profile)
-app.command(name="prove", rich_help_panel="Quick Commands")(benchmark.run)
-
-
-@app.callback()
-def callback(
-    ctx: typer.Context,
-    *,
-    output: OutputMode | None = typer.Option(
-        None,
-        "--output",
-        "-o",
-        help="Output mode: human (rich), agent (tagged), json (raw JSON)",
-        case_sensitive=False,
+_GROUPS = (
+    ("memory", "Store, retrieve, search memories.", memory),
+    ("analysis", "Synthesize, reflect, profile, diff, rollback.", analysis),
+    ("blocks", "Manage context blocks.", blocks),
+    ("curate", "Manage curation runs.", curate),
+    ("benchmark", "Run Production Value & Proof Benchmark Suite.", benchmark),
+    ("security", "Manage security, sensitivity policies, and AES-256-GCM encryption.", security),
+    ("user", "Provision users and API keys for remote/multi-user access.", users),
+    ("eval", "Run evaluation harness (PIX-3953).", eval_cmd),
+    (
+        "system",
+        "System status, init, doctor, config, stats, temporal, history, maintenance, reprocess, tenant.",
+        system,
     ),
-    agent: bool = typer.Option(False, "--agent", "-a", hidden=True),
-    json_mode: bool = typer.Option(False, "--json", "-j", hidden=True),
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override", hidden=True),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
-):
-    load_dotenv_walkup()
-    if agent:
-        output = OutputMode.agent
-    elif json_mode:
-        output = OutputMode.json
-    elif output is None:
-        output = _DEFAULT_OUTPUT
-    """Foresight Memory Management CLI — TUI, agent tools, and memory operations.
+    ("rrf", "View and tune RRF retrieval weights.", rrf),
+    ("documents", "Manage source documents and chunks.", documents),
+    ("graph", "Graph, entity, and clustering operations.", graph),
+    ("decay", "Decay, strength, recovery, and relevance.", decay),
+)
 
-    [bold]Quick start:[/bold]
-    \n
-      foresight init          # First-time setup
-      foresight status        # Check health
-      foresight store 'hello world' --scope session
-      foresight list
-      foresight tui           # Launch the TUI
-    \n
-    [bold]Output modes:[/bold]
-    \n
-      -o human   Rich output with colors and tables (default)
-      -o agent   Machine-parseable tagged lines, no ANSI, pipe-safe
-      -o json    Pure JSON output
-    """
-    agent = output == OutputMode.agent
-    json_mode = output == OutputMode.json
-    out.configure(
-        mode=output.value,
-        color=True,
-        pipe_safe=agent or json_mode,
-        verbose=verbose,
-    )
+_ALIASES = (
+    ("store", memory, "store"),
+    ("get", memory, "get"),
+    ("list", memory, "list"),
+    ("query", memory, "query"),
+    ("delete", memory, "delete"),
+    ("reinforce", memory, "reinforce"),
+    ("search", memory, "search"),
+    ("export", memory, "export"),
+    ("import", memory, "import"),
+    ("status", system, "status"),
+    ("init", system, "init"),
+    ("doctor", system, "doctor"),
+    ("stats", system, "stats"),
+    ("config", system, "config"),
+    ("synthesize", analysis, "synthesize"),
+    ("reflect", analysis, "reflect"),
+    ("profile", analysis, "profile"),
+    ("prove", benchmark, "run"),
+)
 
-    # Initialize config
-    ctx.obj = {
-        "user_id": cfg.get_user_id(user_id),
-        "agent": agent,
-        "json": json_mode,
-    }
+
+class TuiParams(BaseModel):
+    """Arguments for :func:`tui`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="User ID override")
 
 
 def _decode_tool_result(result: str | dict) -> dict:
@@ -164,36 +121,114 @@ def _decode_tool_result(result: str | dict) -> dict:
     return {"ok": False, "error": {"message": result}}
 
 
-try:
-    from .tui.app import ForesightTUI
-except ImportError:
-    ForesightTUI = None
-
-_tui_err = (
-    "Cannot launch TUI — missing dependency: {e}\n"
-    "Install with: pip install 'foresight[tui]' or: uv pip install 'foresight[tui]'"
-)
-
-
-@app.command()
-def tui(
-    user_id: str | None = typer.Option(None, "--user-id", "-u", help="User ID override", hidden=True),
-):
+def tui(params: TuiParams) -> None:
     """Launch the Foresight interactive TUI (Textual)."""
     if ForesightTUI is None:
         out.error("Cannot launch TUI — missing dependency. Install with: pip install 'foresight[tui]'")
-        raise typer.Exit(1)
+        raise SystemExit(1)
 
     ui_cfg = cfg.ensure_config()
-    resolved_uid = cfg.get_user_id(user_id)
+    resolved_uid = cfg.get_user_id(params.user_id)
     tui_app = ForesightTUI(user_id=resolved_uid, config=ui_cfg)
     with contextlib.suppress(KeyboardInterrupt):
         tui_app.run()
 
 
-# Legacy entry point compatibility
-main = app
+def _tui_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--user-id", "-u", default=None, help=SUPPRESS)
 
 
-if __name__ == "__main__":
-    app()
+def build_parser() -> argparse.ArgumentParser:
+    """Assemble the full command tree."""
+    parser = new_parser(program_name(), "Foresight Memory Management — CLI, TUI, and agent tools.")
+    parser.add_argument(
+        "--output",
+        "-o",
+        dest="global_output",
+        type=str.lower,
+        choices=_OUTPUT_CHOICES,
+        default=None,
+        help="Output mode: human (rich), agent (tagged), json (raw JSON)",
+    )
+    parser.add_argument("--agent", "-a", dest="global_agent", action="store_true", help=SUPPRESS)
+    parser.add_argument("--json", "-j", dest="global_json", action="store_true", help=SUPPRESS)
+    parser.add_argument("--user-id", "-u", dest="global_user_id", default=None, help=SUPPRESS)
+    parser.add_argument("--verbose", "-v", dest="global_verbose", action="store_true", help="Verbose output")
+    parser.add_argument(
+        "--install-completion",
+        dest="global_install_completion",
+        action="store_true",
+        default=None,
+        help="Install completion for the current shell.",
+    )
+    parser.add_argument(
+        "--show-completion",
+        dest="global_show_completion",
+        metavar="SHELL",
+        nargs="?",
+        const="",
+        default=None,
+        help="Show completion for the current shell, to copy it or customize the installation.",
+    )
+
+    subparsers = parser.add_subparsers(required=True, metavar="COMMAND")
+    _tui_parser(add_command(subparsers, "tui", tui, TuiParams))
+    for name, summary, module in _GROUPS:
+        register_commands(add_group(subparsers, name, summary), module.COMMANDS)
+    for name, module, command in _ALIASES:
+        register_commands(subparsers, module.COMMANDS, {name: command})
+    return parser
+
+
+def _configure(namespace: argparse.Namespace) -> None:
+    load_dotenv_walkup()
+    mode = OutputMode(namespace.global_output) if namespace.global_output else _DEFAULT_OUTPUT
+    if namespace.global_agent:
+        mode = OutputMode.agent
+    elif namespace.global_json:
+        mode = OutputMode.json
+    out.configure(
+        mode=mode.value,
+        color=True,
+        pipe_safe=mode in (OutputMode.agent, OutputMode.json),
+        verbose=namespace.global_verbose,
+    )
+    cfg.get_user_id(namespace.global_user_id)
+
+
+def _completion_request(parser: argparse.ArgumentParser, arguments: list[str]) -> int | None:
+    """Handle the completion flags eagerly, before command resolution."""
+    for index, word in enumerate(arguments):
+        if word == "--install-completion":
+            completion.install(parser, None)
+            return 0
+        if word == "--show-completion" or word.startswith("--show-completion="):
+            shell = word.partition("=")[2] or None
+            if shell is None and index + 1 < len(arguments) and not arguments[index + 1].startswith("-"):
+                shell = arguments[index + 1]
+            sys.stdout.write(completion.shell_script(parser, shell))
+            return 0
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse ``argv``, dispatch the selected command, and return its exit status."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    if not arguments:
+        parser.print_help()
+        return 2
+    handled = _completion_request(parser, arguments)
+    if handled is not None:
+        return handled
+    namespace, extras = parser.parse_known_args(arguments)
+    if extras:
+        namespace.command_parser.error(f"unrecognized arguments: {' '.join(extras)}")
+    _configure(namespace)
+    params_type = namespace.params_type
+    params = params_type(**{name: getattr(namespace, name) for name in params_type.model_fields})
+    try:
+        namespace.handler(params)
+    except UsageError as exc:
+        namespace.command_parser.error(str(exc))
+    return 0
