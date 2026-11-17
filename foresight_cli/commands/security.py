@@ -30,7 +30,7 @@ class SecurityEncryptAllParams(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     user_id: str | None = Field(default=None, description="User ID override")
-    tenant_id: str | None = Field(default="default", description="Tenant ID")
+    tenant_id: str = Field(default="default", description="Tenant ID")
 
 
 class SecurityRotateKeyParams(BaseModel):
@@ -41,7 +41,7 @@ class SecurityRotateKeyParams(BaseModel):
     old_key: str | None = Field(default=None, description="Existing master encryption key")
     new_key: str | None = Field(default=None, description="New master encryption key to migrate to")
     user_id: str | None = Field(default=None, description="User ID override")
-    tenant_id: str | None = Field(default="default", description="Tenant ID")
+    tenant_id: str = Field(default="default", description="Tenant ID")
 
 
 def _init_backend() -> None:
@@ -130,9 +130,7 @@ def encrypt_all(params: SecurityEncryptAllParams) -> None:
                 encrypted_count += 1
 
         conn.commit()
-        out.success(
-            f"Encrypted {encrypted_count} memories at rest (AES-256-GCM). Already encrypted: {already_encrypted}."
-        )
+        out.done(f"Encrypted {encrypted_count} memories at rest (AES-256-GCM). Already encrypted: {already_encrypted}.")
     finally:
         conn.close()
 
@@ -154,9 +152,9 @@ def rotate_key(params: SecurityRotateKeyParams) -> None:
             tenant_id=params.tenant_id,
             user_id=resolved_uid,
         )
-        out.success(f"Key rotation complete: {res['rotated_count']} memories re-encrypted under new key.")
+        out.done(f"Key rotation complete: {res['rotated_count']} memories re-encrypted under new key.")
         if res.get("failed_count"):
-            out.warning(f"Failed to decrypt {res['failed_count']} memories with the provided old key.")
+            out.warn(f"Failed to decrypt {res['failed_count']} memories with the provided old key.")
     finally:
         conn.close()
 
