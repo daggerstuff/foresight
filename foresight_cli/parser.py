@@ -16,7 +16,57 @@ from typing import NamedTuple
 
 from pydantic import BaseModel
 
-FORMATTER = argparse.RawDescriptionHelpFormatter
+
+class HelpDefaultsFormatter(argparse.RawDescriptionHelpFormatter):
+    """Append the Typer-era ``[default: X]`` suffix to an option's help text.
+
+    ``argparse`` never renders a default on its own, and
+    ``ArgumentDefaultsHelpFormatter`` writes ``(default: None)`` for every
+    argument that has none. This formatter annotates only options whose default
+    is a real value: an absent default (``None``) stays silent, and a boolean
+    flag stays bare because the flag itself already states its default.
+    """
+
+    def _get_help_string(self, action: argparse.Action) -> str:
+        text = action.help if isinstance(action.help, str) else ""
+        annotation = _default_annotation(action)
+        if annotation is None:
+            return text
+        return f"{text} {annotation}"
+
+    def _split_lines(self, text: str, width: int) -> list[str]:
+        body, annotation = _split_annotation(text)
+        if annotation is None:
+            return super()._split_lines(text, width)
+        lines = super()._split_lines(body, width) if body else []
+        if not lines:
+            return [annotation]
+        merged = f"{lines[-1]} {annotation}"
+        if len(merged) <= width:
+            return [*lines[:-1], merged]
+        return [*lines, annotation]
+
+
+def _default_annotation(action: argparse.Action) -> str | None:
+    """Return the default to display for ``action``, or ``None`` to display nothing."""
+    if not action.option_strings:
+        return None
+    default = action.default
+    if default is None or default is argparse.SUPPRESS or isinstance(default, bool):
+        return None
+    return f"[default: {default}]"
+
+
+def _split_annotation(text: str) -> tuple[str, str | None]:
+    """Separate a trailing ``[default: X]`` annotation from the help text before it."""
+    marker = " [default: "
+    index = text.rfind(marker)
+    if index < 0 or not text.endswith("]"):
+        return text, None
+    return text[:index], text[index + 1 :]
+
+
+FORMATTER = HelpDefaultsFormatter
 SUPPRESS = argparse.SUPPRESS
 
 
