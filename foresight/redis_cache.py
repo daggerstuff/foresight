@@ -47,7 +47,7 @@ from typing import Any
 
 import redis
 
-from .narrative_cache import NarrativeCache
+from .narrative_cache import NarrativeCache, NarrativeScope
 
 DEFAULT_PREFIX = "foresight"
 DEFAULT_MAX_ENTRIES = 10_000
@@ -131,36 +131,27 @@ class RedisCache:
             self._hits += 1
             return str(value)
 
-    def put(
-        self,
-        report_id: str,
-        narrative: str,
-        *,
-        tenant_id: str,
-        user_id: str,
-        model_version: str,
-        insights_hash: str,
-    ) -> None:
+    def put(self, report_id: str, narrative: str, scope: NarrativeScope) -> None:
         """Insert or replace a cached narrative and enforce size bounds."""
         NarrativeCache._validate_parts(
             report_id=report_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            model_version=model_version,
-            insights_hash=insights_hash,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            model_version=scope.model_version,
+            insights_hash=scope.insights_hash,
         )
         if not isinstance(narrative, str):
             raise TypeError("narrative must be a string")
 
         cache_key = NarrativeCache._cache_key(
-            tenant_id=tenant_id,
-            user_id=user_id,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
             report_id=report_id,
-            model_version=model_version,
-            insights_hash=insights_hash,
+            model_version=scope.model_version,
+            insights_hash=scope.insights_hash,
         )
-        entry_key = self._entry_key(tenant_id, user_id, cache_key)
-        zset_key = self._zset_key(tenant_id, user_id)
+        entry_key = self._entry_key(scope.tenant_id, scope.user_id, cache_key)
+        zset_key = self._zset_key(scope.tenant_id, scope.user_id)
         now = time.time()
 
         with self._lock:
@@ -170,7 +161,7 @@ class RedisCache:
             # Give the auxiliary zset a longer TTL so unused shards don't
             # accumulate indefinitely when a tenant goes idle.
             self._client.expire(zset_key, max(int(self.ttl_seconds), 60))
-            self._evict_lru(tenant_id, user_id)
+            self._evict_lru(scope.tenant_id, scope.user_id)
 
     def clear(self, tenant_id: str | None = None) -> int:
         """Clear all cache entries, or only entries for one tenant."""

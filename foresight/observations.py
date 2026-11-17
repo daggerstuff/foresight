@@ -28,7 +28,7 @@ from typing import Any
 
 from .enhanced_synthesizer import EnhancedMemorySynthesizer
 from .memory_types import MemoryObject
-from .reflect import _connect, _fetch_all, _fetch_one
+from .reflect import UserScope, _connect, _fetch_all, _fetch_one
 from .sql_helpers import join_sql_parts
 
 logger = logging.getLogger("foresight_observations")
@@ -262,13 +262,10 @@ def _upsert_observation(
 
 
 def curate_observations(
+    scope: UserScope,
     *,
-    user_id: str,
-    tenant_id: str,
     category: str | None = None,
     limit: int = 200,
-    agent_id: str | None = None,
-    project: str | None = None,
 ) -> dict[str, Any]:
     """Scan recent memories and upsert evidence-linked observations.
 
@@ -277,13 +274,15 @@ def curate_observations(
     detects recurring patterns, and refines existing observations rather
     than overwriting them.
     """
+    user_id = scope.user_id
+    tenant_id = scope.tenant_id
     t0 = time.perf_counter()
     sql = (
         "SELECT id, content, category, scope, retention, created_at, tags "
         "FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 AND is_latest = 1"
     )
     params: list[Any] = [user_id, tenant_id]
-    ns_frag, ns_params = _ns_clause(agent_id, project)
+    ns_frag, ns_params = _ns_clause(scope.agent_id, scope.project)
     sql += ns_frag
     params.extend(ns_params)
     if category:
@@ -299,9 +298,15 @@ def curate_observations(
     observations: list[dict[str, Any]] = []
     for candidate in candidates:
         before = _find_observation(
-            candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project
+            candidate["pattern_key"],
+            user_id=user_id,
+            tenant_id=tenant_id,
+            agent_id=scope.agent_id,
+            project=scope.project,
         )
-        obs = _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project)
+        obs = _upsert_observation(
+            candidate, user_id=user_id, tenant_id=tenant_id, agent_id=scope.agent_id, project=scope.project
+        )
         observations.append(obs)
         if before is None:
             created += 1
@@ -332,16 +337,15 @@ def _recency_factor(last_refined_at: str | None, now: datetime) -> float:
 
 
 def list_observations(
+    scope: UserScope,
     *,
-    user_id: str,
-    tenant_id: str,
     status: str = "active",
     limit: int = 50,
-    agent_id: str | None = None,
-    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """List observations for a scope, ranked by confidence * recency."""
-    frag, ns_params = _ns_clause(agent_id, project)
+    user_id = scope.user_id
+    tenant_id = scope.tenant_id
+    frag, ns_params = _ns_clause(scope.agent_id, scope.project)
     if status == "active":
         rows = _fetch_all(
             join_sql_parts(

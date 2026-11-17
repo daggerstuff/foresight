@@ -477,6 +477,22 @@ class SemanticSearchResult:
         }
 
 
+@dataclass(frozen=True)
+class _VectorQuery:
+    """One already-embedded query, resolved to a single tenant/user/provider lane.
+
+    The ANN and scan paths take the same six values; passing them as one value
+    keeps the vector next to the scope it was validated for.
+    """
+
+    vector: list[float]
+    tenant_id: str
+    user_id: str
+    provider: str
+    limit: int
+    min_score: float
+
+
 @dataclass
 class SemanticSearchOptions:
     """Options for semantic search."""
@@ -779,16 +795,7 @@ class SemanticSearch:
             else:
                 conn.close()
 
-    def _search_ann(
-        self,
-        conn: Any,
-        query_vec: list[float],
-        tid: str,
-        user_id: str,
-        prov: str,
-        limit: int,
-        min_score: float,
-    ) -> list[SemanticMatch]:
+    def _search_ann(self, conn: Any, query: _VectorQuery) -> list[SemanticMatch]:
         """ANN query over the pgvector HNSW index (384-dim rows only).
 
         ``<=>`` is pgvector's cosine distance; the SQL converts it to a
@@ -797,7 +804,7 @@ class SemanticSearch:
         restricts the cast to ``dimension = 384`` rows, so mixed-dimension
         tables never feed wrong-width vectors into it.
         """
-        literal = _vector_literal(query_vec)
+        literal = _vector_literal(query.vector)
         rows = conn.execute(
             """
             SELECT memory_id,
@@ -810,13 +817,13 @@ class SemanticSearch:
             ORDER BY embedding::vector(384) <=> ?::vector(384)
             LIMIT ?
             """,
-            (literal, tid, user_id, prov, literal, min_score, literal, limit),
+            (literal, query.tenant_id, query.user_id, query.provider, literal, query.min_score, literal, query.limit),
         ).fetchall()
         return [
             SemanticMatch(
                 memory_id=r["memory_id"],
                 score=float(r["score"]),
-                provider=prov,
+                provider=query.provider,
                 dimension=ANN_DIM,
             )
             for r in rows
@@ -860,12 +867,20 @@ class SemanticSearch:
         except EmbeddingDimensionError as exc:
             raise SemanticSearchError(str(exc)) from exc
 
+        vector_query = _VectorQuery(
+            vector=query_vec,
+            tenant_id=tid,
+            user_id=user_id,
+            provider=prov,
+            limit=limit,
+            min_score=min_score,
+        )
         conn = self._connect()
         try:
             if self._pgvector_ready and embedder.dimension == ANN_DIM:
-                matches = self._search_ann(conn, query_vec, tid, user_id, prov, limit, min_score)
+                matches = self._search_ann(conn, vector_query)
             else:
-                matches = self._search_scan(conn, query_vec, tid, user_id, prov, min_score)
+                matches = self._search_scan(conn, vector_query)
         finally:
             pool = getattr(conn, "_pool", None)
             if pool is not None:
@@ -881,15 +896,7 @@ class SemanticSearch:
             matches=matches[:limit],
         )
 
-    def _search_scan(
-        self,
-        conn: Any,
-        query_vec: list[float],
-        tid: str,
-        user_id: str,
-        prov: str,
-        min_score: float,
-    ) -> list[SemanticMatch]:
+    def _search_scan(self, conn: Any, query: _VectorQuery) -> list[SemanticMatch]:
         """Python cosine scan over stored float32 blobs (non-ANN fallback)."""
         rows = conn.execute(
             """
@@ -897,28 +904,28 @@ class SemanticSearch:
             FROM memory_embeddings
             WHERE tenant_id = ? AND user_id = ? AND provider = ?
             """,
-            (tid, user_id, prov),
+            (query.tenant_id, query.user_id, query.provider),
         ).fetchall()
 
         matches: list[SemanticMatch] = []
         for r in rows:
             dim = int(r["dimension"])
-            if dim != len(query_vec):
+            if dim != len(query.vector):
                 logger.warning(
                     "Skipping memory %s: dim %d != embedder dim %d",
                     r["memory_id"],
                     dim,
-                    len(query_vec),
+                    len(query.vector),
                 )
                 continue
             vec = deserialize_vector(bytes(r["vector"]), dim)
-            score = cosine_similarity(query_vec, vec)
-            if score >= min_score:
+            score = cosine_similarity(query.vector, vec)
+            if score >= query.min_score:
                 matches.append(
                     SemanticMatch(
                         memory_id=r["memory_id"],
                         score=score,
-                        provider=prov,
+                        provider=query.provider,
                         dimension=dim,
                     )
                 )

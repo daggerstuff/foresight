@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -37,16 +38,29 @@ UNAVAILABLE_REMAINING_FALLBACK = 9999
 _INVALIDATE_CHANNEL = "foresight:embedding:invalidate"
 
 
-def _make_embed_key(tid: str, uid: str, provider: str, text_hash: str) -> str:
-    return f"{_KEY_PREFIX}:{tid}:{uid}:embed:{provider}:{text_hash}"
-
-
 def _make_rate_key(tid: str, uid: str) -> str:
     return f"{_KEY_PREFIX}:{tid}:{uid}:rate"
 
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(frozen=True)
+class EmbeddingScope:
+    """The (tenant, user, provider) namespace an embedding is cached under.
+
+    The three values only ever travel together — they are the address of the
+    cache entry — so they are passed as one object rather than as three
+    positional strings a caller can transpose by accident.
+    """
+
+    tenant_id: str
+    user_id: str
+    provider: str
+
+    def key_for(self, text: str) -> str:
+        return f"{_KEY_PREFIX}:{self.tenant_id}:{self.user_id}:embed:{self.provider}:{_hash_text(text)}"
 
 
 class RedisCompanion:
@@ -98,11 +112,11 @@ class RedisCompanion:
     # Embedding cache
     # ------------------------------------------------------------------
 
-    async def embedding_cache_get(self, text: str, tenant_id: str, user_id: str, provider: str) -> list[float] | None:
+    async def embedding_cache_get(self, text: str, scope: EmbeddingScope) -> list[float] | None:
         """Return cached embedding vector for *text*, or ``None``."""
         if not await self._ensure_connected():
             return None
-        key = _make_embed_key(tenant_id, user_id, provider, _hash_text(text))
+        key = scope.key_for(text)
         try:
             raw = await self._redis.get(key)
             if raw is None:
@@ -115,15 +129,13 @@ class RedisCompanion:
         self,
         text: str,
         vector: list[float],
-        tenant_id: str,
-        user_id: str,
-        provider: str,
+        scope: EmbeddingScope,
         ttl: int = _EMBED_TTL,
     ) -> None:
         """Store *vector* in cache with *ttl* seconds."""
         if not await self._ensure_connected():
             return
-        key = _make_embed_key(tenant_id, user_id, provider, _hash_text(text))
+        key = scope.key_for(text)
         with contextlib.suppress(Exception):
             await self._redis.setex(key, ttl, json.dumps(vector))
 

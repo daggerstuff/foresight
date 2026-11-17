@@ -156,6 +156,22 @@ class ExtractionResult:
         }
 
 
+@dataclass(frozen=True)
+class EntityExtractorConfig:
+    """LLM settings for :class:`EntityExtractor`.
+
+    Every field defaults to "read the environment", so ``EntityExtractorConfig()``
+    behaves exactly like the old all-defaults constructor.
+    """
+
+    api_key: str | None = None
+    model: str | None = None
+    max_tokens: int = DEFAULT_EXTRACTION_MAX_TOKENS
+    temperature: float = 0.1
+    provider: str | None = None
+    base_url: str | None = None
+
+
 class EntityExtractor:
     """
     LLM-based entity and relationship extractor.
@@ -254,35 +270,20 @@ Output (raw JSON only, no markdown):
         {"not", "n't", "no", "never", "neither", "nor", "without", "hardly", "barely"}
     )
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str | None = None,
-        max_tokens: int = DEFAULT_EXTRACTION_MAX_TOKENS,
-        temperature: float = 0.1,
-        provider: str | None = None,
-        base_url: str | None = None,
-    ) -> None:
+    def __init__(self, config: EntityExtractorConfig | None = None) -> None:
         """
         Initialize entity extractor.
 
         Args:
-            api_key: LLM API key. Reads FORESIGHT_LLM_API_KEY, then
-                     ANTHROPIC_API_KEY / OPENAI_API_KEY env vars if not provided.
-            model: Model to use for LLM extraction. Falls back to
-                   FORESIGHT_LLM_MODEL env var, then provider default.
-            max_tokens: Max tokens for LLM response. The default leaves room for
-                the full entity/relationship array; a smaller budget truncates
-                the JSON mid-document.
-            temperature: Sampling temperature (low = more deterministic).
-            provider: LLM provider ("anthropic" or "openai"). Reads
-                      FORESIGHT_LLM_PROVIDER env var if not provided.
-                      "openai" covers NVIDIA NIM, Azure OpenAI, Together AI, etc.
-            base_url: Custom API base URL for OpenAI-compatible providers.
-                      Reads FORESIGHT_LLM_BASE_URL env var if not provided.
+            config: LLM settings; see :class:`EntityExtractorConfig`. Every field
+                falls back to the environment, so ``EntityExtractor()`` is the
+                all-defaults form.
         """
-        self.provider = (provider or os.environ.get("FORESIGHT_LLM_PROVIDER", "anthropic")).lower().strip()
-        self.base_url = base_url or os.environ.get("FORESIGHT_LLM_BASE_URL", "").strip()
+        cfg = config or EntityExtractorConfig()
+        api_key = cfg.api_key
+        model = cfg.model
+        self.provider = (cfg.provider or os.environ.get("FORESIGHT_LLM_PROVIDER", "anthropic")).lower().strip()
+        self.base_url = cfg.base_url or os.environ.get("FORESIGHT_LLM_BASE_URL", "").strip()
         self.api_key = (
             api_key
             or os.environ.get("FORESIGHT_LLM_API_KEY", "")
@@ -298,8 +299,8 @@ Output (raw JSON only, no markdown):
             self.model = "gpt-4o-mini"
         else:
             self.model = "claude-3-haiku-20240307"
-        self.max_tokens = max_tokens
-        self.temperature = temperature
+        self.max_tokens = cfg.max_tokens
+        self.temperature = cfg.temperature
 
     def _generate_entity_id(self, name: str, entity_type: str) -> str:
         """Generate a deterministic entity ID for deduplication."""
@@ -628,7 +629,9 @@ class _EntityExtractorSingleton:
         """Get or create the global entity extractor instance (thread-safe)."""
         with cls._lock:
             if cls._instance is None:
-                cls._instance = EntityExtractor(api_key=api_key, model=model, provider=provider, base_url=base_url)
+                cls._instance = EntityExtractor(
+                    EntityExtractorConfig(api_key=api_key, model=model, provider=provider, base_url=base_url)
+                )
             return cls._instance
 
     @classmethod

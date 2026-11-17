@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -22,12 +23,12 @@ import foresight.config as config_module
 import foresight.connection_pool as conn_pool_module
 import foresight.server as server_module
 import foresight.subconscious as subconscious_module
-from foresight.capture import get_capture_pipeline, reset_capture_pipeline
+from foresight.capture import CaptureOptions, get_capture_pipeline, reset_capture_pipeline
 from foresight.connection_pool import reset_pool
 from foresight.memory_gc import tombstone_raw_events
 from foresight.memory_relationships import reset_memory_relationship_store
 from foresight.server import init_db
-from foresight.temporal_queries import TemporalQueryBuilder
+from foresight.temporal_queries import TemporalFilters, TemporalQueryBuilder
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 from foresight.truth_resolution import detect_and_mark_supersessions
 from tests._sqlite_backend import SqliteBackend
@@ -73,23 +74,23 @@ def _memory_id(content, salt=""):
     return hashlib.sha256(f"{content}{salt}".encode()).hexdigest()[:16]
 
 
-def _store_memory(
-    conn,
-    memory_id,
-    content,
-    user_id,
-    tenant_id,
-    created_at,
-    *,
-    is_latest=1,
-    valid_from=None,
-    valid_until=None,
-    category="fact",
-):
+@dataclass(frozen=True)
+class _MemoryRow:
+    """Scope, timestamps and bitemporal columns of one seeded memory row."""
+
+    user_id: str
+    tenant_id: str
+    created_at: str
+    is_latest: int = 1
+    valid_from: str | None = None
+    valid_until: str | None = None
+    category: str = "fact"
+
+
+def _store_memory(conn, memory_id, content, row: _MemoryRow):
     # Bitemporal convention: a fact is valid from the moment it is recorded unless
     # an explicit validity interval is supplied.
-    if valid_from is None:
-        valid_from = created_at
+    valid_from = row.created_at if row.valid_from is None else row.valid_from
     conn.execute(
         """INSERT INTO memories
         (id, content, user_id, tenant_id, category, scope, retention, created_at, updated_at,
@@ -98,14 +99,14 @@ def _store_memory(
         (
             memory_id,
             content,
-            user_id,
-            tenant_id,
-            category,
-            created_at,
-            created_at,
-            is_latest,
+            row.user_id,
+            row.tenant_id,
+            row.category,
+            row.created_at,
+            row.created_at,
+            row.is_latest,
             valid_from,
-            valid_until,
+            row.valid_until,
         ),
     )
     conn.commit()
@@ -126,7 +127,7 @@ class TestRawLayerAppendOnly:
             messages=messages,
             user_id="_test_user_",
             tenant_id="_test_",
-            infer=False,
+            options=CaptureOptions(infer=False),
         )
         assert stats.stored > 0
 
@@ -165,7 +166,7 @@ class TestRawLayerAppendOnly:
             messages=messages,
             user_id="_test_user_",
             tenant_id="_test_",
-            infer=False,
+            options=CaptureOptions(infer=False),
         )
 
         with _conn(ml_db) as conn:
@@ -199,10 +200,12 @@ class TestSupersessionInvariants:
                 conn,
                 old_id,
                 "I love going to therapy every week.",
-                "_test_user_",
-                "_test_",
-                old_created,
-                is_latest=1,
+                _MemoryRow(
+                    user_id="_test_user_",
+                    tenant_id="_test_",
+                    created_at=old_created,
+                    is_latest=1,
+                ),
             )
 
             new_created = _iso_ago(minutes=1)
@@ -210,10 +213,12 @@ class TestSupersessionInvariants:
                 conn,
                 new_id,
                 "I hate going to therapy every week.",
-                "_test_user_",
-                "_test_",
-                new_created,
-                is_latest=1,
+                _MemoryRow(
+                    user_id="_test_user_",
+                    tenant_id="_test_",
+                    created_at=new_created,
+                    is_latest=1,
+                ),
             )
 
             matches = detect_and_mark_supersessions(
@@ -251,23 +256,27 @@ class TestSupersessionInvariants:
                 conn,
                 _memory_id("dark"),
                 "I prefer dark mode.",
-                "_test_user_",
-                "_test_",
-                "2026-01-01T00:00:00+00:00",
-                is_latest=0,
-                valid_from="2026-01-01T00:00:00+00:00",
-                valid_until="2026-02-01T00:00:00+00:00",
+                _MemoryRow(
+                    user_id="_test_user_",
+                    tenant_id="_test_",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    is_latest=0,
+                    valid_from="2026-01-01T00:00:00+00:00",
+                    valid_until="2026-02-01T00:00:00+00:00",
+                ),
             )
             _store_memory(
                 conn,
                 _memory_id("light"),
                 "I prefer light mode.",
-                "_test_user_",
-                "_test_",
-                "2026-02-01T00:00:00+00:00",
-                is_latest=1,
-                valid_from="2026-02-01T00:00:00+00:00",
-                valid_until=None,
+                _MemoryRow(
+                    user_id="_test_user_",
+                    tenant_id="_test_",
+                    created_at="2026-02-01T00:00:00+00:00",
+                    is_latest=1,
+                    valid_from="2026-02-01T00:00:00+00:00",
+                    valid_until=None,
+                ),
             )
 
             rows = conn.execute(
@@ -293,9 +302,19 @@ class TestTemporalReconstruction:
 
         with _conn(ml_db) as conn:
             old_created = _iso_ago(minutes=5)
-            _store_memory(conn, old_id, "I love therapy.", "_test_user_", "_test_", old_created)
+            _store_memory(
+                conn,
+                old_id,
+                "I love therapy.",
+                _MemoryRow(user_id="_test_user_", tenant_id="_test_", created_at=old_created),
+            )
             new_created = _iso_ago(minutes=1)
-            _store_memory(conn, new_id, "I hate therapy.", "_test_user_", "_test_", new_created)
+            _store_memory(
+                conn,
+                new_id,
+                "I hate therapy.",
+                _MemoryRow(user_id="_test_user_", tenant_id="_test_", created_at=new_created),
+            )
             detect_and_mark_supersessions(conn, new_id, "I hate therapy.", "_test_user_", "_test_")
 
             older = conn.execute("SELECT id, valid_from, valid_until FROM memories WHERE id = ?", (old_id,)).fetchone()
@@ -311,7 +330,7 @@ class TestTemporalReconstruction:
             results = builder.get_memories_as_of_time(
                 user_id="_test_user_",
                 target_date=datetime.fromisoformat(mid),
-                min_importance=0.0,
+                filters=TemporalFilters(min_importance=0.0),
             )
         finally:
             reset_tenant_context()
@@ -327,8 +346,18 @@ class TestTemporalReconstruction:
         new_id = _memory_id("I hate therapy.")
 
         with _conn(ml_db) as conn:
-            _store_memory(conn, old_id, "I love therapy.", "_test_user_", "_test_", _iso_ago(minutes=5))
-            _store_memory(conn, new_id, "I hate therapy.", "_test_user_", "_test_", _iso_ago(minutes=1))
+            _store_memory(
+                conn,
+                old_id,
+                "I love therapy.",
+                _MemoryRow(user_id="_test_user_", tenant_id="_test_", created_at=_iso_ago(minutes=5)),
+            )
+            _store_memory(
+                conn,
+                new_id,
+                "I hate therapy.",
+                _MemoryRow(user_id="_test_user_", tenant_id="_test_", created_at=_iso_ago(minutes=1)),
+            )
             detect_and_mark_supersessions(conn, new_id, "I hate therapy.", "_test_user_", "_test_")
 
             newer = conn.execute("SELECT id, valid_from FROM memories WHERE id = ?", (new_id,)).fetchone()
@@ -339,7 +368,7 @@ class TestTemporalReconstruction:
             results = builder.get_memories_as_of_time(
                 user_id="_test_user_",
                 target_date=datetime.fromisoformat(newer["valid_from"]),
-                min_importance=0.0,
+                filters=TemporalFilters(min_importance=0.0),
             )
         finally:
             reset_tenant_context()
@@ -356,9 +385,11 @@ class TestTemporalReconstruction:
                 conn,
                 mid,
                 "My therapist is Dr. Smith.",
-                "_test_user_",
-                "_test_",
-                "2026-01-01T00:00:00+00:00",
+                _MemoryRow(
+                    user_id="_test_user_",
+                    tenant_id="_test_",
+                    created_at="2026-01-01T00:00:00+00:00",
+                ),
             )
             conn.execute(
                 "INSERT INTO memory_versions (id, memory_id, tenant_id, content, version, created_at) "
@@ -380,7 +411,7 @@ class TestTemporalReconstruction:
             results = builder.get_memories_as_of_time(
                 user_id="_test_user_",
                 target_date=datetime.fromisoformat("2026-02-01T00:00:00+00:00"),
-                min_importance=0.0,
+                filters=TemporalFilters(min_importance=0.0),
             )
         finally:
             reset_tenant_context()
@@ -404,14 +435,14 @@ class TestTenantIsolationInvariants:
             messages=tenant_a_messages,
             user_id="_user_a_",
             tenant_id="_tenant_a_",
-            infer=False,
+            options=CaptureOptions(infer=False),
         )
         pipeline.run(
             session_id="sb",
             messages=tenant_b_messages,
             user_id="_user_b_",
             tenant_id="_tenant_b_",
-            infer=False,
+            options=CaptureOptions(infer=False),
         )
 
         with _conn(ml_db) as conn:
@@ -444,17 +475,21 @@ class TestTenantIsolationInvariants:
                 conn,
                 _memory_id("tenant-a"),
                 "Tenant A private note.",
-                "_user_a_",
-                "_tenant_a_",
-                "2026-01-01T00:00:00+00:00",
+                _MemoryRow(
+                    user_id="_user_a_",
+                    tenant_id="_tenant_a_",
+                    created_at="2026-01-01T00:00:00+00:00",
+                ),
             )
             _store_memory(
                 conn,
                 _memory_id("tenant-b"),
                 "Tenant B private note.",
-                "_user_b_",
-                "_tenant_b_",
-                "2026-01-01T00:00:00+00:00",
+                _MemoryRow(
+                    user_id="_user_b_",
+                    tenant_id="_tenant_b_",
+                    created_at="2026-01-01T00:00:00+00:00",
+                ),
             )
 
         builder = TemporalQueryBuilder(db_path=str(ml_db))
@@ -465,7 +500,7 @@ class TestTenantIsolationInvariants:
             a_results = builder.get_memories_as_of_time(
                 user_id="_user_a_",
                 target_date=datetime.fromisoformat("2099-01-01T00:00:00+00:00"),
-                min_importance=0.0,
+                filters=TemporalFilters(min_importance=0.0),
             )
         finally:
             reset_tenant_context()
@@ -476,7 +511,7 @@ class TestTenantIsolationInvariants:
             b_results = builder.get_memories_as_of_time(
                 user_id="_user_b_",
                 target_date=datetime.fromisoformat("2099-01-01T00:00:00+00:00"),
-                min_importance=0.0,
+                filters=TemporalFilters(min_importance=0.0),
             )
         finally:
             reset_tenant_context()
@@ -501,7 +536,7 @@ class TestTombstoneInvariants:
             messages=messages,
             user_id="_test_user_",
             tenant_id="_test_",
-            infer=False,
+            options=CaptureOptions(infer=False),
         )
 
         with _conn(ml_db) as conn:

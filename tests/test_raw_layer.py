@@ -9,7 +9,7 @@ import foresight.connection_pool as conn_pool_module
 import foresight.server as server_module
 import foresight.subconscious as subconscious_module
 from foresight import config as foresight_config
-from foresight.capture import get_capture_pipeline, reset_capture_pipeline
+from foresight.capture import CaptureOptions, get_capture_pipeline, reset_capture_pipeline
 from foresight.connection_pool import get_pool, reset_pool
 from foresight.memory_gc import GCConfig, MemoryGC, tombstone_raw_events
 from foresight.server import init_db
@@ -141,7 +141,7 @@ class TestCapturePersistence:
             {"role": "assistant", "content": "That is a solid practice for maintainable code."},
             {"role": "user", "content": "Testing first helps me catch regressions early."},
         ]
-        pipeline.run("sess_prov", msgs, "_test_user_", tenant_id="_test_", infer=False)
+        pipeline.run("sess_prov", msgs, "_test_user_", tenant_id="_test_", options=CaptureOptions(infer=False))
 
         pool = get_pool(pipeline.db_path)
         conn = pool.acquire()
@@ -187,8 +187,8 @@ class TestCapturePersistence:
             {"role": "assistant", "content": "Agreed."},
             {"role": "user", "content": "No other tenant should see this transcript."},
         ]
-        pipeline.run("sess_tenant_a", msgs, "user_a", tenant_id="tenant_a", infer=False)
-        pipeline.run("sess_tenant_b", msgs, "user_b", tenant_id="tenant_b", infer=False)
+        pipeline.run("sess_tenant_a", msgs, "user_a", tenant_id="tenant_a", options=CaptureOptions(infer=False))
+        pipeline.run("sess_tenant_b", msgs, "user_b", tenant_id="tenant_b", options=CaptureOptions(infer=False))
 
         assert _count_raw_events(pipeline.db_path, tenant_id="tenant_a") == len(msgs)
         assert _count_raw_events(pipeline.db_path, tenant_id="tenant_b") == len(msgs)
@@ -226,7 +226,7 @@ class TestTombstone:
             {"role": "user", "content": "This sensitive message should be erasable."},
             {"role": "assistant", "content": "Understood."},
         ]
-        pipeline.run("sess_erase", msgs, "_test_user_", tenant_id="_test_", infer=False)
+        pipeline.run("sess_erase", msgs, "_test_user_", tenant_id="_test_", options=CaptureOptions(infer=False))
 
         assert _count_raw_events(pipeline.db_path, tenant_id="_test_", session_id="sess_erase") == len(msgs)
 

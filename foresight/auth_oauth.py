@@ -27,7 +27,8 @@ import logging
 import secrets
 import time
 from contextlib import suppress
-from typing import Final, Literal
+from dataclasses import dataclass
+from typing import Any, Final, Literal
 from urllib.parse import urlencode
 
 from fastmcp.server.auth import OAuthProvider
@@ -71,6 +72,54 @@ AUTH_CODE_TTL = 600  # seconds
 OAUTH_SCHEME: Final[Literal["Bearer"]] = "Bearer"
 
 
+@dataclass(frozen=True)
+class _StoredTable:
+    """Shape of one durable table, used to re-hydrate an in-memory dict.
+
+    The reload loop is identical for clients, codes and tokens; only the SQL,
+    the pydantic model and the two column names differ, so they travel
+    together as one descriptor.
+    """
+
+    query: str
+    model_cls: type[Any]
+    key: str
+    json_key: str
+    kind_key: str | None = None
+
+
+_CLIENTS_TABLE = _StoredTable(
+    "SELECT client_id, client_info_json FROM oauth_clients",
+    OAuthClientInformationFull,
+    "client_id",
+    "client_info_json",
+)
+_AUTH_CODES_TABLE = _StoredTable(
+    "SELECT code, code_json, expires_at FROM oauth_auth_codes",
+    AuthorizationCode,
+    "code",
+    "code_json",
+)
+_TOKENS_TABLE = "SELECT token, kind, token_json, expires_at FROM oauth_tokens"
+_ACCESS_TOKENS_TABLE = _StoredTable(_TOKENS_TABLE, AccessToken, "token", "token_json", "access")
+_REFRESH_TOKENS_TABLE = _StoredTable(_TOKENS_TABLE, RefreshToken, "token", "token_json", "refresh")
+
+
+@dataclass(frozen=True)
+class OAuthEndpointOptions:
+    """Optional endpoint and scope overrides forwarded to ``OAuthProvider``.
+
+    These four values only ever travel from the constructor to
+    ``OAuthProvider.__init__``; grouping them keeps ``ForesightOAuthProvider``'s
+    own surface down to the base URL and the store path.
+    """
+
+    resource_base_url: str | None = None
+    issuer_url: str | None = None
+    service_documentation_url: str | None = None
+    required_scopes: list[str] | None = None
+
+
 class ForesightOAuthProvider(OAuthProvider):
     """OAuth 2.1 authorization server with DCR and durable (Postgres) storage.
 
@@ -92,22 +141,20 @@ class ForesightOAuthProvider(OAuthProvider):
         self,
         *,
         base_url: str,
-        resource_base_url: str | None = None,
-        issuer_url: str | None = None,
-        service_documentation_url: str | None = None,
-        required_scopes: list[str] | None = None,
         db_path: str | None = DB_PATH,
+        endpoints: OAuthEndpointOptions | None = None,
     ) -> None:
+        endpoints = endpoints or OAuthEndpointOptions()
         super().__init__(
             base_url=base_url,
-            resource_base_url=resource_base_url,
-            issuer_url=issuer_url,
-            service_documentation_url=service_documentation_url,
-            required_scopes=required_scopes,
+            resource_base_url=endpoints.resource_base_url,
+            issuer_url=endpoints.issuer_url,
+            service_documentation_url=endpoints.service_documentation_url,
+            required_scopes=endpoints.required_scopes,
             client_registration_options=ClientRegistrationOptions(
                 enabled=True,
-                valid_scopes=required_scopes,
-                default_scopes=required_scopes,
+                valid_scopes=endpoints.required_scopes,
+                default_scopes=endpoints.required_scopes,
             ),
             revocation_options=RevocationOptions(enabled=True),
         )
@@ -179,33 +226,23 @@ class ForesightOAuthProvider(OAuthProvider):
             logger.warning("OAuth store %s failed (continuing memory-only): %s", name, exc)
             return None
 
-    def _load_table(
-        self,
-        conn,
-        query: str,
-        model_cls,
-        target: dict,
-        key: str,
-        json_key: str,
-        now: float,
-        kind_key: str | None = None,
-    ) -> None:
+    def _load_table(self, conn, now: float, table: _StoredTable, target: dict) -> None:
         """Load one table's rows into ``target``, skipping corrupt/expired rows.
 
         ``expires_at`` and ``kind`` are optional columns (absent on the
         clients table); ``CustomRow.get`` returns ``None`` for a missing
         column so they are read safely.
         """
-        for row in conn.execute(query).fetchall():
+        for row in conn.execute(table.query).fetchall():
             expires_at = row.get("expires_at")
             if expires_at is not None and expires_at <= now:
                 continue
-            if kind_key is not None and row.get("kind") != kind_key:
+            if table.kind_key is not None and row.get("kind") != table.kind_key:
                 continue
             try:
-                target[row[key]] = model_cls.model_validate_json(row[json_key])
+                target[row[table.key]] = table.model_cls.model_validate_json(row[table.json_key])
             except Exception as exc:
-                logger.warning("Skipping corrupt stored %s: %s", key, exc)
+                logger.warning("Skipping corrupt stored %s: %s", table.key, exc)
 
     def _load_state_from_store(self) -> None:
         """Re-hydrate the in-memory dicts from the durable store at startup.
@@ -225,31 +262,10 @@ class ForesightOAuthProvider(OAuthProvider):
             pool = get_pool(self._db_path)
             conn = pool.acquire()
             now = time.time()
-            self._load_table(
-                conn,
-                "SELECT client_id, client_info_json FROM oauth_clients",
-                OAuthClientInformationFull,
-                self._clients,
-                "client_id",
-                "client_info_json",
-                now,
-            )
-            self._load_table(
-                conn,
-                "SELECT code, code_json, expires_at FROM oauth_auth_codes",
-                AuthorizationCode,
-                self._auth_codes,
-                "code",
-                "code_json",
-                now,
-            )
-            tokens_sql = "SELECT token, kind, token_json, expires_at FROM oauth_tokens"
-            self._load_table(
-                conn, tokens_sql, AccessToken, self._access_tokens, "token", "token_json", now, kind_key="access"
-            )
-            self._load_table(
-                conn, tokens_sql, RefreshToken, self._refresh_tokens, "token", "token_json", now, kind_key="refresh"
-            )
+            self._load_table(conn, now, _CLIENTS_TABLE, self._clients)
+            self._load_table(conn, now, _AUTH_CODES_TABLE, self._auth_codes)
+            self._load_table(conn, now, _ACCESS_TOKENS_TABLE, self._access_tokens)
+            self._load_table(conn, now, _REFRESH_TOKENS_TABLE, self._refresh_tokens)
         except Exception as exc:
             logger.warning("OAuth store reload failed (continuing memory-only): %s", exc)
         finally:

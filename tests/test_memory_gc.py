@@ -6,6 +6,7 @@ maintenance events pruning, and orphan cleanup.
 
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from foresight.memory_gc import (
@@ -105,31 +106,33 @@ def _make_test_db() -> str:
     return db_path
 
 
-def _insert_memory(
-    conn,
-    mid: str,
-    content: str,
-    *,
-    retention: str = "short_term",
-    tenant_id: str = "t1",
-    user_id: str = "u1",
-    created_at: str | None = None,
-) -> None:
+@dataclass(frozen=True)
+class _MemoryRow:
+    """Non-identity columns of one seeded ``memories`` row."""
+
+    retention: str = "short_term"
+    tenant_id: str = "t1"
+    user_id: str = "u1"
+    created_at: str | None = None
+
+
+def _insert_memory(conn, mid: str, content: str, row: _MemoryRow | None = None) -> None:
+    row = row or _MemoryRow()
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, "
         "is_ghost, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
-            user_id,
-            tenant_id,
+            row.user_id,
+            row.tenant_id,
             content,
             "session",
-            retention,
+            row.retention,
             0.5,
             "stable",
             0,
-            created_at or datetime.now(UTC).isoformat(),
+            row.created_at or datetime.now(UTC).isoformat(),
         ),
     )
     conn.commit()
@@ -273,8 +276,8 @@ class TestPhase1ExpiredRetention:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
-        _insert_memory(conn, "m1", "old ephemeral", retention="ephemeral", created_at=old)
-        _insert_memory(conn, "m2", "fresh ephemeral", retention="ephemeral")
+        _insert_memory(conn, "m1", "old ephemeral", _MemoryRow(retention="ephemeral", created_at=old))
+        _insert_memory(conn, "m2", "fresh ephemeral", _MemoryRow(retention="ephemeral"))
         conn.close()
 
         gc = MemoryGC(db_path)
@@ -292,8 +295,8 @@ class TestPhase1ExpiredRetention:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         old = (datetime.now(UTC) - timedelta(days=14)).isoformat()
-        _insert_memory(conn, "m1", "old short_term", retention="short_term", created_at=old)
-        _insert_memory(conn, "m2", "recent short_term", retention="short_term")
+        _insert_memory(conn, "m1", "old short_term", _MemoryRow(retention="short_term", created_at=old))
+        _insert_memory(conn, "m2", "recent short_term", _MemoryRow(retention="short_term"))
         conn.close()
 
         gc = MemoryGC(db_path)
@@ -307,8 +310,8 @@ class TestPhase1ExpiredRetention:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         old = (datetime.now(UTC) - timedelta(days=365)).isoformat()
-        _insert_memory(conn, "m1", "old long_term", retention="long_term", created_at=old)
-        _insert_memory(conn, "m2", "old permanent", retention="permanent", created_at=old)
+        _insert_memory(conn, "m1", "old long_term", _MemoryRow(retention="long_term", created_at=old))
+        _insert_memory(conn, "m2", "old permanent", _MemoryRow(retention="permanent", created_at=old))
         conn.close()
 
         gc = MemoryGC(db_path)
@@ -325,8 +328,8 @@ class TestPhase1ExpiredRetention:
     def test_no_expired_memories(self) -> None:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
-        _insert_memory(conn, "m1", "fresh", retention="ephemeral")
-        _insert_memory(conn, "m2", "fresh", retention="short_term")
+        _insert_memory(conn, "m1", "fresh", _MemoryRow(retention="ephemeral"))
+        _insert_memory(conn, "m2", "fresh", _MemoryRow(retention="short_term"))
         conn.close()
 
         gc = MemoryGC(db_path)
@@ -339,8 +342,8 @@ class TestPhase1ExpiredRetention:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
-        _insert_memory(conn, "m1", "t1 old", retention="ephemeral", tenant_id="t1", created_at=old)
-        _insert_memory(conn, "m2", "t2 old", retention="ephemeral", tenant_id="t2", created_at=old)
+        _insert_memory(conn, "m1", "t1 old", _MemoryRow(retention="ephemeral", tenant_id="t1", created_at=old))
+        _insert_memory(conn, "m2", "t2 old", _MemoryRow(retention="ephemeral", tenant_id="t2", created_at=old))
         conn.close()
 
         gc = MemoryGC(db_path)
@@ -359,7 +362,7 @@ class TestPhase1ExpiredRetention:
         old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
         memory_count = 20
         for i in range(memory_count):
-            _insert_memory(conn, f"m{i}", f"old {i}", retention="ephemeral", created_at=old)
+            _insert_memory(conn, f"m{i}", f"old {i}", _MemoryRow(retention="ephemeral", created_at=old))
         conn.close()
 
         gc = MemoryGC(db_path)
@@ -379,18 +382,17 @@ def _insert_memory_with_expiry(
     mid: str,
     content: str,
     expires_at: str | None,
-    *,
-    tenant_id: str = "t1",
-    user_id: str = "u1",
+    row: _MemoryRow | None = None,
 ) -> None:
+    row = row or _MemoryRow()
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, "
         "strength_trend, is_ghost, created_at, expires_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
-            user_id,
-            tenant_id,
+            row.user_id,
+            row.tenant_id,
             content,
             "session",
             "short_term",
@@ -429,8 +431,8 @@ class TestPhase15ExplicitExpiry:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        _insert_memory_with_expiry(conn, "m1", "t1 expired", past, tenant_id="t1")
-        _insert_memory_with_expiry(conn, "m2", "t2 expired", past, tenant_id="t2")
+        _insert_memory_with_expiry(conn, "m1", "t1 expired", past, _MemoryRow(tenant_id="t1"))
+        _insert_memory_with_expiry(conn, "m2", "t2 expired", past, _MemoryRow(tenant_id="t2"))
         conn.close()
 
         gc = MemoryGC(db_path)
@@ -598,8 +600,8 @@ class TestCombinedRun:
 
         # Phase 1: expired ephemeral
         old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
-        _insert_memory(conn, "m1", "old ephemeral", retention="ephemeral", created_at=old)
-        _insert_memory(conn, "m2", "recent", retention="short_term")
+        _insert_memory(conn, "m1", "old ephemeral", _MemoryRow(retention="ephemeral", created_at=old))
+        _insert_memory(conn, "m2", "recent", _MemoryRow(retention="short_term"))
 
         # Phase 2: old decay event
         old_decay = (datetime.now(UTC) - timedelta(days=60)).isoformat()
@@ -639,7 +641,7 @@ class TestFactory:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
-        _insert_memory(conn, "m1", "old too", retention="ephemeral", created_at=old)
+        _insert_memory(conn, "m1", "old too", _MemoryRow(retention="ephemeral", created_at=old))
         conn.close()
 
         gc = MemoryGC(db_path)

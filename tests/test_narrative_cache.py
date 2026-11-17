@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from foresight.narrative_cache import NarrativeCache
+from foresight.narrative_cache import NarrativeCache, NarrativeScope
 
 
 def test_narrative_cache_put_and_get(tmp_path) -> None:
@@ -14,10 +14,12 @@ def test_narrative_cache_put_and_get(tmp_path) -> None:
     cache.put(
         "report-1",
         "cached narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-a",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        ),
     )
 
     assert (
@@ -37,10 +39,12 @@ def test_narrative_cache_tenant_isolation(tmp_path) -> None:
     cache.put(
         "report-1",
         "tenant-a narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-a",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        ),
     )
 
     assert (
@@ -82,10 +86,12 @@ def test_narrative_cache_lru_eviction(tmp_path) -> None:
         cache.put(
             report_id,
             f"{report_id} narrative",
-            tenant_id="tenant-a",
-            user_id="user-1",
-            model_version="model-a",
-            insights_hash=report_id,
+            NarrativeScope(
+                tenant_id="tenant-a",
+                user_id="user-1",
+                model_version="model-a",
+                insights_hash=report_id,
+            ),
         )
         time.sleep(0.01)
 
@@ -103,10 +109,12 @@ def test_narrative_cache_lru_eviction(tmp_path) -> None:
     cache.put(
         "newest",
         "newest narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="newest",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="newest",
+        ),
     )
 
     assert (
@@ -137,10 +145,12 @@ def test_narrative_cache_ttl_expiry(tmp_path) -> None:
     cache.put(
         "report-1",
         "short-lived narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-a",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        ),
     )
     time.sleep(0.15)
 
@@ -163,10 +173,12 @@ def test_narrative_cache_survives_reopen(tmp_path) -> None:
     cache.put(
         "report-1",
         "persistent narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-a",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        ),
     )
     cache.close()
 
@@ -189,18 +201,22 @@ def test_narrative_cache_clear_by_tenant(tmp_path) -> None:
     cache.put(
         "report-1",
         "tenant-a narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-a",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        ),
     )
     cache.put(
         "report-1",
         "tenant-b narrative",
-        tenant_id="tenant-b",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-a",
+        NarrativeScope(
+            tenant_id="tenant-b",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        ),
     )
 
     assert cache.clear(tenant_id="tenant-a") == 1
@@ -231,10 +247,12 @@ def test_narrative_cache_stats(tmp_path) -> None:
     cache.put(
         "report-1",
         "report 1 narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-a",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        ),
     )
 
     assert (
@@ -260,10 +278,12 @@ def test_narrative_cache_stats(tmp_path) -> None:
     cache.put(
         "report-2",
         "report 2 narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="hash-b",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-b",
+        ),
     )
 
     stats = cache.stats()
@@ -298,10 +318,12 @@ def test_narrative_cache_allows_cross_thread_access(tmp_path) -> None:
             cache.put(
                 "report-1",
                 "thread narrative",
-                tenant_id="tenant-a",
-                user_id="user-1",
-                model_version="model-a",
-                insights_hash="hash-a",
+                NarrativeScope(
+                    tenant_id="tenant-a",
+                    user_id="user-1",
+                    model_version="model-a",
+                    insights_hash="hash-a",
+                ),
             )
         except Exception as exc:
             errors.append(exc)
@@ -332,20 +354,24 @@ def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) 
         cache.put(
             f"expired-{index}",
             f"expired narrative {index}",
-            tenant_id="tenant-a",
-            user_id="user-1",
-            model_version="model-a",
-            insights_hash=f"hash-{index}",
+            NarrativeScope(
+                tenant_id="tenant-a",
+                user_id="user-1",
+                model_version="model-a",
+                insights_hash=f"hash-{index}",
+            ),
         )
     time.sleep(2.5)
 
     cache.put(
         "fresh",
         "fresh narrative",
-        tenant_id="tenant-a",
-        user_id="user-1",
-        model_version="model-a",
-        insights_hash="fresh-hash",
+        NarrativeScope(
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="fresh-hash",
+        ),
     )
 
     assert cache.stats()["size"] == 1

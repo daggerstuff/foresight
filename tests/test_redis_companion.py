@@ -9,7 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from foresight.backend.redis_companion import UNAVAILABLE_REMAINING_FALLBACK, RedisCompanion
+from foresight.backend.redis_companion import (
+    UNAVAILABLE_REMAINING_FALLBACK,
+    EmbeddingScope,
+    RedisCompanion,
+)
+
+_SCOPE = EmbeddingScope(tenant_id="t1", user_id="u1", provider="test")
 
 
 class TestRedisCompanionGracefulDegradation:
@@ -18,14 +24,14 @@ class TestRedisCompanionGracefulDegradation:
     @pytest.mark.asyncio
     async def test_embedding_cache_get_returns_none_when_unavailable(self):
         companion = RedisCompanion(url="redis://localhost:19999/0")
-        result = await companion.embedding_cache_get("hello", "t1", "u1", "test")
+        result = await companion.embedding_cache_get("hello", _SCOPE)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_embedding_cache_set_noop_when_unavailable(self):
         companion = RedisCompanion(url="redis://localhost:19999/0")
         # Should not raise
-        await companion.embedding_cache_set("hello", [0.1, 0.2], "t1", "u1", "test")
+        await companion.embedding_cache_set("hello", [0.1, 0.2], _SCOPE)
 
     @pytest.mark.asyncio
     async def test_invalidation_noop_when_unavailable(self):
@@ -53,8 +59,8 @@ class TestRedisCompanionGracefulDegradation:
     async def test_multiple_operations_no_side_effects(self):
         """Multiple consecutive operations on unavailable Redis are all no-ops."""
         companion = RedisCompanion(url="redis://localhost:19999/0")
-        await companion.embedding_cache_set("data", [0.5], "t1", "u1", "test")
-        result = await companion.embedding_cache_get("data", "t1", "u1", "test")
+        await companion.embedding_cache_set("data", [0.5], _SCOPE)
+        result = await companion.embedding_cache_get("data", _SCOPE)
         assert result is None
         ok = await companion.rate_limit_acquire("t1", "u1")
         assert ok is True

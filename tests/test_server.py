@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -1065,15 +1066,18 @@ def _make_curation_test_db():
     return tmp.name
 
 
-def _seed_memory(
-    db_path: str,
-    *,
-    memory_id: str,
-    content: str,
-    bank_id: str,
-    user_id: str,
-    tenant_id: str = "_test_",
-) -> None:
+@dataclass(frozen=True)
+class _MemorySeed:
+    """The identity columns of one seeded memory row."""
+
+    memory_id: str
+    content: str
+    bank_id: str
+    user_id: str
+    tenant_id: str = "_test_"
+
+
+def _seed_memory(db_path: str, seed: _MemorySeed) -> None:
     """Insert a memory row for curation tests.
 
     Writes directly to the SQLite test DB. Do NOT use get_db_connection()
@@ -1092,7 +1096,7 @@ def _seed_memory(
         VALUES (?, ?, ?, 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, \
 'stable', NULL)
         ON CONFLICT (id) DO NOTHING""",
-        (memory_id, content, tenant_id, user_id, bank_id, now, now),
+        (seed.memory_id, seed.content, seed.tenant_id, seed.user_id, seed.bank_id, now, now),
     )
     conn.commit()
     conn.close()
@@ -1104,10 +1108,12 @@ def test_manage_curation_runs_create_cancel_archive():
     user_id = "curation_cancel_user"
     _seed_memory(
         db_path,
-        memory_id="mem1",
-        content="A durable memory",
-        bank_id="source_bank",
-        user_id=user_id,
+        _MemorySeed(
+            memory_id="mem1",
+            content="A durable memory",
+            bank_id="source_bank",
+            user_id=user_id,
+        ),
     )
 
     with (
@@ -1196,7 +1202,9 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
 
     db_path = _make_curation_test_db()
     user_id = "curation_failure_user"
-    _seed_memory(db_path, memory_id="mem1", content="Primary insight", bank_id="source_bank", user_id=user_id)
+    _seed_memory(
+        db_path, _MemorySeed(memory_id="mem1", content="Primary insight", bank_id="source_bank", user_id=user_id)
+    )
     events = []
 
     class _FakeBus:
@@ -1251,10 +1259,12 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
     for index, memory_id in enumerate(seeded_memory_ids, start=1):
         _seed_memory(
             db_path,
-            memory_id=memory_id,
-            content=f"Original memory {index}",
-            bank_id="source_bank",
-            user_id=user_id,
+            _MemorySeed(
+                memory_id=memory_id,
+                content=f"Original memory {index}",
+                bank_id="source_bank",
+                user_id=user_id,
+            ),
         )
 
     def _run_inline(run_id, payload):
@@ -1329,10 +1339,12 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
     user_id = "curation_cancel_integrity_user"
     _seed_memory(
         db_path,
-        memory_id="mem1",
-        content="Keep this intact",
-        bank_id="source_bank",
-        user_id=user_id,
+        _MemorySeed(
+            memory_id="mem1",
+            content="Keep this intact",
+            bank_id="source_bank",
+            user_id=user_id,
+        ),
     )
 
     def _run_inline(run_id, payload):
@@ -1412,10 +1424,12 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
     user_id = "curation_cancel_promotion_user"
     _seed_memory(
         db_path,
-        memory_id="mem1",
-        content="Original source memory",
-        bank_id="source_bank",
-        user_id=user_id,
+        _MemorySeed(
+            memory_id="mem1",
+            content="Original source memory",
+            bank_id="source_bank",
+            user_id=user_id,
+        ),
     )
 
     def _run_inline(run_id, payload):
@@ -1423,29 +1437,12 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
 
     original_promote = server_module._promote_in_place_curation
 
-    def _cancel_after_promote(
-        uid,
-        tenant_id,
-        run_id,
-        source_bank_id,
-        staging_bank_id,
-        source_rows,
-        staged_ids,
-        *,
-        cancel_event,
-    ):
-        summary = original_promote(
-            uid,
-            tenant_id,
-            run_id,
-            source_bank_id,
-            staging_bank_id,
-            source_rows,
-            staged_ids,
-            cancel_event=cancel_event,
-        )
+    def _cancel_after_promote(promotion, *, cancel_event):
+        summary = original_promote(promotion, cancel_event=cancel_event)
         cancel_event.set()
-        server_module._update_curation_run(run_id, tenant_id, status="canceled")
+        server_module._update_curation_run(
+            promotion.run_id, promotion.tenant_id, server_module.CurationRunUpdate(status="canceled")
+        )
         return summary
 
     with (
@@ -1617,10 +1614,12 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
     user_id = "curation_atomic_claim_user"
     _seed_memory(
         db_path,
-        memory_id="mem1",
-        content="Atomic claim source",
-        bank_id="source_bank",
-        user_id=user_id,
+        _MemorySeed(
+            memory_id="mem1",
+            content="Atomic claim source",
+            bank_id="source_bank",
+            user_id=user_id,
+        ),
     )
 
     with (

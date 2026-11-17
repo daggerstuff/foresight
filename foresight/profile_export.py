@@ -18,7 +18,7 @@ from typing import Any
 
 from .observations import list_observations
 from .profile_synthesizer import ProfileConfig, synthesize_profile
-from .reflect import list_mental_models
+from .reflect import UserScope, list_mental_models
 
 logger = logging.getLogger("foresight_profile_export")
 
@@ -59,15 +59,16 @@ def verify_document(document: dict[str, Any], signature: str) -> bool:
 
 
 def build_profile_document(
-    user_id: str,
-    tenant_id: str,
+    scope: UserScope,
     *,
-    agent_id: str | None = None,
-    project: str | None = None,
     max_static_memories: int = 20,
     max_dynamic_memories: int = 10,
 ) -> dict[str, Any]:
     """Assemble the versioned export document (profile + derived layer)."""
+    user_id = scope.user_id
+    tenant_id = scope.tenant_id
+    agent_id = scope.agent_id
+    project = scope.project
 
     profile = synthesize_profile(
         user_id,
@@ -94,7 +95,8 @@ def build_profile_document(
         logger.debug("mental model export failed (non-fatal)", exc_info=True)
     try:
         document["observations"] = list_observations(
-            user_id=user_id, tenant_id=tenant_id, limit=100, agent_id=agent_id, project=project
+            UserScope(user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            limit=100,
         )
     except Exception:
         logger.debug("observation export failed (non-fatal)", exc_info=True)
@@ -139,16 +141,13 @@ def _render_markdown(document: dict[str, Any]) -> str:
 
 
 def export_profile(
-    user_id: str,
-    tenant_id: str,
+    scope: UserScope,
     *,
     format: str = "json",
-    agent_id: str | None = None,
-    project: str | None = None,
     include_signature: bool = True,
 ) -> str:
     """Export the profile as a signed JSON envelope or Markdown document."""
-    document = build_profile_document(user_id, tenant_id, agent_id=agent_id, project=project)
+    document = build_profile_document(scope)
     signature = sign_document(document) if include_signature else None
 
     if format == "markdown":

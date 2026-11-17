@@ -55,6 +55,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from .audit import (
@@ -64,7 +65,7 @@ from .audit import (
     AuditEvent,
     AuditLog,
 )
-from .narrative_cache import NarrativeCache
+from .narrative_cache import NarrativeCache, NarrativeScope
 from .redis_cache import RedisCache
 from .reflection_engine import ReflectionReport
 
@@ -193,22 +194,31 @@ def _hash_payload(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _audit(
-    *,
-    event_type: str,
-    tenant_id: str,
-    user_id: str,
-    report_id: str,
-    model_version: str,
-    prompt_hash: str,
-    response_hash: str | None,
-    latency_ms: float,
-    outcome: str,
-    audit_log: AuditLog | None = None,
-) -> None:
+@dataclass(frozen=True)
+class AuditRecord:
+    """One reflection-narrative audit entry.
+
+    Every field belongs to a single event, and the group is written twice (to
+    the audit sink and to the logger), so it travels as one record instead of
+    ten loose keyword arguments.
+    """
+
+    event_type: str
+    tenant_id: str
+    user_id: str
+    report_id: str
+    model_version: str
+    prompt_hash: str
+    response_hash: str | None
+    latency_ms: float
+    outcome: str
+    audit_log: AuditLog | None = None
+
+
+def _audit(record: AuditRecord) -> None:
     """Emit a structured audit entry.
 
-    If ``audit_log`` is provided, the entry is written to the audit
+    If ``record.audit_log`` is provided, the entry is written to the audit
     table as a queryable, tenant-isolated, append-only row. Otherwise
     the entry is emitted via :func:`logging.Logger.info` with the same
     fields as ``extra`` (a stopgap for environments without an
@@ -216,21 +226,21 @@ def _audit(
     or response bodies — only hashes and timing.
     """
     metadata: dict[str, Any] = {
-        "report_id": report_id,
-        "model_version": model_version,
-        "prompt_hash": prompt_hash,
-        "response_hash": response_hash,
-        "latency_ms": latency_ms,
-        "outcome": outcome,
+        "report_id": record.report_id,
+        "model_version": record.model_version,
+        "prompt_hash": record.prompt_hash,
+        "response_hash": record.response_hash,
+        "latency_ms": record.latency_ms,
+        "outcome": record.outcome,
     }
-    if audit_log is not None:
+    if record.audit_log is not None:
         try:
-            audit_log.record(
+            record.audit_log.record(
                 AuditEvent(
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    event_type=event_type,
-                    resource_id=report_id,
+                    tenant_id=record.tenant_id,
+                    user_id=record.user_id,
+                    event_type=record.event_type,
+                    resource_id=record.report_id,
                     metadata=metadata,
                 )
             )
@@ -242,16 +252,16 @@ def _audit(
             )
 
     logger.info(
-        event_type,
+        record.event_type,
         extra={
-            "tenant_id": tenant_id,
-            "user_id": user_id,
-            "report_id": report_id,
-            "model_version": model_version,
-            "prompt_hash": prompt_hash,
-            "response_hash": response_hash,
-            "latency_ms": latency_ms,
-            "outcome": outcome,
+            "tenant_id": record.tenant_id,
+            "user_id": record.user_id,
+            "report_id": record.report_id,
+            "model_version": record.model_version,
+            "prompt_hash": record.prompt_hash,
+            "response_hash": record.response_hash,
+            "latency_ms": record.latency_ms,
+            "outcome": record.outcome,
         },
     )
 
@@ -266,57 +276,51 @@ def _audit(
 _default_cache: dict[str, str] = {}
 
 
-def generate_insight_narrative(
-    reflection_report: ReflectionReport,
-    *,
-    tenant_id: str,
-    user_id: str,
-    llm_call: LLMCallable,
-    model_version: str = "caller-default",
-    cache: dict[str, str] | NarrativeCache | RedisCache | None = None,
-    audit_log: AuditLog | None = None,
-) -> str:
+@dataclass(frozen=True)
+class NarrativeRequest:
+    """One narrative-generation request.
+
+    The report, the tenant/user scope, the LLM callable, the model version, the
+    cache and the audit sink are all supplied together by every caller; grouping
+    them keeps the tenant/user pair next to the callable that must honour it.
+    See the ``generate_insight_narrative`` docstring for the field semantics.
+    """
+
+    reflection_report: ReflectionReport
+    tenant_id: str
+    user_id: str
+    llm_call: LLMCallable
+    model_version: str = "caller-default"
+    cache: dict[str, str] | NarrativeCache | RedisCache | None = None
+    audit_log: AuditLog | None = None
+
+
+def generate_insight_narrative(request: NarrativeRequest) -> str:
     """Generate a natural-language narrative summary of a reflection report.
 
     Args:
-        reflection_report: A :class:`ReflectionReport` with structured
-            insights. The function reads only the structured insight
-            fields — never raw memory ``content``.
-        tenant_id: Tenant ID for isolation. Required.
-        user_id: User ID for isolation. Required.
-        llm_call: A callable ``(prompt, tenant_id, user_id) -> str`` that
-            invokes the LLM. The caller is responsible for enforcing
-            tenant isolation in the underlying LLM client. The callable
-            is invoked at most once per ``(tenant_id, user_id, report_id,
-            model_version, insights_hash)`` tuple (cache hit short-circuits).
-        model_version: Model identifier used for cache keying and audit.
-            Defaults to ``"caller-default"`` if the caller does not
-            specify.
-        cache: Optional cache. Either a plain ``dict[str, str]`` for
-            in-process caching, or a :class:`NarrativeCache` for
-            tenant-isolated persistent storage that survives restarts.
-            If ``None``, the module-level in-process dict is used. The
-            cache key includes ``tenant_id`` and ``user_id`` to enforce
-            isolation.
-        audit_log: Optional :class:`foresight.audit.AuditLog`. If
-            provided, success / error / cache-hit events are persisted
-            as queryable, tenant-isolated rows. If ``None`` (the
-            default), the module falls back to a structured
-            ``logger.info(...)`` call for compatibility. Production
-            deployments should always pass a configured ``audit_log``.
+        request: The report to narrate, the scope to narrate it for, and the
+            LLM/cache/audit wiring; see :class:`NarrativeRequest`.
 
     Returns:
         A natural-language narrative string.
 
     Raises:
-        TypeError: If ``reflection_report`` is not a :class:`ReflectionReport``
-            or ``llm_call`` is not callable, or ``cache`` is not a
-            ``dict`` or :class:`NarrativeCache`.
+        TypeError: If ``request.reflection_report`` is not a
+            :class:`ReflectionReport` or ``request.llm_call`` is not callable,
+            or ``request.cache`` is not a ``dict`` or :class:`NarrativeCache`.
         ValueError: If ``tenant_id`` or ``user_id`` is empty.
         ReflectionNarrativeError: If the LLM callable raises. The original
             exception is preserved on ``__cause__``. The caller may catch
             this and fall back to the structured report.
     """
+    reflection_report = request.reflection_report
+    tenant_id = request.tenant_id
+    user_id = request.user_id
+    llm_call = request.llm_call
+    model_version = request.model_version
+    cache = request.cache
+    audit_log = request.audit_log
     if not isinstance(reflection_report, ReflectionReport):
         raise TypeError(f"reflection_report must be a ReflectionReport, got {type(reflection_report).__name__}")
     if not tenant_id or not isinstance(tenant_id, str):
@@ -350,16 +354,18 @@ def generate_insight_narrative(
     if cached is not None:
         logger.debug("reflection_narrative_cache_hit", extra={"cache_key": insights_hash})
         _audit(
-            event_type=NARRATIVE_CACHE_HIT,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            report_id=reflection_report.report_id,
-            model_version=model_version,
-            prompt_hash="",
-            response_hash=None,
-            latency_ms=0.0,
-            outcome="cache_hit",
-            audit_log=audit_log,
+            AuditRecord(
+                event_type=NARRATIVE_CACHE_HIT,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                report_id=reflection_report.report_id,
+                model_version=model_version,
+                prompt_hash="",
+                response_hash=None,
+                latency_ms=0.0,
+                outcome="cache_hit",
+                audit_log=audit_log,
+            )
         )
         return cached
 
@@ -372,16 +378,18 @@ def generate_insight_narrative(
     except Exception as exc:
         latency_ms = (time.perf_counter() - start) * 1000.0
         _audit(
-            event_type=NARRATIVE_FAILED,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            report_id=reflection_report.report_id,
-            model_version=model_version,
-            prompt_hash=prompt_hash,
-            response_hash=None,
-            latency_ms=latency_ms,
-            outcome="error",
-            audit_log=audit_log,
+            AuditRecord(
+                event_type=NARRATIVE_FAILED,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                report_id=reflection_report.report_id,
+                model_version=model_version,
+                prompt_hash=prompt_hash,
+                response_hash=None,
+                latency_ms=latency_ms,
+                outcome="error",
+                audit_log=audit_log,
+            )
         )
         raise ReflectionNarrativeError(f"LLM call failed for report {reflection_report.report_id}: {exc}") from exc
 
@@ -391,16 +399,18 @@ def generate_insight_narrative(
     response_hash = _hash_payload(response)
 
     _audit(
-        event_type=NARRATIVE_GENERATED,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        report_id=reflection_report.report_id,
-        model_version=model_version,
-        prompt_hash=prompt_hash,
-        response_hash=response_hash,
-        latency_ms=latency_ms,
-        outcome="success",
-        audit_log=audit_log,
+        AuditRecord(
+            event_type=NARRATIVE_GENERATED,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            report_id=reflection_report.report_id,
+            model_version=model_version,
+            prompt_hash=prompt_hash,
+            response_hash=response_hash,
+            latency_ms=latency_ms,
+            outcome="success",
+            audit_log=audit_log,
+        )
     )
 
     if isinstance(cache, dict):
@@ -411,10 +421,12 @@ def generate_insight_narrative(
         cache.put(
             reflection_report.report_id,
             response,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            model_version=model_version,
-            insights_hash=insights_hash,
+            NarrativeScope(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                model_version=model_version,
+                insights_hash=insights_hash,
+            ),
         )
     return response
 

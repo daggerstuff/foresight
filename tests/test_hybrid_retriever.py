@@ -20,6 +20,7 @@ from foresight.hybrid_retriever import (
     MAX_BURST_BOOST,
     HybridRetriever,
     HybridSearchOptions,
+    Rankings,
     _escape_like,
     _normalize_query,
     _validate_input,
@@ -558,7 +559,9 @@ class TestRRF:
         graph = {"A": 3}
         temporal = {}
 
-        result = retriever._reciprocal_rank_fusion(keyword, semantic, graph, temporal)
+        result = retriever._reciprocal_rank_fusion(
+            Rankings(keyword=keyword, tfidf_cosine=semantic, graph=graph, temporal=temporal)
+        )
 
         # A should score higher (found by 2 signals)
         scores = dict(result)
@@ -566,7 +569,7 @@ class TestRRF:
 
     def test_rrf_empty_inputs(self):
         retriever = HybridRetriever(":memory:")
-        result = retriever._reciprocal_rank_fusion({}, {}, {}, {})
+        result = retriever._reciprocal_rank_fusion(Rankings())
         assert result == []
 
     def test_rrf_with_semantic_signal(self):
@@ -577,7 +580,9 @@ class TestRRF:
         graph = {}
         temporal = {}
 
-        result = retriever._reciprocal_rank_fusion(keyword, semantic, graph, temporal)
+        result = retriever._reciprocal_rank_fusion(
+            Rankings(keyword=keyword, tfidf_cosine=semantic, graph=graph, temporal=temporal)
+        )
         scores = dict(result)
 
         # A is found by keyword + semantic, B only by semantic

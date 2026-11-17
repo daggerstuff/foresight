@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from foresight import entity_extractor
-from foresight.entity_extractor import EntityExtractor
+from foresight.entity_extractor import EntityExtractor, EntityExtractorConfig
 
 # A complete entity + relationship payload does not fit in a 1024-token budget.
 MIN_RESPONSE_TOKEN_BUDGET = 2048
@@ -80,11 +80,13 @@ def _patch_http(monkeypatch: pytest.MonkeyPatch, content: str, finish_reason: st
 
 def _extractor(**kwargs: object) -> EntityExtractor:
     return EntityExtractor(
-        api_key="test-key",
-        model="test-model",
-        provider="openai",
-        base_url="https://example.test/v1",
-        **kwargs,
+        EntityExtractorConfig(
+            api_key="test-key",
+            model="test-model",
+            provider="openai",
+            base_url="https://example.test/v1",
+            **kwargs,
+        )
     )
 
 
@@ -115,7 +117,7 @@ def test_parse_llm_response_still_raises_on_garbage() -> None:
 
 
 def test_default_max_tokens_leaves_room_for_full_response() -> None:
-    assert EntityExtractor(api_key="test-key").max_tokens >= MIN_RESPONSE_TOKEN_BUDGET
+    assert EntityExtractor(EntityExtractorConfig(api_key="test-key")).max_tokens >= MIN_RESPONSE_TOKEN_BUDGET
 
 
 def test_llm_timeout_allows_for_reasoning_models() -> None:

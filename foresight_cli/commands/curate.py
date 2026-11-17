@@ -66,6 +66,7 @@ def _emit(result: str) -> None:
 
 @app.command()
 def create(
+    *,
     source_bank_id: str = typer.Option("default", "--source-bank-id", help="Source bank to curate"),
     output_bank_id: str | None = typer.Option(None, "--output-bank-id", help="Optional reviewable output bank"),
     policy_mode: str = typer.Option("rebalance", "--policy-mode", help="preserve, rebalance, or rebuild"),

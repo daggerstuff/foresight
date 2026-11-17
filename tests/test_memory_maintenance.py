@@ -6,6 +6,7 @@ Covers all four modes: consolidate, contradict, archive_stale, synthesize.
 import os
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from foresight.memory_maintenance import (
@@ -77,33 +78,35 @@ def _make_test_db() -> str:
     return db_path
 
 
-def _insert_memory(
-    conn,
-    mid: str,
-    content: str,
-    *,
-    importance: float = 0.5,
-    strength_trend: str = "stable",
-    is_ghost: int = 0,
-    user_id: str = "u1",
-    tenant_id: str = "t1",
-    scope: str = "session",
-    retention: str = "short_term",
-) -> None:
+@dataclass(frozen=True)
+class _MemoryRow:
+    """Non-identity columns of one seeded ``memories`` row."""
+
+    importance: float = 0.5
+    strength_trend: str = "stable"
+    is_ghost: int = 0
+    user_id: str = "u1"
+    tenant_id: str = "t1"
+    scope: str = "session"
+    retention: str = "short_term"
+
+
+def _insert_memory(conn, mid: str, content: str, row: _MemoryRow | None = None) -> None:
+    row = row or _MemoryRow()
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, content, scope, retention, importance, strength_trend, "
         "is_ghost, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             mid,
-            user_id,
-            tenant_id,
+            row.user_id,
+            row.tenant_id,
             content,
-            scope,
-            retention,
-            importance,
-            strength_trend,
-            is_ghost,
+            row.scope,
+            row.retention,
+            row.importance,
+            row.strength_trend,
+            row.is_ghost,
             datetime.now(UTC).isoformat(),
         ),
     )
@@ -196,7 +199,7 @@ class TestMaintenanceJobConsolidate:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "I feel happy today", user_id="u1", tenant_id="t1")
+            _insert_memory(conn, "m1", "I feel happy today", _MemoryRow(user_id="u1", tenant_id="t1"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -217,7 +220,7 @@ class TestMaintenanceJobConsolidate:
                 "I feel very happy and grateful today about my progress in therapy",
             )
             for memory_id, content in zip(("m1", "m2"), cluster_memories, strict=True):
-                _insert_memory(conn, memory_id, content, user_id="u1", tenant_id="t1")
+                _insert_memory(conn, memory_id, content, _MemoryRow(user_id="u1", tenant_id="t1"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -232,10 +235,16 @@ class TestMaintenanceJobConsolidate:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "The weather is sunny and warm outside today", user_id="u1", tenant_id="t1")
-            _insert_memory(conn, "m2", "Quantum mechanics explains particle wave duality", user_id="u1", tenant_id="t1")
+            _insert_memory(
+                conn, "m1", "The weather is sunny and warm outside today", _MemoryRow(user_id="u1", tenant_id="t1")
+            )
+            _insert_memory(
+                conn, "m2", "Quantum mechanics explains particle wave duality", _MemoryRow(user_id="u1", tenant_id="t1")
+            )
             # Add a third to help form clusters
-            _insert_memory(conn, "m3", "The weather is rainy and cold outside today", user_id="u1", tenant_id="t1")
+            _insert_memory(
+                conn, "m3", "The weather is rainy and cold outside today", _MemoryRow(user_id="u1", tenant_id="t1")
+            )
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -256,7 +265,7 @@ class TestMaintenanceJobContradict:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "I feel hopeful about recovery", user_id="u1", tenant_id="t1")
+            _insert_memory(conn, "m1", "I feel hopeful about recovery", _MemoryRow(user_id="u1", tenant_id="t1"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -272,9 +281,17 @@ class TestMaintenanceJobContradict:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             # These share topic "therapy" but have conflicting sentiments
-            _insert_memory(conn, "m1", "Therapy gives me hope about my future progress", user_id="u1", tenant_id="t1")
             _insert_memory(
-                conn, "m2", "Therapy gives me despair about my future progress", user_id="u1", tenant_id="t1"
+                conn, "m1", "Therapy gives me hope about my future progress", _MemoryRow(user_id="u1", tenant_id="t1")
+            )
+            _insert_memory(
+                conn,
+                "m2",
+                "Therapy gives me despair about my future progress",
+                _MemoryRow(
+                    user_id="u1",
+                    tenant_id="t1",
+                ),
             )
             conn.close()
 
@@ -292,8 +309,12 @@ class TestMaintenanceJobContradict:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "Therapy makes me feel happy about progress", user_id="u1", tenant_id="t1")
-            _insert_memory(conn, "m2", "Therapy makes me feel grateful about progress", user_id="u1", tenant_id="t1")
+            _insert_memory(
+                conn, "m1", "Therapy makes me feel happy about progress", _MemoryRow(user_id="u1", tenant_id="t1")
+            )
+            _insert_memory(
+                conn, "m2", "Therapy makes me feel grateful about progress", _MemoryRow(user_id="u1", tenant_id="t1")
+            )
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -313,7 +334,7 @@ class TestMaintenanceJobArchiveStale:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "Low importance note", importance=0.05, user_id="u1", tenant_id="t1")
+            _insert_memory(conn, "m1", "Low importance note", _MemoryRow(importance=0.05, user_id="u1", tenant_id="t1"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -341,7 +362,7 @@ class TestMaintenanceJobArchiveStale:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "Important memory", importance=0.9, user_id="u1", tenant_id="t1")
+            _insert_memory(conn, "m1", "Important memory", _MemoryRow(importance=0.9, user_id="u1", tenant_id="t1"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -369,7 +390,15 @@ class TestMaintenanceJobArchiveStale:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             _insert_memory(
-                conn, "m1", "Stale memory", importance=0.5, strength_trend="stale", user_id="u1", tenant_id="t1"
+                conn,
+                "m1",
+                "Stale memory",
+                _MemoryRow(
+                    importance=0.5,
+                    strength_trend="stale",
+                    user_id="u1",
+                    tenant_id="t1",
+                ),
             )
             conn.close()
 
@@ -390,8 +419,8 @@ class TestMaintenanceJobSynthesize:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "Feeling good today", user_id="u1", tenant_id="t1")
-            _insert_memory(conn, "m2", "Another day another feeling", user_id="u1", tenant_id="t1")
+            _insert_memory(conn, "m1", "Feeling good today", _MemoryRow(user_id="u1", tenant_id="t1"))
+            _insert_memory(conn, "m2", "Another day another feeling", _MemoryRow(user_id="u1", tenant_id="t1"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -413,8 +442,10 @@ class TestMaintenanceJobSynthesize:
                     conn,
                     f"m{i}",
                     f"Session notes about therapy and recovery progress number {i}",
-                    user_id="u1",
-                    tenant_id="t1",
+                    _MemoryRow(
+                        user_id="u1",
+                        tenant_id="t1",
+                    ),
                 )
             conn.close()
 
@@ -450,7 +481,7 @@ class TestMaintenanceJobMultiMode:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "Test memory content", importance=0.05, user_id="u1", tenant_id="t1")
+            _insert_memory(conn, "m1", "Test memory content", _MemoryRow(importance=0.05, user_id="u1", tenant_id="t1"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)
@@ -470,8 +501,8 @@ class TestMaintenanceJobTenantIsolation:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            _insert_memory(conn, "m1", "Low importance", importance=0.05, user_id="u1", tenant_id="t1")
-            _insert_memory(conn, "m2", "Low importance", importance=0.05, user_id="u2", tenant_id="t2")
+            _insert_memory(conn, "m1", "Low importance", _MemoryRow(importance=0.05, user_id="u1", tenant_id="t1"))
+            _insert_memory(conn, "m2", "Low importance", _MemoryRow(importance=0.05, user_id="u2", tenant_id="t2"))
             conn.close()
 
             job = MemoryMaintenanceJob(db_path=db_path)

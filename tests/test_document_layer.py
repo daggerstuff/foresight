@@ -293,7 +293,7 @@ def test_create_document_rejects_duplicate_content():
 
 def test_create_document_rejects_invalid_source():
     with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="source must be"):
-        store.create_document(title="t", content="x", user_id="u1", source="bogus")
+        store.create_document(title="t", content="x", user_id="u1", options=DocumentCreateOptions(source="bogus"))
 
 
 def test_create_document_rejects_empty_title():
@@ -318,7 +318,7 @@ def test_create_document_rejects_empty_user_id():
 
 def test_create_document_rejects_out_of_range_budget():
     with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="chunk_char_budget"):
-        store.create_document(title="t", content="x", user_id="u1", char_budget=10)
+        store.create_document(title="t", content="x", user_id="u1", options=DocumentCreateOptions(char_budget=10))
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +334,9 @@ def test_get_document_returns_none_for_missing():
 def test_get_document_round_trip():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc, _ = store.create_document(title="t", content="hello", user_id="u1", metadata={"k": "v"})
+        doc, _ = store.create_document(
+            title="t", content="hello", user_id="u1", options=DocumentCreateOptions(metadata={"k": "v"})
+        )
         fetched = store.get_document(document_id=doc.id, user_id="u1")
     assert fetched is not None
     assert fetched.id == doc.id
@@ -369,8 +371,7 @@ def test_get_memory_source_reverse_lookup():
             title="t",
             content="alpha content\n\n" + "b" * 500,
             user_id="u1",
-            memory_id_for_chunk=_id_fn,
-            char_budget=200,
+            options=DocumentCreateOptions(memory_id_for_chunk=_id_fn, char_budget=200),
         )
         result = store.get_memory_source(memory_id="mem_1", user_id="u1")
     assert result is not None
@@ -393,8 +394,12 @@ def test_get_memory_source_returns_none_for_unknown_memory():
 def test_documents_are_tenant_isolated():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc_a, _ = store.create_document(title="t", content="hello", user_id="u1", tenant_id="tA")
-        doc_b, _ = store.create_document(title="t", content="hello", user_id="u1", tenant_id="tB")
+        doc_a, _ = store.create_document(
+            title="t", content="hello", user_id="u1", options=DocumentCreateOptions(tenant_id="tA")
+        )
+        doc_b, _ = store.create_document(
+            title="t", content="hello", user_id="u1", options=DocumentCreateOptions(tenant_id="tB")
+        )
         created_docs = (doc_a, doc_b)
         same_hash_docs = [d for d in created_docs if d is not None]
     assert len(same_hash_docs) == len(created_docs)
@@ -422,7 +427,9 @@ def test_documents_are_user_isolated():
 def test_list_chunks_rejects_other_tenant():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc, _ = store.create_document(title="t", content="a\n\nb", user_id="u1", tenant_id="tA")
+        doc, _ = store.create_document(
+            title="t", content="a\n\nb", user_id="u1", options=DocumentCreateOptions(tenant_id="tA")
+        )
         chunks = store.list_chunks(document_id=doc.id, user_id="u1", tenant_id="tB")
     assert chunks == []
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from foresight.benchmarks import (
+    BenchmarkOptions,
     Dataset,
     ForesightBackend,
     RetrievedMemory,
@@ -184,7 +185,7 @@ def _sample() -> Sample:
 def test_run_benchmark_recall(tmp_path):
     dataset = Dataset(name="longmemeval", revision="", samples=(_sample(),))
     backend = _FakeBackend()
-    report = run_benchmark(dataset, backend, cutoffs=(10, 20), seed=0)
+    report = run_benchmark(dataset, backend, BenchmarkOptions(cutoffs=(10, 20), seed=0))
     assert report.n_samples == 1
     assert report.overall["evidence_recall@10"] == 1.0
     assert report.overall["evidence_recall@20"] == 1.0
@@ -220,7 +221,7 @@ def test_foresight_backend_roundtrip(tmp_path):
 def test_report_json_roundtrip(tmp_path):
     dataset = Dataset(name="locomo", revision="r1", samples=(_sample(),))
     seed = 7
-    report = run_benchmark(dataset, _FakeBackend(), cutoffs=(10,), seed=seed)
+    report = run_benchmark(dataset, _FakeBackend(), BenchmarkOptions(cutoffs=(10,), seed=seed))
     path = tmp_path / "report.json"
     report.save(path)
     loaded = json.loads(path.read_text(encoding="utf-8"))

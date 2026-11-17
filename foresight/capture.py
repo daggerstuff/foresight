@@ -17,7 +17,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -109,6 +109,40 @@ class ReprocessStats:
             "near_duplicates": self.near_duplicates,
             "skipped_sessions": self.skipped_sessions,
         }
+
+
+@dataclass(frozen=True)
+class TranscriptRef:
+    """The identity of one transcript: which account, which user, which session.
+
+    The three values are never meaningfully separate — every write in the
+    capture pipeline is scoped by all of them — and they are all plain
+    ``str``, so passing them as loose arguments invites a transposition that
+    writes one user's memory into another user's lane.
+    """
+
+    tenant_id: str
+    user_id: str
+    session_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CaptureOptions:
+    """How to process a transcript, as opposed to what is being processed."""
+
+    infer: bool = True
+    instructions: str | None = None
+    raw_event_ids: list[str | None] | None = None
+
+
+@dataclass(frozen=True)
+class ReprocessOptions:
+    """The replay window and processing mode for a raw-event reprocess."""
+
+    start_time: str | None = None
+    end_time: str | None = None
+    infer: bool = True
+    instructions: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +484,21 @@ class DedupeEngine:
 # ---------------------------------------------------------------------------
 
 
+def _raw_event_replay_sql(tid: str, user_id: str, opts: ReprocessOptions) -> tuple[str, list[Any]]:
+    """SELECT over the raw layer for one account/user, bounded by the replay window."""
+    sql = """SELECT id, session_id, role, content, position, captured_at
+               FROM raw_events
+              WHERE tenant_id = ? AND user_id = ? AND tombstone = 0"""
+    params: list[Any] = [tid, user_id]
+    if opts.start_time:
+        sql += " AND captured_at >= ?"
+        params.append(opts.start_time)
+    if opts.end_time:
+        sql += " AND captured_at <= ?"
+        params.append(opts.end_time)
+    return sql + " ORDER BY session_id, position, captured_at", params
+
+
 class CapturePipeline:
     """Orchestrate the add-only capture flow for a session transcript."""
 
@@ -461,23 +510,19 @@ class CapturePipeline:
 
     @staticmethod
     def _generate_raw_event_id(
-        tenant_id: str,
-        user_id: str,
-        session_id: str | None,
+        ref: TranscriptRef,
         index: int,
         role: str,
         content: str,
     ) -> str:
         """Deterministic 16-char id for an immutable raw observation row."""
-        key = f"{tenant_id}|{user_id}|{session_id or ''}|{index}|{role}|{content}"
+        key = f"{ref.tenant_id}|{ref.user_id}|{ref.session_id or ''}|{index}|{role}|{content}"
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
     def _persist_raw_events(
         self,
-        session_id: str | None,
+        ref: TranscriptRef,
         messages: list[dict],
-        user_id: str,
-        tenant_id: str,
         source: str,
         now: str,
     ) -> list[str | None]:
@@ -498,10 +543,21 @@ class CapturePipeline:
             if not content:
                 raw_event_ids.append(None)
                 continue
-            rid = self._generate_raw_event_id(tenant_id, user_id, session_id, idx, role, content)
+            rid = self._generate_raw_event_id(ref, idx, role, content)
             raw_event_ids.append(rid)
             rows.append(
-                (rid, tenant_id, user_id, session_id, role, content, idx, now, source, json.dumps({"source": source}))
+                (
+                    rid,
+                    ref.tenant_id,
+                    ref.user_id,
+                    ref.session_id,
+                    role,
+                    content,
+                    idx,
+                    now,
+                    source,
+                    json.dumps({"source": source}),
+                )
             )
 
         if not rows:
@@ -555,37 +611,38 @@ class CapturePipeline:
         messages: list[dict],
         user_id: str,
         tenant_id: str | None = None,
-        infer: bool = True,
-        instructions: str | None = None,
-        raw_event_ids: list[str | None] | None = None,
+        options: CaptureOptions | None = None,
     ) -> CaptureStats:
         """Run the full capture pipeline.
 
-        When ``infer`` is False (PIX-4722), skip classification/extraction and
-        store the concatenated transcript verbatim as a single episodic memory
-        — no rewriting, no dedupe. ``instructions`` is carried into that
+        When ``options.infer`` is False (PIX-4722), skip classification/extraction
+        and store the concatenated transcript verbatim as a single episodic memory
+        — no rewriting, no dedupe. ``options.instructions`` is carried into that
         memory's metrics for traceability.
 
-        If ``raw_event_ids`` is provided (e.g. during reprocess), raw events are
-        assumed already persisted and are not written again; otherwise the
-        append-only raw layer is populated from ``messages`` when retention is on.
+        If ``options.raw_event_ids`` is provided (e.g. during reprocess), raw
+        events are assumed already persisted and are not written again; otherwise
+        the append-only raw layer is populated from ``messages`` when retention is
+        on.
 
         Returns CaptureStats summarizing what happened.
         """
+        opts = options or CaptureOptions()
         stats = CaptureStats()
         tid = tenant_id or get_current_account_id()
+        ref = TranscriptRef(tenant_id=tid, user_id=user_id, session_id=session_id)
         now = datetime.now(UTC).isoformat()
 
         # Phase 0: Persist raw observations before any derivation so the transcript
         # can be reprocessed later even if classification/extraction skips it.
         # During reprocess the IDs are supplied and must not be rewritten.
-        if raw_event_ids is None:
-            raw_event_ids = self._persist_raw_events(session_id, messages, user_id, tid, "capture:transcript", now)
-        raw_event_ids = raw_event_ids or []
+        if opts.raw_event_ids is None:
+            opts = replace(opts, raw_event_ids=self._persist_raw_events(ref, messages, "capture:transcript", now))
+        raw_event_ids = opts.raw_event_ids or []
 
         # PIX-4722: verbatim (no-inference) fast path.
-        if infer is False:
-            return self._run_verbatim(session_id, messages, user_id, tid, now, instructions, raw_event_ids)
+        if opts.infer is False:
+            return self._run_verbatim(ref, messages, now, opts)
 
         # Phase 1: Classify
         skip, reason = self.classifier.should_skip(messages)
@@ -596,7 +653,7 @@ class CapturePipeline:
             return stats
 
         # Phase 2: Extract
-        candidates = self.extractor.extract(messages, instructions=instructions, raw_event_ids=raw_event_ids or [])
+        candidates = self.extractor.extract(messages, instructions=opts.instructions, raw_event_ids=raw_event_ids)
         stats.candidates_found = len(candidates)
 
         if not candidates:
@@ -709,18 +766,16 @@ class CapturePipeline:
         self,
         user_id: str,
         tenant_id: str | None = None,
-        start_time: str | None = None,
-        end_time: str | None = None,
-        infer: bool = True,
-        instructions: str | None = None,
+        options: ReprocessOptions | None = None,
     ) -> ReprocessStats:
         """Rebuild derived memories from the immutable raw-events layer.
 
         Replays raw observations for a user, re-running classification and
         extraction. Dedupe prevents duplicates, so reprocess is idempotent by
-        construction. If ``infer=False`` the verbatim transcript path is used
-        instead.
+        construction. If ``options.infer`` is False the verbatim transcript path
+        is used instead.
         """
+        opts = options or ReprocessOptions()
         tid = tenant_id or get_current_account_id()
         stats = ReprocessStats()
 
@@ -731,17 +786,7 @@ class CapturePipeline:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         try:
-            sql = """SELECT id, session_id, role, content, position, captured_at
-                       FROM raw_events
-                      WHERE tenant_id = ? AND user_id = ? AND tombstone = 0"""
-            params: list[Any] = [tid, user_id]
-            if start_time:
-                sql += " AND captured_at >= ?"
-                params.append(start_time)
-            if end_time:
-                sql += " AND captured_at <= ?"
-                params.append(end_time)
-            sql += " ORDER BY session_id, position, captured_at"
+            sql, params = _raw_event_replay_sql(tid, user_id, opts)
             rows = conn.execute(sql, tuple(params)).fetchall()
         finally:
             pool.release(conn)
@@ -766,9 +811,11 @@ class CapturePipeline:
                 messages,
                 user_id,
                 tid,
-                infer=infer,
-                instructions=instructions,
-                raw_event_ids=session_raw_ids,
+                CaptureOptions(
+                    infer=opts.infer,
+                    instructions=opts.instructions,
+                    raw_event_ids=session_raw_ids,
+                ),
             )
             stats.sessions_reprocessed += 1
             stats.memories_stored += run_stats.stored
@@ -801,22 +848,19 @@ class CapturePipeline:
 
     def _run_verbatim(
         self,
-        session_id: str,
+        ref: TranscriptRef,
         messages: list[dict],
-        user_id: str,
-        tenant_id: str,
         now: str,
-        instructions: str | None,
-        raw_event_ids: list[str | None],
+        options: CaptureOptions,
     ) -> CaptureStats:
         """Handle the infer=False path, returning a fully-populated CaptureStats."""
         stats = CaptureStats()
-        stored, content, _mid = self._store_verbatim(messages, user_id, tenant_id, now, instructions, raw_event_ids)
+        stored, content, _mid = self._store_verbatim(ref, messages, now, options)
         if stored:
             stats.candidates_found = 1
             stats.stored = 1
             stats.stored_items.append(("episodic", content))
-            logger.info("Session %s: stored verbatim transcript (infer=False)", session_id)
+            logger.info("Session %s: stored verbatim transcript (infer=False)", ref.session_id)
         else:
             stats.skipped = True
             stats.skip_reason = "empty transcript"
@@ -824,12 +868,10 @@ class CapturePipeline:
 
     def _store_verbatim(
         self,
+        ref: TranscriptRef,
         messages: list[dict],
-        user_id: str,
-        tenant_id: str,
         now: str,
-        instructions: str | None,
-        raw_event_ids: list[str | None],
+        options: CaptureOptions,
     ) -> tuple[int, str, str | None]:
         """Store the concatenated transcript verbatim as one episodic memory.
 
@@ -841,7 +883,7 @@ class CapturePipeline:
             return 0, "", None
         mid = hashlib.sha256(f"{transcript}{now}".encode()).hexdigest()[:16]
         tags = ["verbatim"]
-        metrics = {"capture_instructions": instructions} if instructions else {}
+        metrics = {"capture_instructions": options.instructions} if options.instructions else {}
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         try:
@@ -857,9 +899,9 @@ class CapturePipeline:
                     mid,
                     transcript,
                     _content_hash(transcript),
-                    user_id,
+                    ref.user_id,
                     BANK_ID,
-                    tenant_id,
+                    ref.tenant_id,
                     now,
                     now,
                     json.dumps(tags),
@@ -870,8 +912,8 @@ class CapturePipeline:
             conn.commit()
             # MemLake provenance: verbatim memory is derived from every raw event.
             if raw_retention_enabled():
-                for rid in raw_event_ids:
-                    self._link_provenance(conn, mid, rid, tenant_id, now)
+                for rid in options.raw_event_ids or []:
+                    self._link_provenance(conn, mid, rid, ref.tenant_id, now)
         finally:
             pool.release(conn)
             conn.close()
@@ -897,7 +939,12 @@ class CapturePipeline:
         # In-flight messages are not a real session transcript, but a stable
         # synthetic session id lets them participate in the raw layer deterministically.
         synthetic_session_id = hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()[:16]
-        raw_event_ids = self._persist_raw_events(synthetic_session_id, messages, user_id, tid, "capture:in_flight", now)
+        raw_event_ids = self._persist_raw_events(
+            TranscriptRef(tenant_id=tid, user_id=user_id, session_id=synthetic_session_id),
+            messages,
+            "capture:in_flight",
+            now,
+        )
 
         candidates = self.extractor.extract(messages, raw_event_ids=raw_event_ids)
         if not candidates:

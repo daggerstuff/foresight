@@ -13,6 +13,7 @@ from foresight.profile_export import (
     sign_document,
     verify_document,
 )
+from foresight.reflect import UserScope
 from foresight.server import export_profile as server_export_profile, manage_memories, reflect
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
@@ -34,7 +35,7 @@ def _store(content: str, **kwargs) -> None:
 def test_document_is_versioned_and_scoped():
     _store("user prefers dark mode and concise answers", scope="trait", retention="long_term")
 
-    doc = build_profile_document("_test_user_", "_test_")
+    doc = build_profile_document(UserScope("_test_user_", "_test_"))
 
     assert doc["version"] == 1
     assert doc["user_id"] == "_test_user_"
@@ -47,7 +48,7 @@ def test_document_is_versioned_and_scoped():
 
 
 def test_signature_verifies_and_tamper_fails():
-    doc = build_profile_document("_test_user_", "_test_")
+    doc = build_profile_document(UserScope("_test_user_", "_test_"))
     sig = sign_document(doc)
 
     assert verify_document(doc, sig)
@@ -72,12 +73,12 @@ def test_export_markdown_contains_signature():
     assert "# Foresight Profile Export" in out
     assert "signature:" in out
     sig = out.rsplit("signature:", 1)[1].strip()
-    doc = build_profile_document("_test_user_", "_test_")
+    doc = build_profile_document(UserScope("_test_user_", "_test_"))
     assert verify_document(doc, sig) or True  # doc rebuilt; signature covers its own doc
 
 
 def test_export_profile_direct_json():
-    out = export_profile("_test_user_", "_test_", format="json")
+    out = export_profile(UserScope("_test_user_", "_test_"), format="json")
     envelope = json.loads(out)
     assert "document" in envelope
     assert "signature" in envelope
@@ -88,5 +89,5 @@ def test_include_derived_layer_after_reflect():
     _store("the deployment freeze starts on fridays", category="fact")
     reflect(question="when does the deployment freeze start?", user_id="_test_user_")
 
-    doc = build_profile_document("_test_user_", "_test_")
+    doc = build_profile_document(UserScope("_test_user_", "_test_"))
     assert any("deployment freeze" in str(m.get("question_text", "")) for m in doc["mental_models"])

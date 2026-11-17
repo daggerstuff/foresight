@@ -35,6 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -150,6 +151,17 @@ def _detect_git_root(start_path: Path | str | None = None) -> str | None:
     return str(cur) if start_path else None
 
 
+@dataclass(frozen=True)
+class MemoryWrite:
+    """The optional fields of one ``POST /memories`` body."""
+
+    category: str = "fact"
+    importance: float = 0.5
+    tags: list[str] | None = None
+    scope: str | None = None
+    retention: str | None = None
+
+
 class _Client:
     """Robust REST client for the Foresight HTTP API."""
 
@@ -261,26 +273,19 @@ class _Client:
             payload["category"] = category
         return self.request("POST", "/search", body=payload, timeout=8.0)
 
-    def store(
-        self,
-        content: str,
-        category: str = "fact",
-        importance: float = 0.5,
-        tags: list[str] | None = None,
-        scope: str | None = None,
-        retention: str | None = None,
-    ) -> Any:
+    def store(self, content: str, write: MemoryWrite | None = None) -> Any:
         """Store a durable memory."""
+        write = write or MemoryWrite()
         body: dict[str, Any] = {
             "content": content,
-            "category": category,
-            "importance": importance,
-            "tags": tags or [],
+            "category": write.category,
+            "importance": write.importance,
+            "tags": write.tags or [],
         }
-        if scope:
-            body["scope"] = scope
-        if retention:
-            body["retention"] = retention
+        if write.scope:
+            body["scope"] = write.scope
+        if write.retention:
+            body["retention"] = write.retention
         return self.request("POST", "/memories", body=body, timeout=8.0)
 
     def reflect(self, question: str) -> Any:
@@ -755,10 +760,12 @@ class ForesightMemoryProvider(MemoryProvider):
         def _work() -> None:
             try:
                 self._client.store(
-                    content=summary,
-                    category="decision",
-                    importance=0.6,
-                    tags=["delegation", "subagent"],
+                    summary,
+                    MemoryWrite(
+                        category="decision",
+                        importance=0.6,
+                        tags=["delegation", "subagent"],
+                    ),
                 )
             except Exception as exc:
                 logger.debug("Foresight on_delegation failed: %s", exc)
@@ -782,16 +789,21 @@ class ForesightMemoryProvider(MemoryProvider):
         def _work() -> None:
             try:
                 if action == "add":
-                    self._client.store(content, category=category, importance=0.7, tags=tags)
+                    self._client.store(content, MemoryWrite(category=category, importance=0.7, tags=tags))
                 elif action == "replace":
-                    self._client.store(content, category=category, importance=0.7, tags=[*tags, "replaced"])
+                    self._client.store(
+                        content,
+                        MemoryWrite(category=category, importance=0.7, tags=[*tags, "replaced"]),
+                    )
                 elif action == "remove":
                     self._client.store(
                         f"[Deleted Memory] {content}",
-                        category="archived",
-                        importance=0.1,
-                        tags=[*tags, "deleted"],
-                        retention="ephemeral",
+                        MemoryWrite(
+                            category="archived",
+                            importance=0.1,
+                            tags=[*tags, "deleted"],
+                            retention="ephemeral",
+                        ),
                     )
             except Exception as exc:
                 logger.debug("Foresight on_memory_write failed: %s", exc)
@@ -869,10 +881,12 @@ class ForesightMemoryProvider(MemoryProvider):
         if tool_name == "foresight_remember":
             importance = args.get("importance")
             return self._client.store(
-                content=args.get("content", ""),
-                category=args.get("category") or "fact",
-                importance=float(importance) if importance is not None else 0.5,
-                tags=args.get("tags") or [],
+                args.get("content", ""),
+                MemoryWrite(
+                    category=args.get("category") or "fact",
+                    importance=float(importance) if importance is not None else 0.5,
+                    tags=args.get("tags") or [],
+                ),
             )
         if tool_name == "foresight_reflect":
             return self._client.reflect(args.get("question", ""))

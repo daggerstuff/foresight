@@ -118,6 +118,7 @@ def extract(
 
 @app.command("entities")
 def query_entities_cmd(
+    *,
     query_type: Literal["by_type", "by_name", "relationships", "traverse"] = typer.Option(
         "by_type", "--type", "-t", help="Query type"
     ),
