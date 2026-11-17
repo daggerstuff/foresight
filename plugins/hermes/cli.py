@@ -38,20 +38,33 @@ try:
 except (ImportError, ValueError):
     import importlib.util
 
+    def _empty_config(_hermes_home: Path) -> dict[str, Any]:
+        """Config loader stand-in for a provider module that cannot be loaded."""
+        return {}
+
     init_path = Path(__file__).resolve().parent / "__init__.py"
     spec = importlib.util.spec_from_file_location("_foresight_init", str(init_path))
-    if spec and spec.loader:
+    if spec is not None and spec.loader is not None:
         _init_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_init_mod)
-        _DEFAULT_URL = getattr(_init_mod, "_DEFAULT_URL", "http://127.0.0.1:8764")
-        _Client = _init_mod._Client
-        _load_config = _init_mod._load_config
+        _exports: dict[str, Any] = {
+            "_DEFAULT_URL": getattr(_init_mod, "_DEFAULT_URL", "http://127.0.0.1:8764"),
+            "_Client": _init_mod._Client,
+            "_load_config": _init_mod._load_config,
+        }
     else:
-        _DEFAULT_URL = "http://127.0.0.1:8764"
-        _Client = None  # type: ignore[assignment]
-
-        def _load_config(_hermes_home: Path) -> dict[str, Any]:
-            return {}
+        # No provider module beside this file. _Client is bound to None, which is
+        # what it has always been on this path: _get_client() fails when called
+        # rather than at import time, so the plugin still imports cleanly.
+        _exports = {
+            "_DEFAULT_URL": "http://127.0.0.1:8764",
+            "_Client": None,
+            "_load_config": _empty_config,
+        }
+    # Bound through the module namespace, not by re-declaring the names: `_Client`
+    # is the provider's class in both paths (or None on the degraded one), so the
+    # annotation on _get_client below keeps its meaning.
+    globals().update(_exports)
 
 
 def _get_client() -> _Client:

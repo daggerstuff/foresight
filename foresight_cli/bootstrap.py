@@ -93,7 +93,7 @@ class _PycFinder(importlib.abc.MetaPathFinder):
         if fullname not in self._pyc_map:
             return None
         pyc_path = self._pyc_map[fullname]
-        loader = _PycLoader(fullname, pyc_path)  # type: ignore[arg-type]
+        loader = _PycLoader(fullname, pyc_path)
         spec = importlib.util.spec_from_loader(fullname, loader, origin=str(pyc_path))
         if spec is None:
             return None

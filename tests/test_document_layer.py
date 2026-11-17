@@ -621,7 +621,7 @@ async def test_llm_extractor_with_mocked_llm():
         ]
     )
 
-    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    extractor = LLMDocumentExtractor(llm_client=mock_client)
     source = "Some text with Key insight from text included."
     chunks = await extractor.extract(source, user_id="test-user")
     assert len(chunks) == 1
@@ -639,7 +639,7 @@ async def test_llm_extractor_fallback_on_llm_error():
         raise LLMError(msg)
 
     mock_client.generate = failing_generate
-    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    extractor = LLMDocumentExtractor(llm_client=mock_client)
     text = "Para one.\n\nPara two.\n\nPara three."
     chunks = await extractor.extract(text, char_budget=200)
     assert len(chunks) == 1
@@ -651,7 +651,7 @@ async def test_llm_extractor_fallback_on_bad_response():
     """When LLM returns bad JSON, fall back to heuristic chunking."""
     mock_client = AsyncMock()
     mock_client.generate = lambda *_args, **_kwargs: "Not JSON at all"
-    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    extractor = LLMDocumentExtractor(llm_client=mock_client)
     text = "A.\n\nB.\n\nC."
     chunks = await extractor.extract(text, char_budget=200)
     assert len(chunks) > 0
@@ -663,7 +663,7 @@ async def test_llm_extractor_fallback_on_empty_memories():
     """When LLM returns empty memory list, fall back to heuristic chunking."""
     mock_client = AsyncMock()
     mock_client.generate = lambda *_args, **_kwargs: "[]"
-    extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
+    extractor = LLMDocumentExtractor(llm_client=mock_client)
     text = "X.\n\nY."
     chunks = await extractor.extract(text, char_budget=200)
     assert len(chunks) > 0

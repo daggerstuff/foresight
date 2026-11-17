@@ -48,61 +48,103 @@ _TRIVIAL_PROMPT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Graceful Hermes agent imports with testing/standalone fallbacks
+# ---------------------------------------------------------------------------
+# Hermes SDK bindings
+#
+# Hermes Agent ships these names; the fallbacks below keep the plugin importable
+# — and testable — when the SDK is not installed. Each name is *defined* exactly
+# once, as the fallback, and the SDK's implementation is bound over it through
+# the module namespace when the SDK imports cleanly. Binding through
+# ``globals()`` rather than declaring the same class or function a second time
+# under the same name is what gives this file one definition per name.
+#
+# The SDK binding is all-or-nothing, exactly like the ``from ... import (...)``
+# it replaces: a module that is present but incomplete leaves every fallback in
+# place instead of half-binding.
+# ---------------------------------------------------------------------------
+INDICATOR_GLYPH = "🧠"
+
+
+class RecallStatus:
+    """Fallback for ``agent.memory_provider.RecallStatus``."""
+
+    def __init__(self, provider_label: str, count: int, glyph: str = INDICATOR_GLYPH) -> None:
+        self.provider_label = provider_label
+        self.count = count
+        self.glyph = glyph
+
+    def __repr__(self) -> str:
+        return f"RecallStatus({self.provider_label!r}, count={self.count}, glyph={self.glyph!r})"
+
+
+class MemoryProvider:
+    """Fallback for ``agent.memory_provider.MemoryProvider``."""
+
+
+def spawn_context_thread(
+    target: Callable[..., Any],
+    *,
+    name: str,
+    daemon: bool = True,
+    args: tuple = (),
+    kwargs: dict[str, Any] | None = None,
+) -> threading.Thread:
+    """Fallback for ``agent.memory_provider.spawn_context_thread``."""
+    return threading.Thread(target=target, name=name, daemon=daemon, args=args, kwargs=kwargs or {})
+
+
+def is_trivial_prompt(text: str | None) -> bool:
+    """Fallback for ``agent.memory_provider.is_trivial_prompt``."""
+    stripped = (text or "").strip()
+    if not stripped or stripped.startswith("/"):
+        return True
+    return bool(_TRIVIAL_PROMPT_RE.match(stripped))
+
+
+def get_secret(key: str, default: str = "") -> str:
+    """Fallback for ``agent.secret_scope.get_secret``: the environment only."""
+    return os.environ.get(key, default)
+
+
+def tool_error(message: str) -> str:
+    """Fallback for ``tools.registry.tool_error``."""
+    return json.dumps({"error": message})
+
+
 try:
-    from agent.memory_provider import (
-        INDICATOR_GLYPH,
-        MemoryProvider,
-        RecallStatus,
-        is_trivial_prompt,
-        spawn_context_thread,
-    )
-except ImportError:
-    INDICATOR_GLYPH = "🧠"
+    from agent import memory_provider as _sdk_memory_provider
 
-    class RecallStatus:  # type: ignore[no-redef]
-        def __init__(self, provider_label: str, count: int, glyph: str = INDICATOR_GLYPH) -> None:
-            self.provider_label = provider_label
-            self.count = count
-            self.glyph = glyph
-
-        def __repr__(self) -> str:
-            return f"RecallStatus({self.provider_label!r}, count={self.count}, glyph={self.glyph!r})"
-
-    class MemoryProvider:  # type: ignore[no-redef]
-        pass
-
-    def spawn_context_thread(  # type: ignore[no-redef]
-        target: Callable[..., Any],
-        *,
-        name: str,
-        daemon: bool = True,
-        args: tuple = (),
-        kwargs: dict[str, Any] | None = None,
-    ) -> threading.Thread:
-        return threading.Thread(target=target, name=name, daemon=daemon, args=args, kwargs=kwargs or {})
-
-    def is_trivial_prompt(text: str | None) -> bool:  # type: ignore[no-redef]
-        stripped = (text or "").strip()
-        if not stripped or stripped.startswith("/"):
-            return True
-        return bool(_TRIVIAL_PROMPT_RE.match(stripped))
-
+    _sdk_memory_provider_bindings = {
+        _name: getattr(_sdk_memory_provider, _name)
+        for _name in (
+            "INDICATOR_GLYPH",
+            "MemoryProvider",
+            "RecallStatus",
+            "is_trivial_prompt",
+            "spawn_context_thread",
+        )
+    }
+except (ImportError, AttributeError):
+    pass
+else:
+    globals().update(_sdk_memory_provider_bindings)
+    del _sdk_memory_provider_bindings, _sdk_memory_provider
 
 try:
-    from agent.secret_scope import get_secret
+    from agent import secret_scope as _sdk_secret_scope
 except ImportError:
-
-    def get_secret(key: str, default: str = "") -> str:  # type: ignore[misc]
-        return os.environ.get(key, default)
-
+    pass
+else:
+    globals()["get_secret"] = _sdk_secret_scope.get_secret
+    del _sdk_secret_scope
 
 try:
-    from tools.registry import tool_error
+    from tools import registry as _sdk_tool_registry
 except ImportError:
-
-    def tool_error(message: str) -> str:  # type: ignore[misc]
-        return json.dumps({"error": message})
+    pass
+else:
+    globals()["tool_error"] = _sdk_tool_registry.tool_error
+    del _sdk_tool_registry
 
 
 logger = logging.getLogger(__name__)

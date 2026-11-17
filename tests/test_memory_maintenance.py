@@ -531,7 +531,7 @@ class TestPairwiseOverlaps:
             {"id": "b", "content": "I feel happy and grateful today"},
         ]
         scores = job._pairwise_overlaps(memories)
-        key: tuple[str, str] = tuple(sorted(["a", "b"]))  # type: ignore[assignment]
+        key: tuple[str, str] = ("a", "b")
         assert key in scores
         assert scores[key] == 1.0
 
@@ -542,7 +542,7 @@ class TestPairwiseOverlaps:
             {"id": "b", "content": "delta epsilon zeta"},
         ]
         scores = job._pairwise_overlaps(memories)
-        key: tuple[str, str] = tuple(sorted(["a", "b"]))  # type: ignore[assignment]
+        key: tuple[str, str] = ("a", "b")
         assert scores[key] == 0.0
 
     def test_empty_content(self) -> None:
@@ -552,7 +552,7 @@ class TestPairwiseOverlaps:
             {"id": "b", "content": "some words here"},
         ]
         scores = job._pairwise_overlaps(memories)
-        key: tuple[str, str] = tuple(sorted(["a", "b"]))  # type: ignore[assignment]
+        key: tuple[str, str] = ("a", "b")
         assert scores[key] == 0.0
 
 

@@ -24,6 +24,7 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -35,7 +36,23 @@ from foresight.query_rewrite import query_rewrite_enabled, rewrite_variants
 
 USER_ID = "rewrite_user"
 
-KEYWORD_ONLY: dict[str, object] = {
+
+class _KeywordOnly(TypedDict):
+    """The signal toggles every retriever call in this module unpacks.
+
+    Spelled out as a TypedDict rather than a bare ``dict[str, object]`` so the
+    ``**KEYWORD_ONLY`` unpack is checked: mypy can prove these four keys are the
+    only ones supplied and that they cannot collide with the named parameters of
+    ``HybridRetriever.search``.
+    """
+
+    use_tfidf_cosine: bool
+    use_vector: bool
+    use_graph: bool
+    use_temporal: bool
+
+
+KEYWORD_ONLY: _KeywordOnly = {
     "use_tfidf_cosine": False,
     "use_vector": False,
     "use_graph": False,
@@ -171,7 +188,7 @@ def test_retriever_disabled_runs_original_only(monkeypatch: pytest.MonkeyPatch):
         "When is my dentist appointment?",
         USER_ID,
         query_rewrite=False,
-        **KEYWORD_ONLY,  # type: ignore[arg-type]
+        **KEYWORD_ONLY,
     )
     assert seen == ["When is my dentist appointment?"]
 
@@ -179,7 +196,7 @@ def test_retriever_disabled_runs_original_only(monkeypatch: pytest.MonkeyPatch):
 def test_question_query_promotes_statement_memory():
     db_path = _make_db()
     retriever = HybridRetriever(db_path)
-    result = retriever.search("When is my dentist appointment?", USER_ID, **KEYWORD_ONLY)  # type: ignore[arg-type]
+    result = retriever.search("When is my dentist appointment?", USER_ID, **KEYWORD_ONLY)
     ids = [r.memory_id for r in result.results]
     assert ids[0] == "mem_target"
 
@@ -191,7 +208,7 @@ def test_disabled_rewrite_preserves_old_ordering():
         "When is my dentist appointment?",
         USER_ID,
         query_rewrite=False,
-        **KEYWORD_ONLY,  # type: ignore[arg-type]
+        **KEYWORD_ONLY,
     )
     ids = [r.memory_id for r in result.results]
     assert ids[0] == "mem_distractor"
@@ -204,7 +221,7 @@ def test_explain_reports_rewrite_variants():
         "When is my dentist appointment?",
         USER_ID,
         explain=True,
-        **KEYWORD_ONLY,  # type: ignore[arg-type]
+        **KEYWORD_ONLY,
     )
     assert result.score_details is not None
     assert "query_rewrite" in result.score_details

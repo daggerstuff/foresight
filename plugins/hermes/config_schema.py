@@ -8,25 +8,45 @@ from __future__ import annotations
 
 from typing import Any
 
+KIND_BOOL, KIND_NUMBER, KIND_SECRET, KIND_TEXT = ("bool", "number", "secret", "text")
+
+
+class ProviderConfigSchema:
+    """Fallback for ``plugins.memory.config_schema.ProviderConfigSchema``."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.__dict__.update(kwargs)
+
+
+class ProviderField:
+    """Fallback for ``plugins.memory.config_schema.ProviderField``."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.__dict__.update(kwargs)
+
+
+# Each name above is defined exactly once; the Hermes Agent schema classes are
+# bound over those fallbacks through the module namespace when they import. The
+# binding is all-or-nothing, like the ``from ... import (...)`` it replaces.
 try:
-    from plugins.memory.config_schema import (
-        KIND_BOOL,
-        KIND_NUMBER,
-        KIND_SECRET,
-        KIND_TEXT,
-        ProviderConfigSchema,
-        ProviderField,
-    )
-except ImportError:
-    KIND_BOOL, KIND_NUMBER, KIND_SECRET, KIND_TEXT = ("bool", "number", "secret", "text")
+    from plugins.memory import config_schema as _sdk_config_schema
 
-    class ProviderConfigSchema:  # type: ignore[no-redef]
-        def __init__(self, **kwargs: Any) -> None:
-            self.__dict__.update(kwargs)
-
-    class ProviderField:  # type: ignore[no-redef]
-        def __init__(self, **kwargs: Any) -> None:
-            self.__dict__.update(kwargs)
+    _sdk_config_bindings = {
+        _name: getattr(_sdk_config_schema, _name)
+        for _name in (
+            "KIND_BOOL",
+            "KIND_NUMBER",
+            "KIND_SECRET",
+            "KIND_TEXT",
+            "ProviderConfigSchema",
+            "ProviderField",
+        )
+    }
+except (ImportError, AttributeError):
+    pass
+else:
+    globals().update(_sdk_config_bindings)
+    del _sdk_config_bindings, _sdk_config_schema
 
 
 CONFIG_SCHEMA = ProviderConfigSchema(

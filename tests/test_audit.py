@@ -45,21 +45,27 @@ def test_audit_event_validates_inputs() -> None:
             event_type="",
             resource_id="r",
         )
+    # These two cases exist to prove __post_init__ rejects payloads that violate
+    # the declared field types, so the payloads are built as untyped dicts on
+    # purpose: the dict is the thing under test, not a stand-in for a typed value.
+    bad_resource_id: dict[str, Any] = {
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "event_type": "x",
+        "resource_id": 42,
+    }
     with pytest.raises(ValueError, match="resource_id must be a string"):
-        AuditEvent(
-            tenant_id="t1",
-            user_id="u1",
-            event_type="x",
-            resource_id=42,  # type: ignore[arg-type]
-        )
+        AuditEvent(**bad_resource_id)
+
+    bad_metadata: dict[str, Any] = {
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "event_type": "x",
+        "resource_id": "r",
+        "metadata": "not a dict",
+    }
     with pytest.raises(ValueError, match="metadata must be a dict"):
-        AuditEvent(
-            tenant_id="t1",
-            user_id="u1",
-            event_type="x",
-            resource_id="r",
-            metadata="not a dict",  # type: ignore[arg-type]
-        )
+        AuditEvent(**bad_metadata)
 
 
 # --------------------------------------------------------------------
