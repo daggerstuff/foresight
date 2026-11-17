@@ -2,8 +2,17 @@
 
 Two families share this source class. The Starlette ``Request`` handed to
 ``@mcp.custom_route`` handlers and to ``foresight/rest_api.py`` exposes the
-query string, path parameters, form body, JSON body, raw body and headers. The
-Flask global ``request`` object exposes the same surface under different names.
+query string, path parameters, form body, JSON body, raw body and headers. That
+family is live: it is what this repository actually runs.
+
+The Flask family is not. There is no Flask code and no Flask dependency in this
+tree, so the ten ``request.*`` patterns are declared coverage with no caller,
+and two of them describe shapes Flask does not have: ``request.json`` is a
+property there, not a callable, and Flask has no ``request.body`` (its raw body
+is ``request.data``). ``flask_json_call`` and ``flask_body`` below pin what the
+rule declares, not what Flask exposes -- which means the live Flask shapes
+``request.json`` and ``request.data`` are not covered by the rule at all. See
+the comment on that block in ``semgrep/sql-injection.yaml``.
 
 The rule lists ten patterns per family, so this fixture carries one function per
 pattern -- twenty in total. Every function reaches one ``execute`` sink.
@@ -153,14 +162,14 @@ def flask_get_json(request) -> None:
 
 @mcp.tool()
 def flask_json_call(request) -> None:
-    """``request.json()`` called as a function."""
+    """``request.json()`` -- the shape the rule declares; Flask's is a property."""
     cur = _cursor()
     cur.execute(f"SELECT * FROM t WHERE a = '{request.json()}'")
 
 
 @mcp.tool()
 def flask_body(request) -> None:
-    """``request.body`` used as a whole."""
+    """``request.body`` -- the shape the rule declares; Flask's is ``.data``."""
     cur = _cursor()
     cur.execute(f"SELECT * FROM t WHERE a = '{request.body}'")
 
