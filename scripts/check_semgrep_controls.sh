@@ -41,7 +41,12 @@
 # The expected count has to be declared next to the fixture, not derived from
 # it, or the control would assert "whatever semgrep currently does". Both
 # directions are checked: a fixture missing from the table fails, and a table
-# entry with no fixture fails.
+# entry with no fixture fails. Duplicate rows fail too, so an expectation cannot
+# be shadowed by a later line.
+#
+# Only POSIX-shell constructs and bash 3.2 features are used (no associative
+# arrays), so the script runs under the stock bash on macOS as well as the bash
+# on the CI runners.
 #
 # ---------------------------------------------------------------------------
 # Why `--error` is absent
@@ -89,67 +94,65 @@ if [ "${#FIXTURES[@]}" -eq 0 ]; then
     fail "no *.py.txt fixtures under ${CONTROLS_DIR}"
 fi
 
-declare -A EXPECTED=()
-declare -A COVERAGE=()
-
-while IFS=$'\t' read -r name count description; do
-    [ -n "$name" ] || continue
-    case "$name" in
-        \#*) continue ;;
-    esac
-    if [[ ! "$count" =~ ^[0-9]+$ ]]; then
-        fail "${EXPECTATIONS}: '${name}' has a non-numeric expected count '${count}'"
-    fi
-    if [ -n "${EXPECTED[$name]:-}" ]; then
-        fail "${EXPECTATIONS}: '${name}' is listed more than once"
-    fi
-    EXPECTED[$name]="$count"
-    COVERAGE[$name]="${description:-}"
-done <"$EXPECTATIONS"
-
-if [ "${#EXPECTED[@]}" -eq 0 ]; then
-    fail "${EXPECTATIONS} declares no fixtures"
-fi
-
-for src in "${FIXTURES[@]}"; do
-    file="$(basename -- "$src")"
-    if [ -z "${EXPECTED[$file]:-}" ]; then
-        fail "${file} exists but is not declared in ${EXPECTATIONS}"
-    fi
-done
-
-for name in "${!EXPECTED[@]}"; do
-    if [ ! -f "${CONTROLS_DIR}/${name}" ]; then
-        fail "${EXPECTATIONS} declares ${name} but that file does not exist"
-    fi
-done
-
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/foresight-semgrep-controls.XXXXXX")"
 cleanup() {
     rm -rf -- "$WORK_DIR"
 }
 trap cleanup EXIT
 
+DECLARED="${WORK_DIR}/declared.txt"
+awk -F'\t' 'NF { print $1 }' "$EXPECTATIONS" >"$DECLARED"
+
+if [ ! -s "$DECLARED" ]; then
+    fail "${EXPECTATIONS} declares no fixtures"
+fi
+
+DUPLICATES="$(sort "$DECLARED" | uniq -d)"
+if [ -n "$DUPLICATES" ]; then
+    fail "${EXPECTATIONS} lists the same fixture more than once: ${DUPLICATES}"
+fi
+
 for src in "${FIXTURES[@]}"; do
     file="$(basename -- "$src")"
+    if ! grep -qxF -- "$file" "$DECLARED"; then
+        fail "${file} exists but is not declared in ${EXPECTATIONS}"
+    fi
     cp -- "$src" "${WORK_DIR}/${file%.py.txt}.py"
 done
+
+while IFS=$'\t' read -r file count description; do
+    [ -n "$file" ] || continue
+    case "$file" in
+        \#*) continue ;;
+    esac
+    if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+        fail "${EXPECTATIONS}: '${file}' has a non-numeric expected count '${count}'"
+    fi
+    if [ ! -f "${CONTROLS_DIR}/${file}" ]; then
+        fail "${EXPECTATIONS} declares ${file} but that file does not exist"
+    fi
+    if [ -z "$description" ]; then
+        fail "${EXPECTATIONS}: '${file}' has no coverage description"
+    fi
+done <"$EXPECTATIONS"
 
 cd "$REPO_ROOT"
 
 status=0
 checked=0
 deviations=()
-declare -A ACTUAL=()
 
 printf '%-42s %8s %8s  %s\n' "fixture" "expected" "actual" "result"
 printf '%-42s %8s %8s  %s\n' "------------------------------------------" "--------" "--------" "------"
 
-for src in "${FIXTURES[@]}"; do
-    file="$(basename -- "$src")"
+while IFS=$'\t' read -r file want coverage; do
+    [ -n "$file" ] || continue
+    case "$file" in
+        \#*) continue ;;
+    esac
+
     stem="${file%.py.txt}"
     target="${WORK_DIR}/${stem}.py"
-    want="${EXPECTED[$file]}"
 
     report="$(uv tool run --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
         --config "$CONFIG" \
@@ -163,7 +166,6 @@ for src in "${FIXTURES[@]}"; do
 
     got="$(printf '%s' "$report" | { grep -o '"check_id"' || true; } | wc -l)"
     got="${got//[[:space:]]/}"
-    ACTUAL[$file]="$got"
 
     checked=$((checked + 1))
 
@@ -171,19 +173,20 @@ for src in "${FIXTURES[@]}"; do
         printf '%-42s %8s %8s  %s\n' "$stem" "$want" "$got" "ok"
     else
         printf '%-42s %8s %8s  %s\n' "$stem" "$want" "$got" "FAIL"
-        deviations+=("$file")
+        deviations+=("${file}|${want}|${got}|${coverage}")
         status=1
     fi
-done
+done <"$EXPECTATIONS"
 
 if [ "$status" -ne 0 ]; then
     echo
     echo "Deviating fixtures, with the reported finding lines:" >&2
-    for file in "${deviations[@]}"; do
+    for entry in "${deviations[@]}"; do
+        IFS='|' read -r file want got coverage <<<"$entry"
         stem="${file%.py.txt}"
         echo "--- ${file}" >&2
-        echo "    covers: ${COVERAGE[$file]:-}" >&2
-        echo "    expected ${EXPECTED[$file]} finding(s), got ${ACTUAL[$file]:-?}" >&2
+        echo "    covers: ${coverage}" >&2
+        echo "    expected ${want} finding(s), got ${got}" >&2
         uv tool run --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
             --config "$CONFIG" \
             --quiet \
