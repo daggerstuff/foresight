@@ -162,6 +162,9 @@ jobs:
       - name: Bandit security scan
         run: uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
 
+      - name: Semgrep SQL injection scan (taint)
+        run: ./scripts/run_semgrep_sql.sh
+
       - name: Trivy vulnerability and secret scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
