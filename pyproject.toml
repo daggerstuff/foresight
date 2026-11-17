@@ -162,6 +162,11 @@ force-single-line = false
 # the interpreter running mypy is the conservative choice: it rejects use of
 # stdlib features that only exist on 3.13/3.14 and would break a 3.12 install.
 python_version = "3.12"
+# Both packages ship in the distribution and both are first-party code the CLI
+# gate depends on, so the default target set is the library plus the CLI. A
+# path passed on the command line replaces this list; run `mypy` with no
+# arguments to check exactly what is declared here.
+files = ["foresight", "foresight_cli"]
 # `pytesseract` ships no `py.typed` marker and there is no `types-pytesseract`
 # distribution on PyPI, so no stub package exists to install. Rather than
 # fabricate a stub for it, the one guarded call site in
