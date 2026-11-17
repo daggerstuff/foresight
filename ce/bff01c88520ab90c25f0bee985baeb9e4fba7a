@@ -1,0 +1,45 @@
+foresight/sql_helpers.py
+  s_59c83024c29646::t_c9f102527e1e45 58,60-75
+foresight_cli/cli.py
+  s_59c83024c29646::t_a4cdcf7cf44ace 18
+  s_59c83024c29646::t_354415a3c863f7 238-241
+foresight_cli/utils/config.py
+  s_59c83024c29646::t_31be53158634a9 79-80
+apps/docs/docs/api/cli-reference.md
+  s_59c83024c29646::t_14a22977c15f9d 113-118,121-125
+scripts/check_semgrep_controls.sh
+  s_59c83024c29646::t_6e0b7453c67558 10
+semgrep/controls/negative_sanitizers.py.txt
+  s_59c83024c29646::t_914afd1946b124 27-28,38
+  s_59c83024c29646::t_a13dfa091a6761 5-10
+semgrep/controls/positive_http_request.py.txt
+  s_59c83024c29646::t_358a8ab4e6612b 167
+  s_59c83024c29646::t_82aa2c664371d1 174
+  s_59c83024c29646::t_79486b436cb936 9-20
+HANDOFF-kimiflare.md
+  s_59c83024c29646::t_a69c9efb1b63dc 60-61
+plugins/hermes/cli.py
+  s_59c83024c29646::t_7ddf32b4874365 49
+tests/test_cli_contract.py
+  s_59c83024c29646::t_2258ae912f6eeb 1-158
+semgrep/sql-injection.yaml
+  s_59c83024c29646::t_64c4ed1b285337 126-135
+semgrep/controls/expectations.tsv
+  s_59c83024c29646::t_c487bea3ba0138 3,9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cebff01c88520ab90c25f0bee985baeb9e4fba7a",
+  "prompts": {},
+  "sessions": {
+    "s_59c83024c29646": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "a2951143-e825-4eec-b17c-e7f98e73f3c2",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
