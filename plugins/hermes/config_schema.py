@@ -25,9 +25,6 @@ class ProviderField:
         self.__dict__.update(kwargs)
 
 
-# Each name above is defined exactly once; the Hermes Agent schema classes are
-# bound over those fallbacks through the module namespace when they import. The
-# binding is all-or-nothing, like the ``from ... import (...)`` it replaces.
 try:
     from plugins.memory import config_schema as _sdk_config_schema
 

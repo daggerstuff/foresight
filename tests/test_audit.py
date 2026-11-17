@@ -45,9 +45,6 @@ def test_audit_event_validates_inputs() -> None:
             event_type="",
             resource_id="r",
         )
-    # These two cases exist to prove __post_init__ rejects payloads that violate
-    # the declared field types, so the payloads are built as untyped dicts on
-    # purpose: the dict is the thing under test, not a stand-in for a typed value.
     bad_resource_id: dict[str, Any] = {
         "tenant_id": "t1",
         "user_id": "u1",
