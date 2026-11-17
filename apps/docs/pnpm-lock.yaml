@@ -5,9 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  body-parser: 1.20.6
+  body-parser: 1.20.9
   http-proxy-middleware: 2.0.10
-  joi: 17.13.7
+  joi: 17.13.9
   qs: 6.16.2
   uuid: 11.1.1
   webpack-dev-server: 5.2.6
@@ -1951,8 +1951,8 @@ packages:
     resolution: {integrity: sha512-Ceh+7ox5qe7LJuLHoY0feh3pHuUDHAcRUeyL2VYghZwfpkNIy/+8Ocg0a3UuSoYzavmylwuLWQOf3hl0jjMMIw==}
     engines: {node: '>=8'}
 
-  body-parser@1.20.6:
-    resolution: {integrity: sha512-p5tAzS57i5MV9fZFDj9LeIiTZEufbSe2eDozP+ElheSUq1m74CRq1jI4mYNDdVs9vQztXFLuk/Gd6BWTdwRJ5g==}
+  body-parser@1.20.9:
+    resolution: {integrity: sha512-FISIQxV5u91Y9gvuFq3q/tA/qTqLJn3AhRcEvyozyhJTh5OBFFtv827AdHU7Rbyct4r+Ba1/99oFa1Y3yuFsdw==}
     engines: {node: '>= 0.8', npm: 1.2.8000 || >= 1.4.16}
 
   bonjour-service@1.4.4:
@@ -3159,8 +3159,8 @@ packages:
     resolution: {integrity: sha512-/imKNG4EbWNrVjoNC/1H5/9GFy+tqjGBHCaSsN+P2RnPqjsLmv6UD3Ej+Kj8nBWaRAwyk7kK5ZUc+OEatnTR3A==}
     hasBin: true
 
-  joi@17.13.7:
-    resolution: {integrity: sha512-MF80Dm5Y2veNy8QWVx9Bj3ui4mo7+VPSPsR1M+oaHXV0Gx6zGX9a2F+OZG3Blby9tOlzU9Rs5FUimlEhbKtfnQ==}
+  joi@17.13.9:
+    resolution: {integrity: sha512-llFCT2rVtfwgBCaIqxtjim+iHqrgss4ONiGSYiiGH9jnjWq90ppSRffqmqKvwpa8W+YfILyQV6XyGcegXX2T4g==}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -4168,6 +4168,7 @@ packages:
   postcss-selector-parser@7.2.0:
     resolution: {integrity: sha512-Khh/tERVBn0I1499dvBSHY0pWJloMJWUxDsOBM0CCDPAcVZ10Jl2L1qy1f19uEX22spa8Mv7DCdEQJc0cGwBhQ==}
     engines: {node: '>=4'}
+    deprecated: Double-escapes CSS Modules class names (#362). Use 7.2.1.
 
   postcss-sort-media-queries@5.2.0:
     resolution: {integrity: sha512-AZ5fDMLD8SldlAYlvi8NIqo0+Z8xnXU2ia0jxmuhxAU+Lqt9K+AlmLNJ/zWEnE9x+Zx3qL3+1K20ATgNOr3fAA==}
@@ -7231,7 +7232,7 @@ snapshots:
       '@types/mdast': 4.0.4
       '@types/react': 19.3.0
       commander: 5.1.0
-      joi: 17.13.7
+      joi: 17.13.9
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
       react-helmet-async: '@slorber/react-helmet-async@1.3.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)'
@@ -7290,7 +7291,7 @@ snapshots:
       '@docusaurus/utils': 3.10.2(clean-css@5.3.3)(cssnano@6.1.2(postcss@8.5.32))(csso@5.0.5)(html-minifier-terser@7.2.0)(postcss@8.5.32)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(supports-color@8.1.1)(svgo@3.3.5)
       '@docusaurus/utils-common': 3.10.2(clean-css@5.3.3)(cssnano@6.1.2(postcss@8.5.32))(csso@5.0.5)(html-minifier-terser@7.2.0)(postcss@8.5.32)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(supports-color@8.1.1)(svgo@3.3.5)
       fs-extra: 11.4.1
-      joi: 17.13.7
+      joi: 17.13.9
       js-yaml: 4.3.2
       lodash: 4.18.1
       tslib: 2.9.1
@@ -8231,7 +8232,7 @@ snapshots:
 
   binary-extensions@2.3.0: {}
 
-  body-parser@1.20.6(supports-color@8.1.1):
+  body-parser@1.20.9(supports-color@8.1.1):
     dependencies:
       bytes: 3.1.2
       content-type: 1.0.5
@@ -8954,7 +8955,7 @@ snapshots:
     dependencies:
       accepts: 1.3.8
       array-flatten: 1.1.1
-      body-parser: 1.20.6(supports-color@8.1.1)
+      body-parser: 1.20.9(supports-color@8.1.1)
       content-disposition: 0.5.4
       content-type: 1.0.5
       cookie: 0.7.2
@@ -9556,7 +9557,7 @@ snapshots:
 
   jiti@1.21.7: {}
 
-  joi@17.13.7:
+  joi@17.13.9:
     dependencies:
       '@hapi/hoek': 9.3.0
       '@hapi/topo': 5.1.0
