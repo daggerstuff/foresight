@@ -121,6 +121,17 @@ rules:
               - pattern: await $REQ.json()
               - pattern: $REQ.body
               - pattern: $REQ.headers[$KEY]
+      # The Flask shapes below are declared but unexercised: this repository has
+      # no Flask code and no Flask dependency -- the REST surface is Starlette.
+      # Two of them cannot match real Flask code either, so read them as
+      # declared coverage rather than observed usage: `request.json` is a
+      # property in Flask, not a callable, and Flask has no `request.body` (its
+      # raw body is `request.data`). The consequence is that the live Flask
+      # shapes `request.json` and `request.data` are NOT covered by this file.
+      # They are pinned here anyway because
+      # semgrep/controls/positive_http_request.py.txt asserts the declared set;
+      # if Flask ever lands in this tree, add the two attribute patterns and
+      # their fixtures in the same commit.
       - pattern-either:
           - pattern: request.args
           - pattern: request.args[$KEY]
