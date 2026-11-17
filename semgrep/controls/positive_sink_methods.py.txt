@@ -1,0 +1,83 @@
+"""Positive control: every sink method in the rule's ``$METHOD`` alternation.
+
+A sink the alternation names but the repository never calls is still a declared
+coverage claim. ``execute_many`` has no call site in this tree today; the other
+eight do. All nine appear here, one function each, so a method dropped from the
+alternation -- or misspelled in it -- fails this fixture instead of quietly
+shrinking the gate.
+
+Expected findings: 9.
+"""
+
+import sqlite3
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+@mcp.tool()
+def sink_execute(table: str) -> None:
+    """``execute`` -- DB-API statement entry point."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def sink_executemany(table: str) -> None:
+    """``executemany`` -- DB-API batched statement entry point."""
+    cur = _cursor()
+    cur.executemany(f"SELECT * FROM {table}", [])
+
+
+@mcp.tool()
+def sink_executescript(table: str) -> None:
+    """``executescript`` -- sqlite3 script entry point."""
+    cur = _cursor()
+    cur.executescript(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def sink_execute_many(table: str) -> None:
+    """``execute_many`` -- declared sink with no call site in this tree."""
+    cur = _cursor()
+    cur.execute_many(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def sink_execute_returning(table: str) -> None:
+    """``execute_returning`` -- project wrapper that returns rows."""
+    cur = _cursor()
+    cur.execute_returning(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def sink_fetch(table: str) -> None:
+    """``fetch`` -- project wrapper that returns rows."""
+    cur = _cursor()
+    cur.fetch(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def sink_fetch_one(table: str) -> None:
+    """``fetch_one`` -- project wrapper that returns one row."""
+    cur = _cursor()
+    cur.fetch_one(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def sink_fetch_rows(table: str) -> None:
+    """``_fetch_rows`` -- GraphStore/HybridRetriever forwarder."""
+    store = _cursor()
+    store._fetch_rows(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def sink_execute_sql(table: str) -> None:
+    """``_execute_sql`` -- TemporalQueryService forwarder."""
+    store = _cursor()
+    store._execute_sql(f"SELECT * FROM {table}")

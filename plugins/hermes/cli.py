@@ -53,17 +53,11 @@ except (ImportError, ValueError):
             "_load_config": _init_mod._load_config,
         }
     else:
-        # No provider module beside this file. _Client is bound to None, which is
-        # what it has always been on this path: _get_client() fails when called
-        # rather than at import time, so the plugin still imports cleanly.
         _exports = {
             "_DEFAULT_URL": "http://127.0.0.1:8764",
             "_Client": None,
             "_load_config": _empty_config,
         }
-    # Bound through the module namespace, not by re-declaring the names: `_Client`
-    # is the provider's class in both paths (or None on the degraded one), so the
-    # annotation on _get_client below keeps its meaning.
     globals().update(_exports)
 
 

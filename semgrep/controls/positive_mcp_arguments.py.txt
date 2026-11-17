@@ -1,0 +1,44 @@
+"""Positive control: source class 2 -- the raw MCP tool-arguments mapping.
+
+``on_call_tool`` middleware sees the client's arguments as a plain mapping
+before they are unpacked into a typed handler signature. The rule names the
+three bindings that mapping arrives under (``arguments``, ``tool_args``,
+``tool_input``) and both access shapes (subscript and ``.get()``), so all four
+combinations appear here.
+
+Expected findings: 4.
+"""
+
+import sqlite3
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+def arguments_subscript(arguments: dict) -> None:
+    """The ``arguments`` mapping read by subscript."""
+    cur = _cursor()
+    cur.execute(f"DELETE FROM t WHERE id = {arguments['id']}")
+
+
+def tool_args_get(tool_args: dict) -> None:
+    """The ``tool_args`` mapping read through ``.get()``."""
+    cur = _cursor()
+    cur.execute(f"DELETE FROM t WHERE id = {tool_args.get('id')}")
+
+
+def tool_input_subscript(tool_input: dict) -> None:
+    """The ``tool_input`` mapping read by subscript."""
+    cur = _cursor()
+    cur.execute(f"DELETE FROM t WHERE id = {tool_input['id']}")
+
+
+def arguments_get(arguments: dict) -> None:
+    """The ``arguments`` mapping read through ``.get()``."""
+    cur = _cursor()
+    cur.execute(f"DELETE FROM t WHERE id = {arguments.get('id')}")

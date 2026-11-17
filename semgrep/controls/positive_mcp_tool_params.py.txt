@@ -1,0 +1,55 @@
+"""Positive control: source class 1 -- MCP tool-handler parameters.
+
+Every parameter of an ``@mcp.tool`` function is JSON supplied by the MCP client,
+so each one is a taint source. Each function below interpolates exactly one such
+parameter into the statement text of a single ``execute`` sink, so the rule must
+report each function exactly once.
+
+The four shapes cover positional, keyword-only, ``async def``, and ``async def``
+with keyword-only parameters. The rule's comment claims all four; this fixture
+is what makes that claim falsifiable.
+
+Expected findings: 4.
+"""
+
+import sqlite3
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+@mcp.tool()
+def positional_parameter(table: str) -> list:
+    """A positional handler parameter reaches the statement text."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+    return cur.fetchall()
+
+
+@mcp.tool()
+def keyword_only_parameter(*, table: str) -> list:
+    """A keyword-only handler parameter reaches the statement text."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+    return cur.fetchall()
+
+
+@mcp.tool()
+async def async_parameter(table: str) -> list:
+    """An ``async def`` handler parameter reaches the statement text."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+    return cur.fetchall()
+
+
+@mcp.tool()
+async def async_keyword_only_parameter(*, table: str) -> list:
+    """An ``async def`` keyword-only parameter reaches the statement text."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+    return cur.fetchall()

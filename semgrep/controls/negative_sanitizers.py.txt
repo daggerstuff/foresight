@@ -1,0 +1,171 @@
+"""Negative control: every sanitizer pattern the rule declares.
+
+Each function takes a live MCP tool parameter, passes it through one sanitizer,
+and interpolates the *returned* value into statement text. The rule lists eight
+sanitizer names, each in a bare and a module-qualified form, so sixteen
+functions appear here.
+
+Silence means the sanitizer is recognised. It does not mean "nothing was
+scanned": the source idiom is the one ``positive_mcp_tool_params.py.txt`` pins
+at exactly four findings, and dropping the sanitizer wrapper is exactly what
+``semgrep/sql-injection.yaml`` reports.
+
+``join_sql_parts()`` is deliberately absent from this fixture. It is not a
+sanitizer -- see ``positive_assembly.py.txt``, which requires it to be reported.
+
+Expected findings: 0.
+"""
+
+import sqlite3
+
+from mcp.server.fastmcp import FastMCP
+
+from foresight.sql_helpers import (
+    VALID_TABLE_NAMES,
+    build_in_clause,
+    build_type_filter,
+    join_sql_parts,
+    placeholders,
+    quote_identifier,
+    validate_identifier,
+)
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+@mcp.tool()
+def sanitized_quote_identifier(table: str) -> list:
+    """Bare ``quote_identifier()`` regex-proves the identifier."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {quote_identifier(table)}")
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_quote_identifier(helpers, table: str) -> list:
+    """Module-qualified ``quote_identifier()``."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {helpers.quote_identifier(table)}")
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_validate_identifier(table: str) -> list:
+    """Bare ``validate_identifier()`` checks a frozen allowlist."""
+    cur = _cursor()
+    cur.execute(join_sql_parts("SELECT * FROM ", validate_identifier(table, VALID_TABLE_NAMES, "table")))
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_validate_identifier(helpers, table: str) -> list:
+    """Module-qualified ``validate_identifier()``."""
+    cur = _cursor()
+    cur.execute(join_sql_parts("SELECT * FROM ", helpers.validate_identifier(table, VALID_TABLE_NAMES, "table")))
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_placeholders(ids: list) -> list:
+    """Bare ``placeholders()`` emits only ``?`` separators."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t WHERE id IN (" + placeholders(len(ids)) + ")", ids)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_placeholders(helpers, ids: list) -> list:
+    """Module-qualified ``placeholders()``."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t WHERE id IN (" + helpers.placeholders(len(ids)) + ")", ids)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_build_in_clause(values: list) -> list:
+    """Bare ``build_in_clause()`` returns separators plus bound values."""
+    cur = _cursor()
+    slots, params = build_in_clause(values)
+    cur.execute("SELECT * FROM t WHERE v IN (" + slots + ")", params)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_build_in_clause(helpers, values: list) -> list:
+    """Module-qualified ``build_in_clause()``."""
+    cur = _cursor()
+    slots, params = helpers.build_in_clause(values)
+    cur.execute("SELECT * FROM t WHERE v IN (" + slots + ")", params)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_build_type_filter(types: list) -> list:
+    """Bare ``build_type_filter()`` validates before emitting separators."""
+    cur = _cursor()
+    fragment, params = build_type_filter(types)
+    cur.execute("SELECT * FROM t WHERE 1 " + fragment, params)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_build_type_filter(helpers, types: list) -> list:
+    """Module-qualified ``build_type_filter()``."""
+    cur = _cursor()
+    fragment, params = helpers.build_type_filter(types)
+    cur.execute("SELECT * FROM t WHERE 1 " + fragment, params)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_build_filter_fragments(request) -> list:
+    """Bare ``_build_filter_fragments()`` -- server-local fragment builder."""
+    cur = _cursor()
+    where, params = _build_filter_fragments(request)
+    cur.execute("SELECT * FROM t WHERE 1 " + where, params)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_build_filter_fragments(helpers, request) -> list:
+    """Module-qualified ``_build_filter_fragments()``."""
+    cur = _cursor()
+    where, params = helpers._build_filter_fragments(request)
+    cur.execute("SELECT * FROM t WHERE 1 " + where, params)
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_namespace_frag(namespace: str) -> list:
+    """Bare ``_namespace_frag()`` -- retriever-local fragment builder."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t WHERE ns = " + _namespace_frag(namespace))
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_namespace_frag(helpers, namespace: str) -> list:
+    """Module-qualified ``_namespace_frag()``."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t WHERE ns = " + helpers._namespace_frag(namespace))
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_quote_identifier_local(table: str) -> list:
+    """Bare ``_quote_identifier()`` -- migration-script twin."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {_quote_identifier(table)}")
+    return cur.fetchall()
+
+
+@mcp.tool()
+def sanitized_module_quote_identifier_local(helpers, table: str) -> list:
+    """Module-qualified ``_quote_identifier()``."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {helpers._quote_identifier(table)}")
+    return cur.fetchall()

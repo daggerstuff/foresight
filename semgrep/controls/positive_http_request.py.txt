@@ -1,0 +1,173 @@
+"""Positive control: source class 3 -- HTTP request parameters and body.
+
+Two families share this source class. The Starlette ``Request`` handed to
+``@mcp.custom_route`` handlers and to ``foresight/rest_api.py`` exposes the
+query string, path parameters, form body, JSON body, raw body and headers. The
+Flask global ``request`` object exposes the same surface under different names.
+
+The rule lists ten patterns per family, so this fixture carries one function per
+pattern -- twenty in total. Every function reaches one ``execute`` sink.
+
+Expected findings: 20.
+"""
+
+import sqlite3
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+@mcp.tool()
+def starlette_query_params(request) -> None:
+    """``request.query_params`` used as a whole."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.query_params}'")
+
+
+@mcp.tool()
+def starlette_query_params_subscript(request) -> None:
+    """``request.query_params`` read by subscript."""
+    cur = _cursor()
+    value = request.query_params["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def starlette_query_params_get(request) -> None:
+    """``request.query_params`` read through ``.get()``."""
+    cur = _cursor()
+    value = request.query_params.get("a")
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def starlette_path_params(request) -> None:
+    """``request.path_params`` read by subscript."""
+    cur = _cursor()
+    value = request.path_params["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def starlette_form_subscript(request) -> None:
+    """``request.form`` read by subscript."""
+    cur = _cursor()
+    value = request.form["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def starlette_form_call(request) -> None:
+    """``request.form`` awaited as a call."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.form()}'")
+
+
+@mcp.tool()
+def starlette_json(request) -> None:
+    """``request.json()`` used without awaiting."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.json()}'")
+
+
+@mcp.tool()
+async def starlette_json_await(request) -> None:
+    """``await request.json()`` bound before use."""
+    cur = _cursor()
+    body = await request.json()
+    cur.execute(f"SELECT * FROM t WHERE a = '{body}'")
+
+
+@mcp.tool()
+def starlette_body(request) -> None:
+    """``request.body`` used as a whole."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.body}'")
+
+
+@mcp.tool()
+def starlette_headers(request) -> None:
+    """``request.headers`` read by subscript."""
+    cur = _cursor()
+    value = request.headers["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def flask_args(request) -> None:
+    """``request.args`` used as a whole."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.args}'")
+
+
+@mcp.tool()
+def flask_args_subscript(request) -> None:
+    """``request.args`` read by subscript."""
+    cur = _cursor()
+    value = request.args["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def flask_args_get(request) -> None:
+    """``request.args`` read through ``.get()``."""
+    cur = _cursor()
+    value = request.args.get("a")
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def flask_form(request) -> None:
+    """``request.form`` used as a whole."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.form}'")
+
+
+@mcp.tool()
+def flask_form_subscript(request) -> None:
+    """``request.form`` read by subscript."""
+    cur = _cursor()
+    value = request.form["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def flask_values_subscript(request) -> None:
+    """``request.values`` read by subscript."""
+    cur = _cursor()
+    value = request.values["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")
+
+
+@mcp.tool()
+def flask_get_json(request) -> None:
+    """``request.get_json()`` used without arguments."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.get_json()}'")
+
+
+@mcp.tool()
+def flask_json_call(request) -> None:
+    """``request.json()`` called as a function."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.json()}'")
+
+
+@mcp.tool()
+def flask_body(request) -> None:
+    """``request.body`` used as a whole."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM t WHERE a = '{request.body}'")
+
+
+@mcp.tool()
+def flask_headers(request) -> None:
+    """``request.headers`` read by subscript."""
+    cur = _cursor()
+    value = request.headers["a"]
+    cur.execute(f"SELECT * FROM t WHERE a = '{value}'")

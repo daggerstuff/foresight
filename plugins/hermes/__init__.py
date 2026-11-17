@@ -48,20 +48,6 @@ _TRIVIAL_PROMPT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ---------------------------------------------------------------------------
-# Hermes SDK bindings
-#
-# Hermes Agent ships these names; the fallbacks below keep the plugin importable
-# — and testable — when the SDK is not installed. Each name is *defined* exactly
-# once, as the fallback, and the SDK's implementation is bound over it through
-# the module namespace when the SDK imports cleanly. Binding through
-# ``globals()`` rather than declaring the same class or function a second time
-# under the same name is what gives this file one definition per name.
-#
-# The SDK binding is all-or-nothing, exactly like the ``from ... import (...)``
-# it replaces: a module that is present but incomplete leaves every fallback in
-# place instead of half-binding.
-# ---------------------------------------------------------------------------
 INDICATOR_GLYPH = "🧠"
 
 

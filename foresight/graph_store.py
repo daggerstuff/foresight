@@ -277,11 +277,6 @@ class GraphStore:
     # =========================================================================
 
     def _migrate_add_tenant_id(self, conn) -> None:
-        # `table` is one of the three literal names below, never caller data, so
-        # the interpolated PRAGMA cannot carry user input. Bound parameters are
-        # not an option here: SQLite does not accept a placeholder as a PRAGMA
-        # table name, which is why the names are an allowlisted tuple in this
-        # function rather than an argument.
         for table in ("memory_entities", "entity_relationships", "memory_entity_links"):
             try:
                 cursor = conn.execute(f"PRAGMA table_info({table})")
