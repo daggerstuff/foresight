@@ -11,6 +11,7 @@ Supports:
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -24,8 +25,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Optional kafka dependency
-import importlib
-
 HAS_KAFKA = True
 KafkaConsumer = None
 TopicPartition = None

@@ -166,7 +166,7 @@ class TestSyncManager:
         )
 
         # Sync with successful callback
-        def success_callback(op):
+        def success_callback(_op):
             return True
 
         manager._sync_callback = success_callback
@@ -188,7 +188,7 @@ class TestSyncManager:
         )
 
         # Always fail
-        def fail_callback(op):
+        def fail_callback(_op):
             raise Exception("Sync failed")
 
         manager._sync_callback = fail_callback
@@ -287,7 +287,7 @@ class TestSyncScenarios:
 
         # Come back online and sync
         manager.set_online(True)
-        manager._sync_callback = lambda op: True  # Success
+        manager._sync_callback = lambda _op: True  # Success
         progress = manager.sync()
 
         assert progress.status == SyncStatus.IDLE
@@ -306,7 +306,7 @@ class TestSyncScenarios:
         # The first attempt fails; the retry must succeed.
         successful_attempt = 2
 
-        def flaky_callback(op):
+        def flaky_callback(_op):
             attempt_count[0] += 1
             if attempt_count[0] < successful_attempt:
                 raise Exception("Temporary failure")

@@ -195,6 +195,79 @@ class MaintenanceStats:
         }
 
 
+@dataclass
+class _MergePlan:
+    """The primary memory's pre-merge state plus the merged content to write back."""
+
+    primary_id: str
+    other_ids: list[str]
+    existing_content: str
+    combined: str
+    now_iso: str
+
+
+def _fetch_merge_sources(
+    conn: Any,
+    other_ids: list[str],
+    config: MaintenanceConfig,
+    existing_synth: set[str],
+) -> list[str]:
+    """Return the merged memories' content and record their ids as synthesis sources."""
+    other_slots = placeholders(len(other_ids))
+    rows = conn.execute(
+        join_sql_parts(
+            "SELECT id, content FROM memories WHERE id IN (",
+            other_slots,
+            ") AND tenant_id = ? AND user_id = ?",
+        ),
+        (*other_ids, config.tenant_id, config.user_id),
+    ).fetchall()
+
+    additional_content = []
+    for row in rows:
+        if row["content"]:
+            additional_content.append(row["content"])
+            existing_synth.add(row["id"])
+    return additional_content
+
+
+_CONTRADICTION_TOPIC_STOPWORDS = frozenset({"that", "with", "from", "have", "this", "been", "were", "they", "their"})
+
+
+def _count_sensitive_memories(conn: Any, config: MaintenanceConfig) -> int:
+    """Count the sensitive memories the contradict scan flags for admin review."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? "
+        "AND COALESCE(is_sensitive, 0) = 1",
+        (config.user_id, config.tenant_id),
+    ).fetchone()
+    return int(row["sensitive_count"] or 0) if row else 0
+
+
+def _build_topic_clusters(memories: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Group memories by the significant words they share."""
+    clusters: dict[str, list[dict[str, Any]]] = {}
+    for mem in memories:
+        content_lower = (mem["content"] or "").lower()
+        for topic in set(re.findall(r"\b\w+\b", content_lower)):
+            if len(topic) < MIN_CONTRADICTION_TOPIC_CHARS or topic in _CONTRADICTION_TOPIC_STOPWORDS:
+                continue
+            clusters.setdefault(topic, []).append(mem)
+    return clusters
+
+
+def _build_word_map(memories: list[dict[str, Any]]) -> dict[str, tuple[frozenset[str], frozenset[str]]]:
+    """Pre-compute each memory's word set once to avoid O(n²) re-tokenization."""
+    word_map: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+    for mem in memories:
+        content_lower = (mem["content"] or "").lower()
+        word_map[mem["id"]] = (
+            frozenset(re.findall(r"\b\w+\b", content_lower)),
+            frozenset(re.findall(r"\b\w+\b", content_lower)),
+        )
+    return word_map
+
+
 class MemoryMaintenanceJob:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or DB_PATH
@@ -451,31 +524,62 @@ class MemoryMaintenanceJob:
         existing_content = row["content"] or ""
         existing_synth = set(re.findall(r"\w+", row["synthesized_from"] or "")) if row["synthesized_from"] else set()
 
-        # Fetch all other memories' content in a single query
-        if other_ids:
-            other_slots = placeholders(len(other_ids))
-            rows = conn.execute(
-                join_sql_parts(
-                    "SELECT id, content FROM memories WHERE id IN (",
-                    other_slots,
-                    ") AND tenant_id = ? AND user_id = ?",
-                ),
-                (*other_ids, config.tenant_id, config.user_id),
-            ).fetchall()
-
-            additional_content = []
-            for row in rows:
-                if row["content"]:
-                    additional_content.append(row["content"])
-                    existing_synth.add(row["id"])
-        else:
-            additional_content = []
+        additional_content = _fetch_merge_sources(conn, other_ids, config, existing_synth)
 
         combined = existing_content
         if additional_content:
             combined = existing_content + " " + " ".join(additional_content)
 
-        # --- Version snapshot: record pre-merge content for audit/rollback ---
+        now_iso = datetime.now(UTC).isoformat()
+        next_version = self._snapshot_pre_merge_version(conn, primary_id, config, existing_content, now_iso)
+
+        # Update primary memory with combined content.  Primary stays VISIBLE
+        # (is_ghost = 0) — the combined content must be retrievable.
+        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, combined[:1000])
+        conn.execute(
+            """UPDATE memories
+               SET content = ?,
+                   is_ghost = 0,
+                   gist = ?,
+                   synthesized_from = ?,
+                   is_sensitive = ?,
+                   sensitivity_reason = ?,
+                   version = ?
+               WHERE id = ? AND tenant_id = ? AND user_id = ?""",
+            (
+                combined[:1000],
+                existing_content[:200],
+                str(list(existing_synth)),
+                1 if is_sensitive_bit else 0,
+                sensitivity_reason,
+                next_version + 1,
+                primary_id,
+                config.tenant_id,
+                config.user_id,
+            ),
+        )
+
+        plan = _MergePlan(
+            primary_id=primary_id,
+            other_ids=other_ids,
+            existing_content=existing_content,
+            combined=combined,
+            now_iso=now_iso,
+        )
+        self._record_merge_history(conn, cand, config, plan)
+        self._ghost_merged_memories(conn, other_ids, existing_synth, config)
+
+        conn.commit()
+
+    def _snapshot_pre_merge_version(
+        self,
+        conn: Any,
+        primary_id: str,
+        config: MaintenanceConfig,
+        existing_content: str,
+        now_iso: str,
+    ) -> int:
+        """Record the pre-merge content as a new version; return that version number."""
         try:
             version_row = conn.execute(
                 "SELECT MAX(version) AS v FROM memory_versions WHERE memory_id = ? AND tenant_id = ?",
@@ -486,7 +590,6 @@ class MemoryMaintenanceJob:
             current_version = 0
         next_version = current_version + 1
 
-        now_iso = datetime.now(UTC).isoformat()
         version_id = str(uuid.uuid4())
         try:
             prim_meta = conn.execute(
@@ -517,34 +620,16 @@ class MemoryMaintenanceJob:
             )
         except Exception:
             logger.debug("version snapshot insert failed for %s", primary_id, exc_info=True)
+        return next_version
 
-        # Update primary memory with combined content.  Primary stays VISIBLE
-        # (is_ghost = 0) — the combined content must be retrievable.
-        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, combined[:1000])
-        conn.execute(
-            """UPDATE memories
-               SET content = ?,
-                   is_ghost = 0,
-                   gist = ?,
-                   synthesized_from = ?,
-                   is_sensitive = ?,
-                   sensitivity_reason = ?,
-                   version = ?
-               WHERE id = ? AND tenant_id = ? AND user_id = ?""",
-            (
-                combined[:1000],
-                existing_content[:200],
-                str(list(existing_synth)),
-                1 if is_sensitive_bit else 0,
-                sensitivity_reason,
-                next_version + 1,
-                primary_id,
-                config.tenant_id,
-                config.user_id,
-            ),
-        )
-
-        # --- Merge history: record this consolidation event for audit ---
+    def _record_merge_history(
+        self,
+        conn: Any,
+        cand: DuplicateCandidate,
+        config: MaintenanceConfig,
+        plan: _MergePlan,
+    ) -> None:
+        """Record this consolidation event in memory_merge_history for audit."""
         history_id = str(uuid.uuid4())
         try:
             conn.execute(
@@ -554,61 +639,64 @@ class MemoryMaintenanceJob:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     history_id,
-                    primary_id,
-                    json.dumps(other_ids),
+                    plan.primary_id,
+                    json.dumps(plan.other_ids),
                     config.tenant_id,
                     config.user_id,
                     cand.cluster_id,
                     (sum(cand.overlap_scores.values()) / len(cand.overlap_scores)) if cand.overlap_scores else None,
-                    now_iso,
+                    plan.now_iso,
                     "system",
-                    existing_content[:2000],
-                    combined[:2000],
+                    plan.existing_content[:2000],
+                    plan.combined[:2000],
                 ),
             )
         except Exception:
-            logger.debug("merge history insert failed for %s", primary_id, exc_info=True)
+            logger.debug("merge history insert failed for %s", plan.primary_id, exc_info=True)
 
-        # Ghost all other memories in a single query
-        if other_ids:
-            other_slots = placeholders(len(other_ids))
-            gist_values = [(other_ids[0][:200] if other_ids else "")] * len(other_ids)
-            synthesized_from_values = [str([*list(existing_synth), mid]) for mid in other_ids]
+    def _ghost_merged_memories(
+        self,
+        conn: Any,
+        other_ids: list[str],
+        existing_synth: set[str],
+        config: MaintenanceConfig,
+    ) -> None:
+        """Ghost the merged-away memories in a single statement."""
+        other_slots = placeholders(len(other_ids))
+        gist_value = other_ids[0][:200]
+        synthesized_from_values = [str([*list(existing_synth), mid]) for mid in other_ids]
 
-            # Build the SET clause for the UPDATE
-            set_parts: list[str] = ["is_ghost = 1, gist = CASE id "]
-            for _mid in other_ids:
-                set_parts.append("WHEN ? THEN ? ")
-            set_parts.append("END, synthesized_from = CASE id ")
-            for _mid in other_ids:
-                set_parts.append("WHEN ? THEN ? ")
-            set_parts.append("END")
-            set_clause = "".join(set_parts)
+        # Build the SET clause for the UPDATE
+        set_parts: list[str] = ["is_ghost = 1, gist = CASE id "]
+        for _mid in other_ids:
+            set_parts.append("WHEN ? THEN ? ")
+        set_parts.append("END, synthesized_from = CASE id ")
+        for _mid in other_ids:
+            set_parts.append("WHEN ? THEN ? ")
+        set_parts.append("END")
+        set_clause = "".join(set_parts)
 
-            # Prepare parameters
-            params = []
-            for i, mid in enumerate(other_ids):
-                params.extend([mid, gist_values[i]])
-            for i, mid in enumerate(other_ids):
-                params.extend([mid, synthesized_from_values[i]])
-            params.extend([config.tenant_id, config.user_id])
+        # Prepare parameters
+        params = []
+        for mid in other_ids:
+            params.extend([mid, gist_value])
+        for i, mid in enumerate(other_ids):
+            params.extend([mid, synthesized_from_values[i]])
+        params.extend([config.tenant_id, config.user_id])
 
-            # Add the WHERE clause parameters (the IDs)
-            where_params = list(other_ids)
-            params = where_params + params
+        # Add the WHERE clause parameters (the IDs)
+        params = list(other_ids) + params
 
-            conn.execute(
-                join_sql_parts(
-                    "UPDATE memories SET ",
-                    set_clause,
-                    " WHERE id IN (",
-                    other_slots,
-                    ") AND tenant_id = ? AND user_id = ?",
-                ),
-                params,
-            )
-
-        conn.commit()
+        conn.execute(
+            join_sql_parts(
+                "UPDATE memories SET ",
+                set_clause,
+                " WHERE id IN (",
+                other_slots,
+                ") AND tenant_id = ? AND user_id = ?",
+            ),
+            params,
+        )
 
     def _flag_for_review(self, conn: Any, cand: DuplicateCandidate, reason: str) -> None:
         event_type = f"maintenance_review:{reason}"
@@ -658,77 +746,12 @@ class MemoryMaintenanceJob:
         # Contradict scans ALL memories (including sensitive) for admin review.
         # The count here tracks how many sensitive rows were *flagged*, not
         # excluded — use += so earlier modes' counts are preserved.
-        sensitive_count_row = conn.execute(
-            "SELECT COUNT(*) AS sensitive_count FROM memories WHERE user_id = ? AND tenant_id = ? "
-            "AND COALESCE(is_sensitive, 0) = 1",
-            (config.user_id, config.tenant_id),
-        ).fetchone()
-        sensitive_count = sensitive_count_row["sensitive_count"] if sensitive_count_row else 0
-        stats.sensitive_excluded += int(sensitive_count or 0)
+        stats.sensitive_excluded += _count_sensitive_memories(conn, config)
         memories = self._fetch_memories_batch(conn, config)
         if len(memories) < MIN_CLUSTER_MEMBERS:
             return
 
-        scan_target = memories
-
-        topic_clusters: dict[str, list[dict[str, Any]]] = {}
-        for mem in scan_target:
-            content_lower = (mem["content"] or "").lower()
-            words = set(re.findall(r"\b\w+\b", content_lower))
-            for topic in words:
-                if len(topic) >= MIN_CONTRADICTION_TOPIC_CHARS and topic not in {
-                    "that",
-                    "with",
-                    "from",
-                    "have",
-                    "this",
-                    "been",
-                    "were",
-                    "they",
-                    "their",
-                }:
-                    if topic not in topic_clusters:
-                        topic_clusters[topic] = []
-                    topic_clusters[topic].append(mem)
-
-        flagged: list[ContradictionCandidate] = []
-        seen_pairs: set[tuple[str, str]] = set()
-        # Pre-compute word sets to avoid O(n²) re-tokenization
-        word_map: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
-        for mem in scan_target:
-            content_lower = (mem["content"] or "").lower()
-            word_map[mem["id"]] = (
-                frozenset(re.findall(r"\b\w+\b", content_lower)),
-                frozenset(re.findall(r"\b\w+\b", content_lower)),
-            )
-
-        for topic, cluster in topic_clusters.items():
-            if len(cluster) < MIN_CLUSTER_MEMBERS:
-                continue
-            if len(cluster) > MAX_CONTRADICTION_CLUSTER_MEMBERS:
-                continue
-            for i, mem_a in enumerate(cluster):
-                for mem_b in cluster[i + 1 :]:
-                    pair_key = tuple(sorted([mem_a["id"], mem_b["id"]]))
-                    if pair_key in seen_pairs:
-                        continue
-                    conflict = self._find_sentiment_conflict(mem_a["content"] or "", mem_b["content"] or "")
-                    if conflict is not None:
-                        seen_pairs.add(pair_key)
-                        pos_word, neg_word = conflict
-                        words_a = word_map[mem_a["id"]][0]
-                        words_b = word_map[mem_b["id"]][1]
-                        overlap = len(words_a & words_b) / len(words_a | words_b) if words_a and words_b else 0.0
-                        flagged.append(
-                            ContradictionCandidate(
-                                memory_id_a=mem_a["id"],
-                                memory_id_b=mem_b["id"],
-                                pos_word=pos_word,
-                                neg_word=neg_word,
-                                topic=topic,
-                                confidence=min(overlap * 1.5, 1.0),
-                            )
-                        )
+        flagged = self._find_conflict_candidates(_build_topic_clusters(memories), _build_word_map(memories))
 
         stats.contradictions_found += len(flagged)
         for cand in flagged:
@@ -740,6 +763,42 @@ class MemoryMaintenanceJob:
             stats.contradictions_found,
             stats.contradictions_flagged_review,
         )
+
+    def _find_conflict_candidates(
+        self,
+        topic_clusters: dict[str, list[dict[str, Any]]],
+        word_map: dict[str, tuple[frozenset[str], frozenset[str]]],
+    ) -> list[ContradictionCandidate]:
+        """Flag same-topic memory pairs that express opposite sentiment."""
+        flagged: list[ContradictionCandidate] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for topic, cluster in topic_clusters.items():
+            if len(cluster) < MIN_CLUSTER_MEMBERS or len(cluster) > MAX_CONTRADICTION_CLUSTER_MEMBERS:
+                continue
+            for i, mem_a in enumerate(cluster):
+                for mem_b in cluster[i + 1 :]:
+                    pair_key = tuple(sorted([mem_a["id"], mem_b["id"]]))
+                    if pair_key in seen_pairs:
+                        continue
+                    conflict = self._find_sentiment_conflict(mem_a["content"] or "", mem_b["content"] or "")
+                    if conflict is None:
+                        continue
+                    seen_pairs.add(pair_key)
+                    pos_word, neg_word = conflict
+                    words_a = word_map[mem_a["id"]][0]
+                    words_b = word_map[mem_b["id"]][1]
+                    overlap = len(words_a & words_b) / len(words_a | words_b) if words_a and words_b else 0.0
+                    flagged.append(
+                        ContradictionCandidate(
+                            memory_id_a=mem_a["id"],
+                            memory_id_b=mem_b["id"],
+                            pos_word=pos_word,
+                            neg_word=neg_word,
+                            topic=topic,
+                            confidence=min(overlap * 1.5, 1.0),
+                        )
+                    )
+        return flagged
 
     def _find_sentiment_conflict(self, content_a: str, content_b: str) -> tuple[str, str] | None:
         words_a = set(re.findall(r"\b\w+\b", content_a.lower()))

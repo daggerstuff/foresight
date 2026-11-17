@@ -236,7 +236,7 @@ def test_narrative_caches_by_report_id_and_tenant() -> None:
     report_b = _make_report(report_id="refl_bbb")
     call_count = 0
 
-    def counting_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+    def counting_llm(_prompt: str, _tenant_id: str, _user_id: str) -> str:
         nonlocal call_count
         call_count += 1
         return f"response #{call_count}"
@@ -309,7 +309,7 @@ def test_narrative_falls_back_to_structured_on_llm_error() -> None:
     No cache entry is written for the failed call.
     """
 
-    def failing_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+    def failing_llm(_prompt: str, _tenant_id: str, _user_id: str) -> str:
         raise RuntimeError("LLM provider unavailable")
 
     report = _make_report()
@@ -330,7 +330,7 @@ def test_narrative_falls_back_to_structured_on_llm_error() -> None:
 
     assert len(cache) == 0
 
-    def working_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+    def working_llm(_prompt: str, _tenant_id: str, _user_id: str) -> str:
         return "recovered narrative"
 
     out = generate_insight_narrative(
@@ -436,15 +436,13 @@ def test_generate_insight_narrative_with_empty_insights() -> None:
 # ============================================================
 
 
-def test_reflection_narrative_uses_narrative_cache_persistent_storage(
-    tmp_path: Any,
-) -> None:
-    cache = NarrativeCache(str(tmp_path / "narratives.db"))
+def test_reflection_narrative_uses_narrative_cache_persistent_storage() -> None:
+    cache = NarrativeCache()
     try:
         report = _make_report()
         call_count = 0
 
-        def counting_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+        def counting_llm(_prompt: str, _tenant_id: str, _user_id: str) -> str:
             nonlocal call_count
             call_count += 1
             return "persisted narrative"
@@ -476,13 +474,10 @@ def test_reflection_narrative_uses_narrative_cache_persistent_storage(
         cache.close()
 
 
-def test_reflection_narrative_narrative_cache_survives_restart(
-    tmp_path: Any,
-) -> None:
-    db_path = str(tmp_path / "narratives.db")
+def test_reflection_narrative_narrative_cache_survives_restart() -> None:
     report = _make_report()
 
-    cache1 = NarrativeCache(db_path)
+    cache1 = NarrativeCache()
     try:
         generate_insight_narrative(
             NarrativeRequest(
@@ -496,10 +491,10 @@ def test_reflection_narrative_narrative_cache_survives_restart(
     finally:
         cache1.close()
 
-    def must_not_call(*args: Any, **kwargs: Any) -> str:
+    def must_not_call(*_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("LLM must not be called when cache is hydrated from disk")
 
-    cache2 = NarrativeCache(db_path)
+    cache2 = NarrativeCache()
     try:
         out = generate_insight_narrative(
             NarrativeRequest(
@@ -515,10 +510,8 @@ def test_reflection_narrative_narrative_cache_survives_restart(
         cache2.close()
 
 
-def test_reflection_narrative_narrative_cache_tenant_isolation(
-    tmp_path: Any,
-) -> None:
-    cache = NarrativeCache(str(tmp_path / "narratives.db"))
+def test_reflection_narrative_narrative_cache_tenant_isolation() -> None:
+    cache = NarrativeCache()
     try:
         report = _make_report()
         insights_hash = _compute_insights_hash(report)
@@ -627,7 +620,7 @@ def test_reflection_narrative_emits_audit_row_on_success(tmp_path: Any) -> None:
 
 
 def test_reflection_narrative_emits_audit_row_on_error(tmp_path: Any) -> None:
-    def boom(prompt: str, tenant_id: str, user_id: str) -> str:
+    def boom(_prompt: str, _tenant_id: str, _user_id: str) -> str:
         raise RuntimeError("upstream provider timeout")
 
     log = AuditLog(str(tmp_path / "audit.db"))
@@ -673,7 +666,7 @@ def test_reflection_narrative_emits_audit_row_on_cache_hit(tmp_path: Any) -> Non
         )
         assert out1
 
-        def must_not_call(*args: Any, **kwargs: Any) -> str:
+        def must_not_call(*_args: Any, **_kwargs: Any) -> str:
             raise AssertionError("LLM callable should not be invoked on cache hit")
 
         out2 = generate_insight_narrative(

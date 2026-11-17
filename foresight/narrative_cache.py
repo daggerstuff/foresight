@@ -41,7 +41,6 @@ class NarrativeCache:
 
     def __init__(
         self,
-        db_path: str | None = None,
         *,
         max_entries: int = DEFAULT_MAX_ENTRIES,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,

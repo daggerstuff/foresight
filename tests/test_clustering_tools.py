@@ -290,9 +290,8 @@ def server_env(temp_db, monkeypatch):
     reset_tenant_context()
 
 
-@pytest.fixture
-def seed_memories(server_env):
-    """Seed test memories for clustering tests."""
+def _seed_memories() -> int:
+    """Seed test memories for clustering tests. Call inside ``server_env``."""
 
     # Group A: anxiety-themed memories
     store_memory(StoreMemoryParams(content="I feel very anxious about my job interview tomorrow", user_id="test_user"))
@@ -326,9 +325,10 @@ class TestRunClusteringTool:
         assert data["clusters_created"] == 0
         assert data["memories_processed"] == 0
 
-    @pytest.mark.usefixtures("seed_memories")
+    @pytest.mark.usefixtures("server_env")
     def test_run_clustering_creates_clusters(self) -> None:
         """run_clustering should create clusters from related memories."""
+        _seed_memories()
 
         result = run_clustering(user_id="test_user", min_similarity=0.1)
         data = json.loads(result)
@@ -336,9 +336,10 @@ class TestRunClusteringTool:
         assert data["clusters_created"] >= 0  # May or may not cluster depending on content
         assert data["memories_processed"] >= MIN_PROCESSED_MEMORIES
 
-    @pytest.mark.usefixtures("seed_memories")
+    @pytest.mark.usefixtures("server_env")
     def test_run_clustering_high_threshold(self) -> None:
         """High min_similarity should produce no clusters."""
+        _seed_memories()
 
         result = run_clustering(user_id="test_user", min_similarity=0.99)
         data = json.loads(result)
@@ -359,9 +360,10 @@ class TestQueryClustersTool:
         assert data["cluster_count"] == 0
         assert data["clusters"] == []
 
-    @pytest.mark.usefixtures("seed_memories")
+    @pytest.mark.usefixtures("server_env")
     def test_query_clusters_after_run(self) -> None:
         """query_clusters should return cluster entities after run_clustering."""
+        _seed_memories()
 
         run_result = json.loads(run_clustering(user_id="test_user", min_similarity=0.1))
         if run_result["clusters_created"] == 0:

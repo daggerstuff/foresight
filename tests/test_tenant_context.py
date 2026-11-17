@@ -42,36 +42,36 @@ def test_reset_restores_default():
 
 
 def test_switch_tenant_default_is_stable_after_bootstrap():
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
+    handle, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(handle)
     try:
-        backend = SqliteBackend(db_path=tmp.name)
-        with patch("foresight.server.get_db_connection", lambda: _ephemeral_connection(tmp.name)):
+        backend = SqliteBackend(db_path=db_path)
+        with patch("foresight.server.get_db_connection", lambda: _ephemeral_connection(db_path)):
             init_db(backend=backend)
             result = switch_tenant(DEFAULT_TENANT_ID)
         assert result == f"Switched to tenant '{DEFAULT_TENANT_ID}'"
 
-        conn = sqlite3.connect(tmp.name)
+        conn = sqlite3.connect(db_path)
         try:
             row = conn.execute("SELECT name FROM tenants WHERE id = ?", (DEFAULT_TENANT_ID,)).fetchone()
             assert row is not None
         finally:
             conn.close()
     finally:
-        os.unlink(tmp.name)
+        os.unlink(db_path)
 
 
 def test_switch_tenant_unknown_returns_not_found():
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
+    handle, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(handle)
     try:
-        backend = SqliteBackend(db_path=tmp.name)
-        with patch("foresight.server.get_db_connection", lambda: _ephemeral_connection(tmp.name)):
+        backend = SqliteBackend(db_path=db_path)
+        with patch("foresight.server.get_db_connection", lambda: _ephemeral_connection(db_path)):
             init_db(backend=backend)
             result = switch_tenant("no-such-tenant")
         assert result == "Tenant 'no-such-tenant' not found"
     finally:
-        os.unlink(tmp.name)
+        os.unlink(db_path)
 
 
 def test_contextvar_isolation_between_tasks():

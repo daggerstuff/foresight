@@ -181,6 +181,7 @@ else:
 # Server module requires fastmcp — make optional so core modules
 # (triggers, event_bus, etc.) remain importable without it.
 import contextlib
+import warnings
 
 from .hybrid_retriever import (
     HybridResult as HybridResult,
@@ -254,7 +255,8 @@ from .semantic_search import (
     serialize_vector as serialize_vector,
 )
 
-with contextlib.suppress(ImportError):
+with contextlib.suppress(ImportError), warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*found in sys.modules.*")
     from .server import (
         AnalysisAction as AnalysisAction,
         AnalyzeMemoriesParams as AnalyzeMemoriesParams,

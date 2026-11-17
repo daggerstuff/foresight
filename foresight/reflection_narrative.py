@@ -295,6 +295,43 @@ class NarrativeRequest:
     audit_log: AuditLog | None = None
 
 
+def _validate_narrative_request(request: NarrativeRequest) -> None:
+    """Reject a narrative request whose report, scope, or wiring is unusable."""
+    if not isinstance(request.reflection_report, ReflectionReport):
+        raise TypeError(f"reflection_report must be a ReflectionReport, got {type(request.reflection_report).__name__}")
+    tenant_id = request.tenant_id
+    if not tenant_id or not isinstance(tenant_id, str):
+        raise ValueError("tenant_id is required and must be a non-empty string")
+    user_id = request.user_id
+    if not user_id or not isinstance(user_id, str):
+        raise ValueError("user_id is required and must be a non-empty string")
+    if not callable(request.llm_call):
+        raise TypeError("llm_call must be callable")
+    cache = request.cache
+    if cache is not None and not isinstance(cache, (dict, NarrativeCache, RedisCache)):
+        raise TypeError(f"cache must be a dict, NarrativeCache, or RedisCache, got {type(cache).__name__}")
+
+
+def _read_cached_narrative(
+    cache: dict[str, str] | NarrativeCache | RedisCache,
+    request: NarrativeRequest,
+    insights_hash: str,
+) -> str | None:
+    """Return the cached narrative for this report, or None on a miss."""
+    report = request.reflection_report
+    if isinstance(cache, dict):
+        return cache.get(_compute_cache_key(report, request.model_version, request.tenant_id, request.user_id))
+    # NarrativeCache and RedisCache both expose a .get() and .put() with the
+    # (report_id, tenant_id, user_id, model_version, insights_hash) signature.
+    return cache.get(
+        report.report_id,
+        tenant_id=request.tenant_id,
+        user_id=request.user_id,
+        model_version=request.model_version,
+        insights_hash=insights_hash,
+    )
+
+
 def generate_insight_narrative(request: NarrativeRequest) -> str:
     """Generate a natural-language narrative summary of a reflection report.
 
@@ -314,42 +351,17 @@ def generate_insight_narrative(request: NarrativeRequest) -> str:
             exception is preserved on ``__cause__``. The caller may catch
             this and fall back to the structured report.
     """
+    _validate_narrative_request(request)
     reflection_report = request.reflection_report
     tenant_id = request.tenant_id
     user_id = request.user_id
     llm_call = request.llm_call
     model_version = request.model_version
-    cache = request.cache
+    cache = request.cache if request.cache is not None else _default_cache
     audit_log = request.audit_log
-    if not isinstance(reflection_report, ReflectionReport):
-        raise TypeError(f"reflection_report must be a ReflectionReport, got {type(reflection_report).__name__}")
-    if not tenant_id or not isinstance(tenant_id, str):
-        raise ValueError("tenant_id is required and must be a non-empty string")
-    if not user_id or not isinstance(user_id, str):
-        raise ValueError("user_id is required and must be a non-empty string")
-    if not callable(llm_call):
-        raise TypeError("llm_call must be callable")
-    if cache is not None and not isinstance(cache, (dict, NarrativeCache, RedisCache)):
-        raise TypeError(f"cache must be a dict, NarrativeCache, or RedisCache, got {type(cache).__name__}")
-
-    if cache is None:
-        cache = _default_cache
 
     insights_hash = _compute_insights_hash(reflection_report)
-    if isinstance(cache, dict):
-        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
-        cached = cache.get(cache_key)
-    else:
-        # cache is NarrativeCache | RedisCache here; both expose a .get() and
-        # .put() with the (report_id, tenant_id, user_id, model_version,
-        # insights_hash) signature.
-        cached = cache.get(
-            reflection_report.report_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            model_version=model_version,
-            insights_hash=insights_hash,
-        )
+    cached = _read_cached_narrative(cache, request, insights_hash)
 
     if cached is not None:
         logger.debug("reflection_narrative_cache_hit", extra={"cache_key": insights_hash})

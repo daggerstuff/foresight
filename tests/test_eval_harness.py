@@ -467,7 +467,7 @@ class TestRunEval:
         monkeypatch.setattr(eval_harness_module, "run_eval", lambda *_, **__: report)
         monkeypatch.setattr(eval_cmd.out, "get_settings", lambda: SimpleNamespace(mode="human"))
         monkeypatch.setattr(eval_cmd.out, "done", done_calls.append)
-        monkeypatch.setattr(eval_cmd.out, "stderr", lambda message, style=None: stderr_calls.append(message))
+        monkeypatch.setattr(eval_cmd.out, "stderr", lambda message, **_: stderr_calls.append(message))
         monkeypatch.setattr(eval_cmd.out, "info", info_calls.append)
 
         eval_cmd.run(

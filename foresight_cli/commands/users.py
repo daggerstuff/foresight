@@ -106,7 +106,7 @@ def create(params: UserCreateParams) -> None:
     )
 
 
-def list_users(params: UserListParams) -> None:
+def list_users() -> None:
     """List provisioned users (never prints API keys)."""
     _init_backend()
     users = get_auth_manager().list_users()

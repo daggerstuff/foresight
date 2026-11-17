@@ -127,12 +127,16 @@ def test_stats_unconnected(db_path):
     assert stats == {"idle": 0, "in_use": 0, "max_size": 10}
 
 
+def _insert_then_fail(conn):
+    conn.execute("INSERT INTO test (val) VALUES (42)")
+    raise ValueError("Something went wrong")
+
+
 def test_connection_exception_rollback(backend):
     backend.execute("CREATE TABLE test (val INTEGER)")
 
     with pytest.raises(ValueError, match="Something went wrong"), backend.connection() as conn:
-        conn.execute("INSERT INTO test (val) VALUES (42)")
-        raise ValueError("Something went wrong")
+        _insert_then_fail(conn)
 
     # The transaction should have been rolled back
     row = backend.fetch_one("SELECT val FROM test")

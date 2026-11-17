@@ -14,6 +14,7 @@ import logging
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from psycopg import errors as psycopg_errors
 
@@ -92,6 +93,241 @@ class GCStats:
         return asdict(self)
 
 
+@dataclass
+class _GCRunContext:
+    """The connection and per-run state shared by the GC phases."""
+
+    conn: Any
+    tenant_id: str
+    cfg: GCConfig
+    start_time: datetime
+    stats: GCStats
+
+
+def _purge_retention_expired(ctx: _GCRunContext, ttls: dict[str, int]) -> None:
+    """Phase 1: delete memories past their retention TTL, in batches."""
+    for retention, hours in ttls.items():
+        cutoff = (ctx.start_time - timedelta(hours=hours)).isoformat()
+
+        # Count found + estimate bytes
+        cursor = ctx.conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
+            FROM memories
+            WHERE tenant_id = ? AND retention = ? AND created_at < ?
+            """,
+            (ctx.tenant_id, retention, cutoff),
+        )
+        row = cursor.fetchone()
+        count_found = row[0] if row else 0
+        bytes_est = row[1] if row else 0
+        ctx.stats.expired_memories_found += count_found
+        ctx.stats.bytes_freed += bytes_est
+
+        if count_found == 0:
+            continue
+
+        deleted = 0
+        while deleted < count_found:
+            cursor = ctx.conn.execute(
+                """
+                DELETE FROM memories WHERE id IN (
+                    SELECT id FROM memories
+                    WHERE tenant_id = ? AND retention = ? AND created_at < ?
+                    LIMIT ?
+                )
+                """,
+                (ctx.tenant_id, retention, cutoff, ctx.cfg.max_batch_size),
+            )
+            batch = cursor.rowcount
+            deleted += batch
+            if batch == 0:
+                break
+
+        ctx.stats.expired_memories_deleted += deleted
+
+    ctx.conn.commit()
+
+
+def _purge_explicit_expiry(ctx: _GCRunContext) -> None:
+    """Phase 1.5: delete memories whose expires_at has passed (PIX-4721)."""
+    expiry_cutoff = ctx.start_time.isoformat()
+    cursor = ctx.conn.execute(
+        """
+        SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
+        FROM memories
+        WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
+        """,
+        (ctx.tenant_id, expiry_cutoff),
+    )
+    row = cursor.fetchone()
+    exp_count = row[0] if row else 0
+    exp_bytes = row[1] if row else 0
+    ctx.stats.expired_memories_found += exp_count
+    ctx.stats.bytes_freed += exp_bytes
+
+    if exp_count:
+        deleted = 0
+        while deleted < exp_count:
+            cursor = ctx.conn.execute(
+                """
+                DELETE FROM memories WHERE id IN (
+                    SELECT id FROM memories
+                    WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
+                    LIMIT ?
+                )
+                """,
+                (ctx.tenant_id, expiry_cutoff, ctx.cfg.max_batch_size),
+            )
+            batch = cursor.rowcount
+            deleted += batch
+            if batch == 0:
+                break
+
+        ctx.stats.expired_memories_deleted += deleted
+
+    # Mental models share the same expires_at sweep semantics —
+    # expired reflections are dropped rather than served stale.
+    try:
+        ctx.conn.execute(
+            "DELETE FROM mental_models WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?",
+            (ctx.tenant_id, expiry_cutoff),
+        )
+        ctx.conn.commit()
+    except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
+        pass
+
+    ctx.conn.commit()
+
+
+def _prune_decay_events(ctx: _GCRunContext) -> None:
+    """Phase 2: prune old memory_decay_events."""
+    decay_cutoff = (ctx.start_time - timedelta(days=ctx.cfg.decay_events_retention_days)).isoformat()
+    cursor = ctx.conn.execute(
+        """
+        DELETE FROM memory_decay_events
+        WHERE created_at < ? AND tenant_id = ?
+        """,
+        (decay_cutoff, ctx.tenant_id),
+    )
+    ctx.stats.decay_events_pruned = cursor.rowcount
+    ctx.conn.commit()
+
+
+def _prune_maintenance_events(ctx: _GCRunContext) -> None:
+    """Phase 3: prune old maintenance events."""
+    maint_cutoff = (ctx.start_time - timedelta(days=ctx.cfg.maintenance_events_retention_days)).isoformat()
+    cursor = ctx.conn.execute(
+        """
+        DELETE FROM events
+        WHERE event_type LIKE ? AND timestamp < ? AND tenant_id = ?
+        """,
+        ("maintenance%", maint_cutoff, ctx.tenant_id),
+    )
+    ctx.stats.maintenance_events_pruned = cursor.rowcount
+    ctx.conn.commit()
+
+
+def _prune_merge_history(ctx: _GCRunContext) -> None:
+    """Phase 3.5: prune old memory_merge_history rows (maintenance-events retention)."""
+    try:
+        merge_cutoff = (ctx.start_time - timedelta(days=ctx.cfg.maintenance_events_retention_days)).isoformat()
+        ctx.conn.execute(
+            """
+            DELETE FROM memory_merge_history
+            WHERE merged_at < ? AND tenant_id = ?
+            """,
+            (merge_cutoff, ctx.tenant_id),
+        )
+        ctx.conn.commit()
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
+        else:
+            raise
+    except psycopg_errors.UndefinedTable as e:
+        logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
+
+
+def _tombstone_raw_events(ctx: _GCRunContext) -> None:
+    """Phase 5: tombstone raw events past the retention window."""
+    if not ctx.cfg.raw_retention_window_days:
+        return
+    raw_cutoff = (ctx.start_time - timedelta(days=ctx.cfg.raw_retention_window_days)).isoformat()
+    try:
+        cursor = ctx.conn.execute(
+            """
+            UPDATE raw_events
+            SET tombstone = 1, content = NULL, metadata = '{}'
+            WHERE tenant_id = ? AND tombstone = 0 AND captured_at < ?
+            """,
+            (ctx.tenant_id, raw_cutoff),
+        )
+        ctx.conn.commit()
+        ctx.stats.raw_events_tombstoned = cursor.rowcount
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            logging.getLogger(__name__).warning("raw_events table not found, skipping tombstone: %s", e)
+        else:
+            raise
+    except psycopg_errors.UndefinedTable as e:
+        logging.getLogger(__name__).warning("raw_events table not found, skipping tombstone: %s", e)
+
+
+def _clean_orphans(ctx: _GCRunContext) -> None:
+    """Phase 4: clean orphaned data (there is no FK cascade protection)."""
+    # 4a: Orphaned memory_entity_links
+    cursor = ctx.conn.execute(
+        """
+        DELETE FROM memory_entity_links
+        WHERE memory_id NOT IN (SELECT id FROM memories)
+        """,
+    )
+    ctx.stats.orphan_links_cleaned = cursor.rowcount
+    ctx.conn.commit()
+
+    # 4b: Orphaned memory_embeddings
+    cursor = ctx.conn.execute(
+        """
+        DELETE FROM memory_embeddings
+        WHERE memory_id NOT IN (SELECT id FROM memories)
+        """,
+    )
+    ctx.stats.orphan_embeddings_cleaned = cursor.rowcount
+    ctx.conn.commit()
+
+    # 4c: Remaining dependents — decay events, versions, relationships,
+    # chunk memory pointers, and intra-memories self-references.
+    for orphan_sql in _ORPHAN_DEPENDENT_SQL.values():
+        try:
+            cursor = ctx.conn.execute(orphan_sql)
+            ctx.stats.orphan_dependents_cleaned += cursor.rowcount or 0
+        except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
+            pass
+    try:
+        cursor = ctx.conn.execute(
+            """
+            DELETE FROM memory_relationships
+            WHERE source_memory_id NOT IN (SELECT id FROM memories)
+               OR target_memory_id NOT IN (SELECT id FROM memories)
+            """,
+        )
+        ctx.stats.orphan_dependents_cleaned += cursor.rowcount or 0
+        ctx.conn.execute(
+            "UPDATE document_chunks SET memory_id = NULL "
+            "WHERE memory_id IS NOT NULL AND memory_id NOT IN (SELECT id FROM memories)"
+        )
+        for clear_sql in _ORPHAN_COLUMN_SQL.values():
+            ctx.conn.execute(clear_sql)
+        try:
+            ctx.stats.orphan_dependents_cleaned += purge_dead_synthesized_from_ids(ctx.conn) or 0
+        except Exception as e:
+            logger.debug(f"synthesized_from sweep skipped: {e}")
+        ctx.conn.commit()
+    except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
+        pass
+
+
 class MemoryGC:
     """
     Lightweight memory garbage collector.
@@ -108,7 +344,7 @@ class MemoryGC:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
-    def run(  # noqa: PLR0912
+    def run(
         self,
         tenant_id: str = "default",
         config: GCConfig | None = None,
@@ -131,228 +367,20 @@ class MemoryGC:
         conn = pool.acquire()
 
         try:
-            # ------------------------------------------------------------------
-            # Phase 1: Delete expired memories by retention policy
-            # ------------------------------------------------------------------
-            for retention, hours in ttls.items():
-                cutoff = (start_time - timedelta(hours=hours)).isoformat()
-
-                # Count found + estimate bytes
-                cursor = conn.execute(
-                    """
-                    SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
-                    FROM memories
-                    WHERE tenant_id = ? AND retention = ? AND created_at < ?
-                    """,
-                    (tenant_id, retention, cutoff),
-                )
-                row = cursor.fetchone()
-                count_found = row[0] if row else 0
-                bytes_est = row[1] if row else 0
-                stats.expired_memories_found += count_found
-                stats.bytes_freed += bytes_est
-
-                if count_found == 0:
-                    continue
-
-                deleted = 0
-                while deleted < count_found:
-                    cursor = conn.execute(
-                        """
-                        DELETE FROM memories WHERE id IN (
-                            SELECT id FROM memories
-                            WHERE tenant_id = ? AND retention = ? AND created_at < ?
-                            LIMIT ?
-                        )
-                        """,
-                        (tenant_id, retention, cutoff, cfg.max_batch_size),
-                    )
-                    batch = cursor.rowcount
-                    deleted += batch
-                    if batch == 0:
-                        break
-
-                stats.expired_memories_deleted += deleted
-
-            conn.commit()
-
-            # ------------------------------------------------------------------
-            # Phase 1.5: Delete explicitly-expired memories (PIX-4721 expires_at)
-            # ------------------------------------------------------------------
-            expiry_cutoff = start_time.isoformat()
-            cursor = conn.execute(
-                """
-                SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
-                FROM memories
-                WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
-                """,
-                (tenant_id, expiry_cutoff),
+            ctx = _GCRunContext(
+                conn=conn,
+                tenant_id=tenant_id,
+                cfg=cfg,
+                start_time=start_time,
+                stats=stats,
             )
-            row = cursor.fetchone()
-            exp_count = row[0] if row else 0
-            exp_bytes = row[1] if row else 0
-            stats.expired_memories_found += exp_count
-            stats.bytes_freed += exp_bytes
-
-            if exp_count:
-                deleted = 0
-                while deleted < exp_count:
-                    cursor = conn.execute(
-                        """
-                        DELETE FROM memories WHERE id IN (
-                            SELECT id FROM memories
-                            WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
-                            LIMIT ?
-                        )
-                        """,
-                        (tenant_id, expiry_cutoff, cfg.max_batch_size),
-                    )
-                    batch = cursor.rowcount
-                    deleted += batch
-                    if batch == 0:
-                        break
-
-                stats.expired_memories_deleted += deleted
-
-            # Mental models share the same expires_at sweep semantics —
-            # expired reflections are dropped rather than served stale.
-            try:
-                conn.execute(
-                    "DELETE FROM mental_models WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?",
-                    (tenant_id, expiry_cutoff),
-                )
-                conn.commit()
-            except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
-                pass
-
-            conn.commit()
-
-            # ------------------------------------------------------------------
-            # Phase 2: Prune old memory_decay_events
-            # ------------------------------------------------------------------
-            decay_cutoff = (start_time - timedelta(days=cfg.decay_events_retention_days)).isoformat()
-            cursor = conn.execute(
-                """
-                DELETE FROM memory_decay_events
-                WHERE created_at < ? AND tenant_id = ?
-                """,
-                (decay_cutoff, tenant_id),
-            )
-            stats.decay_events_pruned = cursor.rowcount
-            conn.commit()
-
-            # ------------------------------------------------------------------
-            # Phase 3: Prune old maintenance events
-            # ------------------------------------------------------------------
-            maint_cutoff = (start_time - timedelta(days=cfg.maintenance_events_retention_days)).isoformat()
-            cursor = conn.execute(
-                """
-                DELETE FROM events
-                WHERE event_type LIKE ? AND timestamp < ? AND tenant_id = ?
-                """,
-                ("maintenance%", maint_cutoff, tenant_id),
-            )
-            stats.maintenance_events_pruned = cursor.rowcount
-            conn.commit()
-
-            try:
-                # Phase 3.5: Prune old memory_merge_history rows (mirror maintenance_events retention)
-                merge_cutoff = (start_time - timedelta(days=cfg.maintenance_events_retention_days)).isoformat()
-                cursor = conn.execute(
-                    """
-                    DELETE FROM memory_merge_history
-                    WHERE merged_at < ? AND tenant_id = ?
-                    """,
-                    (merge_cutoff, tenant_id),
-                )
-                conn.commit()
-            except sqlite3.OperationalError as e:
-                if "no such table" in str(e):
-                    logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
-                else:
-                    raise
-            except psycopg_errors.UndefinedTable as e:
-                logging.getLogger(__name__).warning("memory_merge_history table not found, skipping prune: %s", e)
-
-            # ------------------------------------------------------------------
-            # Phase 5: Tombstone raw events past retention window
-            # ------------------------------------------------------------------
-            if cfg.raw_retention_window_days:
-                raw_cutoff = (start_time - timedelta(days=cfg.raw_retention_window_days)).isoformat()
-                try:
-                    cursor = conn.execute(
-                        """
-                        UPDATE raw_events
-                        SET tombstone = 1, content = NULL, metadata = '{}'
-                        WHERE tenant_id = ? AND tombstone = 0 AND captured_at < ?
-                        """,
-                        (tenant_id, raw_cutoff),
-                    )
-                    conn.commit()
-                    stats.raw_events_tombstoned = cursor.rowcount
-                except sqlite3.OperationalError as e:
-                    if "no such table" in str(e):
-                        logging.getLogger(__name__).warning("raw_events table not found, skipping tombstone: %s", e)
-                    else:
-                        raise
-                except psycopg_errors.UndefinedTable as e:
-                    logging.getLogger(__name__).warning("raw_events table not found, skipping tombstone: %s", e)
-
-            # ------------------------------------------------------------------
-            # Phase 4: Clean orphaned data (no FK cascade protection)
-            # ------------------------------------------------------------------
-
-            # 4a: Orphaned memory_entity_links
-            cursor = conn.execute(
-                """
-                DELETE FROM memory_entity_links
-                WHERE memory_id NOT IN (SELECT id FROM memories)
-                """,
-            )
-            stats.orphan_links_cleaned = cursor.rowcount
-            conn.commit()
-
-            # 4b: Orphaned memory_embeddings
-            cursor = conn.execute(
-                """
-                DELETE FROM memory_embeddings
-                WHERE memory_id NOT IN (SELECT id FROM memories)
-                """,
-            )
-            stats.orphan_embeddings_cleaned = cursor.rowcount
-            conn.commit()
-
-            # 4c: Remaining dependents — decay events, versions, relationships,
-            # chunk memory pointers, and intra-memories self-references.
-            for orphan_sql in _ORPHAN_DEPENDENT_SQL.values():
-                try:
-                    cursor = conn.execute(orphan_sql)
-                    stats.orphan_dependents_cleaned += cursor.rowcount or 0
-                except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
-                    pass
-            try:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM memory_relationships
-                    WHERE source_memory_id NOT IN (SELECT id FROM memories)
-                       OR target_memory_id NOT IN (SELECT id FROM memories)
-                    """,
-                )
-                stats.orphan_dependents_cleaned += cursor.rowcount or 0
-                conn.execute(
-                    "UPDATE document_chunks SET memory_id = NULL "
-                    "WHERE memory_id IS NOT NULL AND memory_id NOT IN (SELECT id FROM memories)"
-                )
-                for clear_sql in _ORPHAN_COLUMN_SQL.values():
-                    conn.execute(clear_sql)
-                try:
-                    stats.orphan_dependents_cleaned += purge_dead_synthesized_from_ids(conn) or 0
-                except Exception as e:
-                    logger.debug(f"synthesized_from sweep skipped: {e}")
-                conn.commit()
-            except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
-                pass
-
+            _purge_retention_expired(ctx, ttls)
+            _purge_explicit_expiry(ctx)
+            _prune_decay_events(ctx)
+            _prune_maintenance_events(ctx)
+            _prune_merge_history(ctx)
+            _tombstone_raw_events(ctx)
+            _clean_orphans(ctx)
         finally:
             pool.release(conn)
 

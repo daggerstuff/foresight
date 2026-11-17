@@ -11,9 +11,9 @@ from textual.containers import Container, Horizontal
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
-logger = logging.getLogger(__name__)
-
 from foresight.server import GetSystemStatusParams, get_system_status, init_db
+
+logger = logging.getLogger(__name__)
 
 
 class StatCard(Static):

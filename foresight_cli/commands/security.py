@@ -57,7 +57,7 @@ def _prompt_secret(label: str) -> str:
         raise SystemExit(1) from None
 
 
-def status(params: SecurityStatusParams) -> None:
+def status() -> None:
     """View current encryption status, active algorithm, and security mode."""
     engine = get_encryption_engine()
     st = engine.get_status()

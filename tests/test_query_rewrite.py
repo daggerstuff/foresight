@@ -127,7 +127,7 @@ def test_env_toggle(monkeypatch: pytest.MonkeyPatch):
 
 def test_llm_failure_never_breaks_rewrite(monkeypatch: pytest.MonkeyPatch):
 
-    def _boom(*args: object, **kwargs: object) -> str:
+    def _boom(*_args: object, **_kwargs: object) -> str:
         raise RuntimeError("llm down")
 
     monkeypatch.setattr(llm_client_module, "default_llm_call", _boom)

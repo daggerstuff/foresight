@@ -123,12 +123,19 @@ def test_store_memory_dedup():
     assert "Duplicate detected" in result2
 
 
+def _temp_db_path() -> str:
+    """Create an empty SQLite database file and return its path."""
+    handle, path = tempfile.mkstemp(suffix=".db")
+    os.close(handle)
+    return path
+
+
 # ====== PIX-2083 content_hash dedup tests ======
 
 
 def test_memories_content_hash_backfill_computes_correct_hash():
     """v10 backfill: existing rows get content_hash = sha256(content)."""
-    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    db_path = _temp_db_path()
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -211,7 +218,7 @@ def test_store_memory_tenant_isolation_on_dedup():
     dedup query omitted tenant_id, identical content across tenants
     would incorrectly collide.
     """
-    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    db_path = _temp_db_path()
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -530,9 +537,8 @@ def _make_inject_test_db(memories=None):
     memories: optional list of dicts with keys:
         id, content, user_id, tenant_id, importance, created_at, is_ghost
     """
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    conn = sqlite3.connect(tmp.name)
+    db_path = _temp_db_path()
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS memories (
@@ -567,7 +573,7 @@ def _make_inject_test_db(memories=None):
             )
     conn.commit()
     conn.close()
-    return tmp.name
+    return db_path
 
 
 def _mock_db_with_rows(db_path):
@@ -869,10 +875,9 @@ def test_score_memory_relevance_old_memory():
 def test_manage_context_blocks_update_reset_clear_cycle():
     """The renamed block manager preserves the continuity block semantics."""
     user_id = f"context_block_test_{datetime.now(UTC).timestamp()}"
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
+    db_path = _temp_db_path()
 
-    with _patched_context_block_storage(tmp.name):
+    with _patched_context_block_storage(db_path):
         listed = _decode_json_result(
             manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list"), user_id=user_id))
         )
@@ -1015,10 +1020,9 @@ def test_registered_context_block_schema_allows_validated_custom_block():
 def test_manage_context_blocks_are_tenant_isolated():
     """Same user ID gets separate persisted context blocks per tenant."""
     user_id = f"tenant_isolation_user_{datetime.now(UTC).timestamp()}"
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
+    db_path = _temp_db_path()
 
-    with _patched_context_block_storage(tmp.name):
+    with _patched_context_block_storage(db_path):
         with patch("foresight.server.get_current_account_id", return_value="tenant-a"):
             update_a = _decode_json_result(
                 manage_context_blocks(
@@ -1053,9 +1057,8 @@ def test_manage_context_blocks_are_tenant_isolated():
 
 def _make_curation_test_db():
     """Create a temp DB with the schemas required for curation workflow tests."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    conn = sqlite3.connect(tmp.name)
+    db_path = _temp_db_path()
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -1126,7 +1129,7 @@ def _make_curation_test_db():
         conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({columns})")
     conn.commit()
     conn.close()
-    return tmp.name
+    return db_path
 
 
 @dataclass(frozen=True)
@@ -1447,7 +1450,7 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
     def _run_inline(run_id, payload):
         server_module._execute_curation_run(run_id, payload)
 
-    def _cancel_before_insert(run, source_rows, block_snapshot, synthesis, reflection):
+    def _cancel_before_insert(run, _source_rows, _block_snapshot, _synthesis, _reflection):
         server_module._get_curation_cancel_event(run["id"]).set()
         return [
             {
@@ -1794,7 +1797,7 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
 
 def test_manage_curation_runs_list_initializes_schema_for_empty_database():
     """Calling curation APIs directly should bootstrap their schema on a new database."""
-    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    db_path = _temp_db_path()
 
     with patch("foresight.server.DB_PATH", db_path):
         listed = json.loads(
@@ -1830,7 +1833,7 @@ def test_handle_memory_archive_respects_tenant_scope():
     statement from the function to verify the WHERE clause includes
     tenant_id.
     """
-    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    db_path = _temp_db_path()
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -1895,7 +1898,7 @@ def test_old_archive_update_would_leak_across_tenants():
     BOTH tenant rows. The fixed UPDATE (tested above) only updates the
     correct tenant.
     """
-    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    db_path = _temp_db_path()
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -1934,11 +1937,6 @@ def test_old_archive_update_would_leak_across_tenants():
         conn.close()
     finally:
         os.unlink(db_path)
-
-
-def _make_dict_conn(db_path: str, **kwargs):
-    """Unused — kept for reference. Use the closure pattern instead to avoid recursion."""
-    return
 
 
 def test_handle_version_rollback_respects_tenant_scope():
@@ -2011,9 +2009,7 @@ def test_memory_hard_cap_enforcement():
     """Storing memory beyond hard cap returns error."""
 
     # Create temp DB
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    db_path = tmp.name
+    db_path = _temp_db_path()
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")

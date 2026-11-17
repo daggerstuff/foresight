@@ -1030,7 +1030,7 @@ async def _handle_profile_export(request: Request) -> Response:
         result = await run_in_threadpool(
             server.export_profile,
             user_id=user_id,
-            format=fmt,
+            output_format=fmt,
             agent_id=agent_id,
             project=project,
         )

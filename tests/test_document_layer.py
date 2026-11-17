@@ -364,7 +364,7 @@ def test_get_memory_source_reverse_lookup():
     db = _make_test_db()
     with _patched_store(db) as store:
 
-        def _id_fn(idx: int, text: str) -> str:
+        def _id_fn(idx: int, _text: str) -> str:
             return f"mem_{idx}"
 
         doc, _chunks = store.create_document(
@@ -615,7 +615,7 @@ def test_llm_parse_llm_response_skips_items_missing_content():
 async def test_llm_extractor_with_mocked_llm():
     """When LLM client returns valid JSON, extract returns parsed memories."""
     mock_client = AsyncMock()
-    mock_client.generate = lambda prompt, user_id="", max_tokens=1024: json.dumps(
+    mock_client.generate = lambda *_args, **_kwargs: json.dumps(
         [
             {"content": "Key insight from text", "category": "insight", "importance": 0.9},
         ]
@@ -634,7 +634,7 @@ async def test_llm_extractor_fallback_on_llm_error():
     """When LLM call raises an exception, fall back to heuristic chunking."""
     mock_client = AsyncMock()
 
-    def failing_generate(prompt, user_id="", max_tokens=1024):
+    def failing_generate(*_args, **_kwargs):
         msg = "API not available"
         raise LLMError(msg)
 
@@ -650,7 +650,7 @@ async def test_llm_extractor_fallback_on_llm_error():
 async def test_llm_extractor_fallback_on_bad_response():
     """When LLM returns bad JSON, fall back to heuristic chunking."""
     mock_client = AsyncMock()
-    mock_client.generate = lambda prompt, user_id="", max_tokens=1024: "Not JSON at all"
+    mock_client.generate = lambda *_args, **_kwargs: "Not JSON at all"
     extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
     text = "A.\n\nB.\n\nC."
     chunks = await extractor.extract(text, char_budget=200)
@@ -662,7 +662,7 @@ async def test_llm_extractor_fallback_on_bad_response():
 async def test_llm_extractor_fallback_on_empty_memories():
     """When LLM returns empty memory list, fall back to heuristic chunking."""
     mock_client = AsyncMock()
-    mock_client.generate = lambda prompt, user_id="", max_tokens=1024: "[]"
+    mock_client.generate = lambda *_args, **_kwargs: "[]"
     extractor = LLMDocumentExtractor(llm_client=mock_client)  # type: ignore[arg-type]
     text = "X.\n\nY."
     chunks = await extractor.extract(text, char_budget=200)

@@ -53,7 +53,7 @@ def drain_operations() -> tuple[int, int]:
     Returns (migrated, skipped).
     """
     if not OPERATIONS_DB.exists():
-        print(f"  [SKIP] {OPERATIONS_DB} not found — nothing to drain")
+        sys.stdout.write(f"  [SKIP] {OPERATIONS_DB} not found — nothing to drain\n")
         return 0, 0
 
     sqlite_conn = sqlite3.connect(str(OPERATIONS_DB))
@@ -65,7 +65,7 @@ def drain_operations() -> tuple[int, int]:
     sqlite_conn.close()
 
     if not rows:
-        print(f"  [EMPTY] {OPERATIONS_DB} has no rows")
+        sys.stdout.write(f"  [EMPTY] {OPERATIONS_DB} has no rows\n")
         return 0, 0
 
     pg_conn = _get_pg_conn()
@@ -99,7 +99,7 @@ def drain_operations() -> tuple[int, int]:
             else:
                 skipped += 1
         except Exception as exc:
-            print(f"  [WARN] Failed to insert operation {row['id']}: {exc}", file=sys.stderr)
+            sys.stderr.write(f"  [WARN] Failed to insert operation {row['id']}: {exc}\n")
             skipped += 1
 
     pg_conn.commit()
@@ -113,7 +113,7 @@ def drain_narrative_cache() -> tuple[int, int]:
     Returns (migrated, skipped).
     """
     if not NARRATIVE_CACHE_DB.exists():
-        print(f"  [SKIP] {NARRATIVE_CACHE_DB} not found — nothing to drain")
+        sys.stdout.write(f"  [SKIP] {NARRATIVE_CACHE_DB} not found — nothing to drain\n")
         return 0, 0
 
     sqlite_conn = sqlite3.connect(str(NARRATIVE_CACHE_DB))
@@ -126,7 +126,7 @@ def drain_narrative_cache() -> tuple[int, int]:
     sqlite_conn.close()
 
     if not rows:
-        print(f"  [EMPTY] {NARRATIVE_CACHE_DB} has no rows")
+        sys.stdout.write(f"  [EMPTY] {NARRATIVE_CACHE_DB} has no rows\n")
         return 0, 0
 
     pg_conn = _get_pg_conn()
@@ -160,7 +160,7 @@ def drain_narrative_cache() -> tuple[int, int]:
             else:
                 skipped += 1
         except Exception as exc:
-            print(f"  [WARN] Failed to insert cache entry {row['cache_key']}: {exc}", file=sys.stderr)
+            sys.stderr.write(f"  [WARN] Failed to insert cache entry {row['cache_key']}: {exc}\n")
             skipped += 1
 
     pg_conn.commit()
@@ -171,11 +171,11 @@ def drain_narrative_cache() -> tuple[int, int]:
 def main() -> None:
     db_url = os.environ.get("FORESIGHT_DB_URL")
     if not db_url:
-        print("ERROR: FORESIGHT_DB_URL must be set to the shared Ghost Postgres DSN", file=sys.stderr)
+        sys.stderr.write("ERROR: FORESIGHT_DB_URL must be set to the shared Ghost Postgres DSN\n")
         sys.exit(1)
 
-    print("Draining legacy SQLite files → Postgres")
-    print(f"  FORESIGHT_DB_URL: {_mask_db_url(db_url)}")
+    sys.stdout.write("Draining legacy SQLite files → Postgres\n")
+    sys.stdout.write(f"  FORESIGHT_DB_URL: {_mask_db_url(db_url)}\n")
 
     ops_migrated, ops_skipped = drain_operations()
     cache_migrated, cache_skipped = drain_narrative_cache()
@@ -183,12 +183,12 @@ def main() -> None:
     total_migrated = ops_migrated + cache_migrated
     total_skipped = ops_skipped + cache_skipped
 
-    print()
-    print("Summary:")
-    print(f"  operations:     {ops_migrated} migrated, {ops_skipped} skipped")
-    print(f"  narrative_cache: {cache_migrated} migrated, {cache_skipped} skipped")
-    print(f"  TOTAL:           {total_migrated} migrated, {total_skipped} skipped")
-    print("Done.")
+    sys.stdout.write("\n")
+    sys.stdout.write("Summary:\n")
+    sys.stdout.write(f"  operations:     {ops_migrated} migrated, {ops_skipped} skipped\n")
+    sys.stdout.write(f"  narrative_cache: {cache_migrated} migrated, {cache_skipped} skipped\n")
+    sys.stdout.write(f"  TOTAL:           {total_migrated} migrated, {total_skipped} skipped\n")
+    sys.stdout.write("Done.\n")
 
 
 if __name__ == "__main__":

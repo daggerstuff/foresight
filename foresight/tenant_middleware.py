@@ -47,6 +47,32 @@ def resolve_tenant_id_from_message(message) -> str:
     return identity["account_id"]
 
 
+_IDENTITY_KEYS = ("user_id", "account_id", "workspace_id", "app_id", "integration_id")
+
+
+def _apply_identity_fields(result: dict, source: dict) -> None:
+    """Copy the sanitized identity fields from one source, aliasing workspace_id."""
+    for key in _IDENTITY_KEYS:
+        if key not in source:
+            continue
+        sanitized = _sanitize_id(source[key])
+        if not sanitized:
+            continue
+        if key == "workspace_id":
+            result["account_id"] = sanitized
+        else:
+            result[key] = sanitized
+
+
+def _apply_tenant_alias(result: dict, source: dict) -> None:
+    """Backward compatibility: a tenant_id in the source resolves to account_id."""
+    if "tenant_id" not in source:
+        return
+    sanitized = _sanitize_id(source["tenant_id"])
+    if sanitized:
+        result["account_id"] = sanitized
+
+
 def resolve_identity_from_message(message) -> dict:
     """Resolve identity components from an MCP message object.
 
@@ -71,40 +97,14 @@ def resolve_identity_from_message(message) -> dict:
     meta = getattr(message, "meta", None)
     if meta and hasattr(meta, "model_extra") and meta.model_extra:
         extra = meta.model_extra
-        for key in ("user_id", "account_id", "workspace_id", "app_id", "integration_id"):
-            if key in extra:
-                sanitized = _sanitize_id(extra[key])
-                if sanitized:
-                    if key == "workspace_id":
-                        result["account_id"] = sanitized
-                    else:
-                        result[key] = sanitized
-
-    # Backward compatibility: tenant_id in metadata
-    if meta and hasattr(meta, "model_extra") and meta.model_extra:
-        extra = meta.model_extra
-        if "tenant_id" in extra:
-            sanitized = _sanitize_id(extra["tenant_id"])
-            if sanitized:
-                result["account_id"] = sanitized
+        _apply_identity_fields(result, extra)
+        _apply_tenant_alias(result, extra)
 
     # Check tool arguments second (higher priority - overrides metadata)
     arguments = getattr(message, "arguments", None) or {}
     if isinstance(arguments, dict):
-        for key in ("user_id", "account_id", "workspace_id", "app_id", "integration_id"):
-            if key in arguments:
-                sanitized = _sanitize_id(arguments[key])
-                if sanitized:
-                    if key == "workspace_id":
-                        result["account_id"] = sanitized
-                    else:
-                        result[key] = sanitized
-
-    # Backward compatibility: tenant_id in arguments
-    if "tenant_id" in arguments:
-        sanitized = _sanitize_id(arguments["tenant_id"])
-        if sanitized:
-            result["account_id"] = sanitized
+        _apply_identity_fields(result, arguments)
+    _apply_tenant_alias(result, arguments)
 
     return result
 

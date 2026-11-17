@@ -676,20 +676,10 @@ class HybridRetriever:
         _validate_input(query, user_id)
 
         # Handle use_semantic as backward-compatible alias for use_tfidf_cosine
-        use_tfidf_cosine = options.use_tfidf_cosine
-        semantic_label = "tfidf_cosine"
-        if options.use_semantic is not None:
-            use_tfidf_cosine = options.use_semantic
-            semantic_label = "semantic"
+        tfidf_signal = _resolve_tfidf_signal(options)
 
-        # Extract search parameters from options
         tenant_id = options.tenant_id
         limit = options.limit
-        min_importance = options.min_importance
-        use_keyword = options.use_keyword
-        use_vector = options.use_vector
-        use_graph = options.use_graph
-        use_temporal = options.use_temporal
         fast_path_enabled = options.fast_path_enabled
 
         # PIX-4701: the rerank stage re-scores candidates the RRF fusion
@@ -716,17 +706,7 @@ class HybridRetriever:
         # every variant and merges per-variant rankings; the temporal signal
         # is query-independent and still runs once.
         rewrite_on = options.query_rewrite if options.query_rewrite is not None else query_rewrite_enabled()
-        if rewrite_on:
-            variant_cap = max(1, min(int(options.max_rewrite_variants or 1), 5))
-            variants = rewrite_variants(
-                query,
-                max_variants=variant_cap,
-                llm_assist=llm_rewrite_enabled(),
-                user_id=user_id,
-                tenant_id=tenant_id,
-            )
-        else:
-            variants = [query]
+        variants = _query_variants(query, user_id, tenant_id, options) if rewrite_on else [query]
         rewrite_signature = tuple(_normalize_query(v) for v in variants)
 
         cache_key = self._cache_key(
@@ -746,69 +726,32 @@ class HybridRetriever:
                 cached.signal_counts["fast_path"] = "cache"
                 return cached
 
-        def _run_merged(run: Any) -> dict[str, int]:
-            per_variant = [run(v, user_id, tenant_id, search_limit, options) for v in variants]
-            if len(per_variant) == 1:
-                return per_variant[0]
-            return merge_variant_rankings(per_variant)
-
-        keyword_ranking = _run_merged(self._run_keyword_search) if use_keyword else {}
-        tfidf_cosine_ranking = _run_merged(self._run_tfidf_search) if use_tfidf_cosine else {}
-        vector_ranking = _run_merged(self._run_vector_search) if use_vector else {}
-        graph_ranking = _run_merged(self._run_graph_search) if use_graph else {}
-        temporal_ranking = (
-            self._run_temporal_search(user_id, tenant_id, search_limit, min_importance, options) if use_temporal else {}
+        rankings = self._collect_rankings(variants, user_id, search_limit, options, tfidf_signal)
+        tail = _SearchTail(
+            query=query,
+            limit=limit,
+            has_filters=has_filters,
+            rerank_on=rerank_on,
+            all_ids=_all_candidate_ids(rankings),
+            rankings=rankings,
+            options=options,
+            effective_weights=effective_weights,
+            rewrite_on=rewrite_on,
+            variants=variants,
+            cache_key=cache_key,
+            use_cache=use_cache,
         )
 
-        rankings = Rankings(
-            keyword=keyword_ranking,
-            tfidf_cosine=tfidf_cosine_ranking,
-            vector=vector_ranking,
-            graph=graph_ranking,
-            temporal=temporal_ranking,
-            semantic_label=semantic_label,
-            entity_hits=dict(self._entity_hits),
-            entity_confidence=dict(self._entity_confidence),
-        )
-
-        all_ids: set[str] = set()
-        all_ids.update(keyword_ranking.keys())
-        all_ids.update(tfidf_cosine_ranking.keys())
-        all_ids.update(vector_ranking.keys())
-        all_ids.update(graph_ranking.keys())
-        all_ids.update(temporal_ranking.keys())
-
-        if not all_ids:
-            result = HybridSearchResult(
-                results=[],
-                total_candidates=0,
-                signal_counts={
-                    "keyword": len(rankings.keyword),
-                    "tfidf_cosine": len(rankings.tfidf_cosine),
-                    "vector": len(rankings.vector),
-                    "graph": len(rankings.graph),
-                    "temporal": len(rankings.temporal),
-                },
-            )
-            if options.explain:
-                result.score_details = self._build_score_details(
-                    result,
-                    options,
-                    RerankStatus(enabled=rerank_on),
-                    effective_weights,
-                    {"enabled": rewrite_on, "variants": list(variants)},
-                )
-            if use_cache:
-                self._cache_result(cache_key, result)
-            return result
+        if not tail.all_ids:
+            return self._empty_result(tail)
 
         merged = self._reciprocal_rank_fusion(
             Rankings(
-                keyword=keyword_ranking,
-                tfidf_cosine=tfidf_cosine_ranking,
-                vector=vector_ranking,
-                graph=graph_ranking,
-                temporal=temporal_ranking,
+                keyword=rankings.keyword,
+                tfidf_cosine=rankings.tfidf_cosine,
+                vector=rankings.vector,
+                graph=rankings.graph,
+                temporal=rankings.temporal,
             ),
             weights=effective_weights,
         )
@@ -820,59 +763,128 @@ class HybridRetriever:
             self._cache_result(cache_key, early)
             return early
 
+        results = self._build_candidates(merged, search_limit, user_id, options, rankings)
+        return self._finalize_results(results, tail)
+
+    def _collect_rankings(
+        self,
+        variants: list[str],
+        user_id: str,
+        search_limit: int,
+        options: HybridSearchOptions,
+        tfidf_signal: tuple[bool, str],
+    ) -> Rankings:
+        """Run every enabled signal over the query variants and bundle the rankings."""
+        use_tfidf_cosine, semantic_label = tfidf_signal
+        tenant_id = options.tenant_id
+
+        def _run_merged(run: Any) -> dict[str, int]:
+            per_variant = [run(v, user_id, tenant_id, search_limit, options) for v in variants]
+            if len(per_variant) == 1:
+                return per_variant[0]
+            return merge_variant_rankings(per_variant)
+
+        keyword_ranking = _run_merged(self._run_keyword_search) if options.use_keyword else {}
+        tfidf_cosine_ranking = _run_merged(self._run_tfidf_search) if use_tfidf_cosine else {}
+        vector_ranking = _run_merged(self._run_vector_search) if options.use_vector else {}
+        graph_ranking = _run_merged(self._run_graph_search) if options.use_graph else {}
+        temporal_ranking = (
+            self._run_temporal_search(user_id, tenant_id, search_limit, options.min_importance, options)
+            if options.use_temporal
+            else {}
+        )
+
+        return Rankings(
+            keyword=keyword_ranking,
+            tfidf_cosine=tfidf_cosine_ranking,
+            vector=vector_ranking,
+            graph=graph_ranking,
+            temporal=temporal_ranking,
+            semantic_label=semantic_label,
+            entity_hits=dict(self._entity_hits),
+            entity_confidence=dict(self._entity_confidence),
+        )
+
+    def _empty_result(self, tail: _SearchTail) -> HybridSearchResult:
+        """Build (and cache) the result for a search that matched no candidates."""
+        result = HybridSearchResult(
+            results=[],
+            total_candidates=0,
+            signal_counts={
+                "keyword": len(tail.rankings.keyword),
+                "tfidf_cosine": len(tail.rankings.tfidf_cosine),
+                "vector": len(tail.rankings.vector),
+                "graph": len(tail.rankings.graph),
+                "temporal": len(tail.rankings.temporal),
+            },
+        )
+        if tail.options.explain:
+            result.score_details = self._build_score_details(
+                result,
+                tail.options,
+                RerankStatus(enabled=tail.rerank_on),
+                tail.effective_weights,
+                _rewrite_info(tail),
+            )
+        if tail.use_cache:
+            self._cache_result(tail.cache_key, result)
+        return result
+
+    def _build_candidates(
+        self,
+        merged: list[tuple],
+        search_limit: int,
+        user_id: str,
+        options: HybridSearchOptions,
+        rankings: Rankings,
+    ) -> list[HybridResult]:
+        """Fetch the candidate window and build the scored results."""
         # Over-fetch 3x so the rerank stage can promote candidates from
         # outside the raw top-N; options.limit is re-applied after reranking.
         # PIX-4720: filters can exclude many top candidates, so widen the
         # candidate window further to avoid starving matching memories that
         # ranked just below the raw cutoff.
+        has_filters = _filters_active(options)
         build_limit = search_limit
         fetch_window = build_limit * 4 if has_filters else build_limit
         fetch_window = min(fetch_window, len(merged))
         top_ids = [mid for mid, _ in merged[:fetch_window]]
-        memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id, options)
+        memories = self._fetch_memories_for_top_ids(top_ids, user_id, options.tenant_id, options)
         if has_filters:
             now_iso = datetime.now(UTC).isoformat()
             memories = {mid: row for mid, row in memories.items() if _row_matches_filters(row, options, now_iso)}
 
-        results = self._build_results(
-            merged,
-            memories,
-            build_limit,
-            rankings,
-        )
+        return self._build_results(merged, memories, build_limit, rankings)
 
+    def _finalize_results(self, results: list[HybridResult], tail: _SearchTail) -> HybridSearchResult:
+        """Apply reranking, extra signals, and explain details to the final result."""
         rerank_provider: str | None = None
-        if rerank_on:
-            results, rerank_provider = self._apply_reranker(query, results)
-            results = results[:limit]
-        elif has_filters:
+        if tail.rerank_on:
+            results, rerank_provider = self._apply_reranker(tail.query, results)
+            results = results[: tail.limit]
+        elif tail.has_filters:
             # Without rerank the result size is normally bounded by the fetched
             # candidate window; the wider filter window can exceed limit, so
             # re-apply it here to keep the filtered contract identical.
-            results = results[:limit]
+            results = results[: tail.limit]
 
-        extra_signals: dict[str, int | str] = {}
-        if rerank_provider:
-            extra_signals["rerank"] = rerank_provider
-        if rewrite_on and len(variants) > 1:
-            extra_signals["query_rewrite"] = len(variants)
-        rewrite_info: dict[str, object] = {"enabled": rewrite_on, "variants": list(variants)}
+        extra_signals = _extra_signals(rerank_provider, tail.rewrite_on, len(tail.variants))
         result = self._make_search_result(
             results,
-            all_ids,
-            rankings,
+            tail.all_ids,
+            tail.rankings,
             extra_signals=extra_signals or None,
         )
-        if options.explain:
+        if tail.options.explain:
             result.score_details = self._build_score_details(
                 result,
-                options,
-                RerankStatus(enabled=rerank_on, provider=rerank_provider),
-                effective_weights,
-                rewrite_info,
+                tail.options,
+                RerankStatus(enabled=tail.rerank_on, provider=rerank_provider),
+                tail.effective_weights,
+                _rewrite_info(tail),
             )
-        if use_cache:
-            self._cache_result(cache_key, result)
+        if tail.use_cache:
+            self._cache_result(tail.cache_key, result)
         return result
 
     def _make_search_result(
@@ -1733,45 +1745,12 @@ class HybridRetriever:
                 temporal_category=temporal_category,
             )
 
-            if memory_id in rankings.keyword:
-                result.keyword_score = self._rank_to_score(rankings.keyword[memory_id], len(rankings.keyword))
-                result.source_signals.append("keyword")
-            if memory_id in rankings.tfidf_cosine:
-                result.semantic_score = self._rank_to_score(
-                    rankings.tfidf_cosine[memory_id], len(rankings.tfidf_cosine)
-                )
-                result.tfidf_cosine_score = self._rank_to_score(
-                    rankings.tfidf_cosine[memory_id], len(rankings.tfidf_cosine)
-                )
-                result.source_signals.append(rankings.semantic_label)
-            if memory_id in rankings.vector:
-                result.vector_score = self._rank_to_score(rankings.vector[memory_id], len(rankings.vector))
-                result.source_signals.append("vector")
-            if memory_id in rankings.graph:
-                result.graph_score = self._rank_to_score(rankings.graph[memory_id], len(rankings.graph))
-                result.source_signals.append("graph")
-                result.entity_hits = rankings.entity_hits.get(memory_id, 0)
-                result.entity_confidence_avg = rankings.entity_confidence.get(memory_id, 0.0)
-            if memory_id in rankings.temporal:
-                result.temporal_score = self._rank_to_score(rankings.temporal[memory_id], len(rankings.temporal))
-                result.source_signals.append("temporal")
+            self._apply_signal_scores(result, memory_id, rankings)
 
             # Cross-cutting decay multiplier: penalize memories whose current strength
             # has decayed below their original importance. This applies decay as a
             # post-RRF factor so it affects ALL signals, not just temporal.
-            # Trend-aware floor so stale/weakening memories get proportionally more
-            # penalty while stable/strengthening ones retain a higher minimum.
-            decay_multiplier = 1.0
-            if current_strength is not None and importance > 0:
-                ratio = current_strength / importance
-                _trend = strength_trend or ""
-                if _trend == "stale":
-                    floor = DECAY_FLOOR_STALE
-                elif _trend == "weakening":
-                    floor = DECAY_FLOOR_WEAKENING
-                else:
-                    floor = DECAY_FLOOR_STABLE
-                decay_multiplier = max(floor, min(1.0, ratio))
+            decay_multiplier = _decay_multiplier(current_strength, importance, strength_trend)
             result.decay_multiplier = decay_multiplier
 
             # PIX-4702 truth resolution: down-rank (never filter) memories that
@@ -1782,22 +1761,17 @@ class HybridRetriever:
             result.is_latest = is_latest
             result.inferred = inferred
             result.superseded_by = mem.get("superseded_by")
-            truth_multiplier = 1.0
-            if not is_latest:
-                truth_multiplier = SUPERSEDED_RANK_PENALTY
-            elif inferred:
-                truth_multiplier = INFERRED_RANK_PENALTY
+            truth_multiplier = _truth_multiplier(is_latest, inferred)
             result.truth_multiplier = truth_multiplier
 
             # Entity salience boost: memories with many high-confidence entity
             # connections get a cross-cutting post-RRF boost. This complements the
             # RRF-level graph signal by rewarding entity richness even when graph
             # ranking is not the dominant signal in the fusion.
-            entity_boost = 1.0
-            _eh = rankings.entity_hits.get(memory_id, 0)
-            _ec = rankings.entity_confidence.get(memory_id, 0.0)
-            if _eh > 0 and _ec > 0:
-                entity_boost = 1.0 + min(0.25, _eh * _ec * 0.06)
+            entity_boost = _entity_salience_boost(
+                rankings.entity_hits.get(memory_id, 0),
+                rankings.entity_confidence.get(memory_id, 0.0),
+            )
             result.entity_salience_boost = entity_boost
 
             result.combined_score = rrf_score * decay_multiplier * entity_boost * truth_multiplier
@@ -1808,6 +1782,29 @@ class HybridRetriever:
         # limit to the final ranking.
         results.sort(key=lambda r: r.combined_score, reverse=True)
         return results[:limit]
+
+    def _apply_signal_scores(self, result: HybridResult, memory_id: str, rankings: Rankings) -> None:
+        """Attach each signal's rank-derived score and provenance to the result."""
+        if memory_id in rankings.keyword:
+            result.keyword_score = self._rank_to_score(rankings.keyword[memory_id], len(rankings.keyword))
+            result.source_signals.append("keyword")
+        if memory_id in rankings.tfidf_cosine:
+            result.semantic_score = self._rank_to_score(rankings.tfidf_cosine[memory_id], len(rankings.tfidf_cosine))
+            result.tfidf_cosine_score = self._rank_to_score(
+                rankings.tfidf_cosine[memory_id], len(rankings.tfidf_cosine)
+            )
+            result.source_signals.append(rankings.semantic_label)
+        if memory_id in rankings.vector:
+            result.vector_score = self._rank_to_score(rankings.vector[memory_id], len(rankings.vector))
+            result.source_signals.append("vector")
+        if memory_id in rankings.graph:
+            result.graph_score = self._rank_to_score(rankings.graph[memory_id], len(rankings.graph))
+            result.source_signals.append("graph")
+            result.entity_hits = rankings.entity_hits.get(memory_id, 0)
+            result.entity_confidence_avg = rankings.entity_confidence.get(memory_id, 0.0)
+        if memory_id in rankings.temporal:
+            result.temporal_score = self._rank_to_score(rankings.temporal[memory_id], len(rankings.temporal))
+            result.source_signals.append("temporal")
 
     def _fetch_memories_for_top_ids(
         self,
@@ -1821,6 +1818,99 @@ class HybridRetriever:
             return {}
 
         return self._fetch_memories(top_ids, user_id, tenant_id, options)
+
+
+@dataclass
+class _SearchTail:
+    """Request-scoped values the result assembly needs once ranking is done."""
+
+    query: str
+    limit: int
+    has_filters: bool
+    rerank_on: bool
+    all_ids: set[str]
+    rankings: Rankings
+    options: HybridSearchOptions
+    effective_weights: dict[str, float]
+    rewrite_on: bool
+    variants: list[str]
+    cache_key: tuple
+    use_cache: bool
+
+
+def _rewrite_info(tail: _SearchTail) -> dict[str, object]:
+    """Describe the query-rewrite stage for the explain payload."""
+    return {"enabled": tail.rewrite_on, "variants": list(tail.variants)}
+
+
+def _extra_signals(rerank_provider: str | None, rewrite_on: bool, variant_count: int) -> dict[str, int | str]:
+    """Report the signals that changed the ranking beyond the base fusion."""
+    extra: dict[str, int | str] = {}
+    if rerank_provider:
+        extra["rerank"] = rerank_provider
+    if rewrite_on and variant_count > 1:
+        extra["query_rewrite"] = variant_count
+    return extra
+
+
+def _resolve_tfidf_signal(options: HybridSearchOptions) -> tuple[bool, str]:
+    """Resolve the semantic signal, honouring the use_semantic backward-compatible alias."""
+    if options.use_semantic is not None:
+        return options.use_semantic, "semantic"
+    return options.use_tfidf_cosine, "tfidf_cosine"
+
+
+def _all_candidate_ids(rankings: Rankings) -> set[str]:
+    """Return every memory id that any signal ranked."""
+    ids: set[str] = set()
+    for ranking in (rankings.keyword, rankings.tfidf_cosine, rankings.vector, rankings.graph, rankings.temporal):
+        ids.update(ranking.keys())
+    return ids
+
+
+def _query_variants(query: str, user_id: str, tenant_id: str, options: HybridSearchOptions) -> list[str]:
+    """Return the query's rewritten variants, capped to the configured maximum."""
+    variant_cap = max(1, min(int(options.max_rewrite_variants or 1), 5))
+    return rewrite_variants(
+        query,
+        max_variants=variant_cap,
+        llm_assist=llm_rewrite_enabled(),
+        user_id=user_id,
+        tenant_id=tenant_id,
+    )
+
+
+def _decay_multiplier(
+    current_strength: float | None,
+    importance: float,
+    strength_trend: str | None,
+) -> float:
+    """Scale a score by how far the memory's strength decayed below its importance.
+
+    The floor is trend-aware so stale and weakening memories take proportionally
+    more penalty while stable or strengthening ones keep a higher minimum.
+    """
+    if current_strength is None or importance <= 0:
+        return 1.0
+    ratio = current_strength / importance
+    floors = {"stale": DECAY_FLOOR_STALE, "weakening": DECAY_FLOOR_WEAKENING}
+    return max(floors.get(strength_trend or "", DECAY_FLOOR_STABLE), min(1.0, ratio))
+
+
+def _truth_multiplier(is_latest: bool, inferred: bool) -> float:
+    """Penalize superseded or inferred memories; a superseded memory wins both flags."""
+    if not is_latest:
+        return SUPERSEDED_RANK_PENALTY
+    if inferred:
+        return INFERRED_RANK_PENALTY
+    return 1.0
+
+
+def _entity_salience_boost(entity_hits: int, entity_confidence: float) -> float:
+    """Boost memories that carry many high-confidence entity connections."""
+    if entity_hits > 0 and entity_confidence > 0:
+        return 1.0 + min(0.25, entity_hits * entity_confidence * 0.06)
+    return 1.0
 
 
 # Global instance management (thread-safe)

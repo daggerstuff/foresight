@@ -182,7 +182,7 @@ def _sample() -> Sample:
     )
 
 
-def test_run_benchmark_recall(tmp_path):
+def test_run_benchmark_recall():
     dataset = Dataset(name="longmemeval", revision="", samples=(_sample(),))
     backend = _FakeBackend()
     report = run_benchmark(dataset, backend, BenchmarkOptions(cutoffs=(10, 20), seed=0))
@@ -195,7 +195,7 @@ def test_run_benchmark_recall(tmp_path):
     assert "evidence_recall@10" in markdown  # flattened into the overall table
 
 
-def test_evaluate_predictions(tmp_path):
+def test_evaluate_predictions():
     dataset = Dataset(
         name="longmemeval",
         revision="",

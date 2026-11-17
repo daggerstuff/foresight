@@ -35,7 +35,6 @@ def run(params: BenchmarkRunParams) -> None:
     9. Multi-Surface Integration Matrix (8+ developer tool surfaces)
     """
     report_obj = run_proof_benchmark(
-        json_output=params.json_output or out.get_settings().mode == "json",
         report_path=params.report,
     )
 

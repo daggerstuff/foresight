@@ -35,7 +35,16 @@ from .commands import (
     system,
     users,
 )
-from .parser import SUPPRESS, UsageError, add_command, add_group, new_parser, program_name, register_commands
+from .parser import (
+    SUPPRESS,
+    UsageError,
+    add_command,
+    add_group,
+    invoke,
+    new_parser,
+    program_name,
+    register_commands,
+)
 from .utils import config as cfg, output as out
 
 ForesightTUI: type | None
@@ -228,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     params_type = namespace.params_type
     params = params_type(**{name: getattr(namespace, name) for name in params_type.model_fields})
     try:
-        namespace.handler(params)
+        invoke(namespace.handler, params)
     except UsageError as exc:
         namespace.command_parser.error(str(exc))
     return 0

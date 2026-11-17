@@ -18,7 +18,7 @@ async def _run_middleware(context_obj, tenant_in_args=None, tenant_in_meta=None)
     mw = TenantMiddleware()
     captured_tenant = {}
 
-    async def capturing_call_next(ctx):
+    async def capturing_call_next(_ctx):
         captured_tenant["value"] = get_current_account_id()
         return "ok"
 
@@ -104,7 +104,7 @@ async def test_invalid_string_identity_is_rejected():
     ctx.message = message
     mw = TenantMiddleware()
 
-    async def call_next(c):
+    async def call_next(_c):
         return "ok"
 
     await mw.on_call_tool(ctx, call_next)

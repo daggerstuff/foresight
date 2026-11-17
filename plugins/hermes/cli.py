@@ -88,21 +88,22 @@ def _get_client() -> _Client:
 def _cmd_status(_args: argparse.Namespace) -> None:
     """Check connectivity, latency, identity lane, and memory stats."""
     client = _get_client()
-    print("\n🔮 Foresight Memory Brain Status")
-    print("─" * 45)
-    print(f"  Server URL:    {client.base_url}")
-    print(f"  Identity Lane: {client.user_id or '(default)'}")
-    print(f"  Auth:          {'configured (API key set)' if client.api_key else 'none / localhost'}")
+    sys.stdout.write("\n🔮 Foresight Memory Brain Status\n")
+    sys.stdout.write("─" * 45 + "\n")
+    sys.stdout.write(f"  Server URL:    {client.base_url}\n")
+    sys.stdout.write(f"  Identity Lane: {client.user_id or '(default)'}\n")
+    sys.stdout.write(f"  Auth:          {'configured (API key set)' if client.api_key else 'none / localhost'}\n")
 
-    print("\n  Pinging server...", end="", flush=True)
+    sys.stdout.write("\n  Pinging server...")
+    sys.stdout.flush()
     health = client.health()
     if health.get("ok"):
         latency = health.get("latency_ms", 0)
-        print(f" connected ✓ ({latency}ms)")
+        sys.stdout.write(f" connected ✓ ({latency}ms)\n")
         if health.get("count") is not None:
-            print(f"  Total Memories: {health['count']}")
+            sys.stdout.write(f"  Total Memories: {health['count']}\n")
     else:
-        print(f" FAILED ✗\n  Error: {health.get('error')}")
+        sys.stdout.write(f" FAILED ✗\n  Error: {health.get('error')}\n")
         return
 
     # Fetch recent memories
@@ -110,12 +111,12 @@ def _cmd_status(_args: argparse.Namespace) -> None:
         res = client.list_memories(limit=5)
         text = res.get("result", "") if isinstance(res, dict) else str(res)
         if text:
-            print("\n  Recent Memories:")
+            sys.stdout.write("\n  Recent Memories:\n")
             for line in text.splitlines()[:6]:
-                print(f"    {line}")
+                sys.stdout.write(f"    {line}\n")
     except Exception as exc:
-        print(f"\n  (Could not fetch recent memories: {exc})")
-    print()
+        sys.stdout.write(f"\n  (Could not fetch recent memories: {exc})\n")
+    sys.stdout.write("\n")
 
 
 def _cmd_search(args: argparse.Namespace) -> None:
@@ -123,10 +124,10 @@ def _cmd_search(args: argparse.Namespace) -> None:
     client = _get_client()
     query = args.query.strip()
     if not query:
-        print("Error: query cannot be empty", file=sys.stderr)
+        sys.stderr.write("Error: query cannot be empty\n")
         return
 
-    print(f"\n🔍 Searching Foresight for: {query!r} (limit={args.limit})...\n")
+    sys.stdout.write(f"\n🔍 Searching Foresight for: {query!r} (limit={args.limit})...\n\n")
     try:
         res = client.search(
             query=query,
@@ -135,15 +136,15 @@ def _cmd_search(args: argparse.Namespace) -> None:
             category=args.category,
         )
         if isinstance(res, dict) and "result" in res:
-            print(res["result"])
+            sys.stdout.write(str(res["result"]) + "\n")
         elif isinstance(res, dict) and "matches" in res:
             for item in res["matches"]:
-                print(f"  - [{item.get('memory_id')}] (score: {item.get('score', 0):.3f})")
+                sys.stdout.write(f"  - [{item.get('memory_id')}] (score: {item.get('score', 0):.3f})\n")
         else:
-            print(json.dumps(res, indent=2))
+            sys.stdout.write(json.dumps(res, indent=2) + "\n")
     except Exception as exc:
-        print(f"Search failed: {exc}", file=sys.stderr)
-    print()
+        sys.stderr.write(f"Search failed: {exc}\n")
+    sys.stdout.write("\n")
 
 
 def _cmd_remember(args: argparse.Namespace) -> None:
@@ -151,7 +152,7 @@ def _cmd_remember(args: argparse.Namespace) -> None:
     client = _get_client()
     content = args.content.strip()
     if not content:
-        print("Error: content cannot be empty", file=sys.stderr)
+        sys.stderr.write("Error: content cannot be empty\n")
         return
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
@@ -163,13 +164,13 @@ def _cmd_remember(args: argparse.Namespace) -> None:
             tags=tags,
         )
         mem_id = res.get("memory_id") if isinstance(res, dict) else None
-        print("\n✓ Stored memory in Foresight brain:")
-        print(f"  ID:         {mem_id or '(created)'}")
-        print(f"  Category:   {args.category}")
-        print(f"  Importance: {args.importance}")
-        print(f"  Content:    {content}\n")
+        sys.stdout.write("\n✓ Stored memory in Foresight brain:\n")
+        sys.stdout.write(f"  ID:         {mem_id or '(created)'}\n")
+        sys.stdout.write(f"  Category:   {args.category}\n")
+        sys.stdout.write(f"  Importance: {args.importance}\n")
+        sys.stdout.write(f"  Content:    {content}\n\n")
     except Exception as exc:
-        print(f"Remember failed: {exc}", file=sys.stderr)
+        sys.stderr.write(f"Remember failed: {exc}\n")
 
 
 def _cmd_reflect(args: argparse.Namespace) -> None:
@@ -177,95 +178,99 @@ def _cmd_reflect(args: argparse.Namespace) -> None:
     client = _get_client()
     question = args.question.strip()
     if not question:
-        print("Error: question cannot be empty", file=sys.stderr)
+        sys.stderr.write("Error: question cannot be empty\n")
         return
 
-    print(f"\n🧠 Reflecting on: {question!r}...\n")
+    sys.stdout.write(f"\n🧠 Reflecting on: {question!r}...\n\n")
     try:
         res = client.reflect(question=question)
         if isinstance(res, dict) and "answer" in res:
-            print(res["answer"])
+            sys.stdout.write(str(res["answer"]) + "\n")
         else:
-            print(json.dumps(res, indent=2))
+            sys.stdout.write(json.dumps(res, indent=2) + "\n")
     except Exception as exc:
-        print(f"Reflection failed: {exc}", file=sys.stderr)
-    print()
+        sys.stderr.write(f"Reflection failed: {exc}\n")
+    sys.stdout.write("\n")
 
 
 def _cmd_profile(_args: argparse.Namespace) -> None:
     """Display the synthesized user profile and persistent preferences."""
     client = _get_client()
-    print("\n👤 User Profile & Mental Models (Foresight)")
-    print("─" * 45)
+    sys.stdout.write("\n👤 User Profile & Mental Models (Foresight)\n")
+    sys.stdout.write("─" * 45 + "\n")
     try:
         res = client.profile()
         if isinstance(res, dict):
             static_prefs = res.get("static", [])
             dynamic_models = res.get("dynamic", [])
             if static_prefs:
-                print("\n  Preferences & Directives:")
+                sys.stdout.write("\n  Preferences & Directives:\n")
                 for pref in static_prefs:
-                    print(f"    • {pref}")
+                    sys.stdout.write(f"    • {pref}\n")
             if dynamic_models:
-                print("\n  Mental Models & Patterns:")
+                sys.stdout.write("\n  Mental Models & Patterns:\n")
                 for model in dynamic_models:
                     if isinstance(model, dict):
-                        print(f"    • [{model.get('type')}] {model.get('content')}")
+                        sys.stdout.write(f"    • [{model.get('type')}] {model.get('content')}\n")
                     else:
-                        print(f"    • {model}")
+                        sys.stdout.write(f"    • {model}\n")
             if not static_prefs and not dynamic_models:
-                print("\n  Profile is currently empty (run agent turns to auto-distill).")
+                sys.stdout.write("\n  Profile is currently empty (run agent turns to auto-distill).\n")
         else:
-            print(json.dumps(res, indent=2))
+            sys.stdout.write(json.dumps(res, indent=2) + "\n")
     except Exception as exc:
-        print(f"Failed to fetch profile: {exc}", file=sys.stderr)
-    print()
+        sys.stderr.write(f"Failed to fetch profile: {exc}\n")
+    sys.stdout.write("\n")
 
 
 def _cmd_test(_args: argparse.Namespace) -> None:
     """Run an automated self-test of the Foresight plugin endpoints."""
     client = _get_client()
-    print("\n⚡ Running Foresight Integration Self-Test")
-    print("─" * 45)
+    sys.stdout.write("\n⚡ Running Foresight Integration Self-Test\n")
+    sys.stdout.write("─" * 45 + "\n")
 
     # 1. Connectivity
-    print("  1. Ping /memories:       ", end="", flush=True)
+    sys.stdout.write("  1. Ping /memories:       ")
+    sys.stdout.flush()
     health = client.health()
     if health.get("ok"):
-        print(f"PASS ({health.get('latency_ms')}ms)")
+        sys.stdout.write(f"PASS ({health.get('latency_ms')}ms)\n")
     else:
-        print(f"FAIL ({health.get('error')})")
+        sys.stdout.write(f"FAIL ({health.get('error')})\n")
         return
 
     # 2. Context Injection
-    print("  2. Test POST /inject:    ", end="", flush=True)
+    sys.stdout.write("  2. Test POST /inject:    ")
+    sys.stdout.flush()
     try:
         inj = client.inject("test query context injection", max_memories=2)
         formatted = inj.get("formatted", "")
         if formatted:
-            print("PASS (recalled context returned)")
+            sys.stdout.write("PASS (recalled context returned)\n")
         else:
-            print("PASS (empty context as expected for novel query)")
+            sys.stdout.write("PASS (empty context as expected for novel query)\n")
     except Exception as exc:
-        print(f"FAIL ({exc})")
+        sys.stdout.write(f"FAIL ({exc})\n")
 
     # 3. Hybrid Search
-    print("  3. Test POST /search:    ", end="", flush=True)
+    sys.stdout.write("  3. Test POST /search:    ")
+    sys.stdout.flush()
     try:
         client.search("test", limit=2, use_hybrid=True)
-        print("PASS")
+        sys.stdout.write("PASS\n")
     except Exception as exc:
-        print(f"FAIL ({exc})")
+        sys.stdout.write(f"FAIL ({exc})\n")
 
     # 4. Profile
-    print("  4. Test GET /profile:    ", end="", flush=True)
+    sys.stdout.write("  4. Test GET /profile:    ")
+    sys.stdout.flush()
     try:
         client.profile()
-        print("PASS")
+        sys.stdout.write("PASS\n")
     except Exception as exc:
-        print(f"FAIL ({exc})")
+        sys.stdout.write(f"FAIL ({exc})\n")
 
-    print("\n✓ All tests passed! Foresight is fully operational and hands-off.\n")
+    sys.stdout.write("\n✓ All tests passed! Foresight is fully operational and hands-off.\n\n")
 
 
 def foresight_command(args: argparse.Namespace) -> None:

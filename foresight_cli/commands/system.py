@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import sys
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
@@ -151,6 +152,173 @@ def _init_backend() -> None:
     _initialize_backend()
 
 
+def _emit_status_json(result: Any) -> None:
+    """Print the status payload as JSON, or raw text when it is not JSON."""
+    if isinstance(result, str):
+        try:
+            out.print_json(json.loads(result))
+        except json.JSONDecodeError:
+            out.stdout(result)
+    else:
+        out.print_json(result)
+
+
+def _status_payload(result: Any) -> dict[str, Any] | None:
+    """Normalise the status payload to a dict, printing it raw when it is not JSON."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            out.stdout(result)
+            return None
+    if isinstance(result, dict):
+        return result
+    out.stdout(str(result))
+    return None
+
+
+def _status_pairs(result: dict[str, Any], resolved_uid: str | None) -> list[tuple[str, str]]:
+    """Build the headline key/value rows for the status table."""
+    pairs = [
+        ("Status", result.get("status", result.get("health", "unknown"))),
+        ("Database", result.get("database", result.get("db_url", "?"))),
+        ("Bank ID", result.get("bank_id", "?")),
+        ("User ID", result.get("user_id", resolved_uid or "?")),
+        ("Memory Count", str(result.get("memory_count", result.get("count", 0)))),
+        ("Crisis Signals", str(result.get("crisis_signals", 0))),
+    ]
+    stale_count = result.get("stale_count")
+    if stale_count is not None:
+        pairs.append(("Stale Memories", str(stale_count)))
+
+    maint = result.get("maintenance_stats")
+    if isinstance(maint, dict):
+        pairs.append(("Maintenance Events", str(maint.get("total_events", 0))))
+        last_run = maint.get("last_maintenance_run", "")
+        if last_run:
+            pairs.append(("Last Maintenance", str(last_run)[:19]))
+
+    lct = result.get("last_capture_time")
+    if lct:
+        pairs.append(("Last Capture", str(lct)[:19]))
+
+    return pairs
+
+
+def _emit_counter_bullets(source: Any, title: str) -> None:
+    """Print a ``key: value`` bullet list for a mapping payload section."""
+    if isinstance(source, dict) and source:
+        out.bullet_list([f"{k}: {v}" for k, v in source.items()], title=title)
+
+
+def _emit_bullet_items(items: list[str], title: str) -> None:
+    """Print a bullet list when there is at least one item."""
+    if items:
+        out.bullet_list(items, title=title)
+
+
+def _maintenance_detail_items(maint: dict[str, Any]) -> list[str]:
+    """Format the per-outcome maintenance counters that are present."""
+    items = []
+    for key in (
+        "duplicates_auto_consolidated",
+        "duplicates_flagged_review",
+        "contradictions_flagged_review",
+        "stale_archived",
+        "insights_generated",
+        "errors",
+        "reviews_flagged",
+    ):
+        value = maint.get(key)
+        if value is not None:
+            items.append(f"{key.replace('_', ' ').title()}: {value}")
+    return items
+
+
+def _payload_budget_items(budget: Any) -> list[str]:
+    """Format the injection payload-budget section."""
+    if not isinstance(budget, dict):
+        return []
+    items = [f"Min Lane Chars: {budget.get('min_lane_chars', '?')}"]
+    weights = budget.get("default_lane_weights", {})
+    if isinstance(weights, dict):
+        for lane_name, pct in sorted(weights.items()):
+            items.append(f"{lane_name}: {pct * 100:.0f}%")
+    return items
+
+
+def _last_injection_items(inj: Any) -> list[str]:
+    """Format the last-injection section."""
+    if not isinstance(inj, dict):
+        return []
+    items = [
+        f"Last Run: {str(inj.get('last_run_at', '?'))[:19]}",
+        f"Latency: {inj.get('latency_ms', '?')}ms",
+        f"Fetched: {inj.get('memories_fetched', '?')}",
+        f"Returned: {inj.get('memories_returned', '?')}",
+    ]
+    fps = inj.get("fast_path")
+    if fps is not None:
+        items.append(f"Fast Path: {fps}")
+    mc = inj.get("max_chars")
+    if mc is not None:
+        items.append(f"Budget: {mc} chars")
+    return items
+
+
+def _injection_health_items(ih: Any) -> list[str]:
+    """Format the injection-health section."""
+    if not isinstance(ih, dict):
+        return []
+    items = []
+    tr = ih.get("total_runs")
+    if tr is not None:
+        items.append(f"Total Runs: {tr}")
+    r24 = ih.get("runs_24h")
+    if r24 is not None:
+        items.append(f"Runs 24h: {r24}")
+    lat = ih.get("avg_latency_ms")
+    if lat is not None:
+        items.append(f"Avg Latency: {lat}ms")
+    ret = ih.get("avg_memories_returned")
+    if ret is not None:
+        items.append(f"Avg Returned: {ret}")
+    fet = ih.get("avg_memories_fetched")
+    if fet is not None:
+        items.append(f"Avg Fetched: {fet}")
+    fpr = ih.get("fast_path_rate_pct")
+    if fpr is not None:
+        items.append(f"Fast Path Rate: {fpr:.0f}%")
+    lra = ih.get("last_run_at")
+    if lra is not None:
+        items.append(f"Last Run: {str(lra)[:19]}")
+    return items
+
+
+def _retrieval_debug_items(cache: Any) -> list[str]:
+    """Format the retrieval-debug counters carried by the cache metrics."""
+    if not isinstance(cache, dict):
+        return []
+    debug = cache.get("retrieval_debug", {})
+    if not isinstance(debug, dict):
+        return []
+    return [f"{k}: {v}" for k, v in debug.items()]
+
+
+def _emit_status_sections(result: dict[str, Any]) -> None:
+    """Print the optional status sections in their reporting order."""
+    maint = result.get("maintenance_stats")
+    _emit_counter_bullets(result.get("by_scope"), "Memories by Scope")
+    _emit_counter_bullets(result.get("by_category"), "Memories by Category")
+    if isinstance(maint, dict):
+        _emit_bullet_items(_maintenance_detail_items(maint), "Maintenance Details")
+        _emit_counter_bullets(maint.get("by_type"), "Maintenance by Type")
+    _emit_bullet_items(_payload_budget_items(result.get("payload_budget")), "Payload Budget")
+    _emit_bullet_items(_last_injection_items(result.get("last_injection")), "Last Injection")
+    _emit_bullet_items(_injection_health_items(result.get("injection_health")), "Injection Health")
+    _emit_bullet_items(_retrieval_debug_items(result.get("cache_metrics")), "Retrieval Debug")
+
+
 def status(params: SystemStatusParams) -> None:
     """Get Foresight system status and health."""
     _init_backend()
@@ -158,150 +326,15 @@ def status(params: SystemStatusParams) -> None:
     result = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
 
     if out.get_settings().mode in ("agent", "json"):
-        if isinstance(result, str):
-            try:
-                out.print_json(json.loads(result))
-            except json.JSONDecodeError:
-                out.stdout(result)
-        else:
-            out.print_json(result)
+        _emit_status_json(result)
         return
 
-    if isinstance(result, str):
-        try:
-            result = json.loads(result)
-        except json.JSONDecodeError:
-            out.stdout(result)
-            return
+    payload = _status_payload(result)
+    if payload is None:
+        return
 
-    if isinstance(result, dict):
-        pairs = [
-            ("Status", result.get("status", result.get("health", "unknown"))),
-            ("Database", result.get("database", result.get("db_url", "?"))),
-            ("Bank ID", result.get("bank_id", "?")),
-            ("User ID", result.get("user_id", resolved_uid or "?")),
-            ("Memory Count", str(result.get("memory_count", result.get("count", 0)))),
-            ("Crisis Signals", str(result.get("crisis_signals", 0))),
-        ]
-        stale_count = result.get("stale_count")
-        if stale_count is not None:
-            pairs.append(("Stale Memories", str(stale_count)))
-
-        maint = result.get("maintenance_stats")
-        if isinstance(maint, dict):
-            last_run = maint.get("last_maintenance_run", "")
-            total = maint.get("total_events", 0)
-            pairs.append(("Maintenance Events", str(total)))
-            if last_run:
-                pairs.append(("Last Maintenance", str(last_run)[:19]))
-
-        lct = result.get("last_capture_time")
-        if lct:
-            pairs.append(("Last Capture", str(lct)[:19]))
-
-        out.kv_table(pairs, title="Foresight Status")
-
-        by_scope = result.get("by_scope", {})
-        if isinstance(by_scope, dict) and by_scope:
-            out.bullet_list(
-                [f"{k}: {v}" for k, v in by_scope.items()],
-                title="Memories by Scope",
-            )
-        by_category = result.get("by_category", {})
-        if isinstance(by_category, dict) and by_category:
-            out.bullet_list(
-                [f"{k}: {v}" for k, v in by_category.items()],
-                title="Memories by Category",
-            )
-
-        if isinstance(maint, dict):
-            maint_items = []
-            for k in (
-                "duplicates_auto_consolidated",
-                "duplicates_flagged_review",
-                "contradictions_flagged_review",
-                "stale_archived",
-                "insights_generated",
-                "errors",
-                "reviews_flagged",
-            ):
-                v = maint.get(k)
-                if v is not None:
-                    label = k.replace("_", " ").title()
-                    maint_items.append(f"{label}: {v}")
-            if maint_items:
-                out.bullet_list(maint_items, title="Maintenance Details")
-
-            by_type = maint.get("by_type", {})
-            if isinstance(by_type, dict) and by_type:
-                out.bullet_list(
-                    [f"{k}: {v}" for k, v in by_type.items()],
-                    title="Maintenance by Type",
-                )
-
-        budget = result.get("payload_budget")
-        if isinstance(budget, dict):
-            budget_items = [f"Min Lane Chars: {budget.get('min_lane_chars', '?')}"]
-            weights = budget.get("default_lane_weights", {})
-            if isinstance(weights, dict):
-                for lane_name, pct in sorted(weights.items()):
-                    budget_items.append(f"{lane_name}: {pct * 100:.0f}%")
-            out.bullet_list(budget_items, title="Payload Budget")
-
-        inj = result.get("last_injection")
-        if isinstance(inj, dict):
-            inj_items = [
-                f"Last Run: {str(inj.get('last_run_at', '?'))[:19]}",
-                f"Latency: {inj.get('latency_ms', '?')}ms",
-                f"Fetched: {inj.get('memories_fetched', '?')}",
-                f"Returned: {inj.get('memories_returned', '?')}",
-            ]
-            fps = inj.get("fast_path")
-            if fps is not None:
-                inj_items.append(f"Fast Path: {fps}")
-            mc = inj.get("max_chars")
-            if mc is not None:
-                inj_items.append(f"Budget: {mc} chars")
-            out.bullet_list(inj_items, title="Last Injection")
-
-        ih = result.get("injection_health")
-        if isinstance(ih, dict):
-            ih_items = []
-            tr = ih.get("total_runs")
-            if tr is not None:
-                ih_items.append(f"Total Runs: {tr}")
-            r24 = ih.get("runs_24h")
-            if r24 is not None:
-                ih_items.append(f"Runs 24h: {r24}")
-            lat = ih.get("avg_latency_ms")
-            if lat is not None:
-                ih_items.append(f"Avg Latency: {lat}ms")
-            ret = ih.get("avg_memories_returned")
-            if ret is not None:
-                ih_items.append(f"Avg Returned: {ret}")
-            fet = ih.get("avg_memories_fetched")
-            if fet is not None:
-                ih_items.append(f"Avg Fetched: {fet}")
-            fpr = ih.get("fast_path_rate_pct")
-            if fpr is not None:
-                ih_items.append(f"Fast Path Rate: {fpr:.0f}%")
-            lra = ih.get("last_run_at")
-            if lra is not None:
-                ih_items.append(f"Last Run: {str(lra)[:19]}")
-            if ih_items:
-                out.bullet_list(ih_items, title="Injection Health")
-
-        cache = result.get("cache_metrics")
-        if isinstance(cache, dict):
-            debug_items = []
-            debug = cache.get("retrieval_debug", {})
-            if isinstance(debug, dict):
-                for k, v in debug.items():
-                    debug_items.append(f"{k}: {v}")
-            if debug_items:
-                out.bullet_list(debug_items, title="Retrieval Debug")
-    else:
-        out.stdout(str(result))
+    out.kv_table(_status_pairs(payload, resolved_uid), title="Foresight Status")
+    _emit_status_sections(payload)
 
 
 def init(params: SystemInitParams) -> None:
@@ -362,191 +395,252 @@ def _mask_db_url(url: str) -> str:
         return "***"
 
 
-def doctor(params: SystemDoctorParams) -> None:
-    """Run comprehensive diagnostics."""
-    _init_backend()
-    resolved_uid = cfg.get_user_id(params.user_id)
-    config = cfg.ensure_config()
-    passed = 0
-    failed = 0
-    warnings: list[str] = []
+@dataclass
+class _DoctorReport:
+    """Running tally of diagnostics results."""
 
-    def check(name: str, ok: bool, detail: str = "") -> None:
-        nonlocal passed, failed
+    passed: int = 0
+    failed: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+    def check(self, name: str, ok: bool, detail: str = "") -> None:
+        """Record one check and echo its result outside agent mode."""
         if ok:
-            passed += 1
-            if out.get_settings().mode == "agent":
-                pass
-            else:
+            self.passed += 1
+            if out.get_settings().mode != "agent":
                 out.stdout(f"  ✓ {name}", style="green")
         else:
-            failed += 1
-            if out.get_settings().mode == "agent":
-                pass
-            else:
+            self.failed += 1
+            if out.get_settings().mode != "agent":
                 out.stdout(f"  ✗ {name}: {detail}", style="red")
 
-    if out.get_settings().mode != "agent":
-        out.stderr("Foresight Diagnostics", style="bold underline")
-        out.stderr("")
 
-    py_ok = sys.version_info >= (3, 11)
-    check("Python 3.11+", py_ok, f"Found {sys.version}")
-
-    check("Config dir exists", cfg.CONFIG_DIR.exists(), str(cfg.CONFIG_DIR))
-    check("Config file exists", cfg.CONFIG_PATH.exists(), str(cfg.CONFIG_PATH))
+def _doctor_check_environment(report: _DoctorReport, config: Any) -> None:
+    """Check the interpreter, config files, database URL, identities, and env overrides."""
+    report.check("Python 3.11+", sys.version_info >= (3, 11), f"Found {sys.version}")
+    report.check("Config dir exists", cfg.CONFIG_DIR.exists(), str(cfg.CONFIG_DIR))
+    report.check("Config file exists", cfg.CONFIG_PATH.exists(), str(cfg.CONFIG_PATH))
 
     db_url = cfg.get_db_url()
     if db_url:
-        check("Database URL configured", True, _mask_db_url(db_url))
+        report.check("Database URL configured", True, _mask_db_url(db_url))
     else:
-        check("Database URL configured", False, "Set FORESIGHT_DB_URL env var")
+        report.check("Database URL configured", False, "Set FORESIGHT_DB_URL env var")
 
     if config.user_id:
-        check("User ID configured", True, config.user_id)
+        report.check("User ID configured", True, config.user_id)
     if config.bank_id:
-        check("Bank ID configured", True, config.bank_id)
+        report.check("Bank ID configured", True, config.bank_id)
 
     for env_var in ["FORESIGHT_DB_URL", "FORESIGHT_USER_ID", "FORESIGHT_BANK_ID"]:
         if os.environ.get(env_var):
             val = os.environ[env_var]
             if env_var == "FORESIGHT_DB_URL":
                 val = _mask_db_url(val)
-            warnings.append(f"{env_var}={val}")
+            report.warnings.append(f"{env_var}={val}")
 
+
+def _doctor_check_database(report: _DoctorReport, resolved_uid: str | None) -> None:
+    """Check that the memory store answers a status query."""
     try:
         health = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
         if isinstance(health, str):
             health = json.loads(health) if health.startswith("{") else {"raw": health}
         if isinstance(health, dict):
             mem_count = health.get("memory_count", health.get("count", "?"))
-            check("Database responsive", True, f"Memories: {mem_count}")
+            report.check("Database responsive", True, f"Memories: {mem_count}")
         else:
-            check("Database responsive", True)
+            report.check("Database responsive", True)
     except Exception as e:
-        check("Database responsive", False, str(e))
+        report.check("Database responsive", False, str(e))
 
+
+def _doctor_check_llm(report: _DoctorReport) -> None:
+    """Check the LLM provider configuration is internally consistent."""
     llm_provider = os.environ.get("FORESIGHT_LLM_PROVIDER", "")
     llm_api_key = os.environ.get("FORESIGHT_LLM_API_KEY", "")
     llm_model = os.environ.get("FORESIGHT_LLM_MODEL", "")
     supported_providers = {"openai", "anthropic", "gemini", "ollama", "vllm", "lmstudio", "none"}
     if llm_provider:
         if llm_provider.lower() not in supported_providers:
-            check("LLM provider configured", False, f"unsupported provider: {llm_provider}")
+            report.check("LLM provider configured", False, f"unsupported provider: {llm_provider}")
         elif not llm_api_key and llm_provider.lower() not in {"ollama", "vllm", "lmstudio", "none"}:
-            check("LLM provider configured", False, f"{llm_provider} set but FORESIGHT_LLM_API_KEY missing")
+            report.check("LLM provider configured", False, f"{llm_provider} set but FORESIGHT_LLM_API_KEY missing")
         else:
-            check("LLM provider configured", True, f"{llm_provider}/{llm_model or 'default'}")
+            report.check("LLM provider configured", True, f"{llm_provider}/{llm_model or 'default'}")
     elif llm_api_key or llm_model:
-        check("LLM provider configured", False, "partial (some vars set, FORESIGHT_LLM_PROVIDER missing)")
+        report.check("LLM provider configured", False, "partial (some vars set, FORESIGHT_LLM_PROVIDER missing)")
     else:
-        check("LLM provider configured", True, "not set (synthesis/reflection disabled)")
+        report.check("LLM provider configured", True, "not set (synthesis/reflection disabled)")
 
+
+def _doctor_check_redis(report: _DoctorReport) -> None:
+    """Check the optional Redis cache is reachable when configured."""
     redis_url = os.environ.get("FORESIGHT_REDIS_URL", "")
-    if redis_url:
-        try:
-            _r = _redis.from_url(redis_url, socket_connect_timeout=0.5)
-            _r.ping()
-            check("Redis cache", True, "reachable")
-        except Exception as exc:
-            check("Redis cache", False, f"configured but unreachable: {exc!s}")
-    else:
-        check("Redis cache", True, "not set (in-process cache fallback)")
+    if not redis_url:
+        report.check("Redis cache", True, "not set (in-process cache fallback)")
+        return
+    try:
+        _r = _redis.from_url(redis_url, socket_connect_timeout=0.5)
+        _r.ping()
+        report.check("Redis cache", True, "reachable")
+    except Exception as exc:
+        report.check("Redis cache", False, f"configured but unreachable: {exc!s}")
 
+
+def _doctor_check_mcp_port(report: _DoctorReport) -> None:
+    """Check whether the MCP HTTP server is listening."""
     mcp_port = int(os.environ.get("FORESIGHT_PORT", "8764"))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
     try:
         sock.connect(("127.0.0.1", mcp_port))
-        check("MCP HTTP server", True, f"listening on :{mcp_port}")
+        report.check("MCP HTTP server", True, f"listening on :{mcp_port}")
     except (TimeoutError, ConnectionRefusedError, OSError):
-        check("MCP HTTP server", False, f"not running on :{mcp_port} (start with: foresight-server)")
+        report.check("MCP HTTP server", False, f"not running on :{mcp_port} (start with: foresight-server)")
     finally:
         sock.close()
 
+
+def _doctor_check_schema(report: _DoctorReport) -> None:
+    """Check the applied schema migration version."""
     try:
         backend = get_backend()
         if backend is None:
-            check("Schema version", True, "backend not initialized")
+            report.check("Schema version", True, "backend not initialized")
         elif hasattr(backend, "fetch"):
             row = backend.fetch("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
             if row:
                 version = row[0][0] if isinstance(row[0], (list, tuple)) else row[0].get("version", "?")
-                check("Schema version", True, f"v{version}")
+                report.check("Schema version", True, f"v{version}")
             else:
-                check("Schema version", True, "no migrations applied")
+                report.check("Schema version", True, "no migrations applied")
         else:
-            check("Schema version", True, "backend supports migrations")
+            report.check("Schema version", True, "backend supports migrations")
     except Exception as exc:
-        check("Schema version", False, f"check failed: {exc!s}")
+        report.check("Schema version", False, f"check failed: {exc!s}")
 
+
+def _doctor_print_summary(report: _DoctorReport) -> None:
+    """Print the pass/fail tally and any active env overrides."""
     if out.get_settings().mode != "agent":
         out.stderr("")
-        if failed == 0:
-            out.done(f"All {passed} checks passed" + (f" ({len(warnings)} env overrides)" if warnings else ""))
+        overrides = f" ({len(report.warnings)} env overrides)" if report.warnings else ""
+        if report.failed == 0:
+            out.done(f"All {report.passed} checks passed{overrides}")
         else:
-            out.warn(f"{passed} passed, {failed} failed" + (f" ({len(warnings)} env overrides)" if warnings else ""))
+            out.warn(f"{report.passed} passed, {report.failed} failed{overrides}")
 
-    if warnings and out.get_settings().mode != "agent":
+    if report.warnings and out.get_settings().mode != "agent":
         out.info("Active env overrides:")
-        for w in warnings:
+        for w in report.warnings:
             out.info(f"  {w}")
 
-    if failed > 0:
+
+def doctor(params: SystemDoctorParams) -> None:
+    """Run comprehensive diagnostics."""
+    _init_backend()
+    resolved_uid = cfg.get_user_id(params.user_id)
+    config = cfg.ensure_config()
+    report = _DoctorReport()
+
+    if out.get_settings().mode != "agent":
+        out.stderr("Foresight Diagnostics", style="bold underline")
+        out.stderr("")
+
+    _doctor_check_environment(report, config)
+    _doctor_check_database(report, resolved_uid)
+    _doctor_check_llm(report)
+    _doctor_check_redis(report)
+    _doctor_check_mcp_port(report)
+    _doctor_check_schema(report)
+    _doctor_print_summary(report)
+
+    if report.failed > 0:
         raise SystemExit(1)
 
 
-def stats(params: SystemStatsParams) -> None:
-    """Show memory statistics and trends."""
-    _init_backend()
-    resolved_uid = cfg.get_user_id(params.user_id)
-
+def _stats_temporal() -> Any:
+    """Fetch the month-long temporal trend, or None when the query fails."""
     try:
-        temporal = query_memories_temporal(
-            QueryMemoriesTemporalParams(options=TemporalWindow(window="month", limit=100))
-        )
+        return query_memories_temporal(QueryMemoriesTemporalParams(options=TemporalWindow(window="month", limit=100)))
     except Exception:
-        temporal = None
+        return None
 
+
+def _stats_health(resolved_uid: str | None) -> dict[str, Any]:
+    """Fetch the system status payload as a dict."""
     health_raw = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
-    health: dict[str, Any] = {}
     if isinstance(health_raw, str):
         with contextlib.suppress(json.JSONDecodeError):
-            health = json.loads(health_raw)
-    elif isinstance(health_raw, dict):
-        health = health_raw
+            parsed = json.loads(health_raw)
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+    if isinstance(health_raw, dict):
+        return health_raw
+    return {}
 
+
+def _stats_telemetry() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fetch the telemetry summary and cache stats, degrading to empty maps."""
+    try:
+        return get_telemetry_store().get_summary(), get_context_cache().get_stats()
+    except Exception:
+        return {}, {}
+
+
+def _maintenance_stats_row(maint: dict[str, Any]) -> list[str]:
+    """Format the single maintenance-stats table row."""
+    return [
+        str(maint.get("total_events", 0)),
+        str(maint.get("duplicates_auto_consolidated", 0)),
+        str(maint.get("duplicates_flagged_review", 0)),
+        str(maint.get("contradictions_flagged_review", 0)),
+        str(maint.get("stale_archived", 0)),
+        str(maint.get("insights_generated", 0)),
+    ]
+
+
+def _emit_stats_json(
+    health: dict[str, Any],
+    temporal: Any,
+    telemetry: dict[str, Any],
+    cache_stats: dict[str, Any],
+) -> None:
+    """Print the stats payload as JSON for agent mode."""
     maint = health.get("maintenance_stats")
     lct = health.get("last_capture_time")
     budget = health.get("payload_budget")
 
-    try:
-        telemetry = get_telemetry_store().get_summary()
-        cache_stats = get_context_cache().get_stats()
-    except Exception:
-        telemetry = {}
-        cache_stats = {}
+    stats_data: dict[str, Any] = {
+        "memory_count": health.get("memory_count", health.get("count", 0)),
+        "crisis_signals": health.get("crisis_signals", 0),
+        "by_scope": health.get("by_scope", {}),
+        "temporal": temporal if isinstance(temporal, dict) else None,
+        "telemetry": telemetry,
+        "cache": cache_stats,
+    }
+    if isinstance(maint, dict):
+        stats_data["maintenance_stats"] = maint
+    if lct:
+        stats_data["last_capture_time"] = str(lct)[:19]
+    if isinstance(budget, dict):
+        stats_data["payload_budget"] = budget
+    out.print_json(stats_data)
 
-    if out.get_settings().mode == "agent":
-        stats_data: dict[str, Any] = {
-            "memory_count": health.get("memory_count", health.get("count", 0)),
-            "crisis_signals": health.get("crisis_signals", 0),
-            "by_scope": health.get("by_scope", {}),
-            "temporal": temporal if isinstance(temporal, dict) else None,
-            "telemetry": telemetry,
-            "cache": cache_stats,
-        }
-        if isinstance(maint, dict):
-            stats_data["maintenance_stats"] = maint
-        if lct:
-            stats_data["last_capture_time"] = str(lct)[:19]
-        if isinstance(budget, dict):
-            stats_data["payload_budget"] = budget
-        out.print_json(stats_data)
-        return
 
+def _emit_stats_human(
+    health: dict[str, Any],
+    temporal: Any,
+    telemetry: dict[str, Any],
+    cache_stats: dict[str, Any],
+) -> None:
+    """Print the human-readable statistics report."""
     mem_count = health.get("memory_count", health.get("count", 0))
     crisis = health.get("crisis_signals", 0)
+    lct = health.get("last_capture_time")
+    maint = health.get("maintenance_stats")
 
     if telemetry:
         out.panel(
@@ -571,19 +665,9 @@ def stats(params: SystemStatsParams) -> None:
         out.print_table(["Scope", "Count"], rows, title="By Scope")
 
     if isinstance(maint, dict):
-        maint_rows = [
-            [
-                str(maint.get("total_events", 0)),
-                str(maint.get("duplicates_auto_consolidated", 0)),
-                str(maint.get("duplicates_flagged_review", 0)),
-                str(maint.get("contradictions_flagged_review", 0)),
-                str(maint.get("stale_archived", 0)),
-                str(maint.get("insights_generated", 0)),
-            ]
-        ]
         out.print_table(
             ["Total", "Consolidated", "Flagged", "Contradictions", "Archived", "Insights"],
-            maint_rows,
+            [_maintenance_stats_row(maint)],
             title="Maintenance Stats",
         )
 
@@ -592,6 +676,21 @@ def stats(params: SystemStatsParams) -> None:
 
     if mem_count == 0:
         out.info("No memories yet. Store one with: foresight store 'your first memory'")
+
+
+def stats(params: SystemStatsParams) -> None:
+    """Show memory statistics and trends."""
+    _init_backend()
+    resolved_uid = cfg.get_user_id(params.user_id)
+    temporal = _stats_temporal()
+    health = _stats_health(resolved_uid)
+    telemetry, cache_stats = _stats_telemetry()
+
+    if out.get_settings().mode == "agent":
+        _emit_stats_json(health, temporal, telemetry, cache_stats)
+        return
+
+    _emit_stats_human(health, temporal, telemetry, cache_stats)
 
 
 def temporal(params: SystemTemporalParams) -> None:

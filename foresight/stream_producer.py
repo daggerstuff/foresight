@@ -374,6 +374,7 @@ class KinesisProducer(StreamProducer):
             self._failed_messages.append(
                 {
                     "stream": self.stream_name,
+                    "topic": topic,
                     "event": event.to_dict(),
                 }
             )

@@ -66,7 +66,7 @@ def test_signature_verifies_and_tamper_fails():
 
 
 def test_export_json_envelope_signed():
-    envelope = json.loads(server_export_profile(user_id="_test_user_", format="json"))
+    envelope = json.loads(server_export_profile(user_id="_test_user_", output_format="json"))
 
     assert envelope["signature_alg"] == "HMAC-SHA256"
     assert len(envelope["signature"]) == len(hashlib.sha256(b"").hexdigest())
@@ -74,7 +74,7 @@ def test_export_json_envelope_signed():
 
 
 def test_export_markdown_contains_signature():
-    out = server_export_profile(user_id="_test_user_", format="markdown")
+    out = server_export_profile(user_id="_test_user_", output_format="markdown")
 
     assert "# Foresight Profile Export" in out
     assert "signature:" in out
@@ -84,7 +84,7 @@ def test_export_markdown_contains_signature():
 
 
 def test_export_profile_direct_json():
-    out = export_profile(UserScope("_test_user_", "_test_"), format="json")
+    out = export_profile(UserScope("_test_user_", "_test_"), output_format="json")
     envelope = json.loads(out)
     assert "document" in envelope
     assert "signature" in envelope

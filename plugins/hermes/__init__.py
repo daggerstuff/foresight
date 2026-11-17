@@ -554,6 +554,7 @@ class ForesightMemoryProvider(MemoryProvider):
         prefetch timeout (8.0s). Injects relevant memories + context blocks,
         and sets recall_status so Hermes emits the deterministic UI recall indicator.
         """
+        logger.debug("Foresight prefetch for session=%r", session_id)
         if not self._client or not query or is_trivial_prompt(query):
             with self._lock:
                 self._last_recall_status = None
@@ -645,7 +646,7 @@ class ForesightMemoryProvider(MemoryProvider):
         *,
         session_id: str = "",
         messages: list[dict[str, Any]] | None = None,
-        **kwargs,
+        **_kwargs,
     ) -> None:
         """Distill the completed conversation turn into memory (background, non-blocking)."""
         if not self._client or not self._auto_distill or not user_content:
@@ -755,9 +756,15 @@ class ForesightMemoryProvider(MemoryProvider):
         parent_session_id: str = "",
         reset: bool = False,
         rewound: bool = False,
-        **kwargs,
+        **_kwargs,
     ) -> None:
         """Handle session reassignment mid-process."""
+        logger.debug(
+            "Foresight session switch to %s (parent=%r, rewound=%s)",
+            new_session_id,
+            parent_session_id,
+            rewound,
+        )
         self._session_id = new_session_id
         if reset:
             with self._lock:
@@ -769,9 +776,10 @@ class ForesightMemoryProvider(MemoryProvider):
         result: str,
         *,
         child_session_id: str = "",
-        **kwargs,
+        **_kwargs,
     ) -> None:
         """Persist findings and decisions from completed subagent delegations."""
+        logger.debug("Foresight delegation recorded for session=%r", child_session_id)
         if not self._client or not task or not result:
             return
 
@@ -800,6 +808,7 @@ class ForesightMemoryProvider(MemoryProvider):
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Mirror built-in memory-tool writes (add/replace/remove) to Foresight."""
+        logger.debug("Foresight mirroring built-in memory %s on %s (metadata=%r)", action, target, metadata)
         if not self._client or not content:
             return
 
@@ -882,7 +891,7 @@ class ForesightMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         return list(_SCHEMAS)
 
-    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **_kwargs) -> str:
         if not self._client:
             return tool_error("Foresight provider not initialized")
         try:
@@ -891,39 +900,58 @@ class ForesightMemoryProvider(MemoryProvider):
             return tool_error(str(exc))
 
     def _dispatch(self, tool_name: str, args: dict[str, Any]) -> Any:
-        if tool_name == "foresight_search":
-            return self._client.search(
-                query=args.get("query", ""),
-                limit=min(int(args.get("limit", 8)), 25),
-                category=args.get("category"),
-                use_hybrid=True,
-            )
-        if tool_name == "foresight_remember":
-            importance = args.get("importance")
-            return self._client.store(
-                args.get("content", ""),
-                MemoryWrite(
-                    category=args.get("category") or "fact",
-                    importance=float(importance) if importance is not None else 0.5,
-                    tags=args.get("tags") or [],
-                ),
-            )
-        if tool_name == "foresight_reflect":
-            return self._client.reflect(args.get("question", ""))
-        if tool_name == "foresight_profile":
-            return self._client.profile()
-        if tool_name == "foresight_context":
-            return self._client.inject(
-                query=args.get("query", ""),
-                max_memories=self._max_memories,
-                include_details=False,
-                project=self._project_path,
-            )
-        if tool_name == "foresight_forget":
-            return self._client.forget(args.get("memory_id", ""))
-        if tool_name == "foresight_list":
-            return self._client.list_memories(limit=min(int(args.get("limit", 20)), 50))
-        return {"error": f"Unknown tool: {tool_name}"}
+        tools: dict[str, Callable[[dict[str, Any]], Any]] = {
+            "foresight_search": self._tool_search,
+            "foresight_remember": self._tool_remember,
+            "foresight_reflect": self._tool_reflect,
+            "foresight_profile": self._tool_profile,
+            "foresight_context": self._tool_context,
+            "foresight_forget": self._tool_forget,
+            "foresight_list": self._tool_list,
+        }
+        tool = tools.get(tool_name)
+        if tool is None:
+            return {"error": f"Unknown tool: {tool_name}"}
+        return tool(args)
+
+    def _tool_search(self, args: dict[str, Any]) -> Any:
+        return self._client.search(
+            query=args.get("query", ""),
+            limit=min(int(args.get("limit", 8)), 25),
+            category=args.get("category"),
+            use_hybrid=True,
+        )
+
+    def _tool_remember(self, args: dict[str, Any]) -> Any:
+        importance = args.get("importance")
+        return self._client.store(
+            args.get("content", ""),
+            MemoryWrite(
+                category=args.get("category") or "fact",
+                importance=float(importance) if importance is not None else 0.5,
+                tags=args.get("tags") or [],
+            ),
+        )
+
+    def _tool_reflect(self, args: dict[str, Any]) -> Any:
+        return self._client.reflect(args.get("question", ""))
+
+    def _tool_profile(self, _args: dict[str, Any]) -> Any:
+        return self._client.profile()
+
+    def _tool_context(self, args: dict[str, Any]) -> Any:
+        return self._client.inject(
+            query=args.get("query", ""),
+            max_memories=self._max_memories,
+            include_details=False,
+            project=self._project_path,
+        )
+
+    def _tool_forget(self, args: dict[str, Any]) -> Any:
+        return self._client.forget(args.get("memory_id", ""))
+
+    def _tool_list(self, args: dict[str, Any]) -> Any:
+        return self._client.list_memories(limit=min(int(args.get("limit", 20)), 50))
 
     def shutdown(self) -> None:
         if self._sync_thread and self._sync_thread.is_alive():

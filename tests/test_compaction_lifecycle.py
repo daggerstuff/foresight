@@ -26,9 +26,16 @@ def setup_test_db():
     reset_tenant_context()
 
 
-def _mock_capture(session_id, messages, **kwargs):
+def _mock_capture(session_id, _messages, **_kwargs):
     """Mock for process_session_transcript to avoid hitting LLM/Postgres during tests."""
     return f"Processed transcript for session {session_id} (0 new memories)"
+
+
+@pytest.fixture(autouse=True)
+def _patch_transcript_capture():
+    """Replace process_session_transcript for every test in this module."""
+    with patch("foresight.server.process_session_transcript", side_effect=_mock_capture):
+        yield
 
 
 def _insert_memory(conn, memory_id: str, content: str, **overrides):
@@ -71,8 +78,7 @@ def _get_conn():
     return get_db_connection()
 
 
-@patch("foresight.server.process_session_transcript", side_effect=_mock_capture)
-def test_compaction_lifecycle_captures_and_recovers(_mock):
+def test_compaction_lifecycle_captures_and_recovers():
     """compaction_lifecycle processes transcript and returns recovery payload."""
     messages = [
         {"role": "user", "content": "Let's use Postgres for the new auth service."},
@@ -90,8 +96,7 @@ def test_compaction_lifecycle_captures_and_recovers(_mock):
     assert "Recovery Context" in result or "0 memories" in result
 
 
-@patch("foresight.server.process_session_transcript", side_effect=_mock_capture)
-def test_compaction_lifecycle_empty_messages(_mock):
+def test_compaction_lifecycle_empty_messages():
     """compaction_lifecycle handles empty message list gracefully."""
     result = compaction_lifecycle(
         session_id="compaction-empty",
@@ -102,8 +107,7 @@ def test_compaction_lifecycle_empty_messages(_mock):
     assert "Recovery Context" in result or "0 memories" in result
 
 
-@patch("foresight.server.process_session_transcript", side_effect=_mock_capture)
-def test_compaction_lifecycle_respects_exclude_ids(_mock):
+def test_compaction_lifecycle_respects_exclude_ids():
     """exclude_memory_ids filters memories from the recovery payload."""
     conn = _get_conn()
     _insert_memory(
@@ -132,8 +136,7 @@ def test_compaction_lifecycle_respects_exclude_ids(_mock):
     assert "compact-exclude-1" not in result
 
 
-@patch("foresight.server.process_session_transcript", side_effect=_mock_capture)
-def test_compaction_lifecycle_respects_max_chars(_mock):
+def test_compaction_lifecycle_respects_max_chars():
     """max_chars limits the recovery payload size."""
     conn = _get_conn()
     for i in range(5):
@@ -158,8 +161,7 @@ def test_compaction_lifecycle_respects_max_chars(_mock):
     assert len(recovery_part) <= max_chars + RECOVERY_OVERHEAD_ALLOWANCE
 
 
-@patch("foresight.server.process_session_transcript", side_effect=_mock_capture)
-def test_compaction_lifecycle_returns_both_parts(_mock):
+def test_compaction_lifecycle_returns_both_parts():
     """Result contains both the capture line and recovery payload, in order."""
     messages = [
         {"role": "user", "content": "We decided to use Redis for caching the session tokens."},

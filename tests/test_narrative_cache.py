@@ -8,8 +8,8 @@ import pytest
 from foresight.narrative_cache import NarrativeCache, NarrativeScope
 
 
-def test_narrative_cache_put_and_get(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3")
+def test_narrative_cache_put_and_get() -> None:
+    cache = NarrativeCache()
 
     cache.put(
         "report-1",
@@ -34,8 +34,8 @@ def test_narrative_cache_put_and_get(tmp_path) -> None:
     )
 
 
-def test_narrative_cache_tenant_isolation(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3")
+def test_narrative_cache_tenant_isolation() -> None:
+    cache = NarrativeCache()
     cache.put(
         "report-1",
         "tenant-a narrative",
@@ -79,9 +79,9 @@ def test_narrative_cache_tenant_isolation(tmp_path) -> None:
     )
 
 
-def test_narrative_cache_lru_eviction(tmp_path) -> None:
+def test_narrative_cache_lru_eviction() -> None:
     max_entries = 2
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=max_entries)
+    cache = NarrativeCache(max_entries=max_entries)
     for report_id in ("oldest", "middle"):
         cache.put(
             report_id,
@@ -140,8 +140,8 @@ def test_narrative_cache_lru_eviction(tmp_path) -> None:
     assert cache.stats()["size"] == max_entries
 
 
-def test_narrative_cache_ttl_expiry(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", ttl_seconds=0.1)
+def test_narrative_cache_ttl_expiry() -> None:
+    cache = NarrativeCache(ttl_seconds=0.1)
     cache.put(
         "report-1",
         "short-lived narrative",
@@ -167,9 +167,8 @@ def test_narrative_cache_ttl_expiry(tmp_path) -> None:
     assert cache.stats()["size"] == 0
 
 
-def test_narrative_cache_survives_reopen(tmp_path) -> None:
-    path = tmp_path / "narratives.sqlite3"
-    cache = NarrativeCache(path)
+def test_narrative_cache_survives_reopen() -> None:
+    cache = NarrativeCache()
     cache.put(
         "report-1",
         "persistent narrative",
@@ -182,7 +181,7 @@ def test_narrative_cache_survives_reopen(tmp_path) -> None:
     )
     cache.close()
 
-    reopened = NarrativeCache(path)
+    reopened = NarrativeCache()
 
     assert (
         reopened.get(
@@ -196,8 +195,8 @@ def test_narrative_cache_survives_reopen(tmp_path) -> None:
     )
 
 
-def test_narrative_cache_clear_by_tenant(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3")
+def test_narrative_cache_clear_by_tenant() -> None:
+    cache = NarrativeCache()
     cache.put(
         "report-1",
         "tenant-a narrative",
@@ -242,8 +241,8 @@ def test_narrative_cache_clear_by_tenant(tmp_path) -> None:
     )
 
 
-def test_narrative_cache_stats(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=1)
+def test_narrative_cache_stats() -> None:
+    cache = NarrativeCache(max_entries=1)
     cache.put(
         "report-1",
         "report 1 narrative",
@@ -297,7 +296,7 @@ def test_narrative_cache_stats(tmp_path) -> None:
 @pytest.mark.skip(reason="WAL mode is SQLite-specific; NarrativeCache is now Postgres-only.")
 def test_narrative_cache_uses_wal_mode(tmp_path) -> None:
     path = tmp_path / "narratives.sqlite3"
-    cache = NarrativeCache(path)
+    cache = NarrativeCache()
     cache.close()
 
     conn = sqlite3.connect(path)
@@ -309,8 +308,8 @@ def test_narrative_cache_uses_wal_mode(tmp_path) -> None:
     assert journal_mode == "wal"
 
 
-def test_narrative_cache_allows_cross_thread_access(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3")
+def test_narrative_cache_allows_cross_thread_access() -> None:
+    cache = NarrativeCache()
     errors: list[Exception] = []
 
     def worker() -> None:
@@ -345,11 +344,11 @@ def test_narrative_cache_allows_cross_thread_access(tmp_path) -> None:
     )
 
 
-def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) -> None:
+def test_narrative_cache_cleans_expired_entries_on_put_when_near_full() -> None:
     # Use a longer TTL (2 s) and sleep (2.5 s) because Postgres network
     # latency means a single put() can take > 0.1 s, causing the fresh entry
     # to appear expired if we use the original 0.1 s TTL.
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=10, ttl_seconds=2.0)
+    cache = NarrativeCache(max_entries=10, ttl_seconds=2.0)
     for index in range(9):
         cache.put(
             f"expired-{index}",
@@ -387,8 +386,8 @@ def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) 
     )
 
 
-def test_narrative_cache_close_is_idempotent(tmp_path) -> None:
-    cache = NarrativeCache(tmp_path / "narratives.sqlite3")
+def test_narrative_cache_close_is_idempotent() -> None:
+    cache = NarrativeCache()
 
     cache.close()
     cache.close()
@@ -397,7 +396,7 @@ def test_narrative_cache_close_is_idempotent(tmp_path) -> None:
 @pytest.mark.skip(reason="NarrativeCache is now Postgres-only; no local SQLite file is created.")
 def test_narrative_cache_db_file_is_private(tmp_path) -> None:
     path = tmp_path / "narratives.sqlite3"
-    NarrativeCache(path).close()
+    NarrativeCache().close()
 
     file_mode = stat.S_IMODE(path.stat().st_mode)
 
