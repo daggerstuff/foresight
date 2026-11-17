@@ -1,0 +1,23 @@
+packages/foresight-core/pnpm-workspace.yaml
+  s_f2cb98df88d592::t_a2200b44667b19 3
+packages/foresight-core/package.json
+  s_f2cb98df88d592::t_ba83eb6fc2568f 39,41
+packages/foresight-core/pnpm-lock.yaml
+  s_f2cb98df88d592::t_3319cf340e194d 167,179,187-188,193-194,238-239,432-433,436,440-441,447-448,453-454,457-458,463-464,470-471,474-475,480-481,487-488,606-607,839-840,964-965,1116,1118,1123,1127,1139,1141,1253,1256-1261,1269,1271-1274,1276,1281,1283-1284,1290,1292-1293,1295,1299,1301-1303,1305,1311,1313,1315-1318,1320,1328,1330-1334,1339,1341,1469,1471,1473,1498,1683,1797,1799-1803
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d35c62bc514f9aa1496f72363b6d5abd26595575",
+  "prompts": {},
+  "sessions": {
+    "s_f2cb98df88d592": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "28e1dd2c-6502-4c00-a10c-37c4e26637e9",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
