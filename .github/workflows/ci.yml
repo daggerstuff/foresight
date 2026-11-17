@@ -34,6 +34,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
+      # `uv sync --frozen` installs the lock as written and does not check it
+      # against pyproject.toml, so a dependency bump that only edits the manifest
+      # leaves CI exercising the old versions. This is the check that notices.
+      - name: Lockfile matches the manifest
+        run: uv lock --check
+
       - name: Ruff lint
         run: uv run ruff check .
 
