@@ -71,7 +71,7 @@ def _patch_http(monkeypatch: pytest.MonkeyPatch, content: str, finish_reason: st
         entity_extractor,
         "httpx",
         SimpleNamespace(
-            AsyncClient=lambda timeout: _FakeAsyncClient(payload, record),
+            AsyncClient=lambda **_: _FakeAsyncClient(payload, record),
             HTTPStatusError=httpx.HTTPStatusError,
         ),
     )
@@ -104,7 +104,7 @@ def test_salvage_returns_none_when_nothing_complete() -> None:
 
 
 def test_parse_llm_response_accepts_truncated_payload() -> None:
-    result = _extractor()._parse_llm_response(_TRUNCATED_RESPONSE, "Chad met Vivi in Dayton.")
+    result = _extractor()._parse_llm_response(_TRUNCATED_RESPONSE)
 
     assert [e.name for e in result.entities] == ["Chad", "Dayton"]
     assert len(result.relationships) == EXPECTED_SALVAGED_RELATIONSHIPS
@@ -113,7 +113,7 @@ def test_parse_llm_response_accepts_truncated_payload() -> None:
 
 def test_parse_llm_response_still_raises_on_garbage() -> None:
     with pytest.raises(json.JSONDecodeError, match="Expecting"):
-        _extractor()._parse_llm_response(_UNSALVAGEABLE_RESPONSE, "Chad")
+        _extractor()._parse_llm_response(_UNSALVAGEABLE_RESPONSE)
 
 
 def test_default_max_tokens_leaves_room_for_full_response() -> None:

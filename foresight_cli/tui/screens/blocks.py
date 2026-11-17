@@ -11,9 +11,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
+from foresight.server import ContextBlockAction, ManageContextBlocksParams, init_db, manage_context_blocks
+
 logger = logging.getLogger(__name__)
 
-from foresight.server import ContextBlockAction, ManageContextBlocksParams, init_db, manage_context_blocks
 
 BLOCK_LABELS = [
     "guidance",

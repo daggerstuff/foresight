@@ -343,6 +343,20 @@ class ContextBlockState:
         return [block.to_dict() for block in self.blocks.values() if not block.is_empty()]
 
 
+def _validate_transcript_messages(messages: list[dict[str, Any]]) -> None:
+    """Reject a transcript whose entries are not role/content dicts."""
+    valid_roles = {"user", "assistant", "system", "tool"}
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            raise ValueError(f"messages[{i}] must be a dict, got {type(msg).__name__}")
+        if "role" not in msg or not isinstance(msg.get("role"), str):
+            raise ValueError(f"messages[{i}] missing required 'role' string field")
+        if "content" not in msg or not isinstance(msg.get("content"), str):
+            raise ValueError(f"messages[{i}] missing required 'content' string field")
+        if msg["role"] not in valid_roles:
+            raise ValueError(f"messages[{i}] has invalid role {msg['role']!r}; must be one of {sorted(valid_roles)}")
+
+
 class ContextBlockAgent:
     """
     Foresight context block agent for Foresight sessions.
@@ -516,18 +530,7 @@ class ContextBlockAgent:
         if project_path:
             logger.debug("Processing transcript with project path: %s", project_path)
 
-        valid_roles = {"user", "assistant", "system", "tool"}
-        for i, msg in enumerate(messages):
-            if not isinstance(msg, dict):
-                raise ValueError(f"messages[{i}] must be a dict, got {type(msg).__name__}")
-            if "role" not in msg or not isinstance(msg.get("role"), str):
-                raise ValueError(f"messages[{i}] missing required 'role' string field")
-            if "content" not in msg or not isinstance(msg.get("content"), str):
-                raise ValueError(f"messages[{i}] missing required 'content' string field")
-            if msg["role"] not in valid_roles:
-                raise ValueError(
-                    f"messages[{i}] has invalid role {msg['role']!r}; must be one of {sorted(valid_roles)}"
-                )
+        _validate_transcript_messages(messages)
 
         touched_labels: set[str] = set()
         with self._lock:
@@ -535,10 +538,7 @@ class ContextBlockAgent:
             self.state.reset_pattern_counters()
 
             for msg in messages:
-                if msg["role"] == "user":
-                    touched_labels.update(self._process_user_message(msg["content"], session_id))
-                elif msg["role"] == "assistant":
-                    touched_labels.update(self._process_assistant_message(msg["content"], session_id))
+                touched_labels.update(self._collect_message_labels(msg, session_id))
 
             # Extract session patterns from accumulated counters
             pattern_label = self._extract_session_patterns(session_id)
@@ -550,6 +550,14 @@ class ContextBlockAgent:
             for label in touched_labels:
                 self._persist_block(label)
         logger.info("Processed transcript for session %s", session_id)
+
+    def _collect_message_labels(self, msg: dict[str, Any], session_id: str) -> set[str]:
+        """Route one transcript message to its handler and return the labels it touched."""
+        if msg["role"] == "user":
+            return self._process_user_message(msg["content"], session_id)
+        if msg["role"] == "assistant":
+            return self._process_assistant_message(msg["content"], session_id)
+        return set()
 
     def _process_user_message(self, content: str, session_id: str) -> set[str]:
         """Process a user message for preferences, pending items, and project context."""

@@ -6,6 +6,7 @@ Idempotent: uses INSERT ... ON CONFLICT DO NOTHING for all tables.
 import os
 import re
 import sqlite3
+import sys
 
 import psycopg2
 
@@ -57,13 +58,13 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
     """
     cols = get_columns(cur_sqlite, table)
     if not cols:
-        print(f"  [SKIP] {table}: no columns found")
+        sys.stdout.write(f"  [SKIP] {table}: no columns found\n")
         return
 
     cur_sqlite.execute("".join(("SELECT * FROM ", _table(table))))
     rows = cur_sqlite.fetchall()
     if not rows:
-        print(f"  [SKIP] {table}: 0 rows")
+        sys.stdout.write(f"  [SKIP] {table}: 0 rows\n")
         return
 
     # Schema_migrations: only insert versions not already in Postgres
@@ -72,11 +73,11 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
         existing = {r[0] for r in cur_pg.fetchall()}
         rows = [r for r in rows if r[0] not in existing]
         if not rows:
-            print(f"  [SKIP] {table}: all {len(cur_sqlite.fetchall())} versions already present")
+            sys.stdout.write(f"  [SKIP] {table}: all {len(cur_sqlite.fetchall())} versions already present\n")
             # Re-fetch for accurate count
             cur_sqlite.execute("SELECT * FROM schema_migrations")
             orig_count = len(cur_sqlite.fetchall())
-            print(f"    (kept {len(existing)} existing, skipped {orig_count - len(rows)})")
+            sys.stdout.write(f"    (kept {len(existing)} existing, skipped {orig_count - len(rows)})\n")
             return
 
     placeholders = ", ".join(["%s"] * len(cols))
@@ -107,15 +108,15 @@ def migrate_table(cur_sqlite, cur_pg, table, conflict_cols=None):
             else:
                 skipped += 1
         except Exception as e:
-            print(f"  [ERROR] {table}: {e}")
-            print(f"    row: {row}")
+            sys.stdout.write(f"  [ERROR] {table}: {e}\n")
+            sys.stdout.write(f"    row: {row}\n")
 
-    print(f"  {table}: {inserted} inserted, {skipped} skipped (of {len(rows)} total)")
+    sys.stdout.write(f"  {table}: {inserted} inserted, {skipped} skipped (of {len(rows)} total)\n")
 
 
 def main():
-    print(f"SQLite: {SQLITE_PATH}")
-    print("Postgres: (Ghost)")
+    sys.stdout.write(f"SQLite: {SQLITE_PATH}\n")
+    sys.stdout.write("Postgres: (Ghost)\n")
 
     conn_sqlite = sqlite3.connect(SQLITE_PATH)
     cur_sqlite = conn_sqlite.cursor()
@@ -144,12 +145,12 @@ def main():
     }
 
     for table in TABLES:
-        print(f"\n--- {table} ---")
+        sys.stdout.write(f"\n--- {table} ---\n")
         migrate_table(cur_sqlite, cur_pg, table, conflict_cols.get(table))
 
     conn_sqlite.close()
     conn_pg.close()
-    print("\nDone.")
+    sys.stdout.write("\nDone.\n")
 
 
 if __name__ == "__main__":

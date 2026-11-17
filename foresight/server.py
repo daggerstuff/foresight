@@ -1058,6 +1058,24 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+def _epoch_seconds_to_iso(value: float) -> str | None:
+    """Render epoch seconds as an ISO-8601 UTC string, or None when out of range."""
+    try:
+        return datetime.fromtimestamp(value, tz=UTC).isoformat()
+    except (ValueError, OSError, OverflowError):
+        return None
+
+
+def _iso_text_to_iso(text: str) -> str | None:
+    """Parse an ISO-8601 or epoch-seconds string as ISO-8601 UTC, or None."""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        with contextlib.suppress(ValueError):
+            return datetime.fromtimestamp(float(text), tz=UTC).isoformat()
+        return None
+
+
 def _normalize_expires_at(value: str | float | int | None) -> str | None:
     """Normalize a caller-supplied expiration to an ISO-8601 UTC string.
 
@@ -1066,21 +1084,13 @@ def _normalize_expires_at(value: str | float | int | None) -> str | None:
     """
     if value is None or value == "":
         return None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        try:
-            return datetime.fromtimestamp(value, tz=UTC).isoformat()
-        except (ValueError, OSError, OverflowError):
-            return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return _epoch_seconds_to_iso(value)
     if isinstance(value, str):
         text = value.strip()
-        if not text:
-            return None
-        try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
-        except ValueError:
-            with contextlib.suppress(ValueError):
-                return datetime.fromtimestamp(float(text), tz=UTC).isoformat()
-            return None
+        return _iso_text_to_iso(text) if text else None
     return None
 
 
@@ -1293,37 +1303,40 @@ def _build_filter_fragments(
     return " AND " + " AND ".join(clauses), params
 
 
+def _matches_category(row: Mapping[str, Any], category: str | list[str] | None) -> bool:
+    """True when the row satisfies the requested category filter."""
+    if not category:
+        return True
+    cats = {category} if isinstance(category, str) else set(category)
+    return row.get("category") in cats
+
+
+def _tags_overlap(row: Mapping[str, Any], tags: list[str] | None) -> bool:
+    """True when the row shares a wanted tag, or when no tag was requested."""
+    wanted = {t for t in tags or [] if t}
+    if not wanted:
+        return True
+    raw = row.get("tags") or "[]"
+    try:
+        have = set(json.loads(raw) if isinstance(raw, str) else raw)
+    except (TypeError, ValueError):
+        have = set()
+    return bool(wanted & have)
+
+
 def _memory_matches_filters(row: Mapping[str, Any], filters: MemoryFilters) -> bool:
     """Python-side filter predicate for post-filtering fetched memory rows."""
-    category = filters.category
-    scope = filters.scope
-    retention = filters.retention
-    bank_id = filters.bank_id
-    tags = filters.tags
-    memory_type = filters.memory_type
-    if category:
-        cats = {category} if isinstance(category, str) else set(category)
-        if row.get("category") not in cats:
+    if not _matches_category(row, filters.category):
+        return False
+    for field, expected in (
+        ("scope", filters.scope),
+        ("retention", filters.retention),
+        ("bank_id", filters.bank_id),
+        ("memory_type", filters.memory_type),
+    ):
+        if expected and row.get(field) != expected:
             return False
-    if scope and row.get("scope") != scope:
-        return False
-    if retention and row.get("retention") != retention:
-        return False
-    if bank_id and row.get("bank_id") != bank_id:
-        return False
-    if memory_type and row.get("memory_type") != memory_type:
-        return False
-    if tags:
-        wanted = {t for t in tags if t}
-        if wanted:
-            raw = row.get("tags") or "[]"
-            try:
-                have = set(json.loads(raw) if isinstance(raw, str) else raw)
-            except (TypeError, ValueError):
-                have = set()
-            if not wanted & have:
-                return False
-    return True
+    return _tags_overlap(row, filters.tags)
 
 
 def _is_expired_row(row: Mapping[str, Any], now_iso: str) -> bool:
@@ -1402,77 +1415,92 @@ def init_db(backend=None):
         # id/name/executed_at shape) before reading applied versions, so a
         # shared database can never crash init_db with UndefinedColumn.
         ensure_schema_migrations_table(backend)
-
-        applied = {row["version"] for row in backend.fetch("SELECT version FROM schema_migrations")}
-
-        for version in sorted(_SCHEMA_MIGRATIONS):
-            if version in applied:
-                continue
-
-            if version in POSTGRES_ONLY_MIGRATIONS and backend.backend_type != "postgresql":
-                logger.info(
-                    "Schema v%s: Postgres-only, skipping statements on %s (version recorded)",
-                    version,
-                    backend.backend_type,
-                )
-                backend.set_version(version, datetime.now(UTC).isoformat())
-                continue
-
-            if version == PGVECTOR_MIGRATION and not ensure_pgvector_extension(backend):
-                logger.warning(
-                    "Schema v%s: pgvector unavailable, skipping ANN statements (version recorded)",
-                    version,
-                )
-                backend.set_version(version, datetime.now(UTC).isoformat())
-                continue
-
-            for stmt in _SCHEMA_MIGRATIONS[version]:
-                try:
-                    backend.execute(stmt)
-                except Exception as e:
-                    err = str(e).lower()
-                    if "duplicate column" in err or "already exists" in err:
-                        continue
-                    if "sqlite" in backend.__class__.__name__.lower() and (
-                        "alter column" in stmt.lower() or 'near "type"' in err
-                    ):
-                        continue
-                    raise
-            backend.set_version(version, datetime.now(UTC).isoformat())
-
-        # Ensure the built-in default tenant always exists so tenant switches are stable.
-        # Use ON CONFLICT DO NOTHING (works on both SQLite 3.24+ and PostgreSQL)
-        # instead of _seed_default_tenant(conn) which uses SQLite-specific INSERT OR IGNORE.
-        backend.execute(
-            """
-            INSERT INTO tenants (id, name, rate_limit, burst_limit, created_at, config)
-            VALUES (?, 'Default tenant', ?, ?, ?, '{}')
-            ON CONFLICT (id) DO NOTHING
-            """,
-            (
-                DEFAULT_TENANT_ID,
-                DEFAULT_RATE_LIMIT,
-                DEFAULT_BURST_LIMIT,
-                datetime.now(UTC).isoformat(),
-            ),
-        )
-
-        # Migrate decay_config: add tenant_id if table exists without it
-        if backend.table_exists("decay_config") and not backend.column_exists("decay_config", "tenant_id"):
-            backend.execute("ALTER TABLE decay_config ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
-            backend.execute("CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)")
-
-        # Backfill content_hash for existing memories (v10 migration)
-        try:
-            rows = backend.fetch("SELECT id, content FROM memories WHERE content_hash IS NULL")
-            if rows:
-                for row in rows:
-                    h = _content_hash(row["content"])
-                    backend.execute("UPDATE memories SET content_hash = ? WHERE id = ?", (h, row["id"]))
-        except Exception as exc:
-            logger.debug("Migration content_hash backfill skipped: %s", exc)
+        _apply_schema_migrations(backend)
+        _ensure_default_tenant(backend)
+        _backfill_content_hashes(backend)
     finally:
         backend.close()
+
+
+def _apply_schema_migrations(backend) -> None:
+    """Execute every migration the database has not recorded yet."""
+    applied = {row["version"] for row in backend.fetch("SELECT version FROM schema_migrations")}
+
+    for version in sorted(_SCHEMA_MIGRATIONS):
+        if version in applied:
+            continue
+
+        if version in POSTGRES_ONLY_MIGRATIONS and backend.backend_type != "postgresql":
+            logger.info(
+                "Schema v%s: Postgres-only, skipping statements on %s (version recorded)",
+                version,
+                backend.backend_type,
+            )
+            backend.set_version(version, datetime.now(UTC).isoformat())
+            continue
+
+        if version == PGVECTOR_MIGRATION and not ensure_pgvector_extension(backend):
+            logger.warning(
+                "Schema v%s: pgvector unavailable, skipping ANN statements (version recorded)",
+                version,
+            )
+            backend.set_version(version, datetime.now(UTC).isoformat())
+            continue
+
+        _execute_migration_statements(backend, version)
+        backend.set_version(version, datetime.now(UTC).isoformat())
+
+
+def _execute_migration_statements(backend, version: int) -> None:
+    """Run one migration's statements, tolerating objects the schema already has."""
+    for stmt in _SCHEMA_MIGRATIONS[version]:
+        try:
+            backend.execute(stmt)
+        except Exception as e:
+            err = str(e).lower()
+            if "duplicate column" in err or "already exists" in err:
+                continue
+            if "sqlite" in backend.__class__.__name__.lower() and (
+                "alter column" in stmt.lower() or 'near "type"' in err
+            ):
+                continue
+            raise
+
+
+def _ensure_default_tenant(backend) -> None:
+    """Guarantee the built-in default tenant exists so tenant switches are stable."""
+    # Use ON CONFLICT DO NOTHING (works on both SQLite 3.24+ and PostgreSQL)
+    # instead of _seed_default_tenant(conn) which uses SQLite-specific INSERT OR IGNORE.
+    backend.execute(
+        """
+        INSERT INTO tenants (id, name, rate_limit, burst_limit, created_at, config)
+        VALUES (?, 'Default tenant', ?, ?, ?, '{}')
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (
+            DEFAULT_TENANT_ID,
+            DEFAULT_RATE_LIMIT,
+            DEFAULT_BURST_LIMIT,
+            datetime.now(UTC).isoformat(),
+        ),
+    )
+
+    # Migrate decay_config: add tenant_id if table exists without it
+    if backend.table_exists("decay_config") and not backend.column_exists("decay_config", "tenant_id"):
+        backend.execute("ALTER TABLE decay_config ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+        backend.execute("CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)")
+
+
+def _backfill_content_hashes(backend) -> None:
+    """Backfill content_hash for existing memories (v10 migration)."""
+    try:
+        rows = backend.fetch("SELECT id, content FROM memories WHERE content_hash IS NULL")
+        if rows:
+            for row in rows:
+                h = _content_hash(row["content"])
+                backend.execute("UPDATE memories SET content_hash = ? WHERE id = ?", (h, row["id"]))
+    except Exception as exc:
+        logger.debug("Migration content_hash backfill skipped: %s", exc)
 
 
 def _initialize_backend() -> None:
@@ -2103,27 +2131,57 @@ def get_event_bus_with_stream():
     return get_event_bus()
 
 
-def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
-    """Helper to handle memory storage."""
-    if not options.content:
-        return "Error: Content is required for 'store' action"
-    content = options.content.strip()
-    if not content:
-        return "Error: Content is required for 'store' action"
-    opts = options.options or MemoryOptions()
+@dataclass(frozen=True)
+class _StoreRequest:
+    """The request-scoped inputs of one memory store."""
 
-    # ── PRE_STORE hook ─────────────────────────────────────────────────
-    hook_ctx = MemoryHookContext(
-        action="store",
-        user_id=uid,
-        tenant_id=tenant_id,
-        content=content,
-        category=opts.category,
-        scope=getattr(opts, "scope", None),
-        retention=getattr(opts, "retention", None),
-        importance=getattr(opts, "importance", 0.5),
-        tags=getattr(opts, "tags", None),
+    uid: str
+    tenant_id: str
+    content: str
+    opts: MemoryOptions
+
+
+def _tenant_memory_count(conn, uid: str, tenant_id: str) -> int:
+    """Count the live memories the user already holds in this tenant."""
+    return (
+        conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+            (uid, tenant_id),
+        ).fetchone()
+        or (0,)
+    )[0]
+
+
+def _bump_duplicate_memory(conn, uid: str, tenant_id: str, content_h: str) -> str | None:
+    """Bump the activation count of an identical live memory; return its message."""
+    existing = conn.execute(
+        "SELECT id, activation_count FROM memories "
+        "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
+        "ORDER BY created_at DESC LIMIT 1",
+        (uid, tenant_id, content_h),
+    ).fetchone()
+    if not existing:
+        return None
+    update_sql = (
+        "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
+        "WHERE id = ? AND user_id = ? AND tenant_id = ?"
     )
+    update_params = (datetime.now(UTC).isoformat(), existing["id"], uid, tenant_id)
+    if _supports_execute_returning(conn):
+        conn.execute_returning(update_sql, update_params).fetchone()
+    else:
+        conn.execute(update_sql, update_params)
+    conn.commit()
+    conn.close()
+    return f"Duplicate detected - bumped activation for existing memory {existing['id']}"
+
+
+def _emit_pre_store_hooks(
+    hook_ctx: MemoryHookContext,
+    options: MemoryAction,
+    opts: MemoryOptions,
+) -> str | None:
+    """Run the PRE_STORE hooks and apply their edits; return an abort message if any."""
     for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_STORE, hook_ctx):
         if r.abort:
             return f"Hook aborted store: {r.message}"
@@ -2132,77 +2190,55 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
                 options.content = r.modified_context["content"]
             if "category" in r.modified_context:
                 opts.category = r.modified_context["category"]
+    return None
 
-    # Hard cap enforcement: check memory count per tenant
-    conn = get_db_connection()
-    current_count = (
-        conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-            (uid, tenant_id),
-        ).fetchone()
-        or (0,)
-    )[0]
-    if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
-        conn.close()
-        return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
-    memory_id = hashlib.sha256(f"{content}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16]
-    content_h = _content_hash(content)
-    existing = conn.execute(
-        "SELECT id, activation_count FROM memories "
-        "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
-        "ORDER BY created_at DESC LIMIT 1",
-        (uid, tenant_id, content_h),
-    ).fetchone()
-    if existing:
-        update_sql = (
-            "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?"
-        )
-        update_params = (datetime.now(UTC).isoformat(), existing["id"], uid, tenant_id)
-        if _supports_execute_returning(conn):
-            conn.execute_returning(update_sql, update_params).fetchone()
-        else:
-            conn.execute(update_sql, update_params)
-        conn.commit()
-        conn.close()
-        return f"Duplicate detected - bumped activation for existing memory {existing['id']}"
+
+def _build_stored_memory(request: _StoreRequest) -> tuple[MemoryObject, Any]:
+    """Create the memory object, run the Socratic gate, and resolve its tags."""
+    opts = request.opts
     # Parse emotional context and metrics
     emo_ctx = EmotionalMetadata.from_dict(opts.emotional_context) if opts.emotional_context else None
     met = EmpathyMetrics.from_dict(opts.metrics) if opts.metrics else None
     memory = MemoryObject.create(
-        content=content,
+        content=request.content,
         scope=cast(MemoryScope, opts.scope),
         retention=cast(RetentionPolicy, opts.retention),
         emotional_context=emo_ctx,
         metrics=met,
     )
-    memory.id = memory_id
     # Socratic Gate
     ms = get_memory_system()
-    gate_result = _run_async(SocraticGate(ms["tagger"]).evaluate(memory, uid))
+    gate_result = _run_async(SocraticGate(ms["tagger"]).evaluate(memory, request.uid))
     crisis_tags = gate_result.suggested_tags or []
     # PIX-4724 tag precedence: explicit tags win over auto-tagging; both are
     # merged with the Socratic Gate's crisis/safety tags (never dropped).
     if opts.tags:
         topical_tags = list(opts.tags)
     elif opts.auto_tag:
-        topical_tags = _extract_topical_tags(content)
+        topical_tags = _extract_topical_tags(request.content)
     else:
         topical_tags = []
     memory.tags = list(dict.fromkeys([*topical_tags, *crisis_tags]))
     if opts.category and opts.category not in memory.tags:
         memory.tags.append(opts.category)
+    return memory, gate_result
+
+
+def _insert_memory_row(conn, request: _StoreRequest, memory: MemoryObject) -> bool:
+    """Insert the memory row and report whether it was flagged sensitive."""
+    opts = request.opts
+    content_h = _content_hash(request.content)
     # PIX-4721: normalize the optional per-memory expiration.
     expires_at = _normalize_expires_at(opts.expires_at)
     # Re-evaluate sensitivity at INSERT-time — content may have been
     # mutated by a PRE_STORE hook above.
-    is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
+    is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, request.content)
 
     stored_content = encrypt_if_enabled(
-        content,
+        request.content,
         is_sensitive=bool(is_sensitive_bit),
-        tenant_id=tenant_id,
-        user_id=uid,
+        tenant_id=request.tenant_id,
+        user_id=request.uid,
     )
     # Store
     insert_sql = (
@@ -2212,9 +2248,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     insert_params = (
-        memory_id,
-        uid,
-        tenant_id,
+        memory.id,
+        request.uid,
+        request.tenant_id,
         BANK_ID,
         opts.category,
         memory.scope,
@@ -2239,53 +2275,171 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         conn.execute_returning(insert_sql, insert_params).fetchone()
     else:
         conn.execute(insert_sql, insert_params)
+    return bool(is_sensitive_bit)
+
+
+def _mark_supersessions(conn, request: _StoreRequest, memory_id: str) -> list[Any]:
+    """Best-effort supersede detection; a failure must never fail a committed store."""
+    if not supersede_detection_enabled():
+        return []
+    try:
+        return detect_and_mark_supersessions(conn, memory_id, request.content, request.uid, request.tenant_id)
+    except Exception as exc:
+        logger.warning(f"Supersede detection failed for {memory_id}: {exc}")
+        return []
+
+
+def _publish_supersede_effects(supersede_matches: list[Any], memory_id: str, uid: str, tenant_id: str) -> None:
+    """Create supersede edges and invalidate the mental models they affect."""
+    if not supersede_matches:
+        return
+    try:
+        create_supersede_edges(memory_id, supersede_matches, uid, tenant_id)
+    except Exception as exc:
+        logger.warning(f"Failed to create supersede edges for {memory_id}: {exc}")
+    try:
+        reflect_mod.mark_mental_models_stale(
+            [m.superseded_memory_id for m in supersede_matches], user_id=uid, tenant_id=tenant_id
+        )
+    except Exception as exc:
+        logger.debug("mental model invalidation failed: %s", exc)
+
+
+def _link_related_memory(request: _StoreRequest, memory_id: str) -> None:
+    """Link the freshly stored memory to the requested related memory."""
+    related_memory_id = request.opts.related_memory_id
+    relationship_type = request.opts.relation_type
+    if not relationship_type or not related_memory_id:
+        return
+    store = get_memory_relationship_store()
+    try:
+        store.link_memories(
+            source_memory_id=memory_id,
+            target_memory_id=related_memory_id,
+            relationship_type=relationship_type,
+            user_id=request.uid,
+            options=LinkMemoriesOptions(
+                tenant_id=request.tenant_id,
+            ),
+        )
+    except MemoryRelationshipError as exc:
+        logger.warning(f"Failed to create memory relationship: {exc}")
+
+
+def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Helper to handle memory storage."""
+    if not options.content:
+        return "Error: Content is required for 'store' action"
+    content = options.content.strip()
+    if not content:
+        return "Error: Content is required for 'store' action"
+    opts = options.options or MemoryOptions()
+
+    # ── PRE_STORE hook ─────────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="store",
+        user_id=uid,
+        tenant_id=tenant_id,
+        content=content,
+        category=opts.category,
+        scope=getattr(opts, "scope", None),
+        retention=getattr(opts, "retention", None),
+        importance=getattr(opts, "importance", 0.5),
+        tags=getattr(opts, "tags", None),
+    )
+    abort_message = _emit_pre_store_hooks(hook_ctx, options, opts)
+    if abort_message:
+        return abort_message
+
+    # Hard cap enforcement: check memory count per tenant
+    conn = get_db_connection()
+    if _tenant_memory_count(conn, uid, tenant_id) >= DEFAULT_MAX_MEMORY_PER_TENANT:
+        conn.close()
+        return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
+
+    duplicate_message = _bump_duplicate_memory(conn, uid, tenant_id, _content_hash(content))
+    if duplicate_message:
+        return duplicate_message
+
+    request = _StoreRequest(uid=uid, tenant_id=tenant_id, content=content, opts=opts)
+    memory, gate_result = _build_stored_memory(request)
+    memory.id = hashlib.sha256(f"{content}{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:16]
+    is_sensitive_bit = _insert_memory_row(conn, request, memory)
     conn.commit()
     # PIX-4702 truth resolution: best-effort supersede marking on the same
     # connection — must not fail an already-committed store.
-
-    supersede_matches = []
-    if supersede_detection_enabled():
-        try:
-            supersede_matches = detect_and_mark_supersessions(conn, memory_id, content, uid, tenant_id)
-        except Exception as exc:
-            logger.warning(f"Supersede detection failed for {memory_id}: {exc}")
+    supersede_matches = _mark_supersessions(conn, request, memory.id)
     conn.close()
-    if supersede_matches:
-        try:
-            create_supersede_edges(memory_id, supersede_matches, uid, tenant_id)
-        except Exception as exc:
-            logger.warning(f"Failed to create supersede edges for {memory_id}: {exc}")
-    if supersede_matches:
-        try:
-            reflect_mod.mark_mental_models_stale(
-                [m.superseded_memory_id for m in supersede_matches], user_id=uid, tenant_id=tenant_id
-            )
-        except Exception as exc:
-            logger.debug("mental model invalidation failed: %s", exc)
+    _publish_supersede_effects(supersede_matches, memory.id, uid, tenant_id)
     # Create memory relationship if specified
     if opts.relation_type and opts.related_memory_id:
-        store = get_memory_relationship_store()
-        try:
-            store.link_memories(
-                source_memory_id=memory_id,
-                target_memory_id=opts.related_memory_id,
-                relationship_type=opts.relation_type,
-                user_id=uid,
-                options=LinkMemoriesOptions(
-                    tenant_id=tenant_id,
-                ),
-            )
-        except MemoryRelationshipError as exc:
-            logger.warning(f"Failed to create memory relationship: {exc}")
+        _link_related_memory(request, memory.id)
     event_content = "[REDACTED - sensitive]" if is_sensitive_bit else content
-    get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=event_content, actor=uid))
+    get_event_bus_with_stream().publish(memory_stored(memory_id=memory.id, content=event_content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
 
-    hook_ctx.memory_id = memory_id
+    hook_ctx.memory_id = memory.id
     get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
 
-    return f"Stored memory {memory_id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
+    return f"Stored memory {memory.id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
+
+
+def _emit_pre_update_hooks(hook_ctx: MemoryHookContext) -> str | None:
+    """Run the PRE_UPDATE hooks; return an abort message if any handler aborts."""
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_UPDATE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted update: {r.message}"
+    return None
+
+
+def _collect_update_columns(
+    row: Any,
+    memory_id: str,
+    updates: MemoryUpdateOptions,
+    tenant_id: str,
+    uid: str,
+) -> tuple[list[str], list[Any]]:
+    """Build the SET fragments and bound values for the requested field updates."""
+    updates_list: list[str] = []
+    values: list[Any] = []
+    if updates.content:
+        create_version_snapshot(
+            memory_id,
+            {
+                "content": row["content"],
+                "tags": row["tags"],
+                "emotional_context": row["emotional_context"],
+                "metrics": row["metrics"],
+                "version": row["version"] or 1,
+                "tenant_id": row["tenant_id"],
+            },
+        )
+
+        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(updates.is_sensitive, updates.content.strip())
+        stored_content = encrypt_if_enabled(
+            updates.content.strip(),
+            is_sensitive=bool(is_sensitive_bit),
+            tenant_id=tenant_id,
+            user_id=uid,
+        )
+        updates_list.extend(["content = ?", "version = ?"])
+        values.extend([stored_content, (row["version"] or 1) + 1])
+        updates_list.extend(["is_sensitive = ?", "sensitivity_reason = ?"])
+        values.extend([1 if is_sensitive_bit else 0, sensitivity_reason])
+    if updates.category:
+        updates_list.append("category = ?")
+        values.append(updates.category)
+    if updates.scope:
+        updates_list.append("scope = ?")
+        values.append(updates.scope)
+    if updates.retention:
+        updates_list.append("retention = ?")
+        values.append(updates.retention)
+    if updates.tags:
+        updates_list.append("tags = ?")
+        values.append(json.dumps(updates.tags))
+    return updates_list, values
 
 
 def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> str:
@@ -2304,9 +2458,9 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         scope=options.updates.scope,
         retention=options.updates.retention,
     )
-    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_UPDATE, hook_ctx):
-        if r.abort:
-            return f"Hook aborted update: {r.message}"
+    abort_message = _emit_pre_update_hooks(hook_ctx)
+    if abort_message:
+        return abort_message
 
     conn = get_db_connection()
     row = conn.execute(
@@ -2315,46 +2469,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     if not row:
         conn.close()
         return f"Memory {options.memory_id} not found."
-    updates_list = []
-    values = []
-    if options.updates.content:
-        create_version_snapshot(
-            options.memory_id,
-            {
-                "content": row["content"],
-                "tags": row["tags"],
-                "emotional_context": row["emotional_context"],
-                "metrics": row["metrics"],
-                "version": row["version"] or 1,
-                "tenant_id": row["tenant_id"],
-            },
-        )
-
-        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(
-            options.updates.is_sensitive, options.updates.content.strip()
-        )
-        stored_content = encrypt_if_enabled(
-            options.updates.content.strip(),
-            is_sensitive=bool(is_sensitive_bit),
-            tenant_id=tenant_id,
-            user_id=uid,
-        )
-        updates_list.extend(["content = ?", "version = ?"])
-        values.extend([stored_content, (row["version"] or 1) + 1])
-        updates_list.extend(["is_sensitive = ?", "sensitivity_reason = ?"])
-        values.extend([1 if is_sensitive_bit else 0, sensitivity_reason])
-    if options.updates.category:
-        updates_list.append("category = ?")
-        values.append(options.updates.category)
-    if options.updates.scope:
-        updates_list.append("scope = ?")
-        values.append(options.updates.scope)
-    if options.updates.retention:
-        updates_list.append("retention = ?")
-        values.append(options.updates.retention)
-    if options.updates.tags:
-        updates_list.append("tags = ?")
-        values.append(json.dumps(options.updates.tags))
+    updates_list, values = _collect_update_columns(row, options.memory_id, options.updates, tenant_id, uid)
     if not updates_list:
         conn.close()
         return "No updates provided."
@@ -2612,6 +2727,51 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
+def _flat_kwargs(**fields: Any) -> dict[str, Any]:
+    """Keep only the flat tool arguments the caller actually supplied."""
+    return {name: value for name, value in fields.items() if value is not None}
+
+
+def _merge_store_options(store_options: Any, flat_kwargs: dict[str, Any]) -> Any:
+    """Fold the flat store arguments into the store options object."""
+    if store_options is None and flat_kwargs:
+        with contextlib.suppress(Exception):
+            return MemoryOptions(**flat_kwargs)
+        return store_options
+    if store_options is not None:
+        for k, v in flat_kwargs.items():
+            if getattr(store_options, k, None) is None or k in ("category", "scope", "retention"):
+                setattr(store_options, k, v)
+    return store_options
+
+
+def _merge_update_options(updates: Any, flat_kwargs: dict[str, Any]) -> Any:
+    """Fold the flat update arguments into the update options object."""
+    if updates is None and flat_kwargs:
+        with contextlib.suppress(Exception):
+            return MemoryUpdateOptions(**flat_kwargs)
+        return updates
+    if updates is not None:
+        for k, v in flat_kwargs.items():
+            if getattr(updates, k, None) is None:
+                setattr(updates, k, v)
+    return updates
+
+
+def _dispatch_memory_action(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Route a resolved memory action to its handler."""
+    handlers = {
+        "store": lambda: _handle_memory_store(uid, tenant_id, options),
+        "update": lambda: _handle_memory_update(uid, tenant_id, options),
+        "delete": lambda: _handle_memory_delete(uid, tenant_id, options.memory_id),
+        "archive": lambda: _handle_memory_archive(uid, tenant_id, options.memory_id),
+    }
+    handler = handlers.get(options.action)
+    if handler is None:
+        return f"Unknown action: {options.action}"
+    return handler()
+
+
 @mcp.tool(output_schema=None)
 def manage_memories(
     params: Annotated[
@@ -2636,101 +2796,46 @@ def manage_memories(
         Confirmation string for the action performed.
     """
     options = params.options
-    user_id = params.user_id
     action = params.action
-    memory_id = params.memory_id
-    content = params.content
-    store_options = params.store_options
-    updates = params.updates
-    category = params.category
-    scope = params.scope
-    retention = params.retention
-    importance = params.importance
-    tags = params.tags
-    is_sensitive = params.is_sensitive
-    relation_type = params.relation_type
-    related_memory_id = params.related_memory_id
-    emotional_context = params.emotional_context
-    metrics = params.metrics
-    expires_at = params.expires_at
-    memory_type = params.memory_type
-    auto_tag = params.auto_tag
-    agent_id = params.agent_id
-    project = params.project
 
-    flat_store_kwargs: dict[str, Any] = {}
-    if category is not None:
-        flat_store_kwargs["category"] = category
-    if scope is not None:
-        flat_store_kwargs["scope"] = scope
-    if retention is not None:
-        flat_store_kwargs["retention"] = retention
-    if importance is not None:
-        flat_store_kwargs["importance"] = importance
-    if emotional_context is not None:
-        flat_store_kwargs["emotional_context"] = emotional_context
-    if metrics is not None:
-        flat_store_kwargs["metrics"] = metrics
-    if tags is not None:
-        flat_store_kwargs["tags"] = tags
-    if expires_at is not None:
-        flat_store_kwargs["expires_at"] = expires_at
-    if memory_type is not None:
-        flat_store_kwargs["memory_type"] = memory_type
-    if auto_tag is not None:
-        flat_store_kwargs["auto_tag"] = auto_tag
-    if agent_id is not None:
-        flat_store_kwargs["agent_id"] = agent_id
-    if project is not None:
-        flat_store_kwargs["project"] = project
-    if relation_type is not None:
-        flat_store_kwargs["relation_type"] = relation_type
-    if related_memory_id is not None:
-        flat_store_kwargs["related_memory_id"] = related_memory_id
-    if is_sensitive is not None:
-        flat_store_kwargs["is_sensitive"] = is_sensitive
+    flat_store_kwargs = _flat_kwargs(
+        category=params.category,
+        scope=params.scope,
+        retention=params.retention,
+        importance=params.importance,
+        emotional_context=params.emotional_context,
+        metrics=params.metrics,
+        tags=params.tags,
+        expires_at=params.expires_at,
+        memory_type=params.memory_type,
+        auto_tag=params.auto_tag,
+        agent_id=params.agent_id,
+        project=params.project,
+        relation_type=params.relation_type,
+        related_memory_id=params.related_memory_id,
+        is_sensitive=params.is_sensitive,
+    )
+    flat_update_kwargs = _flat_kwargs(
+        category=params.category,
+        scope=params.scope,
+        retention=params.retention,
+        tags=params.tags,
+        is_sensitive=params.is_sensitive,
+        relation_type=params.relation_type,
+        related_memory_id=params.related_memory_id,
+        content=params.content,
+    )
 
-    flat_update_kwargs: dict[str, Any] = {}
-    if category is not None:
-        flat_update_kwargs["category"] = category
-    if scope is not None:
-        flat_update_kwargs["scope"] = scope
-    if retention is not None:
-        flat_update_kwargs["retention"] = retention
-    if tags is not None:
-        flat_update_kwargs["tags"] = tags
-    if is_sensitive is not None:
-        flat_update_kwargs["is_sensitive"] = is_sensitive
-    if relation_type is not None:
-        flat_update_kwargs["relation_type"] = relation_type
-    if related_memory_id is not None:
-        flat_update_kwargs["related_memory_id"] = related_memory_id
-    if content is not None:
-        flat_update_kwargs["content"] = content
-
-    if store_options is None and flat_store_kwargs:
-        with contextlib.suppress(Exception):
-            store_options = MemoryOptions(**flat_store_kwargs)
-    elif store_options is not None and flat_store_kwargs:
-        for k, v in flat_store_kwargs.items():
-            if getattr(store_options, k, None) is None or k in ("category", "scope", "retention"):
-                setattr(store_options, k, v)
-
-    if updates is None and flat_update_kwargs:
-        with contextlib.suppress(Exception):
-            updates = MemoryUpdateOptions(**flat_update_kwargs)
-    elif updates is not None and flat_update_kwargs:
-        for k, v in flat_update_kwargs.items():
-            if getattr(updates, k, None) is None:
-                setattr(updates, k, v)
+    store_options = _merge_store_options(params.store_options, flat_store_kwargs)
+    updates = _merge_update_options(params.updates, flat_update_kwargs)
 
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided."
         options = MemoryAction(
             action=action,
-            memory_id=memory_id,
-            content=content,
+            memory_id=params.memory_id,
+            content=params.content,
             options=store_options,
             updates=updates,
         )
@@ -2740,7 +2845,7 @@ def manage_memories(
         if options.updates is None and updates is not None:
             options.updates = updates
 
-    uid = user_id or USER_ID
+    uid = params.user_id or USER_ID
     tenant_id = get_current_account_id()
 
     if options.action == "store" and tenant_id == "default" and os.environ.get("PYTEST_CURRENT_TEST"):
@@ -2748,19 +2853,7 @@ def manage_memories(
             "Error: refusing to store to the 'default' tenant under pytest; set FORESIGHT_DB_PATH or use a test tenant"
         )
 
-    if options.action == "store":
-        return _handle_memory_store(uid, tenant_id, options)
-
-    if options.action == "update":
-        return _handle_memory_update(uid, tenant_id, options)
-
-    if options.action == "delete":
-        return _handle_memory_delete(uid, tenant_id, options.memory_id)
-
-    if options.action == "archive":
-        return _handle_memory_archive(uid, tenant_id, options.memory_id)
-
-    return f"Unknown action: {options.action}"
+    return _dispatch_memory_action(uid, tenant_id, options)
 
 
 @dataclass
@@ -2825,131 +2918,38 @@ def _trace_retrieval(
     return result, trace
 
 
-@mcp.tool(output_schema=None)
-def search_memories(
-    params: Annotated[
-        SearchMemoriesParams,
-        Field(description='Every argument for search_memories, sent as {"params": {...}}.'),
-    ],
-) -> str:
-    """
-    Unified search and retrieval for memories.
-    Supports ID lookup, content keyword search, semantic vector search, and hybrid retrieval.
-
-    Arguments travel in a single ``params`` object. The MCP call shape is
-    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
-    property instead of flattening its fields, so a search is
-    ``{"params": {"query": "...", "limit": 10}}``.
-
-    Args:
-        params: ``SearchMemoriesParams`` — query_type, query, memory_id, limit,
-            offset, ranking signals, and the PIX-4720 column filters. Each
-            field's description is advertised in the tool schema.
-
-    Returns:
-        Formatted results, a structured trace when ``debug`` is set, or a
-        JSON payload for semantic search.
-    """
-    options = params.options
-    user_id = params.user_id
-    query_type = params.query_type
-    query = params.query
-    memory_id = params.memory_id
-    limit = params.limit
-    offset = params.offset
-    min_importance = params.min_importance
-    use_hybrid = params.use_hybrid
-    use_cascade = params.use_cascade
-    cascade_depth = params.cascade_depth
-    cascade_limit = params.cascade_limit
-    debug = params.debug
-    min_score = params.min_score
-    provider = params.provider
-    category = params.category
-    scope = params.scope
-    retention = params.retention
-    bank_id = params.bank_id
-    tags = params.tags
-    memory_type = params.memory_type
-    signal_weights = params.signal_weights
-    agent_id = params.agent_id
-    project = params.project
-
-    if options is None:
-        kwargs: dict[str, Any] = {}
-        if query_type is not None:
-            kwargs["query_type"] = query_type
-        if query is not None:
-            kwargs["query"] = query
-        if memory_id is not None:
-            kwargs["memory_id"] = memory_id
-        if limit is not None:
-            kwargs["limit"] = limit
-        if offset is not None:
-            kwargs["offset"] = offset
-        if min_importance is not None:
-            kwargs["min_importance"] = min_importance
-        if use_hybrid is not None:
-            kwargs["use_hybrid"] = use_hybrid
-        if use_cascade is not None:
-            kwargs["use_cascade"] = use_cascade
-        if cascade_depth is not None:
-            kwargs["cascade_depth"] = cascade_depth
-        if cascade_limit is not None:
-            kwargs["cascade_limit"] = cascade_limit
-        if debug is not None:
-            kwargs["debug"] = debug
-        if min_score is not None:
-            kwargs["min_score"] = min_score
-        if provider is not None:
-            kwargs["provider"] = provider
-        if category is not None:
-            kwargs["category"] = category
-        if scope is not None:
-            kwargs["scope"] = scope
-        if retention is not None:
-            kwargs["retention"] = retention
-        if bank_id is not None:
-            kwargs["bank_id"] = bank_id
-        if tags is not None:
-            kwargs["tags"] = tags
-        if memory_type is not None:
-            kwargs["memory_type"] = memory_type
-        if signal_weights is not None:
-            kwargs["signal_weights"] = signal_weights
-        if agent_id is not None:
-            kwargs["agent_id"] = agent_id
-        if project is not None:
-            kwargs["project"] = project
-        options = SearchOptions(**kwargs)
-
-    uid = user_id or USER_ID
-    tenant_id = get_current_account_id()
-
-    # A rejected ranking policy must fail the call: the hybrid path below
-    # catches every exception and degrades to keyword search, which would
-    # silently ignore the caller's invalid ``signal_weights``.
-    if options.signal_weights:
-        validate_signal_weights(options.signal_weights)
-
-    # PIX-4720 filter bundle, used by every retrieval path.
-    filters = MemoryFilters(
-        category=options.category,
-        scope=options.scope,
-        retention=options.retention,
-        bank_id=options.bank_id,
-        tags=options.tags,
-        memory_type=options.memory_type,
+def _search_options_from_params(params: SearchMemoriesParams) -> SearchOptions:
+    """Build SearchOptions from the flat search arguments the caller supplied."""
+    return SearchOptions(
+        **_flat_kwargs(
+            query_type=params.query_type,
+            query=params.query,
+            memory_id=params.memory_id,
+            limit=params.limit,
+            offset=params.offset,
+            min_importance=params.min_importance,
+            use_hybrid=params.use_hybrid,
+            use_cascade=params.use_cascade,
+            cascade_depth=params.cascade_depth,
+            cascade_limit=params.cascade_limit,
+            debug=params.debug,
+            min_score=params.min_score,
+            provider=params.provider,
+            category=params.category,
+            scope=params.scope,
+            retention=params.retention,
+            bank_id=params.bank_id,
+            tags=params.tags,
+            memory_type=params.memory_type,
+            signal_weights=params.signal_weights,
+            agent_id=params.agent_id,
+            project=params.project,
+        )
     )
-    has_filters = filters.any_set()
 
-    # ── PRE_RETRIEVE hook ──────────────────────────────────────────────
-    hook_ctx = MemoryHookContext(
-        action="retrieve",
-        user_id=uid,
-        tenant_id=tenant_id,
-        query=options.query,
-    )
+
+def _emit_pre_retrieve_hooks(hook_ctx: MemoryHookContext, options: SearchOptions) -> str | None:
+    """Run the PRE_RETRIEVE hooks and apply their query overrides; return an abort message."""
     for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_RETRIEVE, hook_ctx):
         if r.abort:
             return f"Hook aborted retrieval: {r.message}"
@@ -2957,144 +2957,189 @@ def search_memories(
             query_override = r.modified_context.get("query", options.query)
             if query_override:
                 options.query = query_override
+    return None
 
-    # 0. Semantic vector search
-    if options.query_type == "semantic":
-        if not options.query:
-            return "Error: query is required for semantic search."
-        prov = options.provider or _SEMANTIC_DEFAULT_PROVIDER
-        try:
-            store = get_semantic_search(provider=prov)
-            result = store.search(
-                query=options.query,
-                user_id=uid,
-                options=SemanticSearchOptions(
-                    limit=options.limit,
-                    min_score=options.min_score,
-                ),
-            )
-        except _SemanticSearchError as exc:
-            return f"Error: {exc}"
-        # PIX-4720/4721: filter semantic matches by column filters and drop
-        # already-expired memories. ANN top-k is fetched first, so this is a
-        # post-filter over the returned IDs (may return fewer than limit).
-        match_ids = [m.memory_id for m in result.matches]
-        if match_ids:
-            now_iso = datetime.now(UTC).isoformat()
-            conn = get_db_connection()
-            id_slots = placeholders(len(match_ids))
-            rows = conn.execute(
-                join_sql_parts(
-                    "SELECT * FROM memories WHERE id IN (",
-                    id_slots,
-                    ") AND user_id = ? AND tenant_id = ?",
-                ),
-                (*match_ids, uid, tenant_id),
-            ).fetchall()
-            conn.close()
-            by_id = {r["id"]: r for r in rows}
-            result.matches = [
-                m
-                for m in result.matches
-                if (row := by_id.get(m.memory_id))
-                and not _is_expired_row(row, now_iso)
-                and (not has_filters or _memory_matches_filters(row, filters))
-            ]
-        else:
-            result.matches = []
-        # Reinforce surfaced memories (closes decay loop).
-        _auto_reinforce_batch([m.memory_id for m in result.matches], uid, tenant_id)
-        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-        return json.dumps(result.to_dict(), indent=2)
 
-    # 1. Direct ID lookup
-    if options.query_type == "id" or options.memory_id:
-        mid = options.memory_id or options.query
-        if not mid:
-            return "Error: memory_id or query (as ID) required for id lookup."
-        conn = get_db_connection()
-        frag, fparams = _build_filter_fragments(filters)
-        now_iso = datetime.now(UTC).isoformat()
-        row = conn.execute(
-            join_sql_parts(
-                "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-                frag,
-                " AND (expires_at IS NULL OR expires_at >= ?)",
+def _filter_semantic_matches(
+    matches: list[Any],
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+) -> list[Any]:
+    """Keep the semantic matches whose row is live and passes the column filters."""
+    match_ids = [m.memory_id for m in matches]
+    if not match_ids:
+        return []
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    id_slots = placeholders(len(match_ids))
+    rows = conn.execute(
+        join_sql_parts(
+            "SELECT * FROM memories WHERE id IN (",
+            id_slots,
+            ") AND user_id = ? AND tenant_id = ?",
+        ),
+        (*match_ids, uid, tenant_id),
+    ).fetchall()
+    conn.close()
+    by_id = {r["id"]: r for r in rows}
+    return [
+        m
+        for m in matches
+        if (row := by_id.get(m.memory_id))
+        and not _is_expired_row(row, now_iso)
+        and (not filters.any_set() or _memory_matches_filters(row, filters))
+    ]
+
+
+def _semantic_search_payload(
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+    hook_ctx: MemoryHookContext,
+) -> str:
+    """Answer a semantic (vector) query."""
+    if not options.query:
+        return "Error: query is required for semantic search."
+    prov = options.provider or _SEMANTIC_DEFAULT_PROVIDER
+    try:
+        store = get_semantic_search(provider=prov)
+        result = store.search(
+            query=options.query,
+            user_id=uid,
+            options=SemanticSearchOptions(
+                limit=options.limit,
+                min_score=options.min_score,
             ),
-            (mid, uid, tenant_id, *fparams, now_iso),
-        ).fetchone()
-        conn.close()
+        )
+    except _SemanticSearchError as exc:
+        return f"Error: {exc}"
+    # PIX-4720/4721: filter semantic matches by column filters and drop
+    # already-expired memories. ANN top-k is fetched first, so this is a
+    # post-filter over the returned IDs (may return fewer than limit).
+    result.matches = _filter_semantic_matches(result.matches, uid, tenant_id, filters)
+    # Reinforce surfaced memories (closes decay loop).
+    _auto_reinforce_batch([m.memory_id for m in result.matches], uid, tenant_id)
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+    return json.dumps(result.to_dict(), indent=2)
 
-        if not row:
-            # ── POST_RETRIEVE hook (no results) ────────────────────────
-            get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-            return f"Memory {mid} not found."
 
-        # Emit event
-        event_bus = get_event_bus_with_stream()
-        event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
+def _id_lookup_payload(
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+    hook_ctx: MemoryHookContext,
+) -> str:
+    """Answer a direct memory-id lookup."""
+    mid = options.memory_id or options.query
+    if not mid:
+        return "Error: memory_id or query (as ID) required for id lookup."
+    conn = get_db_connection()
+    frag, fparams = _build_filter_fragments(filters)
+    now_iso = datetime.now(UTC).isoformat()
+    row = conn.execute(
+        join_sql_parts(
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            frag,
+            " AND (expires_at IS NULL OR expires_at >= ?)",
+        ),
+        (mid, uid, tenant_id, *fparams, now_iso),
+    ).fetchone()
+    conn.close()
 
-        tags = json.loads(row["tags"])
-        decrypted = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
-        detail = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
-        detail += f"Content: {decrypted}\n"
-        detail += f"Tags: {', '.join(tags) if tags else 'none'}\n"
-        if row["is_ghost"]:
-            detail += "[GHOST NODE - Content archived]"
-
-        # ── POST_RETRIEVE hook (ID lookup) ─────────────────────────────
-        hook_ctx.memory_id = mid
+    if not row:
+        # ── POST_RETRIEVE hook (no results) ────────────────────────
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-        return detail
+        return f"Memory {mid} not found."
 
-    # 2. Hybrid search if enabled and query provided
-    if options.use_hybrid and options.query:
-        try:
-            hybrid_result, trace = _trace_retrieval(
-                options.query,
-                uid,
-                tenant_id,
-                HybridSearchOptions(
-                    tenant_id=tenant_id,
-                    limit=options.limit,
-                    min_importance=options.min_importance,
-                    use_keyword=True,
-                    use_tfidf_cosine=True,
-                    use_semantic=None,
-                    use_graph=True,
-                    use_temporal=True,
-                    category=options.category,
-                    scope=options.scope,
-                    retention=options.retention,
-                    bank_id=options.bank_id,
-                    tags=options.tags,
-                    memory_type=options.memory_type,
-                    signal_weights=options.signal_weights,
-                    query_rewrite=options.query_rewrite,
-                    max_rewrite_variants=options.max_rewrite_variants,
-                    agent_id=options.agent_id,
-                    project=options.project,
-                ),
+    # Emit event
+    event_bus = get_event_bus_with_stream()
+    event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
+
+    row_tags = json.loads(row["tags"])
+    decrypted = decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid)
+    detail = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
+    detail += f"Content: {decrypted}\n"
+    detail += f"Tags: {', '.join(row_tags) if row_tags else 'none'}\n"
+    if row["is_ghost"]:
+        detail += "[GHOST NODE - Content archived]"
+
+    # ── POST_RETRIEVE hook (ID lookup) ─────────────────────────────
+    hook_ctx.memory_id = mid
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+    return detail
+
+
+def _hybrid_search_options(options: SearchOptions, tenant_id: str) -> HybridSearchOptions:
+    """Translate the tool's search options into hybrid retriever options."""
+    return HybridSearchOptions(
+        tenant_id=tenant_id,
+        limit=options.limit,
+        min_importance=options.min_importance,
+        use_keyword=True,
+        use_tfidf_cosine=True,
+        use_semantic=None,
+        use_graph=True,
+        use_temporal=True,
+        category=options.category,
+        scope=options.scope,
+        retention=options.retention,
+        bank_id=options.bank_id,
+        tags=options.tags,
+        memory_type=options.memory_type,
+        signal_weights=options.signal_weights,
+        query_rewrite=options.query_rewrite,
+        max_rewrite_variants=options.max_rewrite_variants,
+        agent_id=options.agent_id,
+        project=options.project,
+    )
+
+
+def _hybrid_search_payload(
+    query: str,
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    hook_ctx: MemoryHookContext,
+) -> str | None:
+    """Answer a hybrid query, or None when hybrid retrieval could not serve it."""
+    try:
+        hybrid_result, trace = _trace_retrieval(
+            query,
+            uid,
+            tenant_id,
+            _hybrid_search_options(options, tenant_id),
+        )
+        if options.debug:
+            return json.dumps(trace.to_dict(), indent=2)
+        if not hybrid_result.results:
+            return None
+        results = []
+        for hit in hybrid_result.results:
+            signals = ", ".join(hit.source_signals) if hit.source_signals else "hybrid"
+            results.append(
+                f"- [{hit.memory_id}] {hit.content[:100]}... (score={hit.combined_score:.3f}, signals={signals})"
             )
-            if options.debug:
-                return json.dumps(trace.to_dict(), indent=2)
-            if hybrid_result.results:
-                results = []
-                for hit in hybrid_result.results:
-                    signals = ", ".join(hit.source_signals) if hit.source_signals else "hybrid"
-                    results.append(
-                        f"- [{hit.memory_id}] {hit.content[:100]}... "
-                        f"(score={hit.combined_score:.3f}, signals={signals})"
-                    )
-                # Reinforce surfaced memories (closes decay loop).
-                _auto_reinforce_batch([hit.memory_id for hit in hybrid_result.results], uid, tenant_id)
-                # ── POST_RETRIEVE hook (hybrid search) ─────────────────
-                get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-                return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
-        except Exception as e:
-            logger.debug(f"Hybrid search failed: {e}")
+        # Reinforce surfaced memories (closes decay loop).
+        _auto_reinforce_batch([hit.memory_id for hit in hybrid_result.results], uid, tenant_id)
+        # ── POST_RETRIEVE hook (hybrid search) ─────────────────
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+        return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
+    except Exception as e:
+        logger.debug(f"Hybrid search failed: {e}")
+        return None
 
-    # 3. Fallback to basic list/keyword search
+
+def _keyword_search_payload(
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+    hook_ctx: MemoryHookContext,
+) -> str:
+    """Answer a list/keyword query."""
     conn = get_db_connection()
     frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
@@ -3135,6 +3180,81 @@ def search_memories(
     # ── POST_RETRIEVE hook (fallback) ─────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
+
+
+@mcp.tool(output_schema=None)
+def search_memories(
+    params: Annotated[
+        SearchMemoriesParams,
+        Field(description='Every argument for search_memories, sent as {"params": {...}}.'),
+    ],
+) -> str:
+    """
+    Unified search and retrieval for memories.
+    Supports ID lookup, content keyword search, semantic vector search, and hybrid retrieval.
+
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a search is
+    ``{"params": {"query": "...", "limit": 10}}``.
+
+    Args:
+        params: ``SearchMemoriesParams`` — query_type, query, memory_id, limit,
+            offset, ranking signals, and the PIX-4720 column filters. Each
+            field's description is advertised in the tool schema.
+
+    Returns:
+        Formatted results, a structured trace when ``debug`` is set, or a
+        JSON payload for semantic search.
+    """
+    options = params.options or _search_options_from_params(params)
+
+    uid = params.user_id or USER_ID
+    tenant_id = get_current_account_id()
+
+    # A rejected ranking policy must fail the call: the hybrid path below
+    # catches every exception and degrades to keyword search, which would
+    # silently ignore the caller's invalid ``signal_weights``.
+    if options.signal_weights:
+        validate_signal_weights(options.signal_weights)
+
+    # PIX-4720 filter bundle, used by every retrieval path.
+    filters = MemoryFilters(
+        category=options.category,
+        scope=options.scope,
+        retention=options.retention,
+        bank_id=options.bank_id,
+        tags=options.tags,
+        memory_type=options.memory_type,
+    )
+
+    # ── PRE_RETRIEVE hook ──────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="retrieve",
+        user_id=uid,
+        tenant_id=tenant_id,
+        query=options.query,
+    )
+    abort_message = _emit_pre_retrieve_hooks(hook_ctx, options)
+    if abort_message:
+        return abort_message
+
+    # 0. Semantic vector search
+    if options.query_type == "semantic":
+        return _semantic_search_payload(options, uid, tenant_id, filters, hook_ctx)
+
+    # 1. Direct ID lookup
+    if options.query_type == "id" or options.memory_id:
+        return _id_lookup_payload(options, uid, tenant_id, filters, hook_ctx)
+
+    # 2. Hybrid search if enabled and query provided
+    if options.use_hybrid and options.query:
+        hybrid_payload = _hybrid_search_payload(options.query, options, uid, tenant_id, hook_ctx)
+        if hybrid_payload is not None:
+            return hybrid_payload
+
+    # 3. Fallback to basic list/keyword search
+    return _keyword_search_payload(options, uid, tenant_id, filters, hook_ctx)
 
 
 @mcp.tool(output_schema=None)
@@ -3233,6 +3353,39 @@ def reflect(
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
+def _mental_model_refresh(model_id: str, uid: str, tenant_id: str) -> str:
+    """Recompute one mental model and return its JSON envelope."""
+    model = reflect_mod.refresh_mental_model(model_id, user_id=uid, tenant_id=tenant_id)
+    if model is None:
+        return _tool_error("mental_models", f"mental model {model_id} not found")
+    return _tool_response(ok=True, action="refresh", model=model)
+
+
+def _mental_model_delete(model_id: str, uid: str, tenant_id: str) -> str:
+    """Delete one mental model and return its JSON envelope."""
+    deleted = reflect_mod.delete_mental_model(model_id, user_id=uid, tenant_id=tenant_id)
+    if not deleted:
+        return _tool_error("mental_models", f"mental model {model_id} not found")
+    return _tool_response(ok=True, action="delete", model_id=model_id)
+
+
+def _run_mental_model_action(options: MentalModelAction, uid: str, tenant_id: str) -> str:
+    """Run one mental-model action and return its JSON envelope."""
+    if options.action == "list":
+        models = reflect_mod.list_mental_models(
+            user_id=uid, tenant_id=tenant_id, agent_id=options.agent_id, limit=options.limit
+        )
+        return _tool_response(ok=True, action="list", models=models, count=len(models))
+
+    if not options.model_id:
+        return _tool_error("mental_models", f"model_id is required for '{options.action}'")
+
+    if options.action == "refresh":
+        return _mental_model_refresh(options.model_id, uid, tenant_id)
+
+    return _mental_model_delete(options.model_id, uid, tenant_id)
+
+
 @mcp.tool(output_schema=None)
 def manage_mental_models(
     params: Annotated[
@@ -3261,43 +3414,24 @@ def manage_mental_models(
         JSON envelope with ``ok``, ``action``, and action-specific payload.
     """
     options = params.options
-    user_id = params.user_id
-    action = params.action
-    model_id = params.model_id
-    agent_id = params.agent_id
-    limit = params.limit
-
-    uid = user_id or USER_ID
+    uid = params.user_id or USER_ID
     tenant_id = get_current_account_id()
 
     if options is None:
-        if action is None:
+        if params.action is None:
             return _tool_error("mental_models", "either 'options' or 'action' must be provided")
         try:
-            options = MentalModelAction(action=action, model_id=model_id, agent_id=agent_id, limit=limit)
+            options = MentalModelAction(
+                action=params.action,
+                model_id=params.model_id,
+                agent_id=params.agent_id,
+                limit=params.limit,
+            )
         except Exception as exc:
             return _tool_error("mental_models", f"invalid arguments: {exc}")
 
     try:
-        if options.action == "list":
-            models = reflect_mod.list_mental_models(
-                user_id=uid, tenant_id=tenant_id, agent_id=options.agent_id, limit=options.limit
-            )
-            return _tool_response(ok=True, action="list", models=models, count=len(models))
-
-        if not options.model_id:
-            return _tool_error("mental_models", f"model_id is required for '{options.action}'")
-
-        if options.action == "refresh":
-            model = reflect_mod.refresh_mental_model(options.model_id, user_id=uid, tenant_id=tenant_id)
-            if model is None:
-                return _tool_error("mental_models", f"mental model {options.model_id} not found")
-            return _tool_response(ok=True, action="refresh", model=model)
-
-        deleted = reflect_mod.delete_mental_model(options.model_id, user_id=uid, tenant_id=tenant_id)
-        if not deleted:
-            return _tool_error("mental_models", f"mental model {options.model_id} not found")
-        return _tool_response(ok=True, action="delete", model_id=options.model_id)
+        return _run_mental_model_action(options, uid, tenant_id)
     except Exception as exc:
         logger.exception("manage_mental_models failed")
         return _tool_error("mental_models", str(exc))
@@ -3567,6 +3701,66 @@ def _handle_context_block_update(agent, label: str, content: str | None, visibil
     return _tool_response(ok=True, action="update", label=label, message=f"Updated block '{label}'")
 
 
+def _context_block_options(
+    params: ManageContextBlocksParams,
+    resolved_label: str | None,
+) -> ContextBlockAction | None:
+    """Build or complete the context-block action from the flat tool arguments."""
+    options = params.options
+    if options is None:
+        if params.action is None:
+            return None
+        return ContextBlockAction(
+            action=params.action,
+            label=resolved_label,
+            content=params.content,
+            agent_id=params.agent_id,
+            project=params.project,
+            visibility=params.visibility,
+        )
+    if not options.label and resolved_label:
+        options.label = resolved_label
+    options.agent_id = options.agent_id or params.agent_id
+    options.project = options.project or params.project
+    options.visibility = options.visibility or params.visibility
+    return options
+
+
+def _reset_or_clear_block(options: ContextBlockAction, agent: Any) -> str:
+    """Reset or clear one context block and return its JSON envelope."""
+    try:
+        if options.action == "reset":
+            agent.reset_block(options.label)
+            message = f"Reset block '{options.label}' to default"
+        else:
+            agent.clear_block(options.label)
+            message = f"Cleared block '{options.label}'"
+        return _tool_response(ok=True, action=options.action, label=options.label, message=message)
+    except ValueError as exc:
+        return _tool_error(options.action, str(exc), label=options.label)
+
+
+def _dispatch_context_block_action(options: ContextBlockAction, agent: Any) -> str:
+    """Run one context-block action and return its JSON envelope."""
+    if options.action == "list":
+        return _handle_context_block_list(agent)
+
+    if not options.label:
+        return _tool_error(options.action, "'label' is required for this action.")
+
+    label = options.label
+    handlers = {
+        "get": lambda: _handle_context_block_get(agent, label),
+        "update": lambda: _handle_context_block_update(agent, label, options.content, options.visibility),
+        "reset": lambda: _reset_or_clear_block(options, agent),
+        "clear": lambda: _reset_or_clear_block(options, agent),
+    }
+    handler = handlers.get(options.action)
+    if handler is None:
+        return _tool_error(options.action, f"Unsupported action: {options.action}")
+    return handler()
+
+
 @mcp.tool(output_schema=None)
 def manage_context_blocks(
     params: Annotated[
@@ -3601,73 +3795,24 @@ def manage_context_blocks(
     Returns:
         JSON envelope with ``ok``, ``action``, and action-specific payload.
     """
-    options = params.options
-    user_id = params.user_id
-    action = params.action
-    label = params.label
-    block_name = params.block_name
-    block_type = params.block_type
-    name = params.name
-    block = params.block
-    block_id = params.block_id
-    key = params.key
-    content = params.content
-    agent_id = params.agent_id
-    project = params.project
-    visibility = params.visibility
-
-    resolved_label = label or block_name or block_type or name or block or block_id or key
+    resolved_label = (
+        params.label
+        or params.block_name
+        or params.block_type
+        or params.name
+        or params.block
+        or params.block_id
+        or params.key
+    )
+    options = _context_block_options(params, resolved_label)
     if options is None:
-        if action is None:
-            return "Error: either 'options' or 'action' must be provided. Use action='list' to list all blocks."
-        options = ContextBlockAction(
-            action=action,
-            label=resolved_label,
-            content=content,
-            agent_id=agent_id,
-            project=project,
-            visibility=visibility,
-        )
-    else:
-        if not options.label and resolved_label:
-            options.label = resolved_label
-        options.agent_id = options.agent_id or agent_id
-        options.project = options.project or project
-        options.visibility = options.visibility or visibility
+        return "Error: either 'options' or 'action' must be provided. Use action='list' to list all blocks."
 
-    uid = user_id or USER_ID
+    uid = params.user_id or USER_ID
     tenant_id = get_current_account_id()
     agent = get_context_block_agent(uid, tenant_id, options.agent_id, options.project)
 
-    if options.action == "list":
-        res = _handle_context_block_list(agent)
-    elif not options.label:
-        res = _tool_error(options.action, "'label' is required for this action.")
-    elif options.action == "get":
-        res = _handle_context_block_get(agent, options.label)
-    elif options.action == "update":
-        res = _handle_context_block_update(agent, options.label, options.content, options.visibility)
-    elif options.action in ("reset", "clear"):
-        try:
-            if options.action == "reset":
-                agent.reset_block(options.label)
-            else:
-                agent.clear_block(options.label)
-            message = (
-                f"Reset block '{options.label}' to default"
-                if options.action == "reset"
-                else f"Cleared block '{options.label}'"
-            )
-            res = _tool_response(
-                ok=True,
-                action=options.action,
-                label=options.label,
-                message=message,
-            )
-        except ValueError as exc:
-            res = _tool_error(options.action, str(exc), label=options.label)
-    else:
-        res = _tool_error(options.action, f"Unsupported action: {options.action}")
+    res = _dispatch_context_block_action(options, agent)
 
     if options.action in ("update", "reset", "clear"):
         get_context_cache().invalidate_user(uid)
@@ -4373,21 +4518,23 @@ def _context_block_snapshot(uid: str, tenant_id: str) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], get_context_block_agent(uid, tenant_id).get_all_blocks())
 
 
-def _make_curated_entries(
+def _curation_tags(run: dict[str, Any]) -> list[str]:
+    """The provenance tags every curated entry carries."""
+    return [
+        f"curation_run:{run['id']}",
+        f"source_bank:{run['source_bank_id']}",
+        f"policy:{run['policy_mode']}",
+    ]
+
+
+def _curation_summary_entry(
     run: dict[str, Any],
     source_rows: list[RowLike],
     block_snapshot: list[dict[str, Any]],
     synthesis: dict[str, Any] | None,
     reflection: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    """Build curated output entries based on the configured policy mode."""
-    tags = [
-        f"curation_run:{run['id']}",
-        f"source_bank:{run['source_bank_id']}",
-        f"policy:{run['policy_mode']}",
-    ]
-    entries: list[dict[str, Any]] = []
-
+) -> dict[str, Any]:
+    """The run summary entry that opens every curated output."""
     context_labels = [block["label"] for block in block_snapshot if block.get("content")]
 
     summary_lines = [
@@ -4409,65 +4556,98 @@ def _make_curated_entries(
         summary_lines.append(f"Reflection overall trend: {reflection['trend_summary'].get('overall', 'stable')}")
         summary_lines.append(f"Reflection insights: {len(reflection.get('insights', []))}")
 
-    entries.append(
-        {
-            "content": "\n".join(summary_lines),
-            "category": "curation_summary",
-            "scope": "arc",
-            "retention": "long_term",
-            "tags": [*tags, "summary"],
-        }
-    )
+    return {
+        "content": "\n".join(summary_lines),
+        "category": "curation_summary",
+        "scope": "arc",
+        "retention": "long_term",
+        "tags": [*_curation_tags(run), "summary"],
+    }
 
-    if run["policy_mode"] == "preserve":
-        for row in source_rows[:10]:
-            entries.append(
-                {
-                    "content": row["content"],
-                    "category": row["category"] or "curated_memory",
-                    "scope": row["scope"] or "arc",
-                    "retention": row["retention"] or "long_term",
-                    "tags": [*tags, "preserved"],
-                }
-            )
-    elif run["policy_mode"] == "rebalance":
-        for row in source_rows[:5]:
-            entries.append(
-                {
-                    "content": f"[Rebalanced] {row['content']}",
-                    "category": row["category"] or "curated_memory",
-                    "scope": row["scope"] or "arc",
-                    "retention": row["retention"] or "long_term",
-                    "tags": [*tags, "rebalanced"],
-                }
-            )
-        if synthesis and synthesis.get("insights"):
-            entries.append(
-                {
-                    "content": "\n".join(f"- {insight['summary']}" for insight in synthesis["insights"][:5]),
-                    "category": "curation_insight",
-                    "scope": "arc",
-                    "retention": "long_term",
-                    "tags": [*tags, "synthesis"],
-                }
-            )
-    else:
-        rebuilt_lines: list[str] = []
-        if synthesis and synthesis.get("insights"):
-            rebuilt_lines.extend(f"- {insight['summary']}" for insight in synthesis["insights"][:5])
-        elif reflection and reflection.get("insights"):
-            rebuilt_lines.extend(f"- {insight['summary']}" for insight in reflection["insights"][:5])
-        else:
-            rebuilt_lines.extend(f"- {row['content']}" for row in source_rows[:5])
+
+def _preserved_entries(source_rows: list[RowLike], tags: list[str]) -> list[dict[str, Any]]:
+    """One entry per source memory, kept verbatim."""
+    return [
+        {
+            "content": row["content"],
+            "category": row["category"] or "curated_memory",
+            "scope": row["scope"] or "arc",
+            "retention": row["retention"] or "long_term",
+            "tags": [*tags, "preserved"],
+        }
+        for row in source_rows[:10]
+    ]
+
+
+def _rebalanced_entries(
+    source_rows: list[RowLike],
+    tags: list[str],
+    synthesis: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Rebalanced entries: the top source memories plus the synthesis insights."""
+    entries = [
+        {
+            "content": f"[Rebalanced] {row['content']}",
+            "category": row["category"] or "curated_memory",
+            "scope": row["scope"] or "arc",
+            "retention": row["retention"] or "long_term",
+            "tags": [*tags, "rebalanced"],
+        }
+        for row in source_rows[:5]
+    ]
+    if synthesis and synthesis.get("insights"):
         entries.append(
             {
-                "content": "Rebuilt memory bank:\n" + "\n".join(rebuilt_lines),
-                "category": "curation_rebuild",
+                "content": "\n".join(f"- {insight['summary']}" for insight in synthesis["insights"][:5]),
+                "category": "curation_insight",
                 "scope": "arc",
                 "retention": "long_term",
-                "tags": [*tags, "rebuilt"],
+                "tags": [*tags, "synthesis"],
             }
         )
+    return entries
+
+
+def _rebuilt_entry(
+    source_rows: list[RowLike],
+    tags: list[str],
+    synthesis: dict[str, Any] | None,
+    reflection: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The single rebuilt-bank entry used by the rebuild policy."""
+    rebuilt_lines: list[str] = []
+    if synthesis and synthesis.get("insights"):
+        rebuilt_lines.extend(f"- {insight['summary']}" for insight in synthesis["insights"][:5])
+    elif reflection and reflection.get("insights"):
+        rebuilt_lines.extend(f"- {insight['summary']}" for insight in reflection["insights"][:5])
+    else:
+        rebuilt_lines.extend(f"- {row['content']}" for row in source_rows[:5])
+    return {
+        "content": "Rebuilt memory bank:\n" + "\n".join(rebuilt_lines),
+        "category": "curation_rebuild",
+        "scope": "arc",
+        "retention": "long_term",
+        "tags": [*tags, "rebuilt"],
+    }
+
+
+def _make_curated_entries(
+    run: dict[str, Any],
+    source_rows: list[RowLike],
+    block_snapshot: list[dict[str, Any]],
+    synthesis: dict[str, Any] | None,
+    reflection: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Build curated output entries based on the configured policy mode."""
+    tags = _curation_tags(run)
+    entries: list[dict[str, Any]] = [_curation_summary_entry(run, source_rows, block_snapshot, synthesis, reflection)]
+
+    if run["policy_mode"] == "preserve":
+        entries.extend(_preserved_entries(source_rows, tags))
+    elif run["policy_mode"] == "rebalance":
+        entries.extend(_rebalanced_entries(source_rows, tags, synthesis))
+    else:
+        entries.append(_rebuilt_entry(source_rows, tags, synthesis, reflection))
 
     return entries
 
@@ -4522,89 +4702,161 @@ def _insert_curation_entries(
         conn.close()
 
 
+@dataclass(frozen=True)
+class _CurationContext:
+    """Identity and payload of one curation run."""
+
+    run_id: str
+    uid: str
+    tenant_id: str
+    payload: dict[str, Any]
+
+
+def _curation_run_dict(run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The run descriptor the curated-entry builder reads."""
+    return {
+        "id": run_id,
+        "source_bank_id": payload["source_bank_id"],
+        "output_bank_id": payload["output_bank_id"],
+        "policy_mode": payload["policy_mode"],
+        "tool_access": payload["tool_access"],
+        "output_mode": payload["output_mode"],
+        "instructions": payload.get("instructions"),
+    }
+
+
+def _process_transcript_bundle(ctx: _CurationContext) -> None:
+    """Distil the run's transcript bundle into context blocks before curating."""
+    bundle = ctx.payload.get("transcript_bundle")
+    if not bundle:
+        return
+    agent = get_context_block_agent(ctx.uid, ctx.tenant_id)
+    session_id = ctx.payload.get("session_id") or f"curation-{ctx.run_id}"
+    _run_async(
+        agent.process_transcript(
+            session_id=session_id,
+            messages=bundle,
+            project_path=ctx.payload.get("project_path"),
+        )
+    )
+    _bridge_context_blocks_to_memories(agent, ctx.uid)
+    _bridge_transcript_entities(bundle, ctx.uid)
+
+
+def _promote_in_place(
+    ctx: _CurationContext,
+    source_rows: list[RowLike],
+    created_ids: list[str],
+    cancel_event: threading.Event,
+) -> dict[str, Any]:
+    """Promote the staged outputs into the source bank when running in place."""
+    if ctx.payload["output_mode"] != "in_place":
+        return {}
+    promotion = CurationPromotion(
+        uid=ctx.uid,
+        tenant_id=ctx.tenant_id,
+        run_id=ctx.run_id,
+        source_bank_id=ctx.payload["source_bank_id"],
+        staging_bank_id=ctx.payload["output_bank_id"],
+        source_rows=source_rows,
+        staged_ids=created_ids,
+    )
+    promotion_summary = _promote_in_place_curation(promotion, cancel_event=cancel_event)
+    if cancel_event.is_set() or _is_run_canceled(ctx.uid, ctx.tenant_id, ctx.run_id):
+        _restore_in_place_curation(promotion)
+        raise CurationError("Curation canceled after promotion; restored source bank")
+    return promotion_summary
+
+
+def _run_post_curation_clustering(ctx: _CurationContext) -> dict[str, Any] | None:
+    """Cluster the curated bank when the run asked for it."""
+    if not ctx.payload.get("run_clustering"):
+        return None
+    try:
+        _raise_if_run_canceled(ctx.uid, ctx.tenant_id, ctx.run_id)
+        cluster_memories_for_run = _fetch_memories_for_clustering(ctx.uid, ctx.tenant_id)
+        if cluster_memories_for_run:
+            cluster_result = cluster_memories(cluster_memories_for_run)
+            if cluster_result.cluster_entities:
+                return _upsert_cluster_results(cluster_result, ctx.uid, ctx.tenant_id)
+    except Exception as exc:
+        logger.warning("Clustering post-curation failed for run %s: %s", ctx.run_id, exc)
+        return {"error": str(exc)}
+    return None
+
+
+def _handle_curation_cancel(ctx: _CurationContext, queue: OperationQueue) -> None:
+    """Record a canceled run, leaving a status already set to canceled untouched."""
+    ended_at = datetime.now(UTC).isoformat()
+    row = _fetch_curation_run(ctx.uid, ctx.tenant_id, ctx.run_id)
+    if row is None or row["status"] != "canceled":
+        _update_curation_run(ctx.run_id, ctx.tenant_id, CurationRunUpdate(status="canceled", ended_at=ended_at))
+        _publish_curation_status(ctx.run_id, "canceled", actor=ctx.uid)
+    else:
+        _update_curation_run(ctx.run_id, ctx.tenant_id, CurationRunUpdate(ended_at=ended_at))
+    queue.remove(ctx.run_id, tenant_id=ctx.tenant_id)
+
+
+def _handle_curation_failure(ctx: _CurationContext, exc: Exception, queue: OperationQueue) -> None:
+    """Record a failed run and publish its error."""
+    failed_at = datetime.now(UTC).isoformat()
+    error = {
+        "type": exc.__class__.__name__,
+        "message": str(exc),
+    }
+    _update_curation_run(ctx.run_id, ctx.tenant_id, CurationRunUpdate(status="failed", error=error, ended_at=failed_at))
+    queue.remove(ctx.run_id, tenant_id=ctx.tenant_id)
+    _publish_curation_status(ctx.run_id, "failed", actor=ctx.uid, error=error)
+
+
 def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     """Execute a queued curation run."""
-    tenant_id = payload["tenant_id"]
-    uid = payload["user_id"]
+    ctx = _CurationContext(
+        run_id=run_id,
+        uid=payload["user_id"],
+        tenant_id=payload["tenant_id"],
+        payload=payload,
+    )
     cancel_event = _get_curation_cancel_event(run_id)
-    set_current_tenant_id(tenant_id)
+    set_current_tenant_id(ctx.tenant_id)
     queue = OperationQueue(DB_PATH)
     now = datetime.now(UTC).isoformat()
-    if not _claim_curation_run(run_id, tenant_id, now):
+    if not _claim_curation_run(run_id, ctx.tenant_id, now):
         return
-    _publish_curation_status(run_id, "running", actor=uid, source_bank_id=payload["source_bank_id"])
+    _publish_curation_status(run_id, "running", actor=ctx.uid, source_bank_id=payload["source_bank_id"])
 
     try:
-        _raise_if_run_canceled(uid, tenant_id, run_id)
-        if payload.get("transcript_bundle"):
-            agent = get_context_block_agent(uid, tenant_id)
-            session_id = payload.get("session_id") or f"curation-{run_id}"
-            _run_async(
-                agent.process_transcript(
-                    session_id=session_id,
-                    messages=payload["transcript_bundle"],
-                    project_path=payload.get("project_path"),
-                )
-            )
-            _bridge_context_blocks_to_memories(agent, uid)
-            _bridge_transcript_entities(payload["transcript_bundle"], uid)
+        _raise_if_run_canceled(ctx.uid, ctx.tenant_id, run_id)
+        _process_transcript_bundle(ctx)
 
-        _raise_if_run_canceled(uid, tenant_id, run_id)
-        source_rows = _load_source_bank_rows(uid, tenant_id, payload["source_bank_id"])
-        block_snapshot = _context_block_snapshot(uid, tenant_id)
-        synthesis = None if payload["tool_access"] == "disabled" else _build_synthesis_snapshot(source_rows, uid)
+        _raise_if_run_canceled(ctx.uid, ctx.tenant_id, run_id)
+        source_rows = _load_source_bank_rows(ctx.uid, ctx.tenant_id, payload["source_bank_id"])
+        block_snapshot = _context_block_snapshot(ctx.uid, ctx.tenant_id)
+        synthesis = None if payload["tool_access"] == "disabled" else _build_synthesis_snapshot(source_rows, ctx.uid)
         reflection = (
-            None if payload["tool_access"] == "disabled" else _build_reflection_snapshot(source_rows, uid, tenant_id)
+            None
+            if payload["tool_access"] == "disabled"
+            else _build_reflection_snapshot(source_rows, ctx.uid, ctx.tenant_id)
         )
-        run = {
-            "id": run_id,
-            "source_bank_id": payload["source_bank_id"],
-            "output_bank_id": payload["output_bank_id"],
-            "policy_mode": payload["policy_mode"],
-            "tool_access": payload["tool_access"],
-            "output_mode": payload["output_mode"],
-            "instructions": payload.get("instructions"),
-        }
-        entries = _make_curated_entries(run, source_rows, block_snapshot, synthesis, reflection)
-        _delete_existing_curation_outputs(uid, tenant_id, payload["output_bank_id"], run_id)
+        entries = _make_curated_entries(
+            _curation_run_dict(run_id, payload),
+            source_rows,
+            block_snapshot,
+            synthesis,
+            reflection,
+        )
+        _delete_existing_curation_outputs(ctx.uid, ctx.tenant_id, payload["output_bank_id"], run_id)
         created_ids = _insert_curation_entries(
-            uid,
-            tenant_id,
+            ctx.uid,
+            ctx.tenant_id,
             payload["output_bank_id"],
             entries,
             cancel_event=cancel_event,
         )
-        _raise_if_run_canceled(uid, tenant_id, run_id)
+        _raise_if_run_canceled(ctx.uid, ctx.tenant_id, run_id)
 
-        promotion_summary: dict[str, Any] = {}
-        if payload["output_mode"] == "in_place":
-            promotion = CurationPromotion(
-                uid=uid,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                source_bank_id=payload["source_bank_id"],
-                staging_bank_id=payload["output_bank_id"],
-                source_rows=source_rows,
-                staged_ids=created_ids,
-            )
-            promotion_summary = _promote_in_place_curation(promotion, cancel_event=cancel_event)
-            if cancel_event.is_set() or _is_run_canceled(uid, tenant_id, run_id):
-                _restore_in_place_curation(promotion)
-                raise CurationError("Curation canceled after promotion; restored source bank")
-
-        # Run clustering after curation if requested
-        clustering_summary: dict[str, Any] | None = None
-        if payload.get("run_clustering"):
-            try:
-                _raise_if_run_canceled(uid, tenant_id, run_id)
-                cluster_memories_for_run = _fetch_memories_for_clustering(uid, tenant_id)
-                if cluster_memories_for_run:
-                    cluster_result = cluster_memories(cluster_memories_for_run)
-                    if cluster_result.cluster_entities:
-                        clustering_summary = _upsert_cluster_results(cluster_result, uid, tenant_id)
-            except Exception as exc:
-                logger.warning("Clustering post-curation failed for run %s: %s", run_id, exc)
-                clustering_summary = {"error": str(exc)}
+        promotion_summary = _promote_in_place(ctx, source_rows, created_ids, cancel_event)
+        clustering_summary = _run_post_curation_clustering(ctx)
 
         summary = {
             "source_memory_count": len(source_rows),
@@ -4617,38 +4869,26 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "clustering": clustering_summary,
         }
         summary.update(promotion_summary)
-        _raise_if_run_canceled(uid, tenant_id, run_id)
+        _raise_if_run_canceled(ctx.uid, ctx.tenant_id, run_id)
         completed_at = datetime.now(UTC).isoformat()
         _update_curation_run(
-            run_id, tenant_id, CurationRunUpdate(status="completed", summary=summary, ended_at=completed_at, error={})
+            run_id,
+            ctx.tenant_id,
+            CurationRunUpdate(status="completed", summary=summary, ended_at=completed_at, error={}),
         )
-        queue.remove(run_id, tenant_id=tenant_id)
+        queue.remove(run_id, tenant_id=ctx.tenant_id)
         _publish_curation_status(
             run_id,
             "completed",
-            actor=uid,
+            actor=ctx.uid,
             output_bank_id=payload["output_bank_id"],
             source_bank_id=payload["source_bank_id"],
             output_mode=payload["output_mode"],
         )
     except CurationError:
-        ended_at = datetime.now(UTC).isoformat()
-        row = _fetch_curation_run(uid, tenant_id, run_id)
-        if row is None or row["status"] != "canceled":
-            _update_curation_run(run_id, tenant_id, CurationRunUpdate(status="canceled", ended_at=ended_at))
-            _publish_curation_status(run_id, "canceled", actor=uid)
-        else:
-            _update_curation_run(run_id, tenant_id, CurationRunUpdate(ended_at=ended_at))
-        queue.remove(run_id, tenant_id=tenant_id)
+        _handle_curation_cancel(ctx, queue)
     except Exception as exc:
-        failed_at = datetime.now(UTC).isoformat()
-        error = {
-            "type": exc.__class__.__name__,
-            "message": str(exc),
-        }
-        _update_curation_run(run_id, tenant_id, CurationRunUpdate(status="failed", error=error, ended_at=failed_at))
-        queue.remove(run_id, tenant_id=tenant_id)
-        _publish_curation_status(run_id, "failed", actor=uid, error=error)
+        _handle_curation_failure(ctx, exc, queue)
     finally:
         with _CURATION_WORKERS_LOCK:
             _CURATION_WORKERS.pop(run_id, None)
@@ -4669,6 +4909,155 @@ def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
             return
         _CURATION_WORKERS[run_id] = worker
     worker.start()
+
+
+def _curation_options_from_params(params: ManageCurationRunsParams) -> CurationRunAction | None:
+    """Build the curation action from the flat tool arguments."""
+    if params.action is None:
+        return None
+    return CurationRunAction(
+        action=params.action,
+        run_id=params.run_id,
+        source_bank_id=params.source_bank_id,
+        output_bank_id=params.output_bank_id,
+        policy_mode=params.policy_mode if params.policy_mode is not None else "rebalance",
+        tool_access=params.tool_access if params.tool_access is not None else "observe",
+        output_mode=params.output_mode if params.output_mode is not None else "reviewable_output",
+        instructions=params.instructions,
+        run_clustering=params.run_clustering if params.run_clustering is not None else False,
+        transcript_bundle=params.transcript_bundle,
+        session_id=params.session_id,
+        project_path=params.project_path,
+    )
+
+
+def _list_curation_runs(options: CurationRunAction, uid: str, tenant_id: str) -> str:
+    """List the user's curation runs, newest first."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT * FROM curation_runs WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+        (uid, tenant_id, options.limit),
+    ).fetchall()
+    conn.close()
+    return _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
+
+
+def _cancel_curation_run(row: Any, run_id: str, uid: str, tenant_id: str) -> str:
+    """Cancel a pending or running curation run."""
+    if row["status"] not in {"pending", "running"}:
+        return _tool_error(
+            "cancel",
+            f"Run {run_id} is already {row['status']} and cannot be canceled.",
+            run=_row_to_curation_run(row),
+        )
+    ended_at = datetime.now(UTC).isoformat()
+    _get_curation_cancel_event(run_id).set()
+    _update_curation_run(run_id, tenant_id, CurationRunUpdate(status="canceled", ended_at=ended_at))
+    OperationQueue(DB_PATH).remove(run_id, tenant_id=tenant_id)
+    _publish_curation_status(run_id, "canceled", actor=uid)
+    return _tool_response(
+        ok=True,
+        action="cancel",
+        run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id)),
+    )
+
+
+def _archive_curation_run(row: Any, run_id: str, uid: str, tenant_id: str) -> str:
+    """Archive a terminal curation run."""
+    if row["status"] not in {"completed", "failed", "canceled"}:
+        return _tool_error(
+            "archive",
+            f"Run {run_id} must be terminal before it can be archived.",
+            run=_row_to_curation_run(row),
+        )
+    archived_at = datetime.now(UTC).isoformat()
+    _update_curation_run(run_id, tenant_id, CurationRunUpdate(archived_at=archived_at))
+    return _tool_response(
+        ok=True,
+        action="archive",
+        run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id)),
+    )
+
+
+def _curation_run_action(options: CurationRunAction, row: Any, run_id: str, uid: str, tenant_id: str) -> str:
+    """Answer a get/cancel/archive request for one existing curation run."""
+    if options.action == "get":
+        return _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
+    if options.action == "cancel":
+        return _cancel_curation_run(row, run_id, uid, tenant_id)
+    if options.action == "archive":
+        return _archive_curation_run(row, run_id, uid, tenant_id)
+    return _tool_error(options.action, f"Unsupported action: {options.action}")
+
+
+def _create_curation_run(options: CurationRunAction, uid: str, tenant_id: str) -> str:
+    """Validate and enqueue a new curation run."""
+    source_bank_id = options.source_bank_id or BANK_ID
+    if options.output_mode == "in_place" and options.tool_access != "operate":
+        return _tool_error("create", "output_mode=in_place requires tool_access=operate")
+    if options.output_mode == "in_place" and options.output_bank_id is not None:
+        return _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
+    if options.transcript_bundle and options.tool_access != "operate":
+        return _tool_error("create", "transcript_bundle requires tool_access=operate")
+
+    run_id = f"cur_{uuid.uuid4().hex[:12]}"
+    output_bank_id = _curation_run_output_bank(run_id, source_bank_id, options.output_mode, options.output_bank_id)
+    created_at = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    conn.execute(
+        """INSERT INTO curation_runs
+        (id, tenant_id, user_id, source_bank_id, output_bank_id, policy_mode, tool_access,
+         output_mode, status, instructions, transcript_bundle_json, session_id, project_path,
+         summary_json, error_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}', '{}', ?)""",
+        (
+            run_id,
+            tenant_id,
+            uid,
+            source_bank_id,
+            output_bank_id,
+            options.policy_mode,
+            options.tool_access,
+            options.output_mode,
+            options.instructions,
+            json.dumps(options.transcript_bundle) if options.transcript_bundle else None,
+            options.session_id,
+            options.project_path,
+            created_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    payload = {
+        "tenant_id": tenant_id,
+        "user_id": uid,
+        "source_bank_id": source_bank_id,
+        "output_bank_id": output_bank_id,
+        "policy_mode": options.policy_mode,
+        "tool_access": options.tool_access,
+        "output_mode": options.output_mode,
+        "instructions": options.instructions,
+        "run_clustering": options.run_clustering,
+        "transcript_bundle": options.transcript_bundle,
+        "session_id": options.session_id,
+        "project_path": options.project_path,
+    }
+    queue = OperationQueue(DB_PATH)
+    queue.enqueue(
+        Operation(
+            id=run_id,
+            type=OperationType.CREATE,
+            entity_type="curation_run",
+            entity_id=run_id,
+            payload=payload,
+        ),
+        tenant_id=tenant_id,
+    )
+    _publish_curation_status(run_id, "pending", actor=uid, output_bank_id=output_bank_id)
+    _start_curation_worker(run_id, payload)
+    run = _row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id))
+    return _tool_response(ok=True, action="create", run=run)
 
 
 @mcp.tool(output_schema=None)
@@ -4695,167 +5084,26 @@ def manage_curation_runs(
         JSON envelope with ``ok``, ``action``, and action-specific payload.
     """
     options = params.options
-    user_id = params.user_id
-    action = params.action
-    run_id = params.run_id
-    source_bank_id = params.source_bank_id
-    output_bank_id = params.output_bank_id
-    policy_mode = params.policy_mode
-    tool_access = params.tool_access
-    output_mode = params.output_mode
-    instructions = params.instructions
-    run_clustering = params.run_clustering
-    transcript_bundle = params.transcript_bundle
-    session_id = params.session_id
-    project_path = params.project_path
-
     if options is None:
-        if action is None:
+        options = _curation_options_from_params(params)
+        if options is None:
             return "Error: either 'options' or 'action' must be provided."
-        options = CurationRunAction(
-            action=action,
-            run_id=run_id,
-            source_bank_id=source_bank_id,
-            output_bank_id=output_bank_id,
-            policy_mode=policy_mode if policy_mode is not None else "rebalance",
-            tool_access=tool_access if tool_access is not None else "observe",
-            output_mode=output_mode if output_mode is not None else "reviewable_output",
-            instructions=instructions,
-            run_clustering=run_clustering if run_clustering is not None else False,
-            transcript_bundle=transcript_bundle,
-            session_id=session_id,
-            project_path=project_path,
-        )
 
     init_db()
-    uid = user_id or USER_ID
+    uid = params.user_id or USER_ID
     tenant_id = get_current_account_id()
 
     if options.action == "create":
-        source_bank_id = options.source_bank_id or BANK_ID
-        if options.output_mode == "in_place" and options.tool_access != "operate":
-            res = _tool_error("create", "output_mode=in_place requires tool_access=operate")
-        elif options.output_mode == "in_place" and options.output_bank_id is not None:
-            res = _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
-        elif options.transcript_bundle and options.tool_access != "operate":
-            res = _tool_error("create", "transcript_bundle requires tool_access=operate")
-        else:
-            run_id = f"cur_{uuid.uuid4().hex[:12]}"
-            output_bank_id = _curation_run_output_bank(
-                run_id, source_bank_id, options.output_mode, options.output_bank_id
-            )
-            created_at = datetime.now(UTC).isoformat()
-            conn = get_db_connection()
-            conn.execute(
-                """INSERT INTO curation_runs
-                (id, tenant_id, user_id, source_bank_id, output_bank_id, policy_mode, tool_access,
-                 output_mode, status, instructions, transcript_bundle_json, session_id, project_path,
-                 summary_json, error_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}', '{}', ?)""",
-                (
-                    run_id,
-                    tenant_id,
-                    uid,
-                    source_bank_id,
-                    output_bank_id,
-                    options.policy_mode,
-                    options.tool_access,
-                    options.output_mode,
-                    options.instructions,
-                    json.dumps(options.transcript_bundle) if options.transcript_bundle else None,
-                    options.session_id,
-                    options.project_path,
-                    created_at,
-                ),
-            )
-            conn.commit()
-            conn.close()
+        return _create_curation_run(options, uid, tenant_id)
+    if options.action == "list":
+        return _list_curation_runs(options, uid, tenant_id)
+    if not options.run_id:
+        return _tool_error(options.action, "run_id is required for this action")
 
-            payload = {
-                "tenant_id": tenant_id,
-                "user_id": uid,
-                "source_bank_id": source_bank_id,
-                "output_bank_id": output_bank_id,
-                "policy_mode": options.policy_mode,
-                "tool_access": options.tool_access,
-                "output_mode": options.output_mode,
-                "instructions": options.instructions,
-                "run_clustering": options.run_clustering,
-                "transcript_bundle": options.transcript_bundle,
-                "session_id": options.session_id,
-                "project_path": options.project_path,
-            }
-            queue = OperationQueue(DB_PATH)
-            queue.enqueue(
-                Operation(
-                    id=run_id,
-                    type=OperationType.CREATE,
-                    entity_type="curation_run",
-                    entity_id=run_id,
-                    payload=payload,
-                ),
-                tenant_id=tenant_id,
-            )
-            _publish_curation_status(run_id, "pending", actor=uid, output_bank_id=output_bank_id)
-            _start_curation_worker(run_id, payload)
-            run = _row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id))
-            res = _tool_response(ok=True, action="create", run=run)
-
-    elif options.action == "list":
-        conn = get_db_connection()
-        rows = conn.execute(
-            "SELECT * FROM curation_runs WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ?",
-            (uid, tenant_id, options.limit),
-        ).fetchall()
-        conn.close()
-        res = _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
-
-    elif not options.run_id:
-        res = _tool_error(options.action, "run_id is required for this action")
-
-    else:
-        row = _fetch_curation_run(uid, tenant_id, options.run_id)
-        if row is None:
-            res = _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
-        elif options.action == "get":
-            res = _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
-        elif options.action == "cancel":
-            if row["status"] not in {"pending", "running"}:
-                res = _tool_error(
-                    "cancel",
-                    f"Run {options.run_id} is already {row['status']} and cannot be canceled.",
-                    run=_row_to_curation_run(row),
-                )
-            else:
-                ended_at = datetime.now(UTC).isoformat()
-                _get_curation_cancel_event(options.run_id).set()
-                _update_curation_run(options.run_id, tenant_id, CurationRunUpdate(status="canceled", ended_at=ended_at))
-                OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
-                _publish_curation_status(options.run_id, "canceled", actor=uid)
-                res = _tool_response(
-                    ok=True,
-                    action="cancel",
-                    run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
-                )
-        elif options.action == "archive":
-            if row["status"] not in {"completed", "failed", "canceled"}:
-                res = _tool_error(
-                    "archive",
-                    f"Run {options.run_id} must be terminal before it can be archived.",
-                    run=_row_to_curation_run(row),
-                )
-            else:
-                archived_at = datetime.now(UTC).isoformat()
-                _update_curation_run(options.run_id, tenant_id, CurationRunUpdate(archived_at=archived_at))
-                res = _tool_response(
-                    ok=True,
-                    action="archive",
-                    run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
-                )
-        else:
-            res = _tool_error(options.action, f"Unsupported action: {options.action}")
-
-    return res
+    row = _fetch_curation_run(uid, tenant_id, options.run_id)
+    if row is None:
+        return _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
+    return _curation_run_action(options, row, options.run_id, uid, tenant_id)
 
 
 # =============================================================================
@@ -5314,67 +5562,89 @@ class InjectionView:
     project: str | None = None
 
 
+def _memory_context_lines(memories: list[HybridResult]) -> list[str]:
+    """Render the surfaced memories as a bulleted context section."""
+    if not memories:
+        return []
+    lines = [f"[Relevant Context - {len(memories)} memories surfaced]"]
+    for mem in memories:
+        snippet = (mem.content or "")[:MEMORY_SNIPPET_CHARS]
+        if len(mem.content or "") > MEMORY_SNIPPET_CHARS:
+            snippet += "..."
+        lines.append(f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}")
+    return lines
+
+
+def _context_block_lines(
+    uid: str,
+    tenant_id: str,
+    terms: list[str],
+    agent_id: str | None,
+    project: str | None,
+) -> list[str]:
+    """Render every non-empty context block, falling back to term-matched notes."""
+    try:
+        all_blocks = get_context_block_agent(uid, tenant_id, agent_id, project).get_all_blocks()
+        if not all_blocks:
+            return []
+        lines = ["[Context Blocks]"]
+        for block in all_blocks:
+            label = block.get("label", "")
+            content = (block.get("content") or "").strip()
+            if content:
+                snippet = content[:CONTEXT_BLOCK_SNIPPET_CHARS] + (
+                    "..." if len(content) > CONTEXT_BLOCK_SNIPPET_CHARS else ""
+                )
+                lines.append(f"  [{label}] {snippet}")
+        return lines
+    except Exception:
+        # Fall back to term-matched block signals if full block fetch fails
+        sub_lines = _context_block_notes_for_terms(uid, terms)
+        if not sub_lines:
+            return []
+        return ["[Context Blocks]", *sub_lines]
+
+
+def _observation_lines(uid: str, tenant_id: str, agent_id: str | None, project: str | None) -> list[str]:
+    """Render the derived observations section, ranked by confidence and recency."""
+    observations = _active_observations(uid, tenant_id, agent_id=agent_id, project=project)
+    if not observations:
+        return []
+    lines = ["[Patterns]"]
+    for obs in observations:
+        lines.append(
+            f"- {obs['observation_text']} (evidence: {obs['evidence_count']}, "
+            f"confidence: {obs['confidence']:.2f}, version: {obs['version']})"
+        )
+    return lines
+
+
+def _join_sections(sections: list[list[str]]) -> list[str]:
+    """Join the non-empty sections, separating each with a single blank line."""
+    lines: list[str] = []
+    for section in sections:
+        if not section:
+            continue
+        if lines:
+            lines.append("")
+        lines.extend(section)
+    return lines
+
+
 def _format_injection_output(view: InjectionView) -> str:
-    memories = view.memories
-    uid = view.uid
-    tenant_id = view.tenant_id
-    terms = view.terms
-    agent_id = view.agent_id
-    project = view.project
     """Format memories and context block signals into a human-readable string.
 
     Always surfaces all non-empty context blocks (not just term-matched ones) so
     user_preferences and pending_items are visible regardless of query keywords.
     Returns an empty string when there is nothing relevant — no noise for the LLM.
     """
-    lines: list[str] = []
-    if memories:
-        lines.append(f"[Relevant Context - {len(memories)} memories surfaced]")
-        for mem in memories:
-            snippet = (mem.content or "")[:MEMORY_SNIPPET_CHARS]
-            if len(mem.content or "") > MEMORY_SNIPPET_CHARS:
-                snippet += "..."
-            lines.append(f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}")
-
-    # Always surface ALL non-empty context blocks, not just term-matched ones.
-    # A preference set days ago is still relevant even if its words aren't in
-    # today's query.
-    try:
-        all_blocks = get_context_block_agent(uid, tenant_id, agent_id, project).get_all_blocks()
-        if all_blocks:
-            if lines:
-                lines.append("")
-            lines.append("[Context Blocks]")
-            for block in all_blocks:
-                label = block.get("label", "")
-                content = (block.get("content") or "").strip()
-                if content:
-                    snippet = content[:CONTEXT_BLOCK_SNIPPET_CHARS] + (
-                        "..." if len(content) > CONTEXT_BLOCK_SNIPPET_CHARS else ""
-                    )
-                    lines.append(f"  [{label}] {snippet}")
-    except Exception:
-        # Fall back to term-matched block signals if full block fetch fails
-        sub_lines = _context_block_notes_for_terms(uid, terms)
-        if sub_lines:
-            if lines:
-                lines.append("")
-            lines.append("[Context Blocks]")
-            lines.extend(sub_lines)
-
-    # Derived layer: evidence-linked observations (recurring patterns) under
-    # a distinct Patterns section, ranked by confidence * recency.
-    observations = _active_observations(uid, tenant_id, agent_id=agent_id, project=project)
-    if observations:
-        if lines:
-            lines.append("")
-        lines.append("[Patterns]")
-        for obs in observations:
-            lines.append(
-                f"- {obs['observation_text']} (evidence: {obs['evidence_count']}, "
-                f"confidence: {obs['confidence']:.2f}, version: {obs['version']})"
-            )
-
+    lines = _join_sections(
+        [
+            _memory_context_lines(view.memories),
+            _context_block_lines(view.uid, view.tenant_id, view.terms, view.agent_id, view.project),
+            _observation_lines(view.uid, view.tenant_id, view.agent_id, view.project),
+        ]
+    )
     # Return empty string when nothing is relevant — cleaner than a noisy
     # "0 memories surfaced" message that clutters the LLM's context.
     return "\n".join(lines) if lines else ""
@@ -6130,13 +6400,8 @@ def _start_sync_thread() -> None:
     logger.info("Sync thread started (interval=%ss, node=%s)", interval, node_id)
 
 
-def _run_scheduled_maintenance_gc() -> None:
-    """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
-    backend = get_backend()
-    if backend is None:
-        logger.warning("Maintenance/GC skipped: no backend initialised")
-        return
-
+def _active_maintenance_pairs(backend: Any) -> list[tuple[str, str, str]] | None:
+    """Collect every live (user_id, tenant_id, bank_id) triple; None when the query fails."""
     pairs: list[tuple[str, str, str]] = []
     try:
         with backend.connection() as conn, conn.cursor() as cur:
@@ -6154,8 +6419,12 @@ def _run_scheduled_maintenance_gc() -> None:
                     pairs.append((uid, tid, bid))
     except Exception:
         logger.exception("Failed to query user/tenant/bank triples for maintenance")
-        return
+        return None
+    return pairs
 
+
+def _ghost_tenants(backend: Any, pairs: list[tuple[str, str, str]]) -> set[str]:
+    """Every tenant that still holds memory rows, falling back to the maintenance pairs."""
     ghost_tenants: set[str] = set()
     try:
         with backend.connection() as conn, conn.cursor() as cur:
@@ -6167,51 +6436,59 @@ def _run_scheduled_maintenance_gc() -> None:
                     ghost_tenants.add(tid)
     except Exception:
         logger.debug("ghost tenant query failed, falling back to maintenance pairs")
-        ghost_tenants = {tid for _, tid, _ in pairs}
+        return {tid for _, tid, _ in pairs}
+    return ghost_tenants
 
+
+def _distill_context_blocks(uid: str, tid: str) -> None:
+    """Auto-distil the user's context blocks after maintenance; failures are non-fatal."""
+    try:
+        distill_res = auto_distill_context_blocks(uid, tid)
+        if distill_res.get("distilled_blocks"):
+            logger.info(
+                "Auto-distilled context blocks for user=%s tenant=%s: %s",
+                uid,
+                tid,
+                distill_res["distilled_blocks"],
+            )
+    except Exception:
+        logger.debug("Auto-distill context blocks failed (non-fatal)", exc_info=True)
+
+
+def _run_maintenance_for_pairs(pairs: list[tuple[str, str, str]]) -> None:
+    """Run the maintenance job for every active user/tenant/bank triple."""
     if not pairs:
-        logger.info("Maintenance/GC: no active user/tenant/bank triples found, skipping maintenance")
-    else:
-        logger.info("Maintenance/GC starting for %d user/tenant/bank triple(s)", len(pairs))
+        return
+    maintenance_modes = ["consolidate", "archive_stale", "synthesize", "prune_low_relevance", "enhanced_synthesize"]
+    job = MemoryMaintenanceJob()
+    for uid, tid, bid in pairs:
+        try:
+            config = MaintenanceConfig(
+                tenant_id=tid,
+                user_id=uid,
+                bank_id=bid,
+                modes=maintenance_modes,
+            )
+            stats = job.run(config)
+            logger.info(
+                "Maintenance complete for user=%s tenant=%s bank=%s: %d dupes found, "
+                "%d auto-merged, %d stale archived, %d insights generated in %.2fs",
+                uid,
+                tid,
+                bid,
+                stats.duplicates_found,
+                stats.duplicates_auto_consolidated,
+                stats.stale_archived,
+                stats.insights_generated,
+                stats.maintenance_duration_seconds,
+            )
+            _distill_context_blocks(uid, tid)
+        except Exception:
+            logger.exception("Maintenance failed for user=%s tenant=%s bank=%s", uid, tid, bid)
 
-    if pairs:
-        maintenance_modes = ["consolidate", "archive_stale", "synthesize", "prune_low_relevance", "enhanced_synthesize"]
-        job = MemoryMaintenanceJob()
-        for uid, tid, bid in pairs:
-            try:
-                config = MaintenanceConfig(
-                    tenant_id=tid,
-                    user_id=uid,
-                    bank_id=bid,
-                    modes=maintenance_modes,
-                )
-                stats = job.run(config)
-                logger.info(
-                    "Maintenance complete for user=%s tenant=%s bank=%s: %d dupes found, "
-                    "%d auto-merged, %d stale archived, %d insights generated in %.2fs",
-                    uid,
-                    tid,
-                    bid,
-                    stats.duplicates_found,
-                    stats.duplicates_auto_consolidated,
-                    stats.stale_archived,
-                    stats.insights_generated,
-                    stats.maintenance_duration_seconds,
-                )
-                try:
-                    distill_res = auto_distill_context_blocks(uid, tid)
-                    if distill_res.get("distilled_blocks"):
-                        logger.info(
-                            "Auto-distilled context blocks for user=%s tenant=%s: %s",
-                            uid,
-                            tid,
-                            distill_res["distilled_blocks"],
-                        )
-                except Exception:
-                    logger.debug("Auto-distill context blocks failed (non-fatal)", exc_info=True)
-            except Exception:
-                logger.exception("Maintenance failed for user=%s tenant=%s bank=%s", uid, tid, bid)
 
+def _run_gc_for_tenants(pairs: list[tuple[str, str, str]]) -> None:
+    """Run memory GC once per tenant that appears in the maintenance pairs."""
     seen_tenants: set[str] = set()
     for _, tid, _ in pairs:
         if tid in seen_tenants:
@@ -6234,6 +6511,9 @@ def _run_scheduled_maintenance_gc() -> None:
         except Exception:
             logger.exception("GC failed for tenant=%s", tid)
 
+
+def _run_edge_decay_for_tenants(pairs: list[tuple[str, str, str]]) -> None:
+    """Update edge decay and prune stale edges once per tenant."""
     edge_tenants: set[str] = set()
     for _, tid, _ in pairs:
         if tid in edge_tenants:
@@ -6257,6 +6537,9 @@ def _run_scheduled_maintenance_gc() -> None:
         except Exception:
             logger.exception("Edge decay/prune failed for tenant=%s", tid)
 
+
+def _run_ghost_cleanup_for_tenants(ghost_tenants: set[str]) -> None:
+    """Run ghost cleanup for every tenant that still holds memory rows."""
     for tid in ghost_tenants:
         try:
             ghost_stats = run_ghost_cleanup(tid)
@@ -6271,13 +6554,42 @@ def _run_scheduled_maintenance_gc() -> None:
         except Exception:
             logger.exception("Ghost cleanup failed for tenant=%s", tid)
 
-    if _oauth_base_url:
-        try:
-            purged = oauth_store.purge_expired(DB_PATH)
-            if purged:
-                logger.info("OAuth store purged %d expired code/token row(s)", purged)
-        except Exception:
-            logger.warning("OAuth store purge failed (non-fatal)", exc_info=True)
+
+def _purge_expired_oauth_rows() -> None:
+    """Purge expired OAuth codes and tokens when the OAuth surface is enabled."""
+    if not _oauth_base_url:
+        return
+    try:
+        purged = oauth_store.purge_expired(DB_PATH)
+        if purged:
+            logger.info("OAuth store purged %d expired code/token row(s)", purged)
+    except Exception:
+        logger.warning("OAuth store purge failed (non-fatal)", exc_info=True)
+
+
+def _run_scheduled_maintenance_gc() -> None:
+    """Run maintenance + GC for all known (user_id, tenant_id) pairs."""
+    backend = get_backend()
+    if backend is None:
+        logger.warning("Maintenance/GC skipped: no backend initialised")
+        return
+
+    pairs = _active_maintenance_pairs(backend)
+    if pairs is None:
+        return
+
+    ghost_tenants = _ghost_tenants(backend, pairs)
+
+    if not pairs:
+        logger.info("Maintenance/GC: no active user/tenant/bank triples found, skipping maintenance")
+    else:
+        logger.info("Maintenance/GC starting for %d user/tenant/bank triple(s)", len(pairs))
+
+    _run_maintenance_for_pairs(pairs)
+    _run_gc_for_tenants(pairs)
+    _run_edge_decay_for_tenants(pairs)
+    _run_ghost_cleanup_for_tenants(ghost_tenants)
+    _purge_expired_oauth_rows()
 
     logger.info("Maintenance/GC cycle complete")
 
@@ -6591,62 +6903,20 @@ def query_memories_temporal(
     )
 
 
-@mcp.tool(output_schema=None)
-def get_system_status(
-    params: Annotated[
-        GetSystemStatusParams,
-        Field(description='Every argument for get_system_status, sent as {"params": {...}}.'),
-    ],
-) -> str:
-    """
-    Get system health, memory statistics, and temporal trends.
+def _system_status_options(params: GetSystemStatusParams) -> SystemStatusOptions:
+    """Build the status options from the flat tool arguments."""
+    return SystemStatusOptions(
+        **_flat_kwargs(
+            include_trends=params.include_trends,
+            timeframe=params.timeframe,
+            include_cache_metrics=params.include_cache_metrics,
+            enforce_hard_caps=params.enforce_hard_caps,
+        )
+    )
 
-    Arguments travel in a single ``params`` object. The MCP call shape is
-    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
-    property instead of flattening its fields, so a status read is
-    ``{"params": {"include_trends": true}}``.
 
-    Args:
-        params: ``GetSystemStatusParams`` — include_trends, timeframe,
-            include_cache_metrics, and enforce_hard_caps. Each field's
-            description is advertised in the tool schema.
-
-    Returns:
-        JSON payload of health, counts, and optional trend/cache sections.
-    """
-    options = params.options
-    user_id = params.user_id
-    include_trends = params.include_trends
-    timeframe = params.timeframe
-    include_cache_metrics = params.include_cache_metrics
-    enforce_hard_caps = params.enforce_hard_caps
-
-    uid = user_id or USER_ID
-    if options is None:
-        kwargs: dict[str, Any] = {}
-        if include_trends is not None:
-            kwargs["include_trends"] = include_trends
-        if timeframe is not None:
-            kwargs["timeframe"] = timeframe
-        if include_cache_metrics is not None:
-            kwargs["include_cache_metrics"] = include_cache_metrics
-        if enforce_hard_caps is not None:
-            kwargs["enforce_hard_caps"] = enforce_hard_caps
-        opts = SystemStatusOptions(**kwargs)
-    else:
-        opts = options
-    tenant_id = get_current_account_id()
-    conn = get_db_connection()
-    # Basic stats
-    count = (
-        conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, tenant_id)).fetchone()
-        or (0,)
-    )[0]
-    scope_counts = conn.execute(
-        "SELECT scope, COUNT(*) AS scope_count FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
-        (uid, tenant_id),
-    ).fetchall()
-    # Maintenance stats (lightweight — uses existing open conn)
+def _maintenance_stats(conn: Any) -> dict[str, Any]:
+    """Summarize the maintenance events recorded for this database."""
     try:
         maintenance_rows = conn.execute(
             "SELECT event_type, COUNT(*) as cnt FROM events WHERE event_type LIKE ? GROUP BY event_type",
@@ -6663,7 +6933,7 @@ def get_system_status(
         total_events = sum(by_event_type.values())
         reviews = sum(v for k, v in by_event_type.items() if "maintenance_review" in k)
         insights = by_event_type.get("maintenance_insight", 0)
-        maintenance_stats = {
+        return {
             "total_events": total_events,
             "reviews_flagged": reviews,
             "insights_generated": insights,
@@ -6671,18 +6941,19 @@ def get_system_status(
             "by_type": by_event_type,
         }
     except Exception:
-        maintenance_stats = {"error": "Cannot query maintenance events"}
+        return {"error": "Cannot query maintenance events"}
 
-    # Last capture time (lightweight — uses existing open conn)
+
+def _memory_health_metrics(conn: Any, uid: str, tenant_id: str) -> dict[str, Any]:
+    """Last capture time, stale count, and category breakdown for the user's memories."""
     try:
-        last_cap = (
+        last_capture_time = (
             conn.execute(
                 "SELECT MAX(created_at) FROM memories WHERE user_id = ? AND tenant_id = ?",
                 (uid, tenant_id),
             ).fetchone()
             or (None,)
         )[0]
-        last_capture_time = last_cap
     except Exception:
         last_capture_time = None
 
@@ -6711,17 +6982,135 @@ def get_system_status(
     except Exception:
         by_category = {}
 
+    return {
+        "last_capture_time": last_capture_time,
+        "stale_count": stale_count,
+        "by_category": by_category,
+    }
+
+
+def _onboarding_payload() -> dict[str, Any]:
+    """The self-bootstrap hint returned when the memory store is empty."""
+    return {
+        "status": "empty",
+        "hint": (
+            "Memory store is empty. Three ways to start: "
+            "(1) Set standing preferences — manage_context_blocks(params={'action': 'update', "
+            "'label': 'user_preferences', 'content': '<your preferences>'}). "
+            "(2) Store a fact or decision — manage_memories(params={'action': 'store', "
+            "'content': '<what to remember>', 'store_options': {'category': 'preference', "
+            "'scope': 'trait', 'retention': 'long_term', 'importance': 0.8}}). "
+            "(3) Process a conversation — process_session_transcript(params={'session_id': '...', "
+            "'messages': [...]})."
+        ),
+    }
+
+
+def _add_cache_metrics(result: dict[str, Any], opts: SystemStatusOptions, count: int) -> None:
+    """Attach the memory-budget, narrative-cache, and TF-IDF cache metrics."""
+    # Memory budget status
+    result["memory_budget"] = {
+        "current_count": count,
+        "max_per_tenant": DEFAULT_MAX_MEMORY_PER_TENANT,
+        "utilization_pct": round((count / DEFAULT_MAX_MEMORY_PER_TENANT) * 100, 2),
+        "hard_cap_enforced": opts.enforce_hard_caps,
+    }
+    # Narrative cache metrics (persistent)
+    try:
+        narrative_cache = get_narrative_cache()
+        cache_stats = narrative_cache.stats()
+        result["cache_metrics"] = {
+            "narrative_cache": {
+                "type": "persistent",
+                "size": cache_stats["size"],
+                "max_entries": cache_stats["max_entries"],
+                "ttl_seconds": cache_stats["ttl_seconds"],
+                "hits": cache_stats["hits"],
+                "misses": cache_stats["misses"],
+                "evictions": cache_stats["eviction_count"],
+                "utilization_pct": round((cache_stats["size"] / cache_stats["max_entries"]) * 100, 2),
+            },
+            "reflection_narrative_in_process_cache": {
+                "type": "in_process",
+                "size": len(_reflection_narrative_cache),
+            },
+        }
+    except Exception:
+        result["cache_metrics"] = {
+            "narrative_cache": {"type": "persistent", "error": "Unable to retrieve narrative cache metrics"},
+            "reflection_narrative_in_process_cache": {
+                "type": "in_process",
+                "size": len(_reflection_narrative_cache),
+            },
+        }
+    # TF-IDF cache metrics
+    try:
+        retriever = get_hybrid_retriever()
+        tfidf_cache_size = len(retriever._tfidf_cache)
+        result["cache_metrics"]["tfidf_cache"] = {
+            "size": tfidf_cache_size,
+            "max_size": DEFAULT_MAX_TFIDF_CACHE_SIZE,
+            "utilization_pct": round((tfidf_cache_size / DEFAULT_MAX_TFIDF_CACHE_SIZE) * 100, 2),
+        }
+        # Retrieval debug info
+        result["retrieval_debug"] = {
+            "tfidf_cache_size": tfidf_cache_size,
+            "fast_path_enabled": True,
+        }
+    except Exception:
+        result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
+
+
+@mcp.tool(output_schema=None)
+def get_system_status(
+    params: Annotated[
+        GetSystemStatusParams,
+        Field(description='Every argument for get_system_status, sent as {"params": {...}}.'),
+    ],
+) -> str:
+    """
+    Get system health, memory statistics, and temporal trends.
+
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a status read is
+    ``{"params": {"include_trends": true}}``.
+
+    Args:
+        params: ``GetSystemStatusParams`` — include_trends, timeframe,
+            include_cache_metrics, and enforce_hard_caps. Each field's
+            description is advertised in the tool schema.
+
+    Returns:
+        JSON payload of health, counts, and optional trend/cache sections.
+    """
+    opts = params.options or _system_status_options(params)
+    uid = params.user_id or USER_ID
+    tenant_id = get_current_account_id()
+    conn = get_db_connection()
+    # Basic stats
+    count = (
+        conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, tenant_id)).fetchone()
+        or (0,)
+    )[0]
+    scope_counts = conn.execute(
+        "SELECT scope, COUNT(*) AS scope_count FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
+        (uid, tenant_id),
+    ).fetchall()
+    # Maintenance stats (lightweight — uses existing open conn)
+    maintenance_stats = _maintenance_stats(conn)
+    health_metrics = _memory_health_metrics(conn, uid, tenant_id)
     conn.close()
     result: dict[str, Any] = {
         "status": "healthy",
         "memory_count": count,
         "by_scope": {row["scope"]: row["scope_count"] for row in scope_counts},
-        "stale_count": stale_count,
-        "by_category": by_category,
+        "stale_count": health_metrics["stale_count"],
+        "by_category": health_metrics["by_category"],
         "last_injection": dict(_last_injection_stats) if _last_injection_stats else None,
         "tenant_id": tenant_id,
         "maintenance_stats": maintenance_stats,
-        "last_capture_time": last_capture_time,
+        "last_capture_time": health_metrics["last_capture_time"],
         "payload_budget": {
             "default_lane_weights": {k.name.lower(): v for k, v in DEFAULT_LANE_WEIGHTS.items()},
             "min_lane_chars": MIN_LANE_CHARS,
@@ -6730,19 +7119,7 @@ def get_system_status(
     # Onboarding hint when the store is empty — gives agents a self-bootstrap path
     # so a fresh install doesn't just silently return nothing on first use.
     if count == 0:
-        result["onboarding"] = {
-            "status": "empty",
-            "hint": (
-                "Memory store is empty. Three ways to start: "
-                "(1) Set standing preferences — manage_context_blocks(params={'action': 'update', "
-                "'label': 'user_preferences', 'content': '<your preferences>'}). "
-                "(2) Store a fact or decision — manage_memories(params={'action': 'store', "
-                "'content': '<what to remember>', 'store_options': {'category': 'preference', "
-                "'scope': 'trait', 'retention': 'long_term', 'importance': 0.8}}). "
-                "(3) Process a conversation — process_session_transcript(params={'session_id': '...', "
-                "'messages': [...]})."
-            ),
-        }
+        result["onboarding"] = _onboarding_payload()
     # Add temporal stats/trends if requested
     if opts.include_trends:
         builder = get_temporal_query_builder()
@@ -6751,57 +7128,7 @@ def get_system_status(
         result["trend_analysis"] = builder.analyze_trends(user_id=uid, timeframe=opts.timeframe)
     # Add cache and budget metrics if requested
     if opts.include_cache_metrics:
-        # Memory budget status
-        result["memory_budget"] = {
-            "current_count": count,
-            "max_per_tenant": DEFAULT_MAX_MEMORY_PER_TENANT,
-            "utilization_pct": round((count / DEFAULT_MAX_MEMORY_PER_TENANT) * 100, 2),
-            "hard_cap_enforced": opts.enforce_hard_caps,
-        }
-        # Narrative cache metrics (persistent)
-        try:
-            narrative_cache = get_narrative_cache()
-            cache_stats = narrative_cache.stats()
-            result["cache_metrics"] = {
-                "narrative_cache": {
-                    "type": "persistent",
-                    "size": cache_stats["size"],
-                    "max_entries": cache_stats["max_entries"],
-                    "ttl_seconds": cache_stats["ttl_seconds"],
-                    "hits": cache_stats["hits"],
-                    "misses": cache_stats["misses"],
-                    "evictions": cache_stats["eviction_count"],
-                    "utilization_pct": round((cache_stats["size"] / cache_stats["max_entries"]) * 100, 2),
-                },
-                "reflection_narrative_in_process_cache": {
-                    "type": "in_process",
-                    "size": len(_reflection_narrative_cache),
-                },
-            }
-        except Exception:
-            result["cache_metrics"] = {
-                "narrative_cache": {"type": "persistent", "error": "Unable to retrieve narrative cache metrics"},
-                "reflection_narrative_in_process_cache": {
-                    "type": "in_process",
-                    "size": len(_reflection_narrative_cache),
-                },
-            }
-        # TF-IDF cache metrics
-        try:
-            retriever = get_hybrid_retriever()
-            tfidf_cache_size = len(retriever._tfidf_cache)
-            result["cache_metrics"]["tfidf_cache"] = {
-                "size": tfidf_cache_size,
-                "max_size": DEFAULT_MAX_TFIDF_CACHE_SIZE,
-                "utilization_pct": round((tfidf_cache_size / DEFAULT_MAX_TFIDF_CACHE_SIZE) * 100, 2),
-            }
-            # Retrieval debug info
-            result["retrieval_debug"] = {
-                "tfidf_cache_size": tfidf_cache_size,
-                "fast_path_enabled": True,
-            }
-        except Exception:
-            result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
+        _add_cache_metrics(result, opts, count)
     result["encryption"] = get_encryption_engine().get_status().to_dict()
     return json.dumps(result, indent=2)
 
@@ -7031,7 +7358,7 @@ def synthesize_profile(
 @mcp.tool(output_schema=None)
 def export_profile(
     user_id: str | None = None,
-    format: Literal["json", "markdown"] = "json",
+    output_format: Literal["json", "markdown"] = "json",
     agent_id: str | None = None,
     project: str | None = None,
 ) -> str:
@@ -7048,7 +7375,7 @@ def export_profile(
 
     Args:
         user_id: Optional user ID override.
-        format: ``json`` (signed envelope) or ``markdown`` (readable doc).
+        output_format: ``json`` (signed envelope) or ``markdown`` (readable doc).
         agent_id: Optional agent namespace lane to scope the export.
         project: Optional project namespace lane to scope the export.
 
@@ -7060,7 +7387,10 @@ def export_profile(
     tenant_id = get_current_account_id()
 
     try:
-        return _export(UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project), format=format)
+        return _export(
+            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            output_format=output_format,
+        )
     except Exception as exc:
         logger.exception("export_profile failed")
         return _tool_error("export_profile", str(exc))
@@ -9062,14 +9392,14 @@ def _ui_protected(fn):
 
 
 @mcp.custom_route("/ui/dashboard", methods=["GET"])
-async def ui_dashboard_endpoint(request: Any) -> Any:
+async def ui_dashboard_endpoint(_request: Any) -> Any:
     """Serve the modern interactive Foresight MCP UI Dashboard."""
 
     return HTMLResponse(_FORESIGHT_DASHBOARD_HTML)
 
 
 @mcp.custom_route("/ui/api/status", methods=["GET"])
-async def ui_api_status(request: Any) -> Any:
+async def ui_api_status(_request: Any) -> Any:
     """API endpoint for UI dashboard stats."""
 
     status_raw = get_system_status(GetSystemStatusParams())
@@ -9108,7 +9438,7 @@ async def ui_api_memories(request: Any) -> Any:
 
 @mcp.custom_route("/ui/api/context-blocks", methods=["GET"])
 @_ui_protected
-async def ui_api_context_blocks(request: Any) -> Any:
+async def ui_api_context_blocks(_request: Any) -> Any:
     """API endpoint for UI context blocks."""
 
     res = manage_context_blocks(ManageContextBlocksParams(action="list"))
@@ -9174,7 +9504,7 @@ async def ui_api_capture(request: Any) -> Any:
 
 @mcp.custom_route("/ui/api/maintenance", methods=["POST"])
 @_ui_protected
-async def ui_api_maintenance(request: Any) -> Any:
+async def ui_api_maintenance(_request: Any) -> Any:
     """API endpoint for triggering background maintenance and auto-distillation."""
 
     uid = USER_ID
@@ -9188,7 +9518,7 @@ async def ui_api_maintenance(request: Any) -> Any:
 
 @mcp.custom_route("/ui/api/benchmark", methods=["GET", "POST"])
 @_ui_protected
-async def ui_api_benchmark(request: Any) -> Any:
+async def ui_api_benchmark(_request: Any) -> Any:
     """API endpoint for running the Foresight Production Value & Proof Benchmark Suite."""
 
     try:
@@ -9201,7 +9531,7 @@ async def ui_api_benchmark(request: Any) -> Any:
 
 @mcp.custom_route("/ui/api/telemetry", methods=["GET"])
 @_ui_protected
-async def ui_api_telemetry(request: Any) -> Any:
+async def ui_api_telemetry(_request: Any) -> Any:
     """API endpoint for telemetry metrics and lifetime token savings."""
 
     telemetry = get_telemetry_store().get_summary()

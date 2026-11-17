@@ -14,7 +14,7 @@ RECOVERY_OVERHEAD_ALLOWANCE = 20
 
 
 @pytest.fixture(autouse=True)
-def setup_test_db(monkeypatch):
+def setup_test_db():
     """Setup test context with tenant context."""
 
     set_current_user_id("_recovery_test_user_")

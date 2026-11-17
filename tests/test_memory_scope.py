@@ -1,11 +1,10 @@
-from foresight.config import DEFAULT_USER_ID
-
 """Tests for explicit memory scoping (PIX-317)."""
 
 import asyncio
 
 import pytest
 
+from foresight.config import DEFAULT_USER_ID
 from foresight.tenant_context import (
     MemoryScope,
     get_current_account_id,

@@ -11,9 +11,6 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-logger = logging.getLogger(__name__)
-
-# NOTE: ListItem requires a child widget (Label/Static), not markup via update()
 from foresight.server import (
     SearchMemoriesParams,
     SearchOptions,
@@ -22,6 +19,8 @@ from foresight.server import (
     search_memories,
     store_memory,
 )
+
+logger = logging.getLogger(__name__)
 
 MEMORY_CATEGORIES = ["fact", "preference", "insight", "observation", "decision", "goal"]
 
@@ -36,6 +35,7 @@ CATEGORY_COLORS: dict[str, str] = {
 }
 
 
+# NOTE: ListItem requires a child widget (Label/Static), not markup via update()
 class MemoryItem(ListItem):
     """A single memory in the list."""
 

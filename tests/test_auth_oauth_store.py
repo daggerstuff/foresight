@@ -167,7 +167,7 @@ async def test_full_flow_survives_restart(db_path):
 # --- Degradation / isolation ---------------------------------------------
 
 
-async def test_memory_only_does_not_touch_store(tmp_path):
+async def test_memory_only_does_not_touch_store():
     """The memory-only sentinel must not probe or write to any store."""
     provider = ForesightOAuthProvider(base_url="http://localhost:8768", db_path=MEMORY_ONLY_DB)
     assert provider._store_available() is False

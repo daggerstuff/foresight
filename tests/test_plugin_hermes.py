@@ -81,11 +81,11 @@ class TestClient:
 
     def test_request_error_status(self):
         client = _Client(base_url="http://test-server:8764", api_key="", user_id="")
+        mock_send_result = (404, "Not Found", json.dumps({"detail": "no such memory"}).encode("utf-8"))
         with (
-            patch("plugins.hermes._send") as mock_send,
+            patch("plugins.hermes._send", return_value=mock_send_result),
             pytest.raises(RuntimeError, match="HTTP 404: no such memory"),
         ):
-            mock_send.return_value = (404, "Not Found", json.dumps({"detail": "no such memory"}).encode("utf-8"))
             client.request("GET", "/memories/missing")
 
     def test_request_connection_failure(self):

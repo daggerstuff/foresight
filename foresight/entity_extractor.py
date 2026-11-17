@@ -431,8 +431,8 @@ Output (raw JSON only, no markdown):
             prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=content[:max_context])
 
             if self.provider == "openai":
-                return await self._extract_openai_compat(prompt, content)
-            return await self._extract_anthropic(prompt, content)
+                return await self._extract_openai_compat(prompt)
+            return await self._extract_anthropic(prompt)
 
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
@@ -448,7 +448,7 @@ Output (raw JSON only, no markdown):
             logger.warning("LLM extraction failed, falling back to rules: %s", exc)
             return self._extract_rules_based(content)
 
-    async def _extract_anthropic(self, prompt: str, content: str) -> ExtractionResult:
+    async def _extract_anthropic(self, prompt: str) -> ExtractionResult:
         """Extract entities via Anthropic Messages API."""
         if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed")
@@ -473,9 +473,9 @@ Output (raw JSON only, no markdown):
         if data.get("stop_reason") == "max_tokens":
             logger.warning("Entity extraction hit max_tokens=%d; response truncated", self.max_tokens)
         json_text: str = data["content"][0]["text"]
-        return self._parse_llm_response(json_text, content)
+        return self._parse_llm_response(json_text)
 
-    async def _extract_openai_compat(self, prompt: str, content: str) -> ExtractionResult:
+    async def _extract_openai_compat(self, prompt: str) -> ExtractionResult:
         """Extract entities via OpenAI-compatible API (NVIDIA NIM, Azure, etc.)."""
         if not HAS_HTTPX:
             raise RuntimeError("httpx is not installed")
@@ -501,7 +501,7 @@ Output (raw JSON only, no markdown):
         if choice.get("finish_reason") == "length":
             logger.warning("Entity extraction hit max_tokens=%d; response truncated", self.max_tokens)
         json_text: str = choice["message"]["content"]
-        return self._parse_llm_response(json_text, content)
+        return self._parse_llm_response(json_text)
 
     @staticmethod
     def _structural_chars(text: str) -> Iterator[tuple[int, str]]:
@@ -559,7 +559,7 @@ Output (raw JSON only, no markdown):
                 best = parsed
         return best
 
-    def _parse_llm_response(self, json_text: str, content: str) -> ExtractionResult:
+    def _parse_llm_response(self, json_text: str) -> ExtractionResult:
         """Parse LLM JSON response into ExtractionResult."""
         json_text = self._FENCE_START_RE.sub("", json_text)
         json_text = self._FENCE_END_RE.sub("", json_text)

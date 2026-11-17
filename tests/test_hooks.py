@@ -167,7 +167,7 @@ def test_pre_hook_can_abort_operation():
     reg = get_memory_hook_registry()
     abort_hook_called = threading.Event()
 
-    def abort_handler(ctx: MemoryHookContext) -> HookResult:
+    def abort_handler(_ctx: MemoryHookContext) -> HookResult:
         abort_hook_called.set()
         return HookResult(abort=True, message="Blocked by policy")
 
@@ -187,7 +187,7 @@ def test_pre_hook_can_modify_context():
     reset_memory_hook_registry()
     reg = get_memory_hook_registry()
 
-    def modify_handler(ctx: MemoryHookContext) -> HookResult:
+    def modify_handler(_ctx: MemoryHookContext) -> HookResult:
         return HookResult(modified_context={"content": "modified content"})
 
     reg.register(MemoryHookType.PRE_STORE, modify_handler)
@@ -208,7 +208,7 @@ def test_multiple_pre_hooks_chain():
         order.append("first")
         return HookResult(modified_context={"content": f"{ctx.content} + first"})
 
-    def second(ctx: MemoryHookContext) -> HookResult:
+    def second(_ctx: MemoryHookContext) -> HookResult:
         order.append("second")
         return HookResult(modified_context={"content": f"{ctx.content} + second"})
 
@@ -228,10 +228,10 @@ def test_pre_hook_abort_stops_chain():
     reg = get_memory_hook_registry()
     second_called = threading.Event()
 
-    def blocking(ctx: MemoryHookContext) -> HookResult:
+    def blocking(_ctx: MemoryHookContext) -> HookResult:
         return HookResult(abort=True, message="blocked")
 
-    def second(ctx: MemoryHookContext) -> HookResult:
+    def second(_ctx: MemoryHookContext) -> HookResult:
         second_called.set()
         return HookResult()
 
@@ -250,7 +250,7 @@ def test_post_hook_is_fire_and_forget():
     reg = get_memory_hook_registry()
     post_called = threading.Event()
 
-    def post_handler(ctx: MemoryHookContext) -> HookResult:
+    def post_handler(_ctx: MemoryHookContext) -> HookResult:
         post_called.set()
         return HookResult(abort=True, message="should be ignored")
 
@@ -314,7 +314,7 @@ def test_async_handler_on_pre():
     reset_memory_hook_registry()
     reg = get_memory_hook_registry()
 
-    async def async_handler(ctx: MemoryHookContext) -> HookResult:
+    async def async_handler(_ctx: MemoryHookContext) -> HookResult:
         await asyncio.sleep(0.01)
         return HookResult(abort=True, message="async blocked")
 
@@ -334,7 +334,7 @@ def test_async_handler_on_post():
     reg = get_memory_hook_registry()
     done = threading.Event()
 
-    async def async_handler(ctx: MemoryHookContext) -> None:
+    async def async_handler(_ctx: MemoryHookContext) -> None:
         await asyncio.sleep(0.01)
         done.set()
 

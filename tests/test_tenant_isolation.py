@@ -34,17 +34,17 @@ def _make_temp_db(db_path: str) -> None:
 def test_tenant_isolation():
     """Tests that memories are isolated by tenant ID in store_memory and query_memories."""
     # Create temporary DBs for two tenants
-    tenant_db1 = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tenant_db2 = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tenant_db1.close()
-    tenant_db2.close()
-    _make_temp_db(tenant_db1.name)
-    _make_temp_db(tenant_db2.name)
+    tenant_db1_fd, tenant_db1 = tempfile.mkstemp(suffix=".db")
+    tenant_db2_fd, tenant_db2 = tempfile.mkstemp(suffix=".db")
+    os.close(tenant_db1_fd)
+    os.close(tenant_db2_fd)
+    _make_temp_db(tenant_db1)
+    _make_temp_db(tenant_db2)
 
     # Simulate Tenant A
     set_current_tenant_id("tenant_a")
     with (
-        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db1.name)),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db1)),
         patch("foresight.server.BANK_ID", "tenant_a"),
     ):
         result = store_memory(StoreMemoryParams(content="Confidential data for tenant A", user_id="user_a"))
@@ -53,7 +53,7 @@ def test_tenant_isolation():
     # Simulate Tenant B
     set_current_tenant_id("tenant_b")
     with (
-        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db2.name)),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db2)),
         patch("foresight.server.BANK_ID", "tenant_b"),
     ):
         result = store_memory(StoreMemoryParams(content="Confidential data for tenant B", user_id="user_b"))
@@ -62,7 +62,7 @@ def test_tenant_isolation():
     # Verify Tenant A cannot see Tenant B memory
     set_current_tenant_id("tenant_a")
     with (
-        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db1.name)),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db1)),
         patch("foresight.server.BANK_ID", "tenant_a"),
     ):
         results = query_memories(QueryMemoriesParams(query="tenant_b"))  # Search for tenant B memory
@@ -71,7 +71,7 @@ def test_tenant_isolation():
     # Verify Tenant B cannot see Tenant A memory
     set_current_tenant_id("tenant_b")
     with (
-        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db2.name)),
+        patch("foresight.server.get_db_connection", lambda: sqlite3.connect(tenant_db2)),
         patch("foresight.server.BANK_ID", "tenant_b"),
     ):
         results = query_memories(QueryMemoriesParams(query="tenant_a"))
@@ -79,8 +79,8 @@ def test_tenant_isolation():
 
     # Cleanup
     with contextlib.suppress(OSError):
-        os.unlink(tenant_db1.name)
+        os.unlink(tenant_db1)
     with contextlib.suppress(OSError):
-        os.unlink(tenant_db2.name)
+        os.unlink(tenant_db2)
 
     reset_tenant_context()

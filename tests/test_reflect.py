@@ -63,7 +63,7 @@ def test_reflect_returns_cited_answer():
 def test_reflect_extractive_fallback_without_llm(monkeypatch):
     """No LLM configured (or failing) → deterministic extractive answer, never fails."""
 
-    def _boom(*args, **kwargs):
+    def _boom(*_args, **_kwargs):
         raise llm_client.LLMError("no provider")
 
     monkeypatch.setattr(llm_client, "default_llm_call", _boom)
@@ -134,7 +134,7 @@ def test_reflect_cache_hit_costs_zero_retrieval(monkeypatch):
     _store(f"zero cost probe ({datetime.now(UTC).isoformat()})")
     _reflect("zero cost probe")
 
-    def _boom(*args, **kwargs):
+    def _boom(*_args, **_kwargs):
         raise AssertionError("retrieval ran on a cache hit")
 
     monkeypatch.setattr(retriever, "search", _boom)
@@ -171,7 +171,7 @@ def test_manage_mental_models_list_refresh_delete():
     assert gone["ok"] is False
 
 
-def test_stale_mental_model_self_heals(monkeypatch):
+def test_stale_mental_model_self_heals():
 
     _store(f"self heal memory ({datetime.now(UTC).isoformat()})")
     first = _reflect("self heal memory")

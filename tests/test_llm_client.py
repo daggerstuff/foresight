@@ -427,7 +427,7 @@ def test_tenant_llm_client_retry_on_provider_error(monkeypatch: pytest.MonkeyPat
     call_count = 0
     max_attempts = 3
 
-    def flaky_complete(_prompt: str, *, max_tokens: int = DEFAULT_LLM_MAX_TOKENS) -> str:
+    def flaky_complete(_prompt: str, **_kwargs: object) -> str:
         nonlocal call_count
         call_count += 1
         if call_count < max_attempts:

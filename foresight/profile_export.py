@@ -143,14 +143,14 @@ def _render_markdown(document: dict[str, Any]) -> str:
 def export_profile(
     scope: UserScope,
     *,
-    format: str = "json",
+    output_format: str = "json",
     include_signature: bool = True,
 ) -> str:
     """Export the profile as a signed JSON envelope or Markdown document."""
     document = build_profile_document(scope)
     signature = sign_document(document) if include_signature else None
 
-    if format == "markdown":
+    if output_format == "markdown":
         text = _render_markdown(document)
         if not include_signature:
             text = text.rsplit("signature:", 1)[0].rstrip()

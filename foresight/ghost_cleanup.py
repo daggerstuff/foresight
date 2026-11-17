@@ -33,6 +33,116 @@ class CleanupStats:
     oldest_ghost_deleted: str | None = None
 
 
+def _expired_ghost_count(conn, tenant_id: str, cutoff_iso: str) -> tuple[int, str | None]:
+    """Count ghosts older than the TTL and report the oldest one's timestamp."""
+    cursor = conn.execute(
+        """
+        SELECT COUNT(*) as count,
+               MIN(created_at) as oldest
+        FROM memories
+        WHERE tenant_id = ? AND is_ghost = 1
+        AND created_at < ?
+        """,
+        (tenant_id, cutoff_iso),
+    )
+    row = cursor.fetchone()
+    return (row[0] if row else 0), (row[1] if row else None)
+
+
+def _expired_ghost_bytes(conn, tenant_id: str, cutoff_iso: str) -> int:
+    """Estimate the bytes freed by deleting the expired ghosts."""
+    cursor = conn.execute(
+        """
+        SELECT SUM(LENGTH(content)) as total_bytes
+        FROM memories
+        WHERE tenant_id = ? AND is_ghost = 1
+        AND created_at < ?
+        """,
+        (tenant_id, cutoff_iso),
+    )
+    row = cursor.fetchone()
+    return row[0] if row and row[0] else 0
+
+
+def _delete_expired_ghosts(
+    conn,
+    tenant_id: str,
+    cutoff_iso: str,
+    total_found: int,
+    max_batch_size: int,
+) -> int:
+    """Delete the expired ghosts in batches and return how many rows went."""
+    deleted = 0
+    while deleted < total_found:
+        cursor = conn.execute(
+            """
+            DELETE FROM memories
+            WHERE id IN (
+                SELECT id FROM memories
+                WHERE tenant_id = ? AND is_ghost = 1
+                AND created_at < ?
+                LIMIT ?
+            )
+            """,
+            (tenant_id, cutoff_iso, max_batch_size),
+        )
+        batch_deleted = cursor.rowcount
+        deleted += batch_deleted
+
+        if batch_deleted < max_batch_size:
+            break
+    return deleted
+
+
+def _clean_orphaned_rows(conn) -> None:
+    """Drop rows left dangling by the ghost deletes; tables without the columns are skipped."""
+    for tbl, orphan_sql in _ORPHAN_CLEANUP_SQL.items():
+        try:
+            cursor = conn.execute(orphan_sql)
+            if cursor.rowcount:
+                logger.info(f"Cleaned {cursor.rowcount} orphaned {tbl} rows")
+        except Exception as e:
+            logger.debug(f"Orphan cleanup skipped for {tbl}: {e}")
+    try:
+        cursor = conn.execute(
+            """
+            DELETE FROM memory_relationships
+            WHERE source_memory_id NOT IN (SELECT id FROM memories)
+               OR target_memory_id NOT IN (SELECT id FROM memories)
+            """,
+        )
+        if cursor.rowcount:
+            logger.info(f"Cleaned {cursor.rowcount} orphaned memory_relationships rows")
+    except Exception as e:
+        logger.debug(f"Orphan cleanup skipped for memory_relationships: {e}")
+    try:
+        purged = purge_dead_synthesized_from_ids(conn)
+        if purged:
+            logger.info(f"Cleaned dead synthesized_from IDs in {purged} memories")
+    except Exception as e:
+        logger.debug(f"Orphan cleanup skipped for synthesized_from: {e}")
+    conn.commit()
+
+
+def _delete_orphaned_entity_links(conn, tenant_id: str, cutoff_iso: str) -> None:
+    """Delete entity links whose memory was one of the expired ghosts."""
+    cursor = conn.execute(
+        """
+        DELETE FROM memory_entity_links
+        WHERE memory_id IN (
+            SELECT id FROM memories
+            WHERE tenant_id = ? AND is_ghost = 1
+            AND created_at < ?
+        )
+        """,
+        (tenant_id, cutoff_iso),
+    )
+    orphaned_links = cursor.rowcount
+    if orphaned_links > 0:
+        logger.info(f"Cleaned up {orphaned_links} orphaned entity links")
+        conn.commit()
+
+
 class GhostMemoryCleanup:
     """
     Service for cleaning up ghost (archived) memories.
@@ -77,113 +187,35 @@ class GhostMemoryCleanup:
         start_time = datetime.now(UTC)
         stats = CleanupStats()
 
-        cutoff_date = start_time - timedelta(days=self.ghost_ttl_days)
+        cutoff_iso = (start_time - timedelta(days=self.ghost_ttl_days)).isoformat()
 
         pool = get_pool(self.db_path)
         conn = pool.acquire()
 
         try:
-            # Count ghosts older than TTL
-            cursor = conn.execute(
-                """
-                SELECT COUNT(*) as count,
-                       MIN(created_at) as oldest
-                FROM memories
-                WHERE tenant_id = ? AND is_ghost = 1
-                AND created_at < ?
-                """,
-                (tenant_id, cutoff_date.isoformat()),
-            )
-            row = cursor.fetchone()
-            stats.ghost_memories_found = row[0] if row else 0
-            if row and row[1]:
-                stats.oldest_ghost_deleted = row[1]
+            stats.ghost_memories_found, oldest_ghost = _expired_ghost_count(conn, tenant_id, cutoff_iso)
+            if oldest_ghost:
+                stats.oldest_ghost_deleted = oldest_ghost
 
             if stats.ghost_memories_found == 0:
                 logger.info("No ghost memories found for cleanup")
                 return stats
 
-            # Estimate bytes freed (approximate based on content length)
-            cursor = conn.execute(
-                """
-                SELECT SUM(LENGTH(content)) as total_bytes
-                FROM memories
-                WHERE tenant_id = ? AND is_ghost = 1
-                AND created_at < ?
-                """,
-                (tenant_id, cutoff_date.isoformat()),
+            stats.bytes_freed = _expired_ghost_bytes(conn, tenant_id, cutoff_iso)
+
+            deleted = _delete_expired_ghosts(
+                conn,
+                tenant_id,
+                cutoff_iso,
+                stats.ghost_memories_found,
+                max_batch_size,
             )
-            row = cursor.fetchone()
-            stats.bytes_freed = row[0] if row and row[0] else 0
-
-            # Delete in batches
-            deleted = 0
-            while deleted < stats.ghost_memories_found:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM memories
-                    WHERE id IN (
-                        SELECT id FROM memories
-                        WHERE tenant_id = ? AND is_ghost = 1
-                        AND created_at < ?
-                        LIMIT ?
-                    )
-                    """,
-                    (tenant_id, cutoff_date.isoformat(), max_batch_size),
-                )
-                batch_deleted = cursor.rowcount
-                deleted += batch_deleted
-
-                if batch_deleted < max_batch_size:
-                    break
-
             conn.commit()
             stats.ghost_memories_deleted = deleted
 
             # Clean dependents orphaned by the ghost deletes (no FK cascade).
-            for tbl, orphan_sql in _ORPHAN_CLEANUP_SQL.items():
-                try:
-                    cursor = conn.execute(orphan_sql)
-                    if cursor.rowcount:
-                        logger.info(f"Cleaned {cursor.rowcount} orphaned {tbl} rows")
-                except Exception as e:
-                    logger.debug(f"Orphan cleanup skipped for {tbl}: {e}")
-            try:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM memory_relationships
-                    WHERE source_memory_id NOT IN (SELECT id FROM memories)
-                       OR target_memory_id NOT IN (SELECT id FROM memories)
-                    """,
-                )
-                if cursor.rowcount:
-                    logger.info(f"Cleaned {cursor.rowcount} orphaned memory_relationships rows")
-            except Exception as e:
-                logger.debug(f"Orphan cleanup skipped for memory_relationships: {e}")
-            try:
-                purged = purge_dead_synthesized_from_ids(conn)
-                if purged:
-                    logger.info(f"Cleaned dead synthesized_from IDs in {purged} memories")
-            except Exception as e:
-                logger.debug(f"Orphan cleanup skipped for synthesized_from: {e}")
-            conn.commit()
-
-            # Also clean up orphaned entity links
-            cursor = conn.execute(
-                """
-                DELETE FROM memory_entity_links
-                WHERE memory_id IN (
-                    SELECT id FROM memories
-                    WHERE tenant_id = ? AND is_ghost = 1
-                    AND created_at < ?
-                )
-                """,
-                (tenant_id, cutoff_date.isoformat()),
-            )
-            orphaned_links = cursor.rowcount
-            if orphaned_links > 0:
-                logger.info(f"Cleaned up {orphaned_links} orphaned entity links")
-                conn.commit()
+            _clean_orphaned_rows(conn)
+            _delete_orphaned_entity_links(conn, tenant_id, cutoff_iso)
 
         finally:
             pool.release(conn)

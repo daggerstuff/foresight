@@ -20,29 +20,14 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
-
-from dotenv import load_dotenv
-
-# Auto-discover environment files if not already populated
-for env_candidate in [
-    Path.cwd() / ".env",
-    Path.cwd() / ".env.local",
-    Path(__file__).parent.parent / ".env",
-    Path(__file__).parent.parent / ".env.local",
-    Path(__file__).parent.parent.parent / ".env",
-    Path(__file__).parent.parent.parent / ".env.local",
-]:
-    if env_candidate.exists():
-        load_dotenv(env_candidate, override=False)
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from . import server
+from . import _env_bootstrap, server
 from .context_blocks import (
     auto_distill_context_blocks,
     get_context_block_agent,
@@ -1275,8 +1260,9 @@ class ProofBenchmarkRunner:
         }
 
 
-def run_proof_benchmark(json_output: bool = False, report_path: str | None = None) -> ProductionProofReport:
+def run_proof_benchmark(report_path: str | None = None) -> ProductionProofReport:
     """Run the complete proof benchmark suite and return the report."""
+    logger.debug("proof benchmark environment files: %s", _env_bootstrap.ENV_FILES_LOADED)
     runner = ProofBenchmarkRunner()
     report = runner.run_all()
     if report_path:

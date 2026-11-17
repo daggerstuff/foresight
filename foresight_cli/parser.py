@@ -96,6 +96,18 @@ def add_command(
     return parser
 
 
+def invoke(handler: Callable[..., None], params: BaseModel) -> None:
+    """Run ``handler`` with ``params``, or with no argument if it declares none.
+
+    A command whose parameter model carries no fields has nothing to pass, so its
+    handler is allowed to omit the parameter entirely.
+    """
+    if inspect.signature(handler).parameters:
+        handler(params)
+    else:
+        handler()
+
+
 def register_commands(
     subparsers: argparse._SubParsersAction,
     commands: Mapping[str, CommandSpec],

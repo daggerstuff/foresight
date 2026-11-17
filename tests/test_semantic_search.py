@@ -13,9 +13,6 @@ from unittest.mock import patch
 import pytest
 
 from foresight import semantic_search as sem_mod
-
-# Unit-vector norms are only exact up to float64 rounding.
-UNIT_NORM_TOLERANCE = 1e-9
 from foresight.semantic_search import (
     DEFAULT_PROVIDER,
     LOCAL_HASH_DIM,
@@ -32,6 +29,9 @@ from foresight.semantic_search import (
     reset_semantic_search,
     serialize_vector,
 )
+
+# Unit-vector norms are only exact up to float64 rounding.
+UNIT_NORM_TOLERANCE = 1e-9
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -323,7 +323,7 @@ def test_singleton_returns_same_instance(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_search_skips_dim_mismatched_rows(monkeypatch):
+def test_search_skips_dim_mismatched_rows():
     """Embeddings stored with a different dimension must be ignored, not crash."""
     db = _make_test_db()
     with _patched_db(db) as store:
