@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/foresight-hook.sh\" prompt",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/foresight_hook.py\" prompt",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/foresight-hook.sh\" precompact",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/foresight_hook.py\" precompact",
             "timeout": 20
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/foresight-hook.sh\" postcompact",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/foresight_hook.py\" postcompact",
             "timeout": 20
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/foresight-hook.sh\" stop",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/foresight_hook.py\" stop",
             "timeout": 15
           }
         ]
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/foresight-hook.sh\" stop",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/foresight_hook.py\" stop",
             "timeout": 15
           }
         ]

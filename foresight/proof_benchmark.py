@@ -1225,9 +1225,9 @@ class ProofBenchmarkRunner:
         return {
             "MastraCode Native Memory Plugin": os.path.exists(f"{home}/.mastracode/plugins/plugins.json"),
             "OpenCode Autoinject Plugin": os.path.exists(f"{home}/.config/opencode/plugins/foresight-autoinject.js"),
-            "Claude Code Hook (UserPromptSubmit)": os.path.exists(f"{home}/.claude/hooks/foresight-hook.sh"),
+            "Claude Code Hook (UserPromptSubmit)": os.path.exists(f"{home}/.claude/hooks/foresight_hook.py"),
             "Claude Code Global MCP Config": os.path.exists(f"{home}/.claude.json"),
-            "MastraCode Hook (AgentEnd)": os.path.exists(f"{home}/.mastracode/hooks/foresight-hook.sh"),
+            "MastraCode Hook (AgentEnd)": os.path.exists(f"{home}/.mastracode/hooks/foresight_hook.py"),
             "fx FastMCP 4.0 Header Protocol": os.path.exists(f"{home}/.fx/mcp.json"),
             "Cursor MCP Integration": os.path.exists(f"{home}/.cursor/mcp.json"),
             "Copilot CLI Ambient Hook": os.path.exists(f"{home}/.copilot/hooks/foresight.json"),

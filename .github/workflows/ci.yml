@@ -166,7 +166,7 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Bandit security scan
-        run: uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
+        run: uv run bandit -c pyproject.toml -r foresight foresight_cli scripts plugins
 
       - name: Semgrep SQL injection scan (taint)
         run: ./scripts/run_semgrep_sql.sh

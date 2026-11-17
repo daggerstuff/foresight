@@ -5,7 +5,7 @@
 # file Semgrep cannot parse cannot silently drop out of the gate.
 #
 # Companion to the Bandit run in CI:
-#   uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
+#   uv run bandit -c pyproject.toml -r foresight foresight_cli scripts plugins
 #
 # ---------------------------------------------------------------------------
 # Why `uv tool run` and not `uv run`
@@ -43,7 +43,7 @@ CONFIG="${REPO_ROOT}/semgrep/sql-injection.yaml"
 # Default to exactly the paths the Bandit step in CI covers. Optional arguments
 # override the set, which is what the positive-control check uses:
 #   scripts/run_semgrep_sql.sh /tmp/fs-semgrep-controls/positive_control.py
-TARGETS=(foresight foresight_cli scripts)
+TARGETS=(foresight foresight_cli scripts plugins)
 if [[ $# -gt 0 ]]; then
     TARGETS=("$@")
 fi
@@ -61,6 +61,12 @@ cd "$REPO_ROOT"
 # --disable-version-check  no update ping (keeps the run offline)
 # --no-git-ignore  walk the tree like Bandit does, so the two gates cover the
 #                  same files instead of semgrep honouring .gitignore
+
+# Embedded Python inside shell scripts is invisible to a path-based scan, so the
+# guard runs first and fails fast: the scan can never report coverage it does
+# not have.
+"${REPO_ROOT}/scripts/check_no_embedded_python.sh"
+
 exec uv tool run --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
     --config "$CONFIG" \
     --error \
