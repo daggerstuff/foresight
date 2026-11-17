@@ -1,0 +1,192 @@
+# Vendored Semgrep rules for Foresight.
+#
+# Stage 3i: Bandit's B608 is a pure AST pattern match. It fires on `f"…"`,
+# `"…" + x`, `"…" % x` and `"…".format(x)` whether or not the interpolated value
+# was ever validated, so hardening a site cannot make B608 go quiet — only
+# removing the interpolation can, which is why `join_sql_parts()` exists.
+#
+# This rule is the dataflow-aware replacement. It is written in taint mode and
+# only reports when a value that entered the process from outside actually
+# reaches the *statement text* argument of a SQL sink. Values bound as query
+# parameters never reach that argument, so the whole class of correctly
+# parameterised queries is silent by construction rather than by suppression.
+#
+# Run it with `scripts/run_semgrep_sql.sh`. No `p/…` remote ruleset, no account,
+# no `semgrep ci`: the config is vendored so the scan is reproducible offline.
+#
+# KNOWN LIMITATION — read before wiring this into CI.
+# Semgrep's OSS taint engine is intraprocedural: it does not follow a value
+# across a function boundary. A source in `caller()` reaching a sink inside
+# `helper()` is NOT reported. This rule therefore catches the direct shape
+# (external value interpolated into SQL inside the same function) and the
+# shapes reachable through local aliasing, `join_sql_parts()`, string
+# concatenation, `%`-formatting and `.format()` — but not a value laundered
+# through an intermediate helper. Keep sinks and statement assembly in the same
+# function as the boundary, or extend this file with a project-specific
+# interprocedural rule when Semgrep Pro is available.
+rules:
+  - id: foresight-sql-injection-tainted-statement-text
+    languages:
+      - python
+    mode: taint
+    severity: ERROR
+    message: >-
+      Untrusted input reaches the SQL statement text passed to `$METHOD`. A
+      value interpolated into the statement text is executable SQL regardless
+      of how the statement is assembled, so `join_sql_parts()` does not make
+      this safe. Fix it one of two ways: bind the value as a query parameter
+      (`execute(sql, (value,))`, or `placeholders(n)` / `build_in_clause()` for
+      an `IN` list), or — when the value genuinely has to be an identifier that
+      is interpolated — validate it first through
+      `foresight.sql_helpers.quote_identifier(name)` (regex-proves a plain
+      identifier) or
+      `validate_identifier(name, <frozenset>, context)` (checks a frozen
+      allowlist) and interpolate the returned value.
+    metadata:
+      category: security
+      technology:
+        - python
+      confidence: MEDIUM
+      impact: HIGH
+      cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+      owasp: "A03:2021 - Injection"
+      references:
+        - https://cwe.mitre.org/data/definitions/89.html
+        - https://semgrep.dev/docs/writing-rules/data-flow/taint-mode/
+
+    # ------------------------------------------------------------------
+    # Sources — values that cross the process boundary.
+    # ------------------------------------------------------------------
+    pattern-sources:
+      # 1. FastMCP / MCP tool handlers. Every parameter of an `@mcp.tool`
+      #    function is JSON supplied by the MCP client. `$...PARAMS` plus
+      #    `focus-metavariable` narrows the taint to the parameter bindings
+      #    themselves (not the decorator or the body), and covers positional,
+      #    keyword-only and `async def` handlers alike.
+      - patterns:
+          - pattern: |
+              @$DEC.tool(...)
+              def $F($...PARAMS):
+                ...
+          - focus-metavariable: $...PARAMS
+
+      # 2. The raw MCP tool-arguments mapping, as seen by `on_call_tool`
+      #    middleware before it is unpacked into a typed handler signature.
+      - patterns:
+          - pattern-either:
+              - pattern: $ARGS[$KEY]
+              - pattern: $ARGS.get(...)
+          - metavariable-regex:
+              metavariable: $ARGS
+              regex: ^(arguments|tool_args|tool_input)$
+
+      # 3. HTTP request parameters and body. `@mcp.custom_route` handlers and
+      #    the Starlette app in `foresight/rest_api.py` both take a `Request`.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query_params
+              - pattern: $REQ.query_params[$KEY]
+              - pattern: $REQ.query_params.get(...)
+              - pattern: $REQ.path_params[$KEY]
+              - pattern: $REQ.form[$KEY]
+              - pattern: $REQ.form(...)
+              - pattern: $REQ.json()
+              - pattern: await $REQ.json()
+              - pattern: $REQ.body
+              - pattern: $REQ.headers[$KEY]
+      - pattern-either:
+          - pattern: request.args
+          - pattern: request.args[$KEY]
+          - pattern: request.args.get(...)
+          - pattern: request.form
+          - pattern: request.form[$KEY]
+          - pattern: request.values[$KEY]
+          - pattern: request.get_json(...)
+          - pattern: request.json(...)
+          - pattern: request.body
+          - pattern: request.headers[$KEY]
+
+      # 4. HTTP route handler parameters (Starlette / FastAPI style decorators).
+      - patterns:
+          - pattern: |
+              @$APP.$VERB(...)
+              def $F($...PARAMS):
+                ...
+          - metavariable-regex:
+              metavariable: $VERB
+              regex: ^(get|post|put|patch|delete|route|api_route)$
+          - focus-metavariable: $...PARAMS
+
+      # 5. CLI arguments. `foresight_cli` is a Typer app, so the parameters of
+      #    an `@app.command` function are argv. `sys.argv` / `os.environ` are
+      #    included for the hand-rolled parsers in `foresight/__main__.py`.
+      - patterns:
+          - pattern: |
+              @$APP.command(...)
+              def $F($...PARAMS):
+                ...
+          - focus-metavariable: $...PARAMS
+      - pattern-either:
+          - pattern: sys.argv[$IDX]
+          - pattern: os.environ[$KEY]
+          - pattern: os.environ.get(...)
+          - pattern: $CTX.params[$KEY]
+
+    # ------------------------------------------------------------------
+    # Sanitizers — the only ways a value may reach statement text.
+    # ------------------------------------------------------------------
+    # `join_sql_parts()` is deliberately absent: it is a `"".join()` pass
+    # through, so listing it here would re-create exactly the blind spot this
+    # rule exists to close. Its arguments must be independently safe.
+    pattern-sanitizers:
+      - pattern-either:
+          # Regex-proves a plain identifier, raises ValueError otherwise.
+          - pattern: quote_identifier(...)
+          - pattern: $M.quote_identifier(...)
+          # Frozen-allowlist check, raises ValueError otherwise.
+          - pattern: validate_identifier(...)
+          - pattern: $M.validate_identifier(...)
+          # Emits only "?" separators, never caller data.
+          - pattern: placeholders(...)
+          - pattern: $M.placeholders(...)
+          # Emit only "?" separators, and return the values as bound params.
+          - pattern: build_in_clause(...)
+          - pattern: $M.build_in_clause(...)
+          - pattern: build_type_filter(...)
+          - pattern: $M.build_type_filter(...)
+          # The two project-local fragment builders, trusted on the same terms
+          # as build_in_clause/build_type_filter above: every value they are
+          # given is appended to the returned params list, and the returned
+          # fragment contains only literal column names and "?" separators.
+          # Verified by reading foresight/server.py::_build_filter_fragments
+          # and foresight/hybrid_retriever.py::_namespace_frag. Neither has a
+          # code path that formats a caller value into the fragment text, which
+          # is what separates them from join_sql_parts(), which is not listed
+          # here on purpose.
+          - pattern: _build_filter_fragments(...)
+          - pattern: $M._build_filter_fragments(...)
+          - pattern: _namespace_frag(...)
+          - pattern: $M._namespace_frag(...)
+          # Project-local twin of quote_identifier in
+          # scripts/migrate_sqlite_to_ghost.py; same regex-prove-then-quote
+          # body, verified by reading it.
+          - pattern: _quote_identifier(...)
+          - pattern: $M._quote_identifier(...)
+
+    # ------------------------------------------------------------------
+    # Sinks — statement text handed to a driver.
+    # ------------------------------------------------------------------
+    # Only the first argument is focused. That is what exempts bound
+    # parameters: in `execute(sql, (value,))` the tainted value sits in the
+    # second argument and never becomes statement text.
+    pattern-sinks:
+      - patterns:
+          # DB-API drivers (sqlite3, psycopg, psycopg2), the
+          # `PooledConnection`/`DatabaseBackend` wrappers in this repo, and the
+          # project-local `_fetch_rows` / `_execute_sql` forwarders used by
+          # GraphStore, HybridRetriever and TemporalQueryService.
+          - pattern: $CUR.$METHOD($SQL, ...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(execute|executemany|executescript|execute_many|execute_returning|fetch|fetch_one|_fetch_rows|_execute_sql)$
+          - focus-metavariable: $SQL
