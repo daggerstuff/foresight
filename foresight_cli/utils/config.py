@@ -139,7 +139,7 @@ def ensure_config() -> CliConfig:
     return CliConfig.load()
 
 
-def get_user_id(override: str | None = None) -> str | None:
+def get_user_id(override: str | None = None) -> str:
     """Get user ID from override, config, or env."""
     if override:
         return override

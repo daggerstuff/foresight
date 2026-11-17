@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.reactive import var
 from textual.screen import Screen
 from textual.theme import Theme
@@ -212,7 +212,7 @@ class ForesightTUI(App):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit", show=True),
         Binding("d", "toggle_theme", "Toggle theme", show=True),
         Binding("r", "refresh", "Refresh", show=True),
@@ -224,8 +224,8 @@ class ForesightTUI(App):
     TITLE = "Foresight"
     SUB_TITLE = "Memory Management Terminal"
 
-    user_id: str | None = var(None)
-    config: CliConfig | None = var(None)
+    user_id = var[str | None](None)
+    config = var[CliConfig | None](None)
 
     def __init__(self, user_id: str | None = None, config: CliConfig | None = None) -> None:
         super().__init__()

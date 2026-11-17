@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from textual import work
 from textual.app import ComposeResult
@@ -82,7 +83,7 @@ class BlocksScreen(Screen):
         try:
             init_db()
             result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list")))
-            blocks = []
+            blocks: list[dict[str, Any]] = []
             if isinstance(result, str):
                 try:
                     payload = json.loads(result)

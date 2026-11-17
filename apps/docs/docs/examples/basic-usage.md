@@ -10,14 +10,21 @@ Common patterns for using Foresight.
 ## Store and Retrieve
 
 ```python
-from foresight import store_memory, query_memories, list_memories
+from foresight import QueryMemoriesParams, StoreMemoryParams, list_memories, query_memories, store_memory
 
 # Store a memory
-result = store_memory(content="User prefers TypeScript", scope="trait", retention="permanent", category="preference")
+result = store_memory(
+    StoreMemoryParams(
+        content="User prefers TypeScript",
+        scope="trait",
+        retention="permanent",
+        category="preference",
+    )
+)
 print(f"Stored: {result}")
 
 # Query
-results = query_memories("TypeScript")
+results = query_memories(QueryMemoriesParams(query="TypeScript"))
 print(results)
 
 # List all
@@ -28,11 +35,13 @@ print(all_memories)
 ## With Emotional Context
 
 ```python
-from foresight import store_memory
+from foresight import StoreMemoryParams, store_memory
 
 result = store_memory(
-    content="User frustrated with deployment",
-    emotional_context={"valence": -0.5, "arousal": 0.7, "primary_emotion": "frustration", "intensity": 0.6},
+    StoreMemoryParams(
+        content="User frustrated with deployment",
+        emotional_context={"valence": -0.5, "arousal": 0.7, "primary_emotion": "frustration", "intensity": 0.6},
+    )
 )
 ```
 
@@ -66,8 +75,8 @@ foresight query "remember"
 # List
 foresight list --limit 5
 
-# Status
-foresight status --json
+# Status (--json is a global flag, so it precedes the command)
+foresight --json status
 ```
 
 ## Related

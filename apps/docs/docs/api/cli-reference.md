@@ -20,11 +20,19 @@ uv run python scripts/foresight-cli.py --help
 
 ## Global options
 
-| Option            | Description                                                    | Default |
-| ----------------- | -------------------------------------------------------------- | ------- |
-| `--help`          | Show help                                                      | -       |
-| `--json`          | Emit the raw backend JSON envelope or a wrapped error envelope | `false` |
-| `--user-id`, `-u` | Override the active user ID                                    | auto    |
+| Option                      | Description                                                    | Default |
+| --------------------------- | -------------------------------------------------------------- | ------- |
+| `--help`                    | Show help                                                      | -       |
+| `--output`, `-o`            | Output mode: `human`, `agent`, or `json`                       | `human` |
+| `--agent`, `-a`             | Force agent output mode (same as `--output agent`)             | `false` |
+| `--json`, `-j`              | Emit the raw backend JSON envelope or a wrapped error envelope | `false` |
+| `--user-id`, `-u`           | Override the active user ID                                    | auto    |
+| `--verbose`, `-v`           | Verbose output                                                 | `false` |
+| `--install-completion`      | Install completion for the current shell                       | `false` |
+| `--show-completion [SHELL]` | Print the completion script for the current shell and exit     | none    |
+
+Global options come before the command: `foresight --json status`, not
+`foresight status --json`.
 
 ## Memory commands
 
@@ -33,12 +41,12 @@ foresight store <content> [options]
 foresight query <query> [options]
 foresight list [options]
 foresight get <memory_id>
-foresight update <memory_id> [options]
+foresight memory update <memory_id> [options]
 foresight delete <memory_id>
 foresight synthesize [options]
 foresight reflect [options]
-foresight diff <memory_id> <version1> <version2>
-foresight rollback <memory_id> <version>
+foresight analysis diff <memory_id> <version1> <version2>
+foresight analysis rollback <memory_id> <version>
 foresight status
 ```
 
@@ -71,17 +79,18 @@ foresight curate archive <run_id>
 
 ### `foresight curate create` options
 
-| Option                     | Description                                            | Default             |
-| -------------------------- | ------------------------------------------------------ | ------------------- |
-| `--source-bank-id`         | Source bank to curate                                  | required            |
-| `--output-bank-id`         | Optional destination bank override for reviewable runs | auto                |
-| `--policy-mode`            | `preserve`, `rebalance`, or `rebuild`                  | `rebalance`         |
-| `--tool-access`            | `disabled`, `observe`, or `operate`                    | `observe`           |
-| `--output-mode`            | `reviewable_output` or `in_place`                      | `reviewable_output` |
-| `--instructions`           | Curator guidance for this run                          | none                |
-| `--transcript-bundle-file` | JSON transcript bundle to fold into curation           | none                |
-| `--session-id`             | Optional session identifier for the transcript bundle  | none                |
-| `--project-path`           | Optional project path for the transcript bundle        | none                |
+| Option                    | Description                                            | Default             |
+| ------------------------- | ------------------------------------------------------ | ------------------- |
+| `--source-bank-id`        | Source bank to curate                                  | `default`           |
+| `--output-bank-id`        | Optional destination bank override for reviewable runs | auto                |
+| `--policy-mode`           | `preserve`, `rebalance`, or `rebuild`                  | `rebalance`         |
+| `--tool-access`           | `disabled`, `observe`, or `operate`                    | `observe`           |
+| `--output-mode`           | `reviewable_output` or `in_place`                      | `reviewable_output` |
+| `--instructions`          | Curator guidance for this run                          | none                |
+| `--transcript-bundle`     | JSON transcript bundle to fold into curation           | none                |
+| `--session-id`            | Optional session identifier for the transcript bundle  | none                |
+| `--run-clustering`        | Run clustering after curation                          | `false`             |
+| `--user-id`, `-u`         | Override the active user ID                            | auto                |
 
 `reviewable_output` writes curated memories to a separate bank. `in_place` first
 writes to a staging bank, and only after a successful run archives the original
@@ -104,7 +113,7 @@ foresight blocks update guidance "Keep updates short and concrete."
 foresight curate create   --source-bank-id default   --policy-mode rebalance   --tool-access observe   --output-mode reviewable_output   --instructions "Merge duplicates and preserve durable preferences"
 
 # Create a transcript-aware in-place run
-foresight curate create   --source-bank-id default   --tool-access operate   --output-mode in_place   --transcript-bundle-file /tmp/transcript-bundle.json
+foresight curate create   --source-bank-id default   --tool-access operate   --output-mode in_place   --transcript-bundle /tmp/transcript-bundle.json
 
 # Inspect run state
 foresight curate list

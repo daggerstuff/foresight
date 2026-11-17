@@ -9,7 +9,7 @@ import os
 import socket
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import redis as _redis
@@ -443,9 +443,12 @@ def _doctor_check_environment(report: _DoctorReport, config: Any) -> None:
 def _doctor_check_database(report: _DoctorReport, resolved_uid: str | None) -> None:
     """Check that the memory store answers a status query."""
     try:
-        health = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
-        if isinstance(health, str):
-            health = json.loads(health) if health.startswith("{") else {"raw": health}
+        payload: object = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
+        health: object
+        if isinstance(payload, str):
+            health = json.loads(payload) if payload.startswith("{") else {"raw": payload}
+        else:
+            health = payload
         if isinstance(health, dict):
             mem_count = health.get("memory_count", health.get("count", "?"))
             report.check("Database responsive", True, f"Memories: {mem_count}")
@@ -693,6 +696,20 @@ def stats(params: SystemStatsParams) -> None:
     _emit_stats_human(health, temporal, telemetry, cache_stats)
 
 
+def _temporal_window(window: str) -> Literal["today", "week", "month", "year"]:
+    """Narrow a ``--window`` value to the literals ``TemporalWindow`` accepts."""
+    match window:
+        case "today":
+            return "today"
+        case "week":
+            return "week"
+        case "month":
+            return "month"
+        case "year":
+            return "year"
+    raise ValueError(f"window must be one of today, week, month, year (got {window!r})")
+
+
 def temporal(params: SystemTemporalParams) -> None:
     """Query memories by time window, trend, or point in time."""
     _init_backend()
@@ -701,7 +718,7 @@ def temporal(params: SystemTemporalParams) -> None:
         if params.as_of is not None:
             _parse_as_of(params.as_of)
         options = TemporalWindow(
-            window=params.window,
+            window=_temporal_window(params.window),
             trend=params.trend,
             category=params.category,
             limit=params.limit,
