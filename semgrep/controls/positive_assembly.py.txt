@@ -1,0 +1,61 @@
+"""Positive control: statement-assembly shapes.
+
+The rule exists because Bandit's B608 cannot tell a validated interpolation from
+an unvalidated one. That distinction only holds if the rule follows every way a
+value can become statement text: an f-string, ``+`` concatenation, ``%``
+formatting, ``.format()``, and a value passed through ``join_sql_parts()``.
+
+The last one is load-bearing. ``join_sql_parts()`` is a ``"".join()`` pass
+through, so listing it as a sanitizer would re-create the blind spot the rule
+was written to close. If it ever appears in ``pattern-sanitizers``, the
+``join_sql_parts`` function below stops being reported and this fixture fails.
+
+Expected findings: 5.
+"""
+
+import sqlite3
+
+from mcp.server.fastmcp import FastMCP
+
+from foresight.sql_helpers import join_sql_parts
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+@mcp.tool()
+def f_string(table: str) -> None:
+    """An f-string interpolates the value into the statement text."""
+    cur = _cursor()
+    cur.execute(f"SELECT * FROM {table}")
+
+
+@mcp.tool()
+def concatenation(table: str) -> None:
+    """``+`` concatenation puts the value into the statement text."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM " + table)
+
+
+@mcp.tool()
+def percent_formatting(table: str) -> None:
+    """``%`` formatting puts the value into the statement text."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM %s" % table)
+
+
+@mcp.tool()
+def dot_format(table: str) -> None:
+    """``.format()`` puts the value into the statement text."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM {}".format(table))
+
+
+@mcp.tool()
+def through_join_sql_parts(table: str) -> None:
+    """``join_sql_parts()`` is a pass-through, not a sanitizer."""
+    cur = _cursor()
+    cur.execute(join_sql_parts("SELECT * FROM ", table))

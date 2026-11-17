@@ -1,0 +1,42 @@
+"""Positive control: source class 5 -- process-boundary CLI values.
+
+The CLI is argparse plus pydantic parameter objects now, so the decorator-based
+source that this class used to carry is gone. What remains, and what this
+fixture pins, is the two argv/environment shapes the rule still lists:
+``sys.argv`` by index, ``os.environ`` by key, and ``os.environ.get()``.
+
+See ``semgrep/sql-injection.yaml`` for why a value that enters through a
+pydantic parameter object is out of reach of this rule regardless of pattern.
+
+Expected findings: 3.
+"""
+
+import os
+import sqlite3
+import sys
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("controls")
+
+
+def _cursor():
+    return sqlite3.connect(":memory:").cursor()
+
+
+def argv_index() -> None:
+    """``sys.argv`` indexed directly into the statement text."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t ORDER BY " + sys.argv[1])
+
+
+def environ_subscript() -> None:
+    """``os.environ`` read by subscript into the statement text."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t WHERE a = '" + os.environ["FORESIGHT_CONTROL"] + "'")
+
+
+def environ_get() -> None:
+    """``os.environ.get()`` into the statement text."""
+    cur = _cursor()
+    cur.execute("SELECT * FROM t WHERE a = '" + os.environ.get("FORESIGHT_CONTROL", "") + "'")
