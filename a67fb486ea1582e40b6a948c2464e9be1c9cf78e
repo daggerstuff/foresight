@@ -1,0 +1,23 @@
+foresight/memory_maintenance.py
+  s_3de66e141cef34::t_b94473fbfefca6 514
+foresight/server.py
+  s_3de66e141cef34::t_74b2a7d4cf9584 4391-4398,4406-4407
+plugins/foresight-autoinject.js
+  s_3de66e141cef34::t_bb12ba875160e9 148,153-158,163,176,183,189,194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a67fb486ea1582e40b6a948c2464e9be1c9cf78e",
+  "prompts": {},
+  "sessions": {
+    "s_3de66e141cef34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_032229cdfffeOATylpGrUzFUR1",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}

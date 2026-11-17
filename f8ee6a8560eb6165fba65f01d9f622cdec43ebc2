@@ -1,0 +1,34 @@
+foresight_cli/commands/rrf.py
+  s_3de66e141cef34::t_f0f205aa4ae295 48
+  s_3de66e141cef34::t_487482e19ab36c 90
+foresight/server.py
+  s_3de66e141cef34::t_ac52db82b78e4d 4376,4388-4393,4399-4401
+  s_3de66e141cef34::t_346b9c7a0f8078 4407-4426
+  s_3de66e141cef34::t_4522a8a2c82222 4403-4406
+README.md
+  s_3de66e141cef34::t_a5fa9b88f58c48 298-299
+foresight/memory_maintenance.py
+  s_3de66e141cef34::t_7b599558b605ee 486-492,499
+plugins/foresight-autoinject.js
+  s_3de66e141cef34::t_ef9b635ce6d574 49-53
+  s_3de66e141cef34::t_ed212999a4cc21 143-152,155,159,162,171-172,175-177,183-184,187-190,192
+install.sh
+  s_3de66e141cef34::t_ac4a494be34c56 370,372,379-384
+  s_3de66e141cef34::t_86cedef19b33a6 331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f8ee6a8560eb6165fba65f01d9f622cdec43ebc2",
+  "prompts": {},
+  "sessions": {
+    "s_3de66e141cef34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_032229cdfffeOATylpGrUzFUR1",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}

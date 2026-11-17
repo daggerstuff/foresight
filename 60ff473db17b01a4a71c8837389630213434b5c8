@@ -1,0 +1,120 @@
+foresight/backend/backend_migrations.py
+  s_3de66e141cef34::t_ddaad5bc7dc544 139-145
+tests/_sqlite_backend.py
+  s_3de66e141cef34::t_74d827f006a9a9 1,3-5,12,14,18,47-48,53-54,56-63
+  s_3de66e141cef34::t_cb3bd8183df980 55
+tests/test_sqlite_backend.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 4
+  s_3de66e141cef34::t_0311e4975ec78b 140,142
+tests/test_backend_factory.py
+  s_3de66e141cef34::t_70584943d58e0b 78
+tests/test_clustering_tools.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 235
+foresight/decay_model.py
+  s_3de66e141cef34::t_e531f7f524ebab 629
+  s_3de66e141cef34::t_6d23f0818e2a6d 728
+  s_3de66e141cef34::t_41b51428c26bf6 152-153
+foresight/backend/backend_factory.py
+  s_3de66e141cef34::t_c437414d6d2f1a 47
+  s_3de66e141cef34::t_7f822c48ba3ec7 4
+foresight/server.py
+  s_3de66e141cef34::t_8f9ce1de6a7e80 986-987,993
+  s_3de66e141cef34::t_6e328150af1522 1457
+tests/test_graph_store_tenant.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 146
+foresight/document_layer.py
+  s_ea7e828ae37655::t_730f65ff0f08c1 841
+foresight/memory_relationships.py
+  s_ea7e828ae37655::t_17e095ddd5c83c 451
+foresight/backend/__init__.py
+  s_3de66e141cef34::t_b6a356d599a7b9 3,5
+foresight/semantic_search.py
+  s_ea7e828ae37655::t_939fe6b5b6f1dd 467
+foresight/hooks.py
+  s_ea7e828ae37655::t_1e9f48bbeb12c1 205
+foresight/graph_store.py
+  s_3de66e141cef34::t_7758df7cbeeed3 325
+  s_3de66e141cef34::t_e4752699395665 298
+  s_3de66e141cef34::t_d95d07233fa25c 70
+  s_3de66e141cef34::t_adee7cc6cf8a33 796-797
+  s_3de66e141cef34::t_2e5e2a468178f7 270
+  s_3de66e141cef34::t_44ebf7caad1ae2 285
+tests/test_capture.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 32
+foresight/eval_harness.py
+  s_3de66e141cef34::t_cd4209e0264125 598-599
+  s_3de66e141cef34::t_3603a31eeb2dea 524,527-530
+  s_3de66e141cef34::t_8789015c3909d7 651
+  s_3de66e141cef34::t_ed9e69c8e48c69 563-564,566-567,569-577,579
+  s_3de66e141cef34::t_b0e4303e5d3c4c 652
+  s_3de66e141cef34::t_8b1cfaed8f930e 663
+  s_3de66e141cef34::t_42ab5d933e131c 513
+foresight/temporal_schema.py
+  s_3de66e141cef34::t_3d1e71883efb88 117
+  s_3de66e141cef34::t_40a3ff1192a230 10-14,43,54-57,63-64,71-72,80-81,87,96-97,100
+tests/test_project_context_producer.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 26
+tests/test_tenant_context.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 9
+tests/test_audit.py
+  s_3de66e141cef34::t_a1bce87f20eee7 80
+  s_3de66e141cef34::t_2f079e4ecc62dd 378,381-382
+foresight/connection_pool.py
+  s_3de66e141cef34::t_fea81f62819d7e 59,65-66,69,92,118-119,244,251
+  s_3de66e141cef34::t_e74d7333122f79 30-57
+  s_3de66e141cef34::t_fbf39e3d67b020 121
+  s_3de66e141cef34::t_a9f39fd6311e58 61
+tests/test_tenant_isolation.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 19
+foresight/reflection_engine.py
+  s_ea7e828ae37655::t_59fcbe596665c9 136,253,708
+  s_ea7e828ae37655::t_1da38a5c713ad2 768
+foresight/maintenance_eval.py
+  s_3de66e141cef34::t_dd74edad1bc1cd 422,425-428
+  s_3de66e141cef34::t_bfb75e2ccc2a30 513
+  s_3de66e141cef34::t_559ddfc665fac7 467
+  s_3de66e141cef34::t_e37d537302e328 411
+  s_3de66e141cef34::t_51690569bb37e2 460
+  s_3de66e141cef34::t_33e0eccb824037 514
+tests/test_backend_migrations.py
+  s_3de66e141cef34::t_5f51c3d2ae9473 21
+foresight/audit.py
+  s_baf988ef3f9e2d::t_cb371698e124a0 48
+  s_3de66e141cef34::t_f690252e8dc0c6 3,11-12,30-31,33-35,58-74,79,102,104-107,109,128-129,151,183,238
+  s_baf988ef3f9e2d::t_d5baec21b5d0eb 119
+  s_baf988ef3f9e2d::t_d769692ff7277c 124,126-127
+  s_baf988ef3f9e2d::t_490f9e722531fc 139
+  s_baf988ef3f9e2d::t_ab48c546e65641 153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "60ff473db17b01a4a71c8837389630213434b5c8",
+  "prompts": {},
+  "sessions": {
+    "s_3de66e141cef34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_032229cdfffeOATylpGrUzFUR1",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    },
+    "s_baf988ef3f9e2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_03152facdffekkvVJ9cY5FV53O",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    },
+    "s_ea7e828ae37655": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_0315bfe89ffessHfCzPWhIWZoZ",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}

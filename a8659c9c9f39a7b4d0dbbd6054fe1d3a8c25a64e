@@ -1,0 +1,46 @@
+foresight/memory_maintenance.py
+  s_3de66e141cef34::t_b104748ec8f390 509,520
+  s_3de66e141cef34::t_17b188d61d3f0b 810,820
+  s_3de66e141cef34::t_b678d4b3ad6a18 884
+  s_3de66e141cef34::t_d5a7a424eb5063 568,575
+  s_3de66e141cef34::t_209dc2fe16ae6f 292,296
+  s_3de66e141cef34::t_d0df79bc6b9694 1043-1044,1046,1048-1059
+  s_3de66e141cef34::t_d1b4e2c0efb669 327-328
+  s_3de66e141cef34::t_8b630a77c4a8a3 632-633
+  s_3de66e141cef34::t_a3f5588a14cc88 871
+  s_3de66e141cef34::t_079b6668c32d23 89
+  s_3de66e141cef34::t_ad2ea3da07a7c5 242-245
+foresight/hybrid_retriever.py
+  s_3de66e141cef34::t_0e29ab7bf35f96 1187-1188
+foresight/server.py
+  s_3de66e141cef34::t_ebc515ea3a7a4a 4456
+  s_3de66e141cef34::t_edfef5cde1cb61 4404,4420-4421,4423,4426,4428,4431,4436,4441,4445
+  s_3de66e141cef34::t_07f3b2ccc5bfb9 4394-4396,4402
+  s_3de66e141cef34::t_ed80dbade125ab 4390
+  s_3de66e141cef34::t_c6b54311a8739d 4478
+foresight/memory_gc.py
+  s_3de66e141cef34::t_08a5ebdb71d337 185-194
+foresight/eval_harness.py
+  s_3de66e141cef34::t_835b83b7bc959c 579-581
+tests/test_memory_maintenance.py
+  s_3de66e141cef34::t_3a8e702e082df7 41
+foresight/maintenance_eval.py
+  s_3de66e141cef34::t_dafe8985ca0a54 442,449-468
+  s_3de66e141cef34::t_bbdce8a740760a 535-537
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a8659c9c9f39a7b4d0dbbd6054fe1d3a8c25a64e",
+  "prompts": {},
+  "sessions": {
+    "s_3de66e141cef34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_032229cdfffeOATylpGrUzFUR1",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}

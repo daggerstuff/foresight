@@ -1,0 +1,45 @@
+foresight/hybrid_retriever.py
+  s_3de66e141cef34::t_2bf8f6828558b7 250-256
+foresight/event_bus.py
+  s_3de66e141cef34::t_458428bf18d2fe 69-74
+install.sh
+  s_3de66e141cef34::t_e5784336268f1c 427-437
+  s_3de66e141cef34::t_85525e19823537 337-348
+  s_3de66e141cef34::t_4eaac5e4b34b2c 364,367
+foresight_cli/commands/system.py
+  s_3de66e141cef34::t_7d27bb591d7bfa 334,336-341,343,350-357,364,371
+foresight/memory_maintenance.py
+  s_3de66e141cef34::t_268b1a81a39c02 38
+  s_3de66e141cef34::t_74f75546eade3f 703
+  s_3de66e141cef34::t_d0bb4304568f26 949,954-955,970,975
+  s_3de66e141cef34::t_d77c6f2d52cb1e 89
+  s_3de66e141cef34::t_962dccdbddc414 1040,1050,1060
+  s_3de66e141cef34::t_115c2d08dcda3a 1090
+  s_3de66e141cef34::t_affb61032e8864 720-723
+  s_3de66e141cef34::t_4a0b14a88b6b07 766,771
+  s_3de66e141cef34::t_65d4b22174ecf3 466-474,479,487-489
+foresight/server.py
+  s_3de66e141cef34::t_19d153059db15f 4375,4380-4383,4389,4391,4399,4403,4405,4410,4415,4420,4424,4432
+  s_3de66e141cef34::t_8d68035d7739e0 4457
+foresight_cli/commands/rrf.py
+  s_3de66e141cef34::t_effd4631033527 137
+foresight/rrf_tuning.py
+  s_3de66e141cef34::t_fb43e772a6a54b 41
+  s_3de66e141cef34::t_1f66969afcce9c 74-83,85-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "79f83b7b15dee2d5ef1f8d825189a1979b8cf4bc",
+  "prompts": {},
+  "sessions": {
+    "s_3de66e141cef34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_032229cdfffeOATylpGrUzFUR1",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
