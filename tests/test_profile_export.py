@@ -14,7 +14,13 @@ from foresight.profile_export import (
     verify_document,
 )
 from foresight.reflect import UserScope
-from foresight.server import export_profile as server_export_profile, manage_memories, reflect
+from foresight.server import (
+    ManageMemoriesParams,
+    ReflectParams,
+    export_profile as server_export_profile,
+    manage_memories,
+    reflect,
+)
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 
@@ -28,7 +34,7 @@ def setup_test_ctx():
 
 def _store(content: str, **kwargs) -> None:
     kwargs.setdefault("category", "fact")
-    result = manage_memories(action="store", content=content, **kwargs)
+    result = manage_memories(ManageMemoriesParams(action="store", content=content, **kwargs))
     assert "Stored memory" in result or "Duplicate" in result, result
 
 
@@ -87,7 +93,7 @@ def test_export_profile_direct_json():
 def test_include_derived_layer_after_reflect():
 
     _store("the deployment freeze starts on fridays", category="fact")
-    reflect(question="when does the deployment freeze start?", user_id="_test_user_")
+    reflect(ReflectParams(question="when does the deployment freeze start?", user_id="_test_user_"))
 
     doc = build_profile_document(UserScope("_test_user_", "_test_"))
     assert any("deployment freeze" in str(m.get("question_text", "")) for m in doc["mental_models"])

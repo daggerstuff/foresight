@@ -10,7 +10,15 @@ import pytest
 
 from foresight import llm_client, reflect as reflect_mod, telemetry
 from foresight.hybrid_retriever import get_hybrid_retriever
-from foresight.server import USER_ID, manage_memories, manage_mental_models, reflect
+from foresight.server import (
+    USER_ID,
+    ManageMemoriesParams,
+    ManageMentalModelsParams,
+    ReflectParams,
+    manage_memories,
+    manage_mental_models,
+    reflect,
+)
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 
@@ -24,14 +32,14 @@ def setup_test_ctx():
 
 def _store(content: str, **kwargs) -> str:
 
-    result = manage_memories(action="store", content=content, category="fact", **kwargs)
+    result = manage_memories(ManageMemoriesParams(action="store", content=content, category="fact", **kwargs))
     match = re.search(r"Stored memory (\S+)\.", result)
     assert match, result
     return match.group(1)
 
 
 def _reflect(question: str, **kwargs) -> dict:
-    return json.loads(reflect(question=question, **kwargs))
+    return json.loads(reflect(ReflectParams(question=question, **kwargs)))
 
 
 def test_reflect_returns_cited_answer():
@@ -78,7 +86,7 @@ def test_reflect_tenant_isolation():
     _store(f"secret project falcon plans ({datetime.now(UTC).isoformat()})")
 
     # Same question under a different user sees nothing.
-    other = json.loads(reflect(question="secret project falcon plans", user_id="_other_user_"))
+    other = json.loads(reflect(ReflectParams(question="secret project falcon plans", user_id="_other_user_")))
     assert other["citations"] == []
 
 
@@ -148,18 +156,18 @@ def test_manage_mental_models_list_refresh_delete():
     first = _reflect("managed model memory")
     model_id = first["mental_model_id"]
 
-    listed = json.loads(manage_mental_models(action="list"))
+    listed = json.loads(manage_mental_models(ManageMentalModelsParams(action="list")))
     assert listed["ok"] is True
     assert any(m["id"] == model_id for m in listed["models"])
 
-    refreshed = json.loads(manage_mental_models(action="refresh", model_id=model_id))
+    refreshed = json.loads(manage_mental_models(ManageMentalModelsParams(action="refresh", model_id=model_id)))
     assert refreshed["ok"] is True
     assert refreshed["model"]["question_key"]
 
-    deleted = json.loads(manage_mental_models(action="delete", model_id=model_id))
+    deleted = json.loads(manage_mental_models(ManageMentalModelsParams(action="delete", model_id=model_id)))
     assert deleted["ok"] is True
 
-    gone = json.loads(manage_mental_models(action="refresh", model_id=model_id))
+    gone = json.loads(manage_mental_models(ManageMentalModelsParams(action="refresh", model_id=model_id)))
     assert gone["ok"] is False
 
 

@@ -8,6 +8,9 @@ import typer
 
 from foresight.server import (
     AnalysisAction,
+    AnalyzeMemoriesParams,
+    ManageMemoryVersionsParams,
+    SynthesizeProfileParams,
     VersionAction,
     _initialize_backend,
     analyze_memories,
@@ -36,7 +39,9 @@ def synthesize(
 ):
     """Run synthesis to find patterns, contradictions, and insights."""
     _init_and_user(user_id)
-    result = analyze_memories(options=AnalysisAction(action="synthesize", limit=limit, enhanced=enhanced))
+    result = analyze_memories(
+        AnalyzeMemoriesParams(options=AnalysisAction(action="synthesize", limit=limit, enhanced=enhanced))
+    )
 
     if out.get_settings().mode == "agent":
         out.print_json({"synthesis": result})
@@ -51,7 +56,7 @@ def reflect(
 ):
     """Run reflection analysis over a time period."""
     _init_and_user(user_id)
-    result = analyze_memories(options=AnalysisAction(action="reflect", period=period))
+    result = analyze_memories(AnalyzeMemoriesParams(options=AnalysisAction(action="reflect", period=period)))
 
     if out.get_settings().mode == "agent":
         out.print_json({"reflection": result})
@@ -70,11 +75,13 @@ def profile(
     """Build a user profile (static facts + dynamic context)."""
     uid = _init_and_user(user_id)
     result = synthesize_profile(
-        uid,
-        max_static_memories=max_static,
-        max_dynamic_memories=max_dynamic,
-        include_synthesis=not no_synthesis,
-        format_prompt=prompt_format,
+        SynthesizeProfileParams(
+            user_id=uid,
+            max_static_memories=max_static,
+            max_dynamic_memories=max_dynamic,
+            include_synthesis=not no_synthesis,
+            format_prompt=prompt_format,
+        )
     )
 
     if out.get_settings().mode == "agent" or prompt_format:
@@ -110,7 +117,9 @@ def diff(
     """Compare two versions of a memory."""
     _init_and_user(user_id)
     result = manage_memory_versions(
-        options=VersionAction(action="diff", memory_id=memory_id, version1=v1, version2=v2),
+        ManageMemoryVersionsParams(
+            options=VersionAction(action="diff", memory_id=memory_id, version1=v1, version2=v2),
+        )
     )
     out.result_block(result, title=f"Diff {memory_id} (v{v1} → v{v2})")
 
@@ -124,7 +133,9 @@ def rollback(
     """Rollback a memory to a specific version."""
     _init_and_user(user_id)
     result = manage_memory_versions(
-        options=VersionAction(action="rollback", memory_id=memory_id, to_version=version),
+        ManageMemoryVersionsParams(
+            options=VersionAction(action="rollback", memory_id=memory_id, to_version=version),
+        )
     )
     out.warn(f"Rolled back {memory_id} to version {version}: {result}")
 
@@ -137,7 +148,9 @@ def versions(
     """List all versions of a memory."""
     _init_and_user(user_id)
     result = manage_memory_versions(
-        options=VersionAction(action="list", memory_id=memory_id),
+        ManageMemoryVersionsParams(
+            options=VersionAction(action="list", memory_id=memory_id),
+        )
     )
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)

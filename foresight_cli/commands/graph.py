@@ -9,6 +9,7 @@ import typer
 from foresight.server import (
     EntityAction,
     EntityQuery,
+    LinkMemoriesParams,
     _initialize_backend,
     get_memory_relationships,
     init_db,
@@ -45,11 +46,13 @@ def link(
     """Create a typed relationship between two memories."""
     _init_and_user(user_id)
     result = link_memories(
-        source_memory_id=source,
-        target_memory_id=target,
-        relationship_type=relationship_type,
-        confidence=confidence,
-        user_id=user_id,
+        LinkMemoriesParams(
+            source_memory_id=source,
+            target_memory_id=target,
+            relationship_type=relationship_type,
+            confidence=confidence,
+            user_id=user_id,
+        )
     )
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)

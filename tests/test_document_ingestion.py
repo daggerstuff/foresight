@@ -98,8 +98,8 @@ def test_ingest_document_file_text(tmp_path, monkeypatch):
 
     captured: dict = {}
 
-    def fake_create_document(**kwargs):
-        captured.update(kwargs)
+    def fake_create_document(params):
+        captured.update(params.model_dump())
         return '{"document": {"id": "d1"}}'
 
     monkeypatch.setattr("foresight.server.create_document", fake_create_document)
@@ -121,8 +121,8 @@ def test_ingest_document_file_pdf_source_default(tmp_path, monkeypatch):
         captured["kind"] = detect_document_kind(path)
         return "extracted text"
 
-    def fake_create_document(**kwargs):
-        captured.update(kwargs)
+    def fake_create_document(params):
+        captured.update(params.model_dump())
         return '{"document": {}}'
 
     monkeypatch.setattr("foresight.document_ingestion.extract_text", fake_extract)

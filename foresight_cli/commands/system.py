@@ -16,7 +16,9 @@ import typer
 from foresight.config import raw_retention_enabled
 from foresight.context_cache import get_context_cache
 from foresight.server import (
+    GetSystemStatusParams,
     MaintenanceAction,
+    QueryMemoriesTemporalParams,
     TemporalWindow,
     _initialize_backend,
     _parse_as_of,
@@ -55,7 +57,7 @@ def status(
     """Get Foresight system status and health."""
     _init_backend()
     resolved_uid = cfg.get_user_id(user_id)
-    result = get_system_status(user_id=resolved_uid)
+    result = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
 
     if out.get_settings().mode in ("agent", "json"):
         if isinstance(result, str):
@@ -244,7 +246,7 @@ def init(
         out.warn(f"Database init issue: {e}")
 
     # Verify
-    health = get_system_status(user_id=config.user_id)
+    health = get_system_status(GetSystemStatusParams(user_id=config.user_id))
     out.info(f"Health check: {health[:100] if isinstance(health, str) else 'OK'}")
 
     out.panel(
@@ -339,7 +341,7 @@ def doctor(
 
     # Test DB connection
     try:
-        health = get_system_status(user_id=resolved_uid)
+        health = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
         if isinstance(health, str):
             health = json.loads(health) if health.startswith("{") else {"raw": health}
         if isinstance(health, dict):
@@ -435,12 +437,14 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
+        temporal = query_memories_temporal(
+            QueryMemoriesTemporalParams(options=TemporalWindow(window="month", limit=100))
+        )
     except Exception:
         temporal = None
 
     # Get status for baseline stats
-    health_raw = get_system_status(user_id=resolved_uid)
+    health_raw = get_system_status(GetSystemStatusParams(user_id=resolved_uid))
     health: dict[str, Any] = {}
     if isinstance(health_raw, str):
         with contextlib.suppress(json.JSONDecodeError):
@@ -558,7 +562,7 @@ def temporal(
         out.error(f"Invalid temporal query: {exc}")
         raise typer.Exit(2) from exc
 
-    result = query_memories_temporal(options=options, user_id=cfg.get_user_id(user_id))
+    result = query_memories_temporal(QueryMemoriesTemporalParams(options=options, user_id=cfg.get_user_id(user_id)))
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)
         return

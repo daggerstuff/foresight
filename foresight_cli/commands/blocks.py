@@ -6,7 +6,13 @@ import json
 
 import typer
 
-from foresight.server import ContextBlockAction, _initialize_backend, init_db, manage_context_blocks
+from foresight.server import (
+    ContextBlockAction,
+    ManageContextBlocksParams,
+    _initialize_backend,
+    init_db,
+    manage_context_blocks,
+)
 from foresight_cli.utils import config as cfg, output as out
 
 app = typer.Typer(help="Manage Foresight context blocks (guidance, preferences, state).")
@@ -63,7 +69,7 @@ def list_blocks(
 ):
     """List non-empty context blocks."""
     _init_and_user(user_id)
-    result = manage_context_blocks(options=ContextBlockAction(action="list"))
+    result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list")))
     _emit(result)
 
 
@@ -74,7 +80,7 @@ def get_block(
 ):
     """Get a specific context block."""
     _init_and_user(user_id)
-    result = manage_context_blocks(options=ContextBlockAction(action="get", label=label))
+    result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="get", label=label)))
     _emit(result)
 
 
@@ -86,7 +92,9 @@ def update_block(
 ):
     """Update a context block with new content."""
     _init_and_user(user_id)
-    result = manage_context_blocks(options=ContextBlockAction(action="update", label=label, content=content))
+    result = manage_context_blocks(
+        ManageContextBlocksParams(options=ContextBlockAction(action="update", label=label, content=content))
+    )
     _emit(result)
 
 
@@ -97,7 +105,7 @@ def reset_block(
 ):
     """Reset a context block to its default value."""
     _init_and_user(user_id)
-    result = manage_context_blocks(options=ContextBlockAction(action="reset", label=label))
+    result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="reset", label=label)))
     _emit(result)
 
 
@@ -108,5 +116,5 @@ def clear_block(
 ):
     """Clear a context block's content."""
     _init_and_user(user_id)
-    result = manage_context_blocks(options=ContextBlockAction(action="clear", label=label))
+    result = manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="clear", label=label)))
     _emit(result)

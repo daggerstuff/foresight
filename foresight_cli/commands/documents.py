@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from foresight.server import (
+    CreateDocumentParams,
     _initialize_backend,
     create_document,
     delete_document,
@@ -36,7 +37,7 @@ def create(
 ):
     """Create a new document with auto-chunking."""
     _init_and_user(user_id_override=None)
-    result = create_document(title=title, content=content, source=source, user_id=user_id)
+    result = create_document(CreateDocumentParams(title=title, content=content, source=source, user_id=user_id))
     if out.get_settings().mode in ("agent", "json"):
         out.print_json(result)
     else:

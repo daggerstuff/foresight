@@ -390,20 +390,24 @@ class ProofBenchmarkRunner:
         # Ingest constraints
         for _key, text, _ in test_cases:
             server.manage_memories(
-                action="store",
-                content=text,
-                category="preference",
-                scope="trait",
-                retention="permanent",
-                importance=0.95,
-                user_id=self.user_id,
+                server.ManageMemoriesParams(
+                    action="store",
+                    content=text,
+                    category="preference",
+                    scope="trait",
+                    retention="permanent",
+                    importance=0.95,
+                    user_id=self.user_id,
+                )
             )
 
         # Evaluate recall across test queries
         hits = 0
         total_queries = len(test_cases)
         for key, _text, query in test_cases:
-            injected = server.inject_context(conversation_text=query, user_id=self.user_id, max_memories=8)
+            injected = server.inject_context(
+                server.InjectContextParams(conversation_text=query, user_id=self.user_id, max_memories=8)
+            )
             # Verification keywords per test case
             keywords = {
                 "pnpm": ["pnpm"],
@@ -484,13 +488,15 @@ class ProofBenchmarkRunner:
 
         for _, fact, _ in arch_facts:
             server.manage_memories(
-                action="store",
-                content=fact,
-                category="decision",
-                scope="arc",
-                retention="long_term",
-                importance=1.0,
-                user_id=self.user_id,
+                server.ManageMemoriesParams(
+                    action="store",
+                    content=fact,
+                    category="decision",
+                    scope="arc",
+                    retention="long_term",
+                    importance=1.0,
+                    user_id=self.user_id,
+                )
             )
 
         mrr_sum = 0.0
@@ -594,18 +600,22 @@ class ProofBenchmarkRunner:
 
         for _, fact, _ in pins:
             server.manage_memories(
-                action="store",
-                content=fact,
-                category="lesson",
-                scope="fact",
-                retention="long_term",
-                importance=0.95,
-                user_id=self.user_id,
+                server.ManageMemoriesParams(
+                    action="store",
+                    content=fact,
+                    category="lesson",
+                    scope="fact",
+                    retention="long_term",
+                    importance=0.95,
+                    user_id=self.user_id,
+                )
             )
 
         hits = 0
         for key, _fact, query in pins:
-            injected = server.inject_context(conversation_text=query, user_id=self.user_id, max_memories=5)
+            injected = server.inject_context(
+                server.InjectContextParams(conversation_text=query, user_id=self.user_id, max_memories=5)
+            )
             matched = {
                 "otel_pin": "1.43.0" in injected or "0.64b0" in injected or "opentelemetry" in injected.lower(),
                 "koffi_pin": "koffi" in injected.lower()
@@ -680,15 +690,19 @@ class ProofBenchmarkRunner:
         ]
 
         server.process_session_transcript(
-            session_id=session_id,
-            messages=messages,
-            user_id=self.user_id,
+            server.ProcessSessionTranscriptParams(
+                session_id=session_id,
+                messages=messages,
+                user_id=self.user_id,
+            )
         )
         latency = (time.perf_counter() - t0) * 1000
 
         # Query extracted facts
         search_res = server.search_memories(
-            query="JWT bearer token HS256 refresh token rotation", limit=5, user_id=self.user_id
+            server.SearchMemoriesParams(
+                query="JWT bearer token HS256 refresh token rotation", limit=5, user_id=self.user_id
+            )
         )
         extracted_text = str(search_res).lower()
 
@@ -748,13 +762,15 @@ class ProofBenchmarkRunner:
         for text, is_trig, cat in test_sentences:
             if is_trig:
                 server.manage_memories(
-                    action="store",
-                    content=text,
-                    category=cat or "fact",
-                    scope="trait",
-                    retention="permanent",
-                    importance=0.8,
-                    user_id=self.user_id,
+                    server.ManageMemoriesParams(
+                        action="store",
+                        content=text,
+                        category=cat or "fact",
+                        scope="trait",
+                        retention="permanent",
+                        importance=0.8,
+                        user_id=self.user_id,
+                    )
                 )
                 captured_triggers += 1
 
@@ -798,18 +814,20 @@ class ProofBenchmarkRunner:
 
         for commit_msg in commits:
             server.manage_memories(
-                action="store",
-                content=f"Git commit milestone: {commit_msg}",
-                category="decision",
-                scope="project",
-                retention="long_term",
-                importance=0.75,
-                user_id=self.user_id,
+                server.ManageMemoriesParams(
+                    action="store",
+                    content=f"Git commit milestone: {commit_msg}",
+                    category="decision",
+                    scope="project",
+                    retention="long_term",
+                    importance=0.75,
+                    user_id=self.user_id,
+                )
             )
 
         # Query recent git context
         search_res = server.search_memories(
-            query="AES-256-GCM encryption connection pool", limit=5, user_id=self.user_id
+            server.SearchMemoriesParams(query="AES-256-GCM encryption connection pool", limit=5, user_id=self.user_id)
         )
         search_text = str(search_res).lower()
         found_commits = sum(1 for kw in ["aes-256-gcm", "connection pool", "encryption"] if kw in search_text)
@@ -854,7 +872,7 @@ class ProofBenchmarkRunner:
         times = []
         for q in queries:
             t0 = time.perf_counter()
-            server.inject_context(conversation_text=q, user_id=self.user_id, max_memories=3)
+            server.inject_context(server.InjectContextParams(conversation_text=q, user_id=self.user_id, max_memories=3))
             times.append((time.perf_counter() - t0) * 1000)
 
         times_sorted = sorted(times)
@@ -902,22 +920,26 @@ class ProofBenchmarkRunner:
 
         # Seed duplicate and variation memories
         server.manage_memories(
-            action="store",
-            content="Always prefer pnpm for javascript projects.",
-            category="preference",
-            scope="trait",
-            retention="permanent",
-            importance=0.8,
-            user_id=self.user_id,
+            server.ManageMemoriesParams(
+                action="store",
+                content="Always prefer pnpm for javascript projects.",
+                category="preference",
+                scope="trait",
+                retention="permanent",
+                importance=0.8,
+                user_id=self.user_id,
+            )
         )
         server.manage_memories(
-            action="store",
-            content="Prefer pnpm over npm for all node/ts projects.",
-            category="preference",
-            scope="trait",
-            retention="permanent",
-            importance=0.8,
-            user_id=self.user_id,
+            server.ManageMemoriesParams(
+                action="store",
+                content="Prefer pnpm over npm for all node/ts projects.",
+                category="preference",
+                scope="trait",
+                retention="permanent",
+                importance=0.8,
+                user_id=self.user_id,
+            )
         )
 
         distill_res = auto_distill_context_blocks(self.user_id, tid)
@@ -1009,22 +1031,29 @@ class ProofBenchmarkRunner:
 
         # Store distilled memories & context blocks in Foresight
         server.process_session_transcript(
-            session_id=f"token_bench_{int(time.time())}",
-            messages=[{"role": r, "content": c} for r, c in turns],
-            user_id=self.user_id,
+            server.ProcessSessionTranscriptParams(
+                session_id=f"token_bench_{int(time.time())}",
+                messages=[{"role": r, "content": c} for r, c in turns],
+                user_id=self.user_id,
+            )
         )
         server.manage_context_blocks(
-            action="update",
-            label="user_preferences",
-            content=(
-                "- Always use pnpm for Node/TS and uv for Python.\n- PostgreSQL 17 on port 5432, Redis on port 6379/0."
-            ),
-            user_id=self.user_id,
+            server.ManageContextBlocksParams(
+                action="update",
+                label="user_preferences",
+                content=(
+                    "- Always use pnpm for Node/TS and uv for Python.\n"
+                    "- PostgreSQL 17 on port 5432, Redis on port 6379/0."
+                ),
+                user_id=self.user_id,
+            )
         )
 
         # Query via inject_context
         query = "What database and Redis port should we use, and what is our package manager convention?"
-        injected = server.inject_context(query, user_id=self.user_id, max_memories=3)
+        injected = server.inject_context(
+            server.InjectContextParams(conversation_text=query, user_id=self.user_id, max_memories=3)
+        )
         latency = (time.perf_counter() - t0) * 1000
 
         foresight_tokens = max(1, len(injected) // 4)
@@ -1078,39 +1107,47 @@ class ProofBenchmarkRunner:
 
         # 1. Seed legacy convention reinforced multiple times (historical weight)
         server.manage_memories(
-            action="store",
-            content="Project rule: Always use yarn v1 for installing dependencies across the codebase.",
-            category="preference",
-            scope="global",
-            retention="permanent",
-            importance=0.6,
-            user_id=self.user_id,
+            server.ManageMemoriesParams(
+                action="store",
+                content="Project rule: Always use yarn v1 for installing dependencies across the codebase.",
+                category="preference",
+                scope="global",
+                retention="permanent",
+                importance=0.6,
+                user_id=self.user_id,
+            )
         )
         server.manage_memories(
-            action="store",
-            content="Standard build command: yarn build and yarn test.",
-            category="fact",
-            scope="project",
-            retention="long_term",
-            importance=0.5,
-            user_id=self.user_id,
+            server.ManageMemoriesParams(
+                action="store",
+                content="Standard build command: yarn build and yarn test.",
+                category="fact",
+                scope="project",
+                retention="long_term",
+                importance=0.5,
+                user_id=self.user_id,
+            )
         )
 
         # 2. Seed explicit current override (recency & active context block precedence)
         server.manage_context_blocks(
-            action="update",
-            label="user_preferences",
-            content="- Strict Package Policy (Updated): Switched project from Yarn to pnpm. Never use yarn or npm.",
-            user_id=self.user_id,
+            server.ManageContextBlocksParams(
+                action="update",
+                label="user_preferences",
+                content="- Strict Package Policy (Updated): Switched project from Yarn to pnpm. Never use yarn or npm.",
+                user_id=self.user_id,
+            )
         )
         server.manage_memories(
-            action="store",
-            content="Explicit decision: We migrated all workspaces to pnpm v9; yarn is completely deprecated.",
-            category="decision",
-            scope="project",
-            retention="permanent",
-            importance=0.95,
-            user_id=self.user_id,
+            server.ManageMemoriesParams(
+                action="store",
+                content="Explicit decision: We migrated all workspaces to pnpm v9; yarn is completely deprecated.",
+                category="decision",
+                scope="project",
+                retention="permanent",
+                importance=0.95,
+                user_id=self.user_id,
+            )
         )
 
         # Invalidate cache to ensure clean retrieval
@@ -1118,7 +1155,9 @@ class ProofBenchmarkRunner:
 
         # 3. Query via inject_context
         query = "What package manager should I use to install a new dependency in this workspace?"
-        injected = server.inject_context(query, user_id=self.user_id, max_memories=5)
+        injected = server.inject_context(
+            server.InjectContextParams(conversation_text=query, user_id=self.user_id, max_memories=5)
+        )
         latency = (time.perf_counter() - t0) * 1000
 
         injected_lower = injected.lower()

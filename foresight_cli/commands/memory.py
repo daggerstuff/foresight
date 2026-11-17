@@ -8,9 +8,12 @@ from pathlib import Path
 import typer
 
 from foresight.server import (
+    ManageMemoriesParams,
     MemoryAction,
     MemoryUpdateOptions,
+    SearchMemoriesParams,
     SearchOptions,
+    StoreMemoryParams,
     _initialize_backend,
     delete_memory_embedding,
     get_current_account_id,
@@ -52,11 +55,13 @@ def store(
     """Store a new memory."""
     _init_and_user(user_id)
     result = store_memory(
-        content=content,
-        scope=scope,
-        retention=retention,
-        category=category,
-        importance=importance,
+        StoreMemoryParams(
+            content=content,
+            scope=scope,
+            retention=retention,
+            category=category,
+            importance=importance,
+        )
     )
     out.done(f"Memory stored: {result}")
 
@@ -68,7 +73,7 @@ def get(
 ):
     """Retrieve a specific memory by ID."""
     _init_and_user(user_id)
-    result = search_memories(options=SearchOptions(query_type="id", memory_id=memory_id))
+    result = search_memories(SearchMemoriesParams(options=SearchOptions(query_type="id", memory_id=memory_id)))
     if out.get_settings().mode == "agent":
         out.print_json(result)
     else:
@@ -83,7 +88,7 @@ def list_memories(
 ):
     """List all memories (latest first)."""
     _init_and_user(user_id)
-    result = search_memories(options=SearchOptions(query_type="list", limit=limit, offset=offset))
+    result = search_memories(SearchMemoriesParams(options=SearchOptions(query_type="list", limit=limit, offset=offset)))
 
     _stdout_console.print(result)
 
@@ -97,7 +102,9 @@ def query(
     """Search memories by content keyword."""
     _init_and_user(user_id)
     # search_memories() returns a pre-formatted display string; render it directly.
-    result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
+    result = search_memories(
+        SearchMemoriesParams(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
+    )
     out.result_block(result, title=f"Search: {query_text}")
 
 
@@ -114,16 +121,18 @@ def update(
     """Update an existing memory."""
     _init_and_user(user_id)
     result = manage_memories(
-        options=MemoryAction(
-            action="update",
-            memory_id=memory_id,
-            updates=MemoryUpdateOptions(
-                content=content,
-                category=category,
-                scope=scope,
-                retention=retention,
+        ManageMemoriesParams(
+            options=MemoryAction(
+                action="update",
+                memory_id=memory_id,
+                updates=MemoryUpdateOptions(
+                    content=content,
+                    category=category,
+                    scope=scope,
+                    retention=retention,
+                ),
             ),
-        ),
+        )
     )
     out.done(f"Updated {memory_id}: {result}")
 
@@ -135,7 +144,7 @@ def delete(
 ):
     """Delete a memory by ID."""
     _init_and_user(user_id)
-    result = manage_memories(options=MemoryAction(action="delete", memory_id=memory_id))
+    result = manage_memories(ManageMemoriesParams(options=MemoryAction(action="delete", memory_id=memory_id)))
     out.warn(f"Deleted {memory_id}: {result}")
 
 
@@ -170,7 +179,9 @@ def search(
             out.error("Semantic search requires embedding support. Use --mode keyword (default).")
             raise typer.Exit(1) from None
     else:
-        result = search_memories(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
+        result = search_memories(
+            SearchMemoriesParams(options=SearchOptions(query_type="keyword", query=query_text, limit=limit))
+        )
 
     # search_memories() returns a pre-formatted display string; render it directly.
     out.result_block(result, title=f"Search ({mode}): {query_text}")
@@ -257,11 +268,13 @@ def import_memories(
         if not content:
             continue
         store_memory(
-            content=content,
-            scope=item.get("scope", scope),
-            retention=item.get("retention", retention),
-            category=item.get("category", "fact"),
-            importance=item.get("importance", 0.5),
+            StoreMemoryParams(
+                content=content,
+                scope=item.get("scope", scope),
+                retention=item.get("retention", retention),
+                category=item.get("category", "fact"),
+                importance=item.get("importance", 0.5),
+            )
         )
         imported += 1
 

@@ -21,7 +21,7 @@ from foresight.capture import (
 from foresight.connection_pool import get_pool, reset_pool
 from foresight.document_layer import content_hash as _content_hash
 from foresight.memory_relationships import reset_memory_relationship_store
-from foresight.server import init_db, process_session_transcript
+from foresight.server import ProcessSessionTranscriptParams, init_db, process_session_transcript
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 from tests._sqlite_backend import SqliteBackend
 
@@ -473,7 +473,11 @@ class TestServerIntegration:
             {"role": "assistant", "content": "Good idea, I'll configure it"},
             {"role": "user", "content": "I prefer using sentinel for high availability"},
         ]
-        result = process_session_transcript("sess_integration", msgs, project_path="/tmp", user_id="_test_user_")
+        result = process_session_transcript(
+            ProcessSessionTranscriptParams(
+                session_id="sess_integration", messages=msgs, project_path="/tmp", user_id="_test_user_"
+            )
+        )
         # The result should mention memories were stored
         assert "new memories" in result
 
@@ -485,7 +489,9 @@ class TestServerIntegration:
             {"role": "assistant", "content": "hello"},
             {"role": "user", "content": "bye now"},
         ]
-        result = process_session_transcript("sess_trivial", msgs, user_id="_test_user_")
+        result = process_session_transcript(
+            ProcessSessionTranscriptParams(session_id="sess_trivial", messages=msgs, user_id="_test_user_")
+        )
         assert "0 new memories" in result
 
     def test_process_session_transcript_with_existing_bridge(self):
@@ -496,7 +502,9 @@ class TestServerIntegration:
             {"role": "assistant", "content": "I'll create a retry decorator with exponential backoff."},
             {"role": "user", "content": "I always prefer tenacity for retry logic in Python."},
         ]
-        result = process_session_transcript("sess_bridge_coexist", msgs, user_id="_test_user_")
+        result = process_session_transcript(
+            ProcessSessionTranscriptParams(session_id="sess_bridge_coexist", messages=msgs, user_id="_test_user_")
+        )
         # Both the bridge and the pipeline should have stored memories
         assert "new memories" in result
         count_str = result.split("(")[1].split(" ")[0] if "(" in result else "0"

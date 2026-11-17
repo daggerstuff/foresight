@@ -32,7 +32,13 @@ from foresight.hybrid_retriever import (
     reset_hybrid_retriever,
 )
 from foresight.memory_relationships import reset_memory_relationship_store
-from foresight.server import PostgresPooledConnection, get_backend, init_db, manage_memories
+from foresight.server import (
+    ManageMemoriesParams,
+    PostgresPooledConnection,
+    get_backend,
+    init_db,
+    manage_memories,
+)
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 from foresight.truth_resolution import (
     OVERLAP_THRESHOLD,
@@ -232,11 +238,15 @@ class TestStorePathSupersede:
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
 
         res_old = manage_memories(
-            action="store", content="Therapy feels helpful for my weekly sessions", category="fact"
+            ManageMemoriesParams(
+                action="store", content="Therapy feels helpful for my weekly sessions", category="fact"
+            )
         )
         old_id = _stored_id(res_old)
         res_new = manage_memories(
-            action="store", content="Therapy feels harmful for my weekly sessions", category="fact"
+            ManageMemoriesParams(
+                action="store", content="Therapy feels harmful for my weekly sessions", category="fact"
+            )
         )
         new_id = _stored_id(res_new)
         assert old_id != new_id
@@ -264,9 +274,13 @@ class TestStorePathSupersede:
     def test_negation_flip_supersedes_old_memory(self, monkeypatch):
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
 
-        res_old = manage_memories(action="store", content="I go to the gym every morning", category="fact")
+        res_old = manage_memories(
+            ManageMemoriesParams(action="store", content="I go to the gym every morning", category="fact")
+        )
         old_id = _stored_id(res_old)
-        res_new = manage_memories(action="store", content="I stopped going to the gym every morning", category="fact")
+        res_new = manage_memories(
+            ManageMemoriesParams(action="store", content="I stopped going to the gym every morning", category="fact")
+        )
         new_id = _stored_id(res_new)
 
         conn = _pg()
@@ -288,9 +302,13 @@ class TestStorePathSupersede:
         monkeypatch.setenv("FORESIGHT_SUPERSEDE_DETECTION", "1")
 
         res1 = manage_memories(
-            action="store", content="User prefers FastAPI for building backend services", category="fact"
+            ManageMemoriesParams(
+                action="store", content="User prefers FastAPI for building backend services", category="fact"
+            )
         )
-        res2 = manage_memories(action="store", content="Client enjoys hiking on weekends", category="fact")
+        res2 = manage_memories(
+            ManageMemoriesParams(action="store", content="Client enjoys hiking on weekends", category="fact")
+        )
         id1, id2 = _stored_id(res1), _stored_id(res2)
 
         conn = _pg()
@@ -308,8 +326,16 @@ class TestStorePathSupersede:
         """With the gate off (default) contradicting memories coexist."""
         monkeypatch.delenv("FORESIGHT_SUPERSEDE_DETECTION", raising=False)
 
-        res1 = manage_memories(action="store", content="Therapy feels helpful for my weekly sessions", category="fact")
-        res2 = manage_memories(action="store", content="Therapy feels harmful for my weekly sessions", category="fact")
+        res1 = manage_memories(
+            ManageMemoriesParams(
+                action="store", content="Therapy feels helpful for my weekly sessions", category="fact"
+            )
+        )
+        res2 = manage_memories(
+            ManageMemoriesParams(
+                action="store", content="Therapy feels harmful for my weekly sessions", category="fact"
+            )
+        )
         id1, id2 = _stored_id(res1), _stored_id(res2)
 
         conn = _pg()

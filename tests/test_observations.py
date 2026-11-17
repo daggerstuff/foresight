@@ -10,7 +10,14 @@ import pytest
 
 from foresight.observations import list_observations
 from foresight.reflect import UserScope
-from foresight.server import USER_ID, curate_observations as curate_tool, inject_context, manage_memories
+from foresight.server import (
+    USER_ID,
+    InjectContextParams,
+    ManageMemoriesParams,
+    curate_observations as curate_tool,
+    inject_context,
+    manage_memories,
+)
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
 TENANT = "_test_"
@@ -25,7 +32,7 @@ def setup_test_ctx():
 
 
 def _store(content: str, category: str = "fact") -> str:
-    result = manage_memories(action="store", content=content, category=category)
+    result = manage_memories(ManageMemoriesParams(action="store", content=content, category=category))
     match = re.search(r"Stored memory (\S+)\.", result)
     assert match, result
     return match.group(1)
@@ -85,7 +92,7 @@ def test_inject_context_surfaces_patterns_section():
     _store(f"work deadline stress recurring daily ({stamp})", category="work")
     _curate()
 
-    output = inject_context(conversation_text="how is work going", user_id=USER_ID)
+    output = inject_context(InjectContextParams(conversation_text="how is work going", user_id=USER_ID))
     assert "[Patterns]" in output
     assert "Recurring pattern" in output
     assert "evidence:" in output
@@ -128,5 +135,5 @@ def test_budgeted_injection_keeps_patterns_in_blocks_lane():
     _store(f"budget pattern two ({stamp})", category="budgetcat")
     _curate()
 
-    output = inject_context(conversation_text="budget pattern", user_id=USER_ID, max_chars=4000)
+    output = inject_context(InjectContextParams(conversation_text="budget pattern", user_id=USER_ID, max_chars=4000))
     assert "pattern:" in output

@@ -27,7 +27,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast
+from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
@@ -574,6 +574,471 @@ class MaintenanceAction(BaseModel):
         default=None, description="ISO-8601 start of reprocess window (inclusive)"
     )
     reprocess_window_end: str | None = Field(default=None, description="ISO-8601 end of reprocess window (inclusive)")
+
+
+# Request parameter objects
+class ManageMemoriesParams(BaseModel):
+    """Arguments for :func:`manage_memories`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: MemoryAction | None = Field(default=None, description="Action and parameters")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    action: Literal["store", "update", "delete", "archive"] | None = Field(
+        default=None, description="Action to perform (fallback when options is not provided)"
+    )
+    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
+    content: str | None = Field(default=None, description="Content for store/update")
+    store_options: MemoryOptions | None = Field(default=None, description="Options for store")
+    updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
+    category: str | None = Field(default=None, description="Flat category label")
+    scope: str | None = Field(default=None, description="Flat memory scope (session, arc, trait, fact)")
+    retention: str | None = Field(
+        default=None, description="Flat retention policy (ephemeral, short_term, long_term, permanent)"
+    )
+    importance: float | None = Field(default=None, description="Flat importance score (0.0 to 1.0)")
+    tags: list[str] | None = Field(default=None, description="Flat tags list")
+    is_sensitive: bool | None = Field(default=None, description="Flat sensitivity override")
+    relation_type: str | None = Field(default=None, description="Flat relationship type")
+    related_memory_id: str | None = Field(default=None, description="Flat related memory ID")
+    emotional_context: dict[str, Any] | None = Field(default=None, description="Flat emotional metadata")
+    metrics: dict[str, Any] | None = Field(default=None, description="Flat empathy metrics")
+    expires_at: str | float | int | None = Field(
+        default=None, description="Flat per-memory expiration (ISO-8601 or epoch seconds)"
+    )
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None, description="Flat memory taxonomy type"
+    )
+    auto_tag: bool | None = Field(default=None, description="Flat switch to derive topical tags deterministically")
+    agent_id: str | None = Field(default=None, description="Flat namespace lane for store (default: shared lane)")
+    project: str | None = Field(default=None, description="Flat project namespace lane for store")
+
+
+class SearchMemoriesParams(BaseModel):
+    """Arguments for :func:`search_memories`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: SearchOptions | None = Field(
+        default=None, description="Search parameters (query_type, query, memory_id, limit, etc.)"
+    )
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    query_type: Literal["id", "keyword", "list", "semantic"] | None = Field(
+        default=None, description="Type of search/retrieval"
+    )
+    query: str | None = Field(default=None, description="Search query string")
+    memory_id: str | None = Field(default=None, description="Retrieve specific memory by ID")
+    limit: int | None = Field(default=None, description="Maximum results")
+    offset: int | None = Field(default=None, description="Result offset")
+    min_importance: float | None = Field(default=None, description="Minimum importance threshold")
+    use_hybrid: bool | None = Field(default=None, description="Enable hybrid search signals")
+    use_cascade: bool | None = Field(default=None, description="Enable cascade search across related entities")
+    cascade_depth: int | None = Field(default=None, description="Maximum depth for cascade traversal")
+    cascade_limit: int | None = Field(default=None, description="Maximum results per cascade level")
+    debug: bool | None = Field(
+        default=None,
+        description="Return structured trace with timing and signal metadata instead of formatted results",
+    )
+    min_score: float | None = Field(
+        default=None, description="Minimum cosine similarity for semantic search [-1.0, 1.0]"
+    )
+    provider: str | None = Field(default=None, description="Embedder provider name for semantic search")
+    category: str | list[str] | None = Field(default=None, description="Filter by category (single value or list)")
+    scope: str | None = Field(default=None, description="Filter by scope")
+    retention: str | None = Field(default=None, description="Filter by retention policy")
+    bank_id: str | None = Field(default=None, description="Filter by bank ID")
+    tags: list[str] | None = Field(default=None, description="Filter to memories carrying any of these tags")
+    memory_type: str | None = Field(default=None, description="Filter by memory_type")
+    signal_weights: dict[str, float] | None = Field(
+        default=None, description="Per-request RRF signal-weight overrides for hybrid retrieval"
+    )
+    agent_id: str | None = Field(default=None, description="Namespace lane filter (own lane + shared 'default')")
+    project: str | None = Field(default=None, description="Project namespace lane filter (own lane + shared 'default')")
+
+
+class ManageContextBlocksParams(BaseModel):
+    """Arguments for :func:`manage_context_blocks`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: ContextBlockAction | None = Field(default=None, description="Action and parameters")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    action: Literal["list", "get", "update", "reset", "clear"] | None = Field(
+        default=None, description="Operation to perform: list, get, update, reset, or clear"
+    )
+    label: str | None = Field(default=None, description="Block label for get/update/reset/clear")
+    block_name: str | None = Field(default=None, description="Alias for label")
+    block_type: str | None = Field(default=None, description="Alias for label")
+    name: str | None = Field(default=None, description="Alias for label")
+    block: str | None = Field(default=None, description="Alias for label")
+    block_id: str | None = Field(default=None, description="Alias for label")
+    key: str | None = Field(default=None, description="Alias for label")
+    content: str | None = Field(default=None, description="New block content for update")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    project: str | None = Field(default=None, description="Optional project namespace lane")
+    visibility: Literal["private", "shared"] | None = Field(
+        default=None, description="Block visibility for update: 'private' or 'shared'"
+    )
+
+
+class ManageCurationRunsParams(BaseModel):
+    """Arguments for :func:`manage_curation_runs`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: CurationRunAction | None = Field(default=None, description="CurationRunAction options payload")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    action: Literal["create", "get", "list", "cancel", "archive"] | None = Field(
+        default=None, description="Action to perform"
+    )
+    run_id: str | None = Field(default=None, description="Curation run ID for get/cancel/archive")
+    source_bank_id: str | None = Field(default=None, description="Source bank to curate from")
+    output_bank_id: str | None = Field(default=None, description="Optional output bank for reviewable results")
+    policy_mode: Literal["preserve", "rebalance", "rebuild"] | None = Field(
+        default=None, description="Curation policy mode"
+    )
+    tool_access: Literal["disabled", "observe", "operate"] | None = Field(
+        default=None, description="Curator tool-access policy"
+    )
+    output_mode: Literal["reviewable_output", "in_place"] | None = Field(
+        default=None, description="Whether curated results land in a reviewable output bank or in place"
+    )
+    instructions: str | None = Field(default=None, description="Optional curator instructions")
+    run_clustering: bool | None = Field(default=None, description="Run memory clustering after curation completes")
+    transcript_bundle: list[dict] | None = Field(
+        default=None, description="Optional transcript bundle to incorporate during curation"
+    )
+    session_id: str | None = Field(default=None, description="Optional session ID for transcript bundles")
+    project_path: str | None = Field(default=None, description="Optional project path for transcript bundles")
+
+
+class InjectContextParams(BaseModel):
+    """Arguments for :func:`inject_context`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    conversation_text: str = Field(description="The current conversation text to analyze for context")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    max_memories: int = Field(default=5, description="Maximum number of memories to return")
+    min_relevance: float = Field(
+        default=0.01, description="Minimum relevance score threshold (RRF scores are typically 0.01-0.08)"
+    )
+    include_details: bool = Field(
+        default=False,
+        description="Return JSON with formatted text plus structured memories and context blocks by InjectionPoint",
+    )
+    max_chars: int | None = Field(
+        default=None,
+        description=(
+            "Character budget for the formatted payload; truncates at sentence boundaries per lane priority "
+            "(static > dynamic > memories > blocks > safety). None = unbounded."
+        ),
+    )
+    agent_id: str | None = Field(
+        default=None, description="Restrict memories, mental models, observations, and blocks to this lane"
+    )
+    project: str | None = Field(default=None, description="Optional project namespace lane (same semantics)")
+
+
+class QueryMemoriesTemporalParams(BaseModel):
+    """Arguments for :func:`query_memories_temporal`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: TemporalWindow | None = Field(default=None, description="Temporal query parameters")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    window: Literal["today", "week", "month", "year"] | None = Field(default=None, description="Time window")
+    trend: str | None = Field(default=None, description="Filter by trend (stable/strengthening/weakening/stale)")
+    category: str | None = Field(default=None, description="Category filter")
+    limit: int | None = Field(default=None, description="Max results")
+    as_of: str | None = Field(
+        default=None,
+        description="ISO-8601 instant for bitemporal point-in-time reconstruction; overrides window and trend",
+    )
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane filter")
+    project: str | None = Field(default=None, description="Optional project namespace lane filter")
+
+
+class SynthesizeProfileParams(BaseModel):
+    """Arguments for :func:`synthesize_profile`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    max_static_memories: int = Field(default=20, description="Max trait/fact memories to consider")
+    max_dynamic_memories: int = Field(default=10, description="Max session/arc memories to consider")
+    include_synthesis: bool = Field(default=True, description="Run enhanced synthesis for contradiction detection")
+    format_prompt: bool = Field(default=False, description="Return a formatted prompt block instead of JSON")
+    max_chars: int | None = Field(
+        default=None, description="Character budget for the formatted prompt (only used with format_prompt=True)"
+    )
+    include_buckets: bool = Field(
+        default=False, description="Group static facts into topical buckets (preferences/goals/work/general)"
+    )
+
+
+class ManageMemoryVersionsParams(BaseModel):
+    """Arguments for :func:`manage_memory_versions`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: VersionAction | None = Field(default=None, description="Action and parameters")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    action: Literal["list", "diff", "rollback"] | None = Field(
+        default=None, description="Versioning action (fallback when options is not provided)"
+    )
+    memory_id: str | None = Field(default=None, description="Memory ID")
+    version1: int | None = Field(default=None, description="First version for diff")
+    version2: int | None = Field(default=None, description="Second version for diff")
+    to_version: int | None = Field(default=None, description="Target version for rollback")
+
+
+class ReflectParams(BaseModel):
+    """Arguments for :func:`reflect`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    question: str = Field(description="The question or topic to reflect on")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    max_memories: int = Field(default=8, description="Maximum memories to consider for synthesis")
+    include_archived: bool = Field(default=False, description="Include archived/ghost memories in retrieval")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane for retrieval and caching")
+    project: str | None = Field(default=None, description="Optional project namespace lane for retrieval")
+
+
+class ManageMentalModelsParams(BaseModel):
+    """Arguments for :func:`manage_mental_models`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: MentalModelAction | None = Field(
+        default=None, description="Action model (action, model_id, agent_id, limit)"
+    )
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    action: Literal["list", "refresh", "delete"] | None = Field(
+        default=None, description="Action to perform (fallback when options is not provided)"
+    )
+    model_id: str | None = Field(default=None, description="Mental model ID for refresh/delete")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    limit: int = Field(default=50, description="Maximum models to return for list")
+
+
+class ProcessSessionTranscriptParams(BaseModel):
+    """Arguments for :func:`process_session_transcript`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    session_id: str = Field(description="Unique session identifier")
+    messages: list[dict] = Field(description="List of message dicts with role/content")
+    project_path: str | None = Field(default=None, description="Optional project path for context")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    infer: bool = Field(
+        default=True,
+        description="When False, store the transcript verbatim as a single memory instead of running extraction",
+    )
+    instructions: str | None = Field(
+        default=None, description="Optional advisory guidance for extraction, recorded on verbatim memories"
+    )
+
+
+class CaptureInFlightMemoryParams(BaseModel):
+    """Arguments for :func:`capture_in_flight_memory`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    content: str = Field(description="Memory content to store immediately (decision, fix, preference, pattern, recipe)")
+    category: str = Field(
+        default="decision",
+        description="Memory category ('decision', 'fact', 'preference', 'lesson', 'pattern', 'pending')",
+    )
+    scope: str = Field(default="arc", description="Scope ('arc', 'trait', 'fact', 'session', 'project')")
+    importance: float = Field(default=0.7, description="Importance score between 0.1 and 1.0")
+    retention: str = Field(default="long_term", description="Retention policy ('long_term' or 'short_term')")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+
+
+class GetSystemStatusParams(BaseModel):
+    """Arguments for :func:`get_system_status`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: SystemStatusOptions | None = Field(default=None, description="Optional status and trend parameters")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    include_trends: bool | None = Field(default=None, description="Whether to include temporal trend analysis")
+    timeframe: str | None = Field(default=None, description="Timeframe for trend analysis")
+    include_cache_metrics: bool | None = Field(default=None, description="Whether to include cache and budget metrics")
+    enforce_hard_caps: bool | None = Field(
+        default=None, description="Whether to enforce hard caps on memory and cache counts"
+    )
+
+
+class IngestDocumentFileParams(BaseModel):
+    """Arguments for :func:`ingest_document_file`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    path: str = Field(description="Local filesystem path to the file (self-hosted deployment)")
+    title: str | None = Field(default=None, description="Human-readable title; defaults to the file stem")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    source: str | None = Field(
+        default=None, description="Document source type; defaults to 'pdf' for PDFs, else 'document'"
+    )
+    char_budget: int | None = Field(default=None, description="Optional soft max chars per chunk")
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional JSON-serializable metadata")
+
+
+class LinkMemoriesParams(BaseModel):
+    """Arguments for :func:`link_memories`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    source_memory_id: str = Field(description="ID of the source memory (the 'from' side)")
+    target_memory_id: str = Field(description="ID of the target memory (the 'to' side)")
+    relationship_type: str = Field(
+        description="One of 'updates', 'extends', 'derives', 'contradicts', 'supports', 'related'"
+    )
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    confidence: float = Field(default=1.0, description="Confidence score in [0.0, 1.0]")
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional JSON-serializable metadata")
+
+
+class ManageInferredParams(BaseModel):
+    """Arguments for :func:`manage_inferred`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: InferredAction | None = Field(
+        default=None, description="Action and parameters (list, approve, decline, undo)"
+    )
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    action: Literal["list", "approve", "decline", "undo"] | None = Field(
+        default=None, description="Action to perform (fallback when options is not provided)"
+    )
+    memory_id: str | None = Field(default=None, description="Memory ID for approve/decline/undo")
+    reason: str | None = Field(default=None, description="Reason recorded when declining")
+    limit: int | None = Field(default=None, description="Max items for list (1-50, default 50)")
+
+
+class AnalyzeMemoriesParams(BaseModel):
+    """Arguments for :func:`analyze_memories`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    options: AnalysisAction | None = Field(default=None, description="Action and parameters")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    action: Literal["synthesize", "reflect"] | None = Field(
+        default=None, description="Analysis action (fallback when options is not provided)"
+    )
+    period: str | None = Field(default=None, description="Period for reflection")
+    limit: int | None = Field(default=None, description="Limit for synthesis")
+    enhanced: bool | None = Field(default=None, description="Whether to use enhanced synthesis")
+
+
+class StoreMemoryParams(BaseModel):
+    """Arguments for :func:`store_memory`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    content: str = Field(description="Memory content")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    category: str = Field(default="fact", description="Category label")
+    scope: str = Field(default="session", description="Memory scope: session, arc, trait, or fact")
+    retention: str = Field(
+        default="short_term", description="Retention policy: ephemeral, short_term, long_term, permanent"
+    )
+    importance: float = Field(default=0.5, description="Initial importance score (0.0 to 1.0)")
+    emotional_context: dict[str, Any] | None = Field(default=None, description="Emotional metadata")
+    metrics: dict[str, Any] | None = Field(default=None, description="Empathy metrics")
+    relation_type: str | None = Field(default=None, description="Optional typed relationship to another memory")
+    related_memory_id: str | None = Field(default=None, description="ID of the memory this one relates to")
+    tags: list[str] | None = Field(default=None, description="Explicit tags; when provided they win over auto-tagging")
+    expires_at: str | float | int | None = Field(
+        default=None, description="Optional expiration (ISO-8601 string or epoch seconds)"
+    )
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None, description="Memory taxonomy type (episodic, semantic, or procedural)"
+    )
+    auto_tag: bool = Field(default=False, description="Derive salient topical tags from content deterministically")
+
+
+class GetRelevantMemoriesParams(BaseModel):
+    """Arguments for :func:`get_relevant_memories`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    query: str = Field(description="Search query string")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    limit: int = Field(default=5, description="Maximum number of memories to return")
+    min_relevance: float = Field(
+        default=0.01, description="Minimum combined_score threshold (RRF scores are typically 0.01-0.08)"
+    )
+    max_chars: int | None = Field(
+        default=None, description="Character budget for memory content; truncates at sentence boundaries"
+    )
+    category: str | list[str] | None = Field(default=None, description="Filter by category (single value or list)")
+    scope: str | None = Field(default=None, description="Filter by scope")
+    retention: str | None = Field(default=None, description="Filter by retention policy")
+    bank_id: str | None = Field(default=None, description="Filter by bank ID")
+    tags: list[str] | None = Field(default=None, description="Filter to memories carrying any of these tags")
+    memory_type: str | None = Field(default=None, description="Filter by memory_type")
+
+
+class UpdateMemoryParams(BaseModel):
+    """Arguments for :func:`update_memory`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    memory_id: str = Field(description="Memory ID to update")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    content: str | None = Field(default=None, description="New memory content")
+    category: str | None = Field(default=None, description="New category label")
+    scope: str | None = Field(default=None, description="New memory scope")
+    retention: str | None = Field(default=None, description="New retention policy")
+    tags: list[str] | None = Field(default=None, description="New list of tags")
+    relation_type: str | None = Field(default=None, description="Optional typed relationship to another memory")
+    related_memory_id: str | None = Field(default=None, description="ID of the memory this one relates to")
+
+
+class SetDecayConfigParams(BaseModel):
+    """Arguments for :func:`set_decay_config`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    tenant_id: str | None = Field(default=None, description="Optional tenant ID override")
+    category: str = Field(default="general", description="Memory category")
+    half_life_hours: float | None = Field(default=None, description="New Ebbinghaus half-life in hours")
+    min_importance: float | None = Field(default=None, description="Floor for current_strength")
+    activation_boost: float | None = Field(default=None, description="Multiplier applied on each access")
+    strengthening_threshold: int | None = Field(default=None, description="Activation count to mark 'strengthening'")
+    stale_threshold: float | None = Field(default=None, description="Below this strength, trend becomes 'stale'")
+
+
+class CreateDocumentParams(BaseModel):
+    """Arguments for :func:`create_document`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    title: str = Field(description="Human-readable document title")
+    content: str = Field(description="Raw source text")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    source: str = Field(default="note", description="One of transcript/article/journal/note/email/other")
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional JSON-serializable metadata")
+    char_budget: int = Field(default=_DOC_CHUNK_BUDGET, description="Soft max chars per chunk (100-8000)")
+    memory_id_for_chunk: str | None = Field(default=None, description="If set, applied to every chunk produced")
+
+
+class QueryMemoriesParams(BaseModel):
+    """Arguments for :func:`query_memories`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    query: str = Field(description="Search query string")
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+    limit: int = Field(default=10, description="Maximum results")
+    use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
+    min_importance: float = Field(default=0.1, description="Minimum importance threshold")
+    offset: int = Field(default=0, description="Result offset")
 
 
 def _run_async(coro):
@@ -1409,7 +1874,7 @@ background curation for AI agents.
    - `fact`: Durable facts and verified project knowledge.
    - `trait`: Enduring user habits, communication preferences, and core principles.
 3. Proactive Capture: Store key user preferences, architectural decisions, and explicit user feedback using \
-`manage_memories(action="store", ...)`.
+`manage_memories(params={"action": "store", ...})`.
 4. Curation: Use `manage_curation_runs` to inspect and review memory consolidation or archiving proposals \
 without loss of durable context."""
 
@@ -1539,7 +2004,7 @@ def _health_status_dict() -> dict[str, Any]:
         "server": "foresight",
     }
     try:
-        raw = get_system_status()
+        raw = get_system_status(GetSystemStatusParams())
         parsed: Any = json.loads(raw) if isinstance(raw, str) else raw
         if isinstance(parsed, dict):
             status_value = parsed.get("status", "ok")
@@ -2149,57 +2614,50 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
 
 @mcp.tool(output_schema=None)
 def manage_memories(
-    options: MemoryAction | None = None,
-    *,
-    user_id: str | None = None,
-    action: Literal["store", "update", "delete", "archive"] | None = None,
-    memory_id: str | None = None,
-    content: str | None = None,
-    store_options: MemoryOptions | None = None,
-    updates: MemoryUpdateOptions | None = None,
-    category: str | None = None,
-    scope: str | None = None,
-    retention: str | None = None,
-    importance: float | None = None,
-    tags: list[str] | None = None,
-    is_sensitive: bool | None = None,
-    relation_type: str | None = None,
-    related_memory_id: str | None = None,
-    emotional_context: dict[str, Any] | None = None,
-    metrics: dict[str, Any] | None = None,
-    expires_at: str | float | int | None = None,
-    memory_type: Literal["episodic", "semantic", "procedural"] | None = None,
-    auto_tag: bool | None = None,
-    agent_id: str | None = None,
-    project: str | None = None,
+    params: Annotated[
+        ManageMemoriesParams,
+        Field(description='Every argument for manage_memories, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Manage memory lifecycle: store, update, delete, or archive.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a store call is
+    ``{"params": {"action": "store", "content": "..."}}``.
+
     Args:
-        options: Action and parameters
-        user_id: Optional user ID override
-        action: Flat parameter for action (optional, fallback if options not provided)
-        memory_id: Flat parameter for memory ID (optional, fallback if options not provided)
-        content: Flat parameter for content (optional, fallback if options not provided)
-        store_options: Flat parameter for store options (optional, fallback if options not provided)
-        updates: Flat parameter for updates (optional, fallback if options not provided)
-        category: Flat parameter for category label
-        scope: Flat parameter for memory scope (session, arc, trait, fact)
-        retention: Flat parameter for retention policy (ephemeral, short_term, long_term, permanent)
-        importance: Flat parameter for importance score (0.0 to 1.0)
-        tags: Flat parameter for tags list
-        is_sensitive: Flat parameter for sensitivity override
-        relation_type: Flat parameter for relationship type
-        related_memory_id: Flat parameter for related memory ID
-        emotional_context: Flat parameter for emotional metadata
-        metrics: Flat parameter for empathy metrics
-        expires_at: Flat parameter for per-memory expiration (ISO-8601 or epoch seconds)
-        memory_type: Flat parameter for memory taxonomy type
-        auto_tag: Flat parameter to derive topical tags deterministically
-        agent_id: Flat namespace lane for store (default: shared 'default' lane)
-        project: Flat project namespace lane for store
+        params: ``ManageMemoriesParams`` — action, memory_id, content, store
+            options, update payload, and the flat store/update fallbacks. Each
+            field's description is advertised in the tool schema.
+
+    Returns:
+        Confirmation string for the action performed.
     """
+    options = params.options
+    user_id = params.user_id
+    action = params.action
+    memory_id = params.memory_id
+    content = params.content
+    store_options = params.store_options
+    updates = params.updates
+    category = params.category
+    scope = params.scope
+    retention = params.retention
+    importance = params.importance
+    tags = params.tags
+    is_sensitive = params.is_sensitive
+    relation_type = params.relation_type
+    related_memory_id = params.related_memory_id
+    emotional_context = params.emotional_context
+    metrics = params.metrics
+    expires_at = params.expires_at
+    memory_type = params.memory_type
+    auto_tag = params.auto_tag
+    agent_id = params.agent_id
+    project = params.project
+
     flat_store_kwargs: dict[str, Any] = {}
     if category is not None:
         flat_store_kwargs["category"] = category
@@ -2369,62 +2827,54 @@ def _trace_retrieval(
 
 @mcp.tool(output_schema=None)
 def search_memories(
-    options: SearchOptions | None = None,
-    *,
-    user_id: str | None = None,
-    query_type: Literal["id", "keyword", "list", "semantic"] | None = None,
-    query: str | None = None,
-    memory_id: str | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
-    min_importance: float | None = None,
-    use_hybrid: bool | None = None,
-    use_cascade: bool | None = None,
-    cascade_depth: int | None = None,
-    cascade_limit: int | None = None,
-    debug: bool | None = None,
-    min_score: float | None = None,
-    provider: str | None = None,
-    category: str | list[str] | None = None,
-    scope: str | None = None,
-    retention: str | None = None,
-    bank_id: str | None = None,
-    tags: list[str] | None = None,
-    memory_type: str | None = None,
-    signal_weights: dict[str, float] | None = None,
-    agent_id: str | None = None,
-    project: str | None = None,
+    params: Annotated[
+        SearchMemoriesParams,
+        Field(description='Every argument for search_memories, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Unified search and retrieval for memories.
     Supports ID lookup, content keyword search, semantic vector search, and hybrid retrieval.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a search is
+    ``{"params": {"query": "...", "limit": 10}}``.
+
     Args:
-        options: Search parameters (query_type, query, memory_id, limit, etc.)
-        user_id: Optional user ID override
-        query_type: Flat parameter for query type (optional)
-        query: Flat parameter for query string (optional)
-        memory_id: Flat parameter for memory ID (optional)
-        limit: Flat parameter for limit (optional)
-        offset: Flat parameter for offset (optional)
-        min_importance: Flat parameter for min importance (optional)
-        use_hybrid: Flat parameter for use hybrid (optional)
-        use_cascade: Flat parameter for use cascade (optional)
-        cascade_depth: Flat parameter for cascade depth (optional)
-        cascade_limit: Flat parameter for cascade limit (optional)
-        debug: Flat parameter for debug mode (optional)
-        min_score: Flat parameter for min semantic similarity score (optional)
-        provider: Flat parameter for embedder provider name (optional)
-        category: Flat filter by category (single value or list, match-any)
-        scope: Flat filter by scope
-        retention: Flat filter by retention policy
-        bank_id: Flat filter by bank ID
-        tags: Flat filter to memories carrying any of these tags
-        memory_type: Flat filter by memory_type
-        signal_weights: Flat per-request signal weight overrides for hybrid retrieval
-        agent_id: Flat namespace lane filter (own lane + shared 'default')
-        project: Flat project namespace lane filter (own lane + shared 'default')
+        params: ``SearchMemoriesParams`` — query_type, query, memory_id, limit,
+            offset, ranking signals, and the PIX-4720 column filters. Each
+            field's description is advertised in the tool schema.
+
+    Returns:
+        Formatted results, a structured trace when ``debug`` is set, or a
+        JSON payload for semantic search.
     """
+    options = params.options
+    user_id = params.user_id
+    query_type = params.query_type
+    query = params.query
+    memory_id = params.memory_id
+    limit = params.limit
+    offset = params.offset
+    min_importance = params.min_importance
+    use_hybrid = params.use_hybrid
+    use_cascade = params.use_cascade
+    cascade_depth = params.cascade_depth
+    cascade_limit = params.cascade_limit
+    debug = params.debug
+    min_score = params.min_score
+    provider = params.provider
+    category = params.category
+    scope = params.scope
+    retention = params.retention
+    bank_id = params.bank_id
+    tags = params.tags
+    memory_type = params.memory_type
+    signal_weights = params.signal_weights
+    agent_id = params.agent_id
+    project = params.project
+
     if options is None:
         kwargs: dict[str, Any] = {}
         if query_type is not None:
@@ -2657,7 +3107,7 @@ def search_memories(
             expiry_sql,
             " LIMIT ? OFFSET ?",
         )
-        params = (uid, tenant_id, f"%{escaped}%", *fparams, now_iso, options.limit, options.offset)
+        query_params = (uid, tenant_id, f"%{escaped}%", *fparams, now_iso, options.limit, options.offset)
     else:
         query_sql = join_sql_parts(
             "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ?",
@@ -2665,9 +3115,9 @@ def search_memories(
             expiry_sql,
             " ORDER BY created_at DESC LIMIT ? OFFSET ?",
         )
-        params = (uid, tenant_id, *fparams, now_iso, options.limit, options.offset)
+        query_params = (uid, tenant_id, *fparams, now_iso, options.limit, options.offset)
 
-    rows = conn.execute(query_sql, params).fetchall()
+    rows = conn.execute(query_sql, query_params).fetchall()
     conn.close()
 
     if not rows:
@@ -2689,13 +3139,10 @@ def search_memories(
 
 @mcp.tool(output_schema=None)
 def reflect(
-    question: str,
-    *,
-    user_id: str | None = None,
-    max_memories: int = 8,
-    include_archived: bool = False,
-    agent_id: str | None = None,
-    project: str | None = None,
+    params: Annotated[
+        ReflectParams,
+        Field(description='Every argument for reflect, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Reflect on a question using memory-backed reasoning with citations.
@@ -2705,19 +3152,28 @@ def reflect(
     otherwise). Every factual claim is anchored to the memory IDs it was
     drawn from, so callers can verify receipts instead of trusting prose.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a reflection is
+    ``{"params": {"question": "..."}}``.
+
     Args:
-        question: The question or topic to reflect on.
-        user_id: Optional user ID override.
-        max_memories: Maximum memories to consider for synthesis (default 8).
-        include_archived: Include archived/ghost memories in retrieval.
-        agent_id: Optional agent namespace lane for retrieval and mental-model cache.
-        project: Optional project namespace lane for retrieval.
+        params: ``ReflectParams`` — question, max_memories, include_archived,
+            and the namespace lanes. Each field's description is advertised in
+            the tool schema.
 
     Returns:
         JSON: ``{"answer", "citations": [{memory_id, content_excerpt,
         score, why_relevant}], "memories_considered", "memories_used",
         "tokens_used", "cached", "synthesized_by", "latency_ms"}``
     """
+    question = params.question
+    user_id = params.user_id
+    max_memories = params.max_memories
+    include_archived = params.include_archived
+    agent_id = params.agent_id
+    project = params.project
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
@@ -2779,13 +3235,10 @@ def reflect(
 
 @mcp.tool(output_schema=None)
 def manage_mental_models(
-    *,
-    options: MentalModelAction | None = None,
-    user_id: str | None = None,
-    action: Literal["list", "refresh", "delete"] | None = None,
-    model_id: str | None = None,
-    agent_id: str | None = None,
-    limit: int = 50,
+    params: Annotated[
+        ManageMentalModelsParams,
+        Field(description='Every argument for manage_mental_models, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Manage cached mental models produced by ``reflect``.
@@ -2795,17 +3248,25 @@ def manage_mental_models(
     memory was superseded or archived) self-heal on the next reflect hit;
     ``refresh`` forces recomputation now.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a list is
+    ``{"params": {"action": "list"}}``.
+
     Args:
-        options: Action model (action, model_id, agent_id, limit)
-        user_id: Optional user ID override
-        action: Flat action parameter (fallback if options not provided)
-        model_id: Flat model ID for refresh/delete
-        agent_id: Flat agent namespace lane
-        limit: Flat list limit
+        params: ``ManageMentalModelsParams`` — action, model_id, agent_id, and
+            limit. Each field's description is advertised in the tool schema.
 
     Returns:
         JSON envelope with ``ok``, ``action``, and action-specific payload.
     """
+    options = params.options
+    user_id = params.user_id
+    action = params.action
+    model_id = params.model_id
+    agent_id = params.agent_id
+    limit = params.limit
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
@@ -3009,27 +3470,35 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
 
 @mcp.tool(output_schema=None)
 def manage_memory_versions(
-    *,
-    options: VersionAction | None = None,
-    user_id: str | None = None,
-    action: Literal["list", "diff", "rollback"] | None = None,
-    memory_id: str | None = None,
-    version1: int | None = None,
-    version2: int | None = None,
-    to_version: int | None = None,
+    params: Annotated[
+        ManageMemoryVersionsParams,
+        Field(description='Every argument for manage_memory_versions, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Manage memory versioning: diff or rollback.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a diff is
+    ``{"params": {"action": "diff", "memory_id": "...", "version1": 1}}``.
+
     Args:
-        options: Action and parameters
-        user_id: Optional user ID override
-        action: Flat parameter for action (optional, fallback if options not provided)
-        memory_id: Flat parameter for memory ID (optional, fallback if options not provided)
-        version1: Flat parameter for first version for diff
-        version2: Flat parameter for second version for diff
-        to_version: Flat parameter for target version for rollback
+        params: ``ManageMemoryVersionsParams`` — action, memory_id, the two
+            versions for diff, and the rollback target. Each field's
+            description is advertised in the tool schema.
+
+    Returns:
+        Version list, diff text, or rollback confirmation.
     """
+    options = params.options
+    user_id = params.user_id
+    action = params.action
+    memory_id = params.memory_id
+    version1 = params.version1
+    version2 = params.version2
+    to_version = params.to_version
+
     if options is None:
         if action is None or memory_id is None:
             return "Error: either 'options' or ('action' and 'memory_id') must be provided."
@@ -3100,21 +3569,10 @@ def _handle_context_block_update(agent, label: str, content: str | None, visibil
 
 @mcp.tool(output_schema=None)
 def manage_context_blocks(
-    options: ContextBlockAction | None = None,
-    *,
-    user_id: str | None = None,
-    action: Literal["list", "get", "update", "reset", "clear"] | None = None,
-    label: str | None = None,
-    block_name: str | None = None,
-    block_type: str | None = None,
-    name: str | None = None,
-    block: str | None = None,
-    block_id: str | None = None,
-    key: str | None = None,
-    content: str | None = None,
-    agent_id: str | None = None,
-    project: str | None = None,
-    visibility: Literal["private", "shared"] | None = None,
+    params: Annotated[
+        ManageContextBlocksParams,
+        Field(description='Every argument for manage_context_blocks, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     List, read, or update the user's standing context blocks (guidance,
@@ -3124,28 +3582,40 @@ def manage_context_blocks(
     context blocks, saved preferences, or standing guidance.
 
     Actions:
-        list: show every block and its content — call with {"action": "list"}
+        list: show every block and its content — call with {"params": {"action": "list"}}
         get: read one block (add "label")
         update: replace a block's content ("label" + "content")
         reset: restore a block to its default
         clear: empty a block
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields.
+
     Args:
-        options: Action and parameters (list, get, update, reset, clear)
-        user_id: Optional user ID override
-        action: Operation to perform: list, get, update, reset, or clear
-        label: Block label for get/update/reset/clear
-        block_name: Alias for label (optional)
-        block_type: Alias for label (optional)
-        name: Alias for label (optional)
-        block: Alias for label (optional)
-        block_id: Alias for label (optional)
-        key: Alias for label (optional)
-        content: New block content for update
-        agent_id: Optional agent namespace lane (private blocks are lane-scoped)
-        project: Optional project namespace lane (shared blocks span it)
-        visibility: 'private' or 'shared' for update action
+        params: ``ManageContextBlocksParams`` — action, label (with its
+            block_name/block_type/name/block/block_id/key aliases), content,
+            the namespace lanes, and visibility. Each field's description is
+            advertised in the tool schema.
+
+    Returns:
+        JSON envelope with ``ok``, ``action``, and action-specific payload.
     """
+    options = params.options
+    user_id = params.user_id
+    action = params.action
+    label = params.label
+    block_name = params.block_name
+    block_type = params.block_type
+    name = params.name
+    block = params.block
+    block_id = params.block_id
+    key = params.key
+    content = params.content
+    agent_id = params.agent_id
+    project = params.project
+    visibility = params.visibility
+
     resolved_label = label or block_name or block_type or name or block or block_id or key
     if options is None:
         if action is None:
@@ -3207,7 +3677,9 @@ def manage_context_blocks(
 
 def manage_subconscious(options: SubconsciousAction, user_id: str | None = None) -> str:
     """Legacy alias for manage_context_blocks()."""
-    return manage_context_blocks(ContextBlockAction(**options.model_dump()), user_id=user_id)
+    return manage_context_blocks(
+        ManageContextBlocksParams(options=ContextBlockAction(**options.model_dump()), user_id=user_id)
+    )
 
 
 def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
@@ -3362,31 +3834,34 @@ def _detect_git_root() -> str | None:
 
 @mcp.tool(output_schema=None)
 def process_session_transcript(
-    session_id: str,
-    messages: list[dict],
-    *,
-    project_path: str | None = None,
-    user_id: str | None = None,
-    infer: bool = True,
-    instructions: str | None = None,
+    params: Annotated[
+        ProcessSessionTranscriptParams,
+        Field(description='Every argument for process_session_transcript, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Process a session transcript and extract memories.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a transcript is
+    ``{"params": {"session_id": "...", "messages": [...]}}``.
+
     Args:
-        session_id: Unique session identifier
-        messages: List of message dicts with role/content
-        project_path: Optional project path for context
-        user_id: Optional user ID override
-        infer: When False (PIX-4722), store the transcript verbatim as a single
-            memory instead of running extraction/dedupe. Default True.
-        instructions: Optional advisory guidance for extraction (reserved for a
-            future LLM-guided extractor; recorded in the verbatim memory's
-            metrics when infer=False).
+        params: ``ProcessSessionTranscriptParams`` — session_id, messages,
+            project_path, infer, and instructions. Each field's description is
+            advertised in the tool schema.
 
     Returns:
         Confirmation message
     """
+    session_id = params.session_id
+    messages = params.messages
+    project_path = params.project_path
+    user_id = params.user_id
+    infer = params.infer
+    instructions = params.instructions
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
@@ -3454,7 +3929,7 @@ def capture_triggered_memories(
                 importance=match.metadata.get("importance", 0.5),
             ),
         )
-        store_result = manage_memories(options, user_id=uid)
+        store_result = manage_memories(ManageMemoriesParams(options=options, user_id=uid))
         stored_count += 1
         results.append(
             {
@@ -3479,24 +3954,33 @@ def capture_triggered_memories(
 
 @mcp.tool(output_schema=None)
 def capture_in_flight_memory(
-    content: str,
-    *,
-    category: str = "decision",
-    scope: str = "arc",
-    importance: float = 0.7,
-    retention: str = "long_term",
-    user_id: str | None = None,
+    params: Annotated[
+        CaptureInFlightMemoryParams,
+        Field(description='Every argument for capture_in_flight_memory, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """Store a memory immediately at any point during active work without waiting for session wrapup.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a capture is
+    ``{"params": {"content": "..."}}``.
+
     Args:
-        content: Memory content to store immediately (decision, fix, preference, pattern, recipe)
-        category: Memory category ('decision', 'fact', 'preference', 'lesson', 'pattern', 'pending')
-        scope: Scope ('arc', 'trait', 'fact', 'session', 'project')
-        importance: Importance score between 0.1 and 1.0 (default: 0.7)
-        retention: Retention policy ('long_term' or 'short_term')
-        user_id: Optional user ID override
+        params: ``CaptureInFlightMemoryParams`` — content, category, scope,
+            importance, and retention. Each field's description is advertised
+            in the tool schema.
+
+    Returns:
+        Confirmation string naming the stored memory.
     """
+    content = params.content
+    category = params.category
+    scope = params.scope
+    importance = params.importance
+    retention = params.retention
+    user_id = params.user_id
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
     action = MemoryAction(
@@ -4189,41 +4673,42 @@ def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
 
 @mcp.tool(output_schema=None)
 def manage_curation_runs(
-    options: CurationRunAction | None = None,
-    *,
-    user_id: str | None = None,
-    action: Literal["create", "get", "list", "cancel", "archive"] | None = None,
-    run_id: str | None = None,
-    source_bank_id: str | None = None,
-    output_bank_id: str | None = None,
-    policy_mode: Literal["preserve", "rebalance", "rebuild"] | None = None,
-    tool_access: Literal["disabled", "observe", "operate"] | None = None,
-    output_mode: Literal["reviewable_output", "in_place"] | None = None,
-    instructions: str | None = None,
-    run_clustering: bool | None = None,
-    transcript_bundle: list[dict] | None = None,
-    session_id: str | None = None,
-    project_path: str | None = None,
+    params: Annotated[
+        ManageCurationRunsParams,
+        Field(description='Every argument for manage_curation_runs, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Manage async Foresight curation runs.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a list is
+    ``{"params": {"action": "list"}}``.
+
     Args:
-        options: CurationRunAction options payload
-        user_id: Optional user ID override
-        action: Flat parameter for action (optional, fallback if options not provided)
-        run_id: Flat parameter for run ID (optional)
-        source_bank_id: Flat parameter for source bank ID (optional)
-        output_bank_id: Flat parameter for output bank ID (optional)
-        policy_mode: Flat parameter for policy mode (optional)
-        tool_access: Flat parameter for tool access (optional)
-        output_mode: Flat parameter for output mode (optional)
-        instructions: Flat parameter for instructions (optional)
-        run_clustering: Flat parameter for run clustering (optional)
-        transcript_bundle: Flat parameter for transcript bundle (optional)
-        session_id: Flat parameter for session ID (optional)
-        project_path: Flat parameter for project path (optional)
+        params: ``ManageCurationRunsParams`` — action, run_id, the bank IDs,
+            policy/tool/output modes, the transcript bundle, and the namespace
+            lanes. Each field's description is advertised in the tool schema.
+
+    Returns:
+        JSON envelope with ``ok``, ``action``, and action-specific payload.
     """
+    options = params.options
+    user_id = params.user_id
+    action = params.action
+    run_id = params.run_id
+    source_bank_id = params.source_bank_id
+    output_bank_id = params.output_bank_id
+    policy_mode = params.policy_mode
+    tool_access = params.tool_access
+    output_mode = params.output_mode
+    instructions = params.instructions
+    run_clustering = params.run_clustering
+    transcript_bundle = params.transcript_bundle
+    session_id = params.session_id
+    project_path = params.project_path
+
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided."
@@ -4538,15 +5023,10 @@ def _score_memory_relevance(
 
 @mcp.tool(output_schema=None)
 def inject_context(
-    conversation_text: str,
-    *,
-    user_id: str | None = None,
-    max_memories: int = 5,
-    min_relevance: float = 0.01,
-    include_details: bool = False,
-    max_chars: int | None = None,
-    agent_id: str | None = None,
-    project: str | None = None,
+    params: Annotated[
+        InjectContextParams,
+        Field(description='Every argument for inject_context, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """Surface relevant memories and context blocks for the current conversation.
 
@@ -4572,22 +5052,15 @@ def inject_context(
 
     ## Parameters
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a call is
+    ``{"params": {"conversation_text": "..."}}``.
+
     Args:
-        conversation_text: The current conversation text to analyze for context
-        user_id: Optional user ID override
-        max_memories: Maximum number of memories to return (default: 5)
-        min_relevance: Minimum relevance score threshold (default: 0.01, RRF scores are typically 0.01-0.08)
-        include_details: If True, return JSON with formatted text plus structured
-            memories and context blocks grouped by InjectionPoint (default: False)
-        max_chars: Optional character budget for the formatted payload.
-            When set, output is truncated at sentence boundaries per lane
-            priority (static > dynamic > memories > blocks > safety).
-            Items that don't fit are progressively summarized or stubbed.
-            Default None = unbounded (legacy behavior).
-        agent_id: Optional agent namespace lane — restricts memories,
-            mental models, observations, and context blocks to this lane
-            plus the shared 'default' lane.
-        project: Optional project namespace lane (same semantics).
+        params: ``InjectContextParams`` — conversation_text, max_memories,
+            min_relevance, include_details, max_chars, and the namespace lanes.
+            Each field's description is advertised in the tool schema.
 
     Returns:
         Formatted string with relevant memories and context block signals.
@@ -4597,6 +5070,15 @@ def inject_context(
         - context_blocks: dict grouped by InjectionPoint
         - budget: lane allocation details (only when max_chars is set)
     """
+    conversation_text = params.conversation_text
+    user_id = params.user_id
+    max_memories = params.max_memories
+    min_relevance = params.min_relevance
+    include_details = params.include_details
+    max_chars = params.max_chars
+    agent_id = params.agent_id
+    project = params.project
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
@@ -5035,40 +5517,15 @@ def _context_block_notes_for_terms(
     return lines
 
 
-def get_relevant_memories(
-    query: str,
-    *,
-    user_id: str | None = None,
-    limit: int = 5,
-    min_relevance: float = 0.01,
-    max_chars: int | None = None,
-    category: str | list[str] | None = None,
-    scope: str | None = None,
-    retention: str | None = None,
-    bank_id: str | None = None,
-    tags: list[str] | None = None,
-    memory_type: str | None = None,
-) -> str:
+def get_relevant_memories(params: GetRelevantMemoriesParams) -> str:
     """Return structured list of relevant memories for a query.
 
     Clean memories-only API (no context blocks). Uses HybridRetriever
     (keyword + TF-IDF + graph + temporal signals via RRF) for ranking.
 
     Args:
-        query: Search query string
-        user_id: Optional user ID override
-        limit: Maximum number of memories to return (default: 5)
-        min_relevance: Minimum combined_score threshold (default: 0.01, RRF scores are typically 0.01-0.08)
-        max_chars: Optional character budget for memory content. When set,
-            each memory's content is truncated at sentence boundaries
-            if the total payload would exceed this limit. Default None
-            = unbounded (legacy behavior).
-        category: Optional filter by category (single value or list)
-        scope: Optional filter by scope
-        retention: Optional filter by retention policy
-        bank_id: Optional filter by bank ID
-        tags: Optional filter to memories carrying any of these tags
-        memory_type: Optional filter by memory_type
+        params: ``GetRelevantMemoriesParams`` — query, limit, min_relevance,
+            max_chars, and the PIX-4720 column filters.
 
     Returns:
         JSON string with:
@@ -5079,6 +5536,18 @@ def get_relevant_memories(
         - signal_counts: dict of how many results each signal contributed
         - budget: lane allocation details (only when max_chars is set)
     """
+    query = params.query
+    user_id = params.user_id
+    limit = params.limit
+    min_relevance = params.min_relevance
+    max_chars = params.max_chars
+    category = params.category
+    scope = params.scope
+    retention = params.retention
+    bank_id = params.bank_id
+    tags = params.tags
+    memory_type = params.memory_type
+
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
     retriever = get_hybrid_retriever()
@@ -5340,10 +5809,12 @@ def compaction_lifecycle(
     #    Best-effort — if capture fails we still return the recovery payload.
     try:
         process_session_transcript(
-            session_id=session_id,
-            messages=messages,
-            project_path=project_path,
-            user_id=uid,
+            ProcessSessionTranscriptParams(
+                session_id=session_id,
+                messages=messages,
+                project_path=project_path,
+                user_id=uid,
+            )
         )
     except Exception:
         logger.warning(
@@ -6016,31 +6487,37 @@ def _parse_as_of(value: str) -> datetime:
 
 @mcp.tool(output_schema=None)
 def query_memories_temporal(
-    *,
-    options: TemporalWindow | None = None,
-    user_id: str | None = None,
-    window: Literal["today", "week", "month", "year"] | None = None,
-    trend: str | None = None,
-    category: str | None = None,
-    limit: int | None = None,
-    as_of: str | None = None,
-    agent_id: str | None = None,
-    project: str | None = None,
+    params: Annotated[
+        QueryMemoriesTemporalParams,
+        Field(description='Every argument for query_memories_temporal, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Query memories based on temporal signals (window, trend, or point-in-time).
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a window query is
+    ``{"params": {"window": "week"}}``.
+
     Args:
-        options: Temporal query parameters (window, trend, category, limit, as_of)
-        user_id: Optional user ID override
-        window: Flat parameter for time window (optional)
-        trend: Flat parameter for trend filter (optional)
-        category: Flat parameter for category filter (optional)
-        limit: Flat parameter for max results (optional)
-        as_of: ISO-8601 instant; reconstructs memory state as of that point in
-            time (bitemporal: honors validity intervals and edit history).
-            Takes precedence over window and trend.
+        params: ``QueryMemoriesTemporalParams`` — window, trend, category,
+            limit, as_of, and the namespace lanes. Each field's description is
+            advertised in the tool schema.
+
+    Returns:
+        JSON list of matching memories with their temporal fields.
     """
+    options = params.options
+    user_id = params.user_id
+    window = params.window
+    trend = params.trend
+    category = params.category
+    limit = params.limit
+    as_of = params.as_of
+    agent_id = params.agent_id
+    project = params.project
+
     if options is None:
         kwargs: dict[str, Any] = {}
         if window is not None:
@@ -6116,24 +6593,34 @@ def query_memories_temporal(
 
 @mcp.tool(output_schema=None)
 def get_system_status(
-    *,
-    options: SystemStatusOptions | None = None,
-    user_id: str | None = None,
-    include_trends: bool | None = None,
-    timeframe: str | None = None,
-    include_cache_metrics: bool | None = None,
-    enforce_hard_caps: bool | None = None,
+    params: Annotated[
+        GetSystemStatusParams,
+        Field(description='Every argument for get_system_status, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Get system health, memory statistics, and temporal trends.
+
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a status read is
+    ``{"params": {"include_trends": true}}``.
+
     Args:
-        options: Optional status and trend parameters
-        user_id: Optional user ID override
-        include_trends: Flat parameter for including trends (optional)
-        timeframe: Flat parameter for timeframe (optional)
-        include_cache_metrics: Flat parameter for including cache metrics (optional)
-        enforce_hard_caps: Flat parameter for enforcing hard caps (optional)
+        params: ``GetSystemStatusParams`` — include_trends, timeframe,
+            include_cache_metrics, and enforce_hard_caps. Each field's
+            description is advertised in the tool schema.
+
+    Returns:
+        JSON payload of health, counts, and optional trend/cache sections.
     """
+    options = params.options
+    user_id = params.user_id
+    include_trends = params.include_trends
+    timeframe = params.timeframe
+    include_cache_metrics = params.include_cache_metrics
+    enforce_hard_caps = params.enforce_hard_caps
+
     uid = user_id or USER_ID
     if options is None:
         kwargs: dict[str, Any] = {}
@@ -6247,12 +6734,13 @@ def get_system_status(
             "status": "empty",
             "hint": (
                 "Memory store is empty. Three ways to start: "
-                "(1) Set standing preferences — manage_context_blocks(action='update', "
-                "label='user_preferences', content='<your preferences>'). "
-                "(2) Store a fact or decision — manage_memories(action='store', "
-                "content='<what to remember>', store_options={'category': 'preference', "
-                "'scope': 'trait', 'retention': 'long_term', 'importance': 0.8}). "
-                "(3) Process a conversation — process_session_transcript(session_id='...', messages=[...])."
+                "(1) Set standing preferences — manage_context_blocks(params={'action': 'update', "
+                "'label': 'user_preferences', 'content': '<your preferences>'}). "
+                "(2) Store a fact or decision — manage_memories(params={'action': 'store', "
+                "'content': '<what to remember>', 'store_options': {'category': 'preference', "
+                "'scope': 'trait', 'retention': 'long_term', 'importance': 0.8}}). "
+                "(3) Process a conversation — process_session_transcript(params={'session_id': '...', "
+                "'messages': [...]})."
             ),
         }
     # Add temporal stats/trends if requested
@@ -6356,18 +6844,18 @@ def _prompt_autocontext() -> str:
         "## Proactive memory storage — follow without being asked\n\n"
         "5. **Capture stated preferences immediately**: When the user says how they "
         "want things done ('I prefer X', 'always use Y', 'don't do Z'), call "
-        "`manage_context_blocks(action='update', label='user_preferences', "
-        "content='<preference>')` to append it. Do this silently.\n\n"
+        "`manage_context_blocks(params={'action': 'update', 'label': 'user_preferences', "
+        "'content': '<preference>'})` to append it. Do this silently.\n\n"
         "6. **Store decisions and key facts**: When a non-trivial decision is made "
-        "or an important fact surfaces, call `manage_memories(action='store', "
-        "content='<concise summary>', store_options={'category': 'decision', "
-        "'scope': 'arc', 'retention': 'long_term', 'importance': 0.7})`. "
+        "or an important fact surfaces, call `manage_memories(params={'action': 'store', "
+        "'content': '<concise summary>', 'store_options': {'category': 'decision', "
+        "'scope': 'arc', 'retention': 'long_term', 'importance': 0.7}})`."
         "One clear sentence per memory — never store the raw transcript.\n\n"
         "7. **Track open tasks**: When a task is raised but not finished this session, "
-        "add it to `pending_items` via `manage_context_blocks(action='update', "
-        "label='pending_items', content='<task>')`.\n\n"
+        "add it to `pending_items` via `manage_context_blocks(params={'action': 'update', "
+        "'label': 'pending_items', 'content': '<task>'})`.\n\n"
         "8. **At session end**: When the conversation concludes, call "
-        "`process_session_transcript(session_id='<date>-<user>', messages=[...])`  "
+        "`process_session_transcript(params={'session_id': '<date>-<user>', 'messages': [...]})`  "
         "to extract and persist everything learned. Omit `project_path` — the server "
         "detects it from git automatically.\n\n"
         "## Storage rules\n\n"
@@ -6389,119 +6877,100 @@ def memory_status(
 ) -> str:
     """Legacy alias for get_system_status() used by CLI health checks."""
     return get_system_status(
-        options=SystemStatusOptions(include_trends=include_trends, timeframe=timeframe),
-        user_id=user_id,
+        GetSystemStatusParams(
+            options=SystemStatusOptions(include_trends=include_trends, timeframe=timeframe),
+            user_id=user_id,
+        )
     )
 
 
-def store_memory(
-    content: str,
-    *,
-    user_id: str | None = None,
-    category: str = "fact",
-    scope: str = "session",
-    retention: str = "short_term",
-    importance: float = 0.5,
-    emotional_context: dict[str, Any] | None = None,
-    metrics: dict[str, Any] | None = None,
-    relation_type: str | None = None,
-    related_memory_id: str | None = None,
-    tags: list[str] | None = None,
-    expires_at: str | float | int | None = None,
-    memory_type: Literal["episodic", "semantic", "procedural"] | None = None,
-    auto_tag: bool = False,
-) -> str:
-    """Legacy alias for manage_memories(action="store") used by callers and tests."""
+def store_memory(params: StoreMemoryParams) -> str:
+    """Legacy alias for manage_memories(params={"action": "store"}) used by callers and tests.
+
+    Args:
+        params: ``StoreMemoryParams`` — content plus the same store options
+            ``manage_memories`` accepts.
+    """
     options = MemoryAction(
         action="store",
-        content=content,
+        content=params.content,
         options=MemoryOptions(
-            category=category,
-            scope=scope,
-            retention=retention,
-            importance=importance,
-            emotional_context=emotional_context,
-            metrics=metrics,
-            relation_type=relation_type,
-            related_memory_id=related_memory_id,
-            tags=tags,
-            expires_at=expires_at,
-            memory_type=memory_type,
-            auto_tag=auto_tag,
+            category=params.category,
+            scope=params.scope,
+            retention=params.retention,
+            importance=params.importance,
+            emotional_context=params.emotional_context,
+            metrics=params.metrics,
+            relation_type=params.relation_type,
+            related_memory_id=params.related_memory_id,
+            tags=params.tags,
+            expires_at=params.expires_at,
+            memory_type=params.memory_type,
+            auto_tag=params.auto_tag,
         ),
     )
-    return manage_memories(options, user_id=user_id)
+    return manage_memories(ManageMemoriesParams(options=options, user_id=params.user_id))
 
 
 def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) -> str:
-    """Legacy alias for search_memories(query_type="list")."""
+    """Legacy alias for search_memories(params={"query_type": "list"})."""
     options = SearchOptions(query_type="list", limit=limit, offset=offset)
-    return search_memories(options, user_id=user_id)
+    return search_memories(SearchMemoriesParams(options=options, user_id=user_id))
 
 
-def query_memories(
-    query: str,
-    *,
-    user_id: str | None = None,
-    limit: int = 10,
-    use_hybrid: bool = True,
-    min_importance: float = 0.1,
-    offset: int = 0,
-) -> str:
-    """Legacy alias for search_memories(query_type="keyword")."""
+def query_memories(params: QueryMemoriesParams) -> str:
+    """Legacy alias for search_memories(params={"query_type": "keyword"}).
+
+    Args:
+        params: ``QueryMemoriesParams`` — query, limit, use_hybrid,
+            min_importance, and offset.
+    """
     options = SearchOptions(
         query_type="keyword",
-        query=query,
-        limit=limit,
-        use_hybrid=use_hybrid,
-        min_importance=min_importance,
-        offset=offset,
+        query=params.query,
+        limit=params.limit,
+        use_hybrid=params.use_hybrid,
+        min_importance=params.min_importance,
+        offset=params.offset,
     )
-    return search_memories(options, user_id=user_id)
+    return search_memories(SearchMemoriesParams(options=options, user_id=params.user_id))
 
 
 def get_memory(memory_id: str, user_id: str | None = None, min_importance: float = 0.1) -> str:
-    """Legacy alias for search_memories(query_type="id")."""
+    """Legacy alias for search_memories(params={"query_type": "id"})."""
     options = SearchOptions(query_type="id", memory_id=memory_id, min_importance=min_importance)
-    return search_memories(options, user_id=user_id)
+    return search_memories(SearchMemoriesParams(options=options, user_id=user_id))
 
 
-def update_memory(
-    memory_id: str,
-    *,
-    user_id: str | None = None,
-    content: str | None = None,
-    category: str | None = None,
-    scope: str | None = None,
-    retention: str | None = None,
-    tags: list[str] | None = None,
-    relation_type: str | None = None,
-    related_memory_id: str | None = None,
-) -> str:
-    """Legacy alias for manage_memories(action="update")."""
+def update_memory(params: UpdateMemoryParams) -> str:
+    """Legacy alias for manage_memories(params={"action": "update"}).
+
+    Args:
+        params: ``UpdateMemoryParams`` — memory_id plus the fields to replace.
+    """
     updates = MemoryUpdateOptions(
-        content=content,
-        category=category,
-        scope=scope,
-        retention=retention,
-        tags=tags,
-        relation_type=relation_type,
-        related_memory_id=related_memory_id,
+        content=params.content,
+        category=params.category,
+        scope=params.scope,
+        retention=params.retention,
+        tags=params.tags,
+        relation_type=params.relation_type,
+        related_memory_id=params.related_memory_id,
     )
-    options = MemoryAction(action="update", memory_id=memory_id, updates=updates)
-    return manage_memories(options, user_id=user_id)
+    options = MemoryAction(action="update", memory_id=params.memory_id, updates=updates)
+    return manage_memories(ManageMemoriesParams(options=options, user_id=params.user_id))
 
 
 def delete_memory(memory_id: str, user_id: str | None = None) -> str:
-    """Legacy alias for manage_memories(action="delete")."""
+    """Legacy alias for manage_memories(params={"action": "delete"})."""
     options = MemoryAction(action="delete", memory_id=memory_id)
-    return manage_memories(options, user_id=user_id)
+    return manage_memories(ManageMemoriesParams(options=options, user_id=user_id))
 
 
 def archive_memory(memory_id: str, user_id: str | None = None) -> str:
-    """Legacy alias for manage_memories(action="archive")."""
+    """Legacy alias for manage_memories(params={"action": "archive"})."""
     options = MemoryAction(action="archive", memory_id=memory_id)
-    return manage_memories(options, user_id=user_id)
+    return manage_memories(ManageMemoriesParams(options=options, user_id=user_id))
 
 
 # =============================================================================
@@ -6511,14 +6980,10 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
 
 @mcp.tool(output_schema=None)
 def synthesize_profile(
-    *,
-    user_id: str | None = None,
-    max_static_memories: int = 20,
-    max_dynamic_memories: int = 10,
-    include_synthesis: bool = True,
-    format_prompt: bool = False,
-    max_chars: int | None = None,
-    include_buckets: bool = False,
+    params: Annotated[
+        SynthesizeProfileParams,
+        Field(description='Every argument for synthesize_profile, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Build a user profile with static (stable facts) and dynamic (recent context) layers.
@@ -6526,22 +6991,28 @@ def synthesize_profile(
     Profile = compact summary of who the user is (static) and what they are
     currently working on (dynamic). Directly injectable into system prompts.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a profile read is
+    ``{"params": {"format_prompt": true}}``.
+
     Args:
-        user_id: Optional user ID override.
-        max_static_memories: Max trait/fact memories to consider.
-        max_dynamic_memories: Max session/arc memories to consider.
-        include_synthesis: Run enhanced synthesis for contradiction detection.
-        format_prompt: Return as a formatted prompt block instead of JSON.
-        max_chars: Character budget for the formatted prompt (only used with
-            ``format_prompt=True``); static lines take priority, then dynamic,
-            then buckets. Ignored for the JSON payload.
-        include_buckets: Group static facts into topical buckets
-            (preferences / goals / work / general) in the output.
+        params: ``SynthesizeProfileParams`` — the memory caps, synthesis and
+            bucket switches, and the prompt character budget. Each field's
+            description is advertised in the tool schema.
 
     Returns:
         JSON:  ``{"static": [...], "dynamic": [...], "buckets"?: {...}}``
         Prompt block when ``format_prompt=True``.
     """
+    user_id = params.user_id
+    max_static_memories = params.max_static_memories
+    max_dynamic_memories = params.max_dynamic_memories
+    include_synthesis = params.include_synthesis
+    format_prompt = params.format_prompt
+    max_chars = params.max_chars
+    include_buckets = params.include_buckets
+
     uid = user_id or USER_ID
     cfg = ProfileConfig(
         max_static_memories=max_static_memories,
@@ -6698,16 +7169,7 @@ def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
 # =============================================================================
 
 
-def create_document(
-    title: str,
-    content: str,
-    *,
-    user_id: str | None = None,
-    source: str = "note",
-    metadata: dict[str, Any] | None = None,
-    char_budget: int = _DOC_CHUNK_BUDGET,
-    memory_id_for_chunk: str | None = None,
-) -> str:
+def create_document(params: CreateDocumentParams) -> str:
     """
     Persist a raw source document and its extracted chunks.
 
@@ -6716,14 +7178,20 @@ def create_document(
     synchronously with paragraph-based splitting (see chunk_text).
 
     Args:
-        title: Human-readable document title.
-        content: Raw source text.
-        user_id: Optional user ID override.
-        source: One of transcript/article/journal/note/email/other.
-        metadata: Optional JSON-serializable metadata.
-        char_budget: Soft max chars per chunk (100-8000).
-        memory_id_for_chunk: If set, applied to every chunk produced.
+        params: ``CreateDocumentParams`` — title, content, source, metadata,
+            char_budget, and memory_id_for_chunk.
+
+    Returns:
+        JSON payload with the stored document and its chunks.
     """
+    title = params.title
+    content = params.content
+    user_id = params.user_id
+    source = params.source
+    metadata = params.metadata
+    char_budget = params.char_budget
+    memory_id_for_chunk = params.memory_id_for_chunk
+
     uid = user_id or USER_ID
     store = get_document_store()
     try:
@@ -6819,13 +7287,10 @@ def delete_document(
 
 @mcp.tool(output_schema=None)
 def ingest_document_file(
-    path: str,
-    *,
-    title: str | None = None,
-    user_id: str | None = None,
-    source: str | None = None,
-    char_budget: int | None = None,
-    metadata: dict[str, Any] | None = None,
+    params: Annotated[
+        IngestDocumentFileParams,
+        Field(description='Every argument for ingest_document_file, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """Ingest a local PDF, image (OCR), or text file as a document.
 
@@ -6833,14 +7298,25 @@ def ingest_document_file(
     extraction needs ``pip install 'foresight[pdf]'``; image OCR needs
     ``pip install 'foresight[ocr]'`` plus the ``tesseract`` binary.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so an ingest is
+    ``{"params": {"path": "/tmp/report.pdf"}}``.
+
     Args:
-        path: Local filesystem path to the file (self-hosted deployment).
-        title: Human-readable title; defaults to the file stem.
-        user_id: Optional user ID override.
-        source: Document source type; defaults to "pdf" for PDFs, else "document".
-        char_budget: Optional soft max chars per chunk.
-        metadata: Optional JSON-serializable metadata.
+        params: ``IngestDocumentFileParams`` — path, title, source,
+            char_budget, and metadata. Each field's description is advertised
+            in the tool schema.
+
+    Returns:
+        JSON payload with the stored document and its chunks.
     """
+    path = params.path
+    title = params.title
+    user_id = params.user_id
+    source = params.source
+    char_budget = params.char_budget
+    metadata = params.metadata
 
     try:
         return _ingest(
@@ -7060,13 +7536,10 @@ def query_clusters(
 
 @mcp.tool(output_schema=None)
 def link_memories(
-    source_memory_id: str,
-    target_memory_id: str,
-    relationship_type: str,
-    *,
-    user_id: str | None = None,
-    confidence: float = 1.0,
-    metadata: dict[str, Any] | None = None,
+    params: Annotated[
+        LinkMemoriesParams,
+        Field(description='Every argument for link_memories, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Create or update a typed relationship between two memories.
@@ -7074,14 +7547,27 @@ def link_memories(
     Relationship types: 'updates', 'extends', 'derives', 'contradicts',
     'supports', 'related'.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a link is
+    ``{"params": {"source_memory_id": "...", "target_memory_id": "...",
+    "relationship_type": "supports"}}``.
+
     Args:
-        source_memory_id: ID of the source memory (the "from" side).
-        target_memory_id: ID of the target memory (the "to" side).
-        relationship_type: One of the supported relationship types.
-        user_id: Optional user ID override.
-        confidence: Confidence score in [0.0, 1.0].
-        metadata: Optional JSON-serializable metadata.
+        params: ``LinkMemoriesParams`` — the two memory IDs, the relationship
+            type, confidence, and metadata. Each field's description is
+            advertised in the tool schema.
+
+    Returns:
+        JSON payload describing the stored relationship.
     """
+    source_memory_id = params.source_memory_id
+    target_memory_id = params.target_memory_id
+    relationship_type = params.relationship_type
+    user_id = params.user_id
+    confidence = params.confidence
+    metadata = params.metadata
+
     uid = user_id or USER_ID
     store = get_memory_relationship_store()
     try:
@@ -7310,13 +7796,10 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
 
 @mcp.tool(output_schema=None)
 def manage_inferred(
-    *,
-    options: InferredAction | None = None,
-    user_id: str | None = None,
-    action: Literal["list", "approve", "decline", "undo"] | None = None,
-    memory_id: str | None = None,
-    reason: str | None = None,
-    limit: int | None = None,
+    params: Annotated[
+        ManageInferredParams,
+        Field(description='Every argument for manage_inferred, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Review queue for inferred memories.
@@ -7328,14 +7811,25 @@ def manage_inferred(
     decline — soft-forget a rejected inferred memory (recoverable via undo).
     undo    — reverse approve/decline and return the memory to the queue.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a review is
+    ``{"params": {"action": "approve", "memory_id": "..."}}``.
+
     Args:
-        options: Action and parameters (list, approve, decline, undo)
-        user_id: Optional user ID override
-        action: Flat parameter for action (optional, fallback if options not provided)
-        memory_id: Memory ID for approve/decline/undo
-        reason: Reason recorded when declining
-        limit: Max items for list (1-50, default 50)
+        params: ``ManageInferredParams`` — action, memory_id, reason, and
+            limit. Each field's description is advertised in the tool schema.
+
+    Returns:
+        JSON envelope with ``ok``, ``action``, and action-specific payload.
     """
+    options = params.options
+    user_id = params.user_id
+    action = params.action
+    memory_id = params.memory_id
+    reason = params.reason
+    limit = params.limit
+
     if options is None:
         if action is None:
             return _tool_error("manage_inferred", "either 'options' or 'action' must be provided.")
@@ -7507,25 +8001,34 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
 
 @mcp.tool(output_schema=None)
 def analyze_memories(
-    *,
-    options: AnalysisAction | None = None,
-    user_id: str | None = None,
-    action: Literal["synthesize", "reflect"] | None = None,
-    period: str | None = None,
-    limit: int | None = None,
-    enhanced: bool | None = None,
+    params: Annotated[
+        AnalyzeMemoriesParams,
+        Field(description='Every argument for analyze_memories, sent as {"params": {...}}.'),
+    ],
 ) -> str:
     """
     Perform analysis on memories: synthesis or reflection.
 
+    Arguments travel in a single ``params`` object. The MCP call shape is
+    ``{"params": {...}}`` — fastmcp nests the model under the ``params``
+    property instead of flattening its fields, so a synthesis is
+    ``{"params": {"action": "synthesize"}}``.
+
     Args:
-        options: Action and parameters
-        user_id: Optional user ID override
-        action: Flat parameter for action (optional, fallback if options not provided)
-        period: Flat parameter for period (optional)
-        limit: Flat parameter for limit (optional)
-        enhanced: Flat parameter for enhanced synthesis (optional)
+        params: ``AnalyzeMemoriesParams`` — action, period, limit, and
+            enhanced. Each field's description is advertised in the tool
+            schema.
+
+    Returns:
+        JSON payload for the requested analysis.
     """
+    options = params.options
+    user_id = params.user_id
+    action = params.action
+    period = params.period
+    limit = params.limit
+    enhanced = params.enhanced
+
     if options is None:
         if action is None:
             return "Error: either 'options' or 'action' must be provided."
@@ -7702,17 +8205,7 @@ def get_decay_config(
     return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
 
 
-def set_decay_config(
-    *,
-    user_id: str | None = None,
-    tenant_id: str | None = None,
-    category: str = "general",
-    half_life_hours: float | None = None,
-    min_importance: float | None = None,
-    activation_boost: float | None = None,
-    strengthening_threshold: int | None = None,
-    stale_threshold: float | None = None,
-) -> str:
+def set_decay_config(params: SetDecayConfigParams) -> str:
     """Upsert a decay config row for (tenant, user, category).
 
     None values for individual fields keep whatever the existing row
@@ -7721,15 +8214,19 @@ def set_decay_config(
     activation_boost in [0, 10].
 
     Args:
-        user_id: Optional user ID override.
-        tenant_id: Optional tenant ID override.
-        category: Memory category (default 'general').
-        half_life_hours: New Ebbinghaus half-life in hours.
-        min_importance: Floor for current_strength.
-        activation_boost: Multiplier applied on each access.
-        strengthening_threshold: Activation count to mark 'strengthening'.
-        stale_threshold: Below this strength, trend becomes 'stale'.
+        params: ``SetDecayConfigParams`` — the target category plus the
+            half-life, importance floor, activation boost, and the two trend
+            thresholds.
     """
+    user_id = params.user_id
+    tenant_id = params.tenant_id
+    category = params.category
+    half_life_hours = params.half_life_hours
+    min_importance = params.min_importance
+    activation_boost = params.activation_boost
+    strengthening_threshold = params.strengthening_threshold
+    stale_threshold = params.stale_threshold
+
     uid = user_id or USER_ID
     tid = tenant_id or get_current_account_id()
     cfg = get_decay_model().set_decay_config(
@@ -7902,7 +8399,7 @@ def session_catchup_prompt(query: str = "", user_id: str | None = None) -> str:
     uid = user_id or USER_ID
     snapshot = get_context_snapshot(user_id=uid)
     msg = query if query else "current session context and user goals"
-    injected = inject_context(conversation_text=msg, user_id=uid)
+    injected = inject_context(InjectContextParams(conversation_text=msg, user_id=uid))
 
     return f"""# Foresight Continuity & Context Catch-Up
 
@@ -7924,12 +8421,14 @@ def curate_review_prompt(run_id: str | None = None, user_id: str | None = None) 
     """Generate a structured curation review prompt to evaluate pending memory consolidation proposals."""
     uid = user_id or USER_ID
     if run_id:
-        run_res = manage_curation_runs(CurationRunAction(action="get", run_id=run_id), user_id=uid)
+        run_res = manage_curation_runs(
+            ManageCurationRunsParams(options=CurationRunAction(action="get", run_id=run_id), user_id=uid)
+        )
     else:
         # CurationRunAction has no status filter (and its model_config is
         # extra="ignore"), so listing is unfiltered — the review prompt shows
         # every run for the user rather than only staged ones.
-        run_res = manage_curation_runs(CurationRunAction(action="list"), user_id=uid)
+        run_res = manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="list"), user_id=uid))
 
     inferred_res = _handle_inferred_list(uid, get_current_account_id(), 20)
 
@@ -7963,8 +8462,10 @@ def user_profile_prompt(user_id: str | None = None) -> str:
     uid = user_id or USER_ID
     guidance = get_context_whisper(user_id=uid)
     search_res = search_memories(
-        options=SearchOptions(query_type="keyword", query="preference habit style communication rule", limit=20),
-        user_id=uid,
+        SearchMemoriesParams(
+            options=SearchOptions(query_type="keyword", query="preference habit style communication rule", limit=20),
+            user_id=uid,
+        )
     )
 
     return f"""# User Profile & Working Style
@@ -7985,19 +8486,19 @@ def user_profile_prompt(user_id: str | None = None) -> str:
 @mcp.resource("foresight://context-blocks")
 def resource_context_blocks() -> str:
     """Live resource stream of all active context blocks."""
-    return manage_context_blocks(action="list")
+    return manage_context_blocks(ManageContextBlocksParams(action="list"))
 
 
 @mcp.resource("foresight://system-status")
 def resource_system_status() -> str:
     """Live resource stream of Foresight memory and database health metrics."""
-    return get_system_status()
+    return get_system_status(GetSystemStatusParams())
 
 
 @mcp.resource("foresight://curation-runs")
 def resource_curation_runs() -> str:
     """Live resource stream of memory curation runs."""
-    return manage_curation_runs(CurationRunAction(action="list"))
+    return manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="list")))
 
 
 # ============================================================================
@@ -8571,7 +9072,7 @@ async def ui_dashboard_endpoint(request: Any) -> Any:
 async def ui_api_status(request: Any) -> Any:
     """API endpoint for UI dashboard stats."""
 
-    status_raw = get_system_status()
+    status_raw = get_system_status(GetSystemStatusParams())
     try:
         data = json.loads(status_raw) if isinstance(status_raw, str) else status_raw
     except Exception:
@@ -8592,9 +9093,9 @@ async def ui_api_memories(request: Any) -> Any:
         limit = 50
 
     if q:
-        res = search_memories(options=SearchOptions(query_type="keyword", query=q, limit=limit))
+        res = search_memories(SearchMemoriesParams(options=SearchOptions(query_type="keyword", query=q, limit=limit)))
     else:
-        res = search_memories(options=SearchOptions(query_type="list", limit=limit))
+        res = search_memories(SearchMemoriesParams(options=SearchOptions(query_type="list", limit=limit)))
 
     try:
         items = json.loads(res) if isinstance(res, str) else (res or [])
@@ -8610,7 +9111,7 @@ async def ui_api_memories(request: Any) -> Any:
 async def ui_api_context_blocks(request: Any) -> Any:
     """API endpoint for UI context blocks."""
 
-    res = manage_context_blocks(action="list")
+    res = manage_context_blocks(ManageContextBlocksParams(action="list"))
     try:
         data = json.loads(res) if isinstance(res, str) else res
     except Exception:
@@ -8631,7 +9132,7 @@ async def ui_api_inject(request: Any) -> Any:
         text = ""
         messages = None
 
-    res = inject_context(conversation_text=text, include_details=True)
+    res = inject_context(InjectContextParams(conversation_text=text, include_details=True))
     if messages and isinstance(messages, list):
         uid = get_current_user_id()
         tid = get_current_account_id()

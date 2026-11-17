@@ -14,7 +14,14 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 logger = logging.getLogger(__name__)
 
 # NOTE: ListItem requires a child widget (Label/Static), not markup via update()
-from foresight.server import SearchOptions, init_db, search_memories, store_memory
+from foresight.server import (
+    SearchMemoriesParams,
+    SearchOptions,
+    StoreMemoryParams,
+    init_db,
+    search_memories,
+    store_memory,
+)
 
 MEMORY_CATEGORIES = ["fact", "preference", "insight", "observation", "decision", "goal"]
 
@@ -77,7 +84,7 @@ class MemoriesScreen(Screen):
         """Load and display memories asynchronously."""
         try:
             init_db()
-            result = search_memories(options=SearchOptions(query_type="list", limit=50, offset=0))
+            result = search_memories(SearchMemoriesParams(options=SearchOptions(query_type="list", limit=50, offset=0)))
             self.app.call_from_thread(self._render_memory_list, result)
         except Exception as e:
             self.app.call_from_thread(self._render_error, str(e))
@@ -109,7 +116,9 @@ class MemoriesScreen(Screen):
         """Search memories in background thread."""
         try:
             init_db()
-            result = search_memories(options=SearchOptions(query_type="keyword", query=query, limit=30))
+            result = search_memories(
+                SearchMemoriesParams(options=SearchOptions(query_type="keyword", query=query, limit=30))
+            )
             self.app.call_from_thread(self._render_memory_list, result)
         except Exception as e:
             self.app.call_from_thread(self._render_error, str(e))
@@ -150,7 +159,9 @@ class MemoriesScreen(Screen):
             if content:
                 try:
                     init_db()
-                    store_memory(content=content, scope="session", retention="short_term", category="fact")
+                    store_memory(
+                        StoreMemoryParams(content=content, scope="session", retention="short_term", category="fact")
+                    )
                     input_widget.value = ""
                     self.refresh_data()
                 except Exception as e:

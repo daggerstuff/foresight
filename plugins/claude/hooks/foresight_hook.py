@@ -43,7 +43,7 @@ PROMPT_DIRECTIVES = (
     "- Apply the memories and context blocks above naturally.",
     "- Continuous In-Flight Capture: Store key decisions, bug fixes, operational findings, and user "
     "preferences IMMEDIATELY at any point during tasks using `capture_in_flight_memory` or "
-    '`manage_memories(action="store", ...)`. Do NOT wait for session wrapup.',
+    '`manage_memories(params={"action": "store", ...})`. Do NOT wait for session wrapup.',
     "- At start of tasks or topic shifts, call `inject_context`.",
     "- When user states preferences or makes architecture decisions, call `manage_context_blocks` or "
     "`capture_in_flight_memory` to persist them immediately.",
@@ -55,7 +55,7 @@ POSTCOMPACT_DIRECTIVES = (
     "- Apply the memories and context blocks above naturally.",
     "- Continuous In-Flight Capture: Store key decisions, bug fixes, operational findings, and user "
     "preferences IMMEDIATELY using `capture_in_flight_memory` or "
-    '`manage_memories(action="store", ...)`.',
+    '`manage_memories(params={"action": "store", ...})`.',
     "- At start of tasks or topic shifts, call `inject_context`.",
     "- When user states preferences or makes architecture decisions, call `manage_context_blocks` or "
     "`capture_in_flight_memory` to persist them immediately.",

@@ -441,24 +441,26 @@ async def _handle_store_memory(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.manage_memories,
-            user_id=user_id,
-            action="store",
-            content=body.content,
-            category=body.category,
-            scope=body.scope,
-            retention=body.retention,
-            importance=body.importance,
-            tags=body.tags,
-            is_sensitive=body.is_sensitive,
-            emotional_context=body.emotional_context,
-            metrics=body.metrics,
-            relation_type=body.relation_type,
-            related_memory_id=body.related_memory_id,
-            expires_at=body.expires_at,
-            memory_type=body.memory_type,
-            auto_tag=body.auto_tag,
-            agent_id=body.agent_id,
-            project=body.project,
+            server.ManageMemoriesParams(
+                user_id=user_id,
+                action="store",
+                content=body.content,
+                category=body.category,
+                scope=body.scope,
+                retention=body.retention,
+                importance=body.importance,
+                tags=body.tags,
+                is_sensitive=body.is_sensitive,
+                emotional_context=body.emotional_context,
+                metrics=body.metrics,
+                relation_type=body.relation_type,
+                related_memory_id=body.related_memory_id,
+                expires_at=body.expires_at,
+                memory_type=body.memory_type,
+                auto_tag=body.auto_tag,
+                agent_id=body.agent_id,
+                project=body.project,
+            ),
         )
     finally:
         reset_tenant_context()
@@ -471,24 +473,26 @@ def _store_one(user_id: str | None, tenant_id: str, body: StoreMemoryBody) -> st
     set_current_account_id(tenant_id)
     try:
         return server.manage_memories(
-            user_id=user_id,
-            action="store",
-            content=body.content,
-            category=body.category,
-            scope=body.scope,
-            retention=body.retention,
-            importance=body.importance,
-            tags=body.tags,
-            is_sensitive=body.is_sensitive,
-            emotional_context=body.emotional_context,
-            metrics=body.metrics,
-            relation_type=body.relation_type,
-            related_memory_id=body.related_memory_id,
-            expires_at=body.expires_at,
-            memory_type=body.memory_type,
-            auto_tag=body.auto_tag,
-            agent_id=body.agent_id,
-            project=body.project,
+            server.ManageMemoriesParams(
+                user_id=user_id,
+                action="store",
+                content=body.content,
+                category=body.category,
+                scope=body.scope,
+                retention=body.retention,
+                importance=body.importance,
+                tags=body.tags,
+                is_sensitive=body.is_sensitive,
+                emotional_context=body.emotional_context,
+                metrics=body.metrics,
+                relation_type=body.relation_type,
+                related_memory_id=body.related_memory_id,
+                expires_at=body.expires_at,
+                memory_type=body.memory_type,
+                auto_tag=body.auto_tag,
+                agent_id=body.agent_id,
+                project=body.project,
+            )
         )
     finally:
         reset_tenant_context()
@@ -559,8 +563,9 @@ async def _handle_temporal_query(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.query_memories_temporal,
-            options=server.TemporalWindow(**body.model_dump(exclude_none=True)),
-            user_id=user_id,
+            server.QueryMemoriesTemporalParams(
+                options=server.TemporalWindow(**body.model_dump(exclude_none=True)), user_id=user_id
+            ),
         )
     finally:
         reset_tenant_context()
@@ -591,19 +596,12 @@ async def _handle_list_memories(request: Request) -> Response:
         if q:
             result = await run_in_threadpool(
                 server.search_memories,
-                user_id=user_id,
-                query_type="keyword",
-                query=q,
-                limit=limit,
-                offset=offset,
+                server.SearchMemoriesParams(user_id=user_id, query_type="keyword", query=q, limit=limit, offset=offset),
             )
         else:
             result = await run_in_threadpool(
                 server.search_memories,
-                user_id=user_id,
-                query_type="list",
-                limit=limit,
-                offset=offset,
+                server.SearchMemoriesParams(user_id=user_id, query_type="list", limit=limit, offset=offset),
             )
     finally:
         reset_tenant_context()
@@ -637,17 +635,19 @@ async def _handle_patch_memory(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.manage_memories,
-            user_id=user_id,
-            action="update",
-            memory_id=request.path_params["memory_id"],
-            content=body.content,
-            category=body.category,
-            scope=body.scope,
-            retention=body.retention,
-            tags=body.tags,
-            is_sensitive=body.is_sensitive,
-            relation_type=body.relation_type,
-            related_memory_id=body.related_memory_id,
+            server.ManageMemoriesParams(
+                user_id=user_id,
+                action="update",
+                memory_id=request.path_params["memory_id"],
+                content=body.content,
+                category=body.category,
+                scope=body.scope,
+                retention=body.retention,
+                tags=body.tags,
+                is_sensitive=body.is_sensitive,
+                relation_type=body.relation_type,
+                related_memory_id=body.related_memory_id,
+            ),
         )
     finally:
         reset_tenant_context()
@@ -672,9 +672,9 @@ async def _handle_delete_memory(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.manage_memories,
-            user_id=user_id,
-            action="archive" if archive else "delete",
-            memory_id=request.path_params["memory_id"],
+            server.ManageMemoriesParams(
+                user_id=user_id, action="archive" if archive else "delete", memory_id=request.path_params["memory_id"]
+            ),
         )
     finally:
         reset_tenant_context()
@@ -700,7 +700,9 @@ async def _handle_search(request: Request) -> Response:
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
-        result = await run_in_threadpool(server.search_memories, user_id=user_id, options=options)
+        result = await run_in_threadpool(
+            server.search_memories, server.SearchMemoriesParams(user_id=user_id, options=options)
+        )
     finally:
         reset_tenant_context()
     return _tool_json(result)
@@ -726,12 +728,14 @@ async def _handle_reflect(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.reflect,
-            question=body.question,
-            user_id=user_id,
-            max_memories=body.max_memories,
-            include_archived=body.include_archived,
-            agent_id=body.agent_id,
-            project=body.project,
+            server.ReflectParams(
+                question=body.question,
+                user_id=user_id,
+                max_memories=body.max_memories,
+                include_archived=body.include_archived,
+                agent_id=body.agent_id,
+                project=body.project,
+            ),
         )
     finally:
         reset_tenant_context()
@@ -758,11 +762,9 @@ async def _handle_manage_mental_models(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.manage_mental_models,
-            user_id=user_id,
-            action=body.action,
-            model_id=body.model_id,
-            agent_id=body.agent_id,
-            limit=body.limit,
+            server.ManageMentalModelsParams(
+                user_id=user_id, action=body.action, model_id=body.model_id, agent_id=body.agent_id, limit=body.limit
+            ),
         )
     finally:
         reset_tenant_context()
@@ -820,14 +822,16 @@ async def _handle_inject(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.inject_context,
-            user_id=user_id,
-            conversation_text=body.conversation_text,
-            max_memories=body.max_memories,
-            min_relevance=body.min_relevance,
-            include_details=body.include_details,
-            max_chars=body.max_chars,
-            agent_id=body.agent_id,
-            project=body.project,
+            server.InjectContextParams(
+                user_id=user_id,
+                conversation_text=body.conversation_text,
+                max_memories=body.max_memories,
+                min_relevance=body.min_relevance,
+                include_details=body.include_details,
+                max_chars=body.max_chars,
+                agent_id=body.agent_id,
+                project=body.project,
+            ),
         )
     finally:
         reset_tenant_context()
@@ -861,12 +865,14 @@ async def _handle_session_transcript(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.process_session_transcript,
-            session_id=body.session_id,
-            messages=body.messages,
-            project_path=body.project_path,
-            user_id=body.user_id or user_id,
-            infer=body.infer,
-            instructions=body.instructions,
+            server.ProcessSessionTranscriptParams(
+                session_id=body.session_id,
+                messages=body.messages,
+                project_path=body.project_path,
+                user_id=body.user_id or user_id,
+                infer=body.infer,
+                instructions=body.instructions,
+            ),
         )
     finally:
         reset_tenant_context()
@@ -901,7 +907,7 @@ async def _handle_create_document(request: Request) -> Response:
     set_current_user_id(user_id or DEFAULT_USER_ID)
     set_current_account_id(tenant_id)
     try:
-        result = await run_in_threadpool(server.create_document, **create_kwargs)
+        result = await run_in_threadpool(server.create_document, server.CreateDocumentParams(**create_kwargs))
     finally:
         reset_tenant_context()
     return _tool_json(result, success_status=201)
@@ -988,10 +994,12 @@ async def _handle_profile(request: Request) -> Response:
     try:
         result = await run_in_threadpool(
             server.synthesize_profile,
-            user_id=user_id,
-            max_static_memories=max_static,
-            max_dynamic_memories=max_dynamic,
-            format_prompt=format_prompt,
+            server.SynthesizeProfileParams(
+                user_id=user_id,
+                max_static_memories=max_static,
+                max_dynamic_memories=max_dynamic,
+                format_prompt=format_prompt,
+            ),
         )
     finally:
         reset_tenant_context()

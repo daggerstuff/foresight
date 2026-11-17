@@ -30,10 +30,22 @@ from foresight.server import (
     DEFAULT_CASCADE_DEPTH,
     DEFAULT_CASCADE_LIMIT,
     AnalysisAction,
+    AnalyzeMemoriesParams,
     ContextBlockAction,
     CurationRunAction,
+    GetRelevantMemoriesParams,
+    GetSystemStatusParams,
+    InjectContextParams,
+    ManageContextBlocksParams,
+    ManageCurationRunsParams,
+    ManageMemoriesParams,
+    ManageMemoryVersionsParams,
     PostgresPooledConnection,
+    ProcessSessionTranscriptParams,
+    QueryMemoriesTemporalParams,
+    SearchMemoriesParams,
     SearchOptions,
+    StoreMemoryParams,
     SystemStatusOptions,
     VersionAction,
     _bridge_context_blocks_to_memories,
@@ -98,16 +110,16 @@ def setup_test_db(monkeypatch):
 def test_store_memory():
     # Use unique content to avoid dedup collision with previous runs
     unique = f"test_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'store_test').hexdigest()[:8]}"
-    result = store_memory(unique)
+    result = store_memory(StoreMemoryParams(content=unique))
     assert "Stored" in result
 
 
 def test_store_memory_dedup():
     """Storing identical content should bump activation, not create duplicate."""
     content = f"dedup_test_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'dedup_unique').hexdigest()[:8]}"
-    result1 = store_memory(content)
+    result1 = store_memory(StoreMemoryParams(content=content))
     assert "Stored" in result1
-    result2 = store_memory(content)
+    result2 = store_memory(StoreMemoryParams(content=content))
     assert "Duplicate detected" in result2
 
 
@@ -164,10 +176,10 @@ def test_store_memory_uses_content_hash_for_dedup():
     unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(UTC).isoformat()}".encode()).hexdigest()[:8]
     content = f"hash_dedup_test_{unique_marker}"
 
-    result1 = store_memory(content)
+    result1 = store_memory(StoreMemoryParams(content=content))
     assert "Stored" in result1, f"first store should succeed: {result1}"
 
-    result2 = store_memory(content)
+    result2 = store_memory(StoreMemoryParams(content=content))
     assert "Duplicate detected" in result2, f"second store should dedup: {result2}"
 
 
@@ -175,9 +187,9 @@ def test_store_memory_dedup_increments_activation_count():
     """Duplicate store must bump activation_count, not create a new row."""
 
     unique = f"activation_bump_{datetime.now(UTC).isoformat()}_{hashlib.md5(b'act_test').hexdigest()[:8]}"
-    r1 = store_memory(unique)
+    r1 = store_memory(StoreMemoryParams(content=unique))
     assert "Stored" in r1
-    r2 = store_memory(unique)
+    r2 = store_memory(StoreMemoryParams(content=unique))
     assert "Duplicate detected" in r2
 
     conn = get_db_connection()
@@ -352,12 +364,14 @@ class TestRetrievalInputContracts:
     def test_invalid_signal_weights_reach_the_caller(self):
         """Unknown weights must not fall through to the keyword-only search."""
         with pytest.raises(ValueError, match="Invalid signal_weight keys"):
-            search_memories(query="therapy sessions", use_hybrid=True, signal_weights={"bogus": 1.0})
+            search_memories(
+                SearchMemoriesParams(query="therapy sessions", use_hybrid=True, signal_weights={"bogus": 1.0})
+            )
 
     def test_invalid_as_of_reaches_the_caller(self):
         """A bad ``as_of`` must not quietly answer with current-state memories."""
         with pytest.raises(ValueError, match="Invalid as_of"):
-            query_memories_temporal(as_of="last tuesday")
+            query_memories_temporal(QueryMemoriesTemporalParams(as_of="last tuesday"))
 
 
 @pytest.mark.asyncio
@@ -369,7 +383,7 @@ async def test_local_mcp_calls_return_text_without_api_key(monkeypatch):
     async with Client(mcp) as client:
         result = await client.call_tool(
             "manage_context_blocks",
-            {"options": {"action": "list"}, "user_id": "test_user"},
+            {"params": {"options": {"action": "list"}, "user_id": "test_user"}},
         )
 
     assert result.is_error is False
@@ -386,18 +400,27 @@ async def test_mcp_synthesize_profile_buckets_and_budget(monkeypatch):
         await client.call_tool(
             "manage_context_blocks",
             {
-                "options": {
-                    "action": "update",
-                    "label": "user_preferences",
-                    "content": "Always uses concise replies and prefers text over voice",
-                },
-                "user_id": "_test_user_",
+                "params": {
+                    "options": {
+                        "action": "update",
+                        "label": "user_preferences",
+                        "content": "Always uses concise replies and prefers text over voice",
+                    },
+                    "user_id": "_test_user_",
+                }
             },
         )
         max_chars = 200
         result = await client.call_tool(
             "synthesize_profile",
-            {"user_id": "_test_user_", "include_buckets": True, "format_prompt": True, "max_chars": max_chars},
+            {
+                "params": {
+                    "user_id": "_test_user_",
+                    "include_buckets": True,
+                    "format_prompt": True,
+                    "max_chars": max_chars,
+                }
+            },
         )
 
     assert result.is_error is False
@@ -634,7 +657,7 @@ def test_inject_context_returns_formatted_output():
         patch("foresight.server.USER_ID", "inject_test_user"),
         patch("foresight.server.get_context_block_agent"),
     ):
-        result = inject_context("Let's talk about database and type hints")
+        result = inject_context(InjectContextParams(conversation_text="Let's talk about database and type hints"))
 
     assert "Relevant Context" in result
     assert "mem1" in result or "mem2" in result
@@ -652,7 +675,7 @@ def test_inject_context_respects_max_memories():
         patch("foresight.server.get_context_block_agent"),
     ):
         max_memories = 2
-        result = inject_context("python topic", max_memories=max_memories)
+        result = inject_context(InjectContextParams(conversation_text="python topic", max_memories=max_memories))
 
     memory_lines = [line for line in result.splitlines() if line.startswith("- [")]
     assert len(memory_lines) <= max_memories
@@ -669,7 +692,9 @@ def test_inject_context_no_match():
         patch("foresight.server.USER_ID", "inject_test_user"),
         patch("foresight.server.get_context_block_agent"),
     ):
-        result = inject_context("quantum computing algorithms", min_relevance=0.5)
+        result = inject_context(
+            InjectContextParams(conversation_text="quantum computing algorithms", min_relevance=0.5)
+        )
 
     assert "[Relevant Context" not in result
 
@@ -681,7 +706,7 @@ def test_inject_context_empty_conversation_text():
         patch("foresight.server.USER_ID", "inject_test_user"),
         patch("foresight.server.get_context_block_agent"),
     ):
-        result = inject_context("")
+        result = inject_context(InjectContextParams(conversation_text=""))
 
     assert "memories surfaced" not in result
 
@@ -696,7 +721,7 @@ def test_inject_context_include_details_returns_json():
         patch("foresight.server.USER_ID", "inject_test_user"),
         patch("foresight.server.get_context_block_agent"),
     ):
-        result = inject_context("python type hints", include_details=True)
+        result = inject_context(InjectContextParams(conversation_text="python type hints", include_details=True))
 
     payload = json.loads(result)
     assert "formatted" in payload
@@ -720,7 +745,7 @@ def test_get_relevant_memories_returns_structured_data():
         _patch_hybrid_retriever(results, total_candidates=total_candidates, signal_counts={"keyword": 3, "graph": 2}),
         patch("foresight.server.USER_ID", "inject_test_user"),
     ):
-        result = get_relevant_memories("python type hints")
+        result = get_relevant_memories(GetRelevantMemoriesParams(query="python type hints"))
 
     payload = json.loads(result)
     assert "memories" in payload
@@ -742,7 +767,7 @@ def test_get_relevant_memories_filters_by_min_relevance():
         _patch_hybrid_retriever(results),
         patch("foresight.server.USER_ID", "inject_test_user"),
     ):
-        result = get_relevant_memories("test query", min_relevance=0.5)
+        result = get_relevant_memories(GetRelevantMemoriesParams(query="test query", min_relevance=0.5))
 
     payload = json.loads(result)
     assert len(payload["memories"]) == 1
@@ -757,7 +782,7 @@ def test_get_relevant_memories_respects_limit():
         patch("foresight.server.USER_ID", "inject_test_user"),
     ):
         limit = 3
-        result = get_relevant_memories("test query", limit=limit)
+        result = get_relevant_memories(GetRelevantMemoriesParams(query="test query", limit=limit))
 
     payload = json.loads(result)
     assert len(payload["memories"]) == limit
@@ -848,23 +873,29 @@ def test_manage_context_blocks_update_reset_clear_cycle():
     tmp.close()
 
     with _patched_context_block_storage(tmp.name):
-        listed = _decode_json_result(manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id))
+        listed = _decode_json_result(
+            manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list"), user_id=user_id))
+        )
         assert listed["ok"] is True
         assert any(block["label"] == "core_directives" for block in listed["blocks"])
 
         initial_guidance = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+            )
         )
         assert "No active guidance" in initial_guidance["content"]
 
         updated = _decode_json_result(
             manage_context_blocks(
-                ContextBlockAction(
-                    action="update",
-                    label="guidance",
-                    content="Always show exact verification evidence.",
-                ),
-                user_id=user_id,
+                ManageContextBlocksParams(
+                    options=ContextBlockAction(
+                        action="update",
+                        label="guidance",
+                        content="Always show exact verification evidence.",
+                    ),
+                    user_id=user_id,
+                )
             )
         )
         assert updated == {
@@ -875,27 +906,35 @@ def test_manage_context_blocks_update_reset_clear_cycle():
         }
 
         fetched = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+            )
         )
         assert fetched["content"] == "Always show exact verification evidence."
 
         cleared = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="clear", label="guidance"), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="clear", label="guidance"), user_id=user_id)
+            )
         )
         assert cleared["message"] == "Cleared block 'guidance'"
 
         empty_fetch = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+            )
         )
         assert empty_fetch["content"] == ""
 
         listed_after_clear = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id)
+            manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list"), user_id=user_id))
         )
         assert all(block["label"] != "guidance" for block in listed_after_clear["blocks"])
 
         reset = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="reset", label="guidance"), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="reset", label="guidance"), user_id=user_id)
+            )
         )
         assert reset["message"] == "Reset block 'guidance' to default"
 
@@ -919,42 +958,56 @@ def test_registered_context_block_schema_allows_validated_custom_block():
     with _patched_context_block_storage(db_path):
         updated = _decode_json_result(
             manage_context_blocks(
-                ContextBlockAction(action="update", label=label, content="short note"),
-                user_id=user_id,
+                ManageContextBlocksParams(
+                    options=ContextBlockAction(action="update", label=label, content="short note"),
+                    user_id=user_id,
+                )
             )
         )
         assert updated["ok"] is True
 
         fetched = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="get", label=label), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="get", label=label), user_id=user_id)
+            )
         )
         assert fetched["content"] == "short note"
 
-        listed = _decode_json_result(manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id))
+        listed = _decode_json_result(
+            manage_context_blocks(ManageContextBlocksParams(options=ContextBlockAction(action="list"), user_id=user_id))
+        )
         custom_block = next(block for block in listed["blocks"] if block["label"] == label)
         assert custom_block["description"] == "Short custom notes"
         assert custom_block["char_limit"] == char_limit
         invalid = _decode_json_result(
             manage_context_blocks(
-                ContextBlockAction(action="update", label=label, content="this note is too long"),
-                user_id=user_id,
+                ManageContextBlocksParams(
+                    options=ContextBlockAction(action="update", label=label, content="this note is too long"),
+                    user_id=user_id,
+                )
             )
         )
         assert invalid["ok"] is False
         assert "Content exceeds char limit" in invalid["error"]["message"]
         reloaded = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="get", label=label), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="get", label=label), user_id=user_id)
+            )
         )
         assert reloaded["content"] == "short note"
 
         reset = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="reset", label=label), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="reset", label=label), user_id=user_id)
+            )
         )
         assert reset["ok"] is True
         assert reset["message"] == f"Reset block '{label}' to default"
 
         after_reset = _decode_json_result(
-            manage_context_blocks(ContextBlockAction(action="get", label=label), user_id=user_id)
+            manage_context_blocks(
+                ManageContextBlocksParams(options=ContextBlockAction(action="get", label=label), user_id=user_id)
+            )
         )
         assert after_reset["content"] == ""
 
@@ -969,21 +1022,31 @@ def test_manage_context_blocks_are_tenant_isolated():
         with patch("foresight.server.get_current_account_id", return_value="tenant-a"):
             update_a = _decode_json_result(
                 manage_context_blocks(
-                    ContextBlockAction(action="update", label="guidance", content="Tenant A guidance"),
-                    user_id=user_id,
+                    ManageContextBlocksParams(
+                        options=ContextBlockAction(action="update", label="guidance", content="Tenant A guidance"),
+                        user_id=user_id,
+                    )
                 )
             )
             assert update_a["ok"] is True
 
         with patch("foresight.server.get_current_account_id", return_value="tenant-b"):
             fetched_b = _decode_json_result(
-                manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+                manage_context_blocks(
+                    ManageContextBlocksParams(
+                        options=ContextBlockAction(action="get", label="guidance"), user_id=user_id
+                    )
+                )
             )
             assert fetched_b["content"] != "Tenant A guidance"
 
         with patch("foresight.server.get_current_account_id", return_value="tenant-a"):
             fetched_a = _decode_json_result(
-                manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
+                manage_context_blocks(
+                    ManageContextBlocksParams(
+                        options=ContextBlockAction(action="get", label="guidance"), user_id=user_id
+                    )
+                )
             )
             assert fetched_a["content"] == "Tenant A guidance"
 
@@ -1124,8 +1187,10 @@ def test_manage_curation_runs_create_cancel_archive():
     ):
         created = json.loads(
             manage_curation_runs(
-                CurationRunAction(action="create", source_bank_id="source_bank"),
-                user_id=user_id,
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="create", source_bank_id="source_bank"),
+                    user_id=user_id,
+                )
             )
         )
         assert created["ok"] is True
@@ -1133,20 +1198,36 @@ def test_manage_curation_runs_create_cancel_archive():
         assert created["run"]["output_bank_id"].startswith("curation:")
 
         fetched = json.loads(
-            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
+            manage_curation_runs(
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
+                )
+            )
         )
         assert fetched["run"]["id"] == created["run"]["id"]
 
-        listed = json.loads(manage_curation_runs(CurationRunAction(action="list", limit=5), user_id=user_id))
+        listed = json.loads(
+            manage_curation_runs(
+                ManageCurationRunsParams(options=CurationRunAction(action="list", limit=5), user_id=user_id)
+            )
+        )
         assert listed["runs"][0]["id"] == created["run"]["id"]
 
         canceled = json.loads(
-            manage_curation_runs(CurationRunAction(action="cancel", run_id=created["run"]["id"]), user_id=user_id)
+            manage_curation_runs(
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="cancel", run_id=created["run"]["id"]), user_id=user_id
+                )
+            )
         )
         assert canceled["run"]["status"] == "canceled"
 
         archived = json.loads(
-            manage_curation_runs(CurationRunAction(action="archive", run_id=created["run"]["id"]), user_id=user_id)
+            manage_curation_runs(
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="archive", run_id=created["run"]["id"]), user_id=user_id
+                )
+            )
         )
         assert archived["run"]["archived_at"] is not None
 
@@ -1156,13 +1237,15 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
     user_id = "curation_validation_user"
 
     in_place = manage_curation_runs(
-        CurationRunAction(
-            action="create",
-            source_bank_id="source_bank",
-            output_mode="in_place",
-            tool_access="observe",
-        ),
-        user_id=user_id,
+        ManageCurationRunsParams(
+            options=CurationRunAction(
+                action="create",
+                source_bank_id="source_bank",
+                output_mode="in_place",
+                tool_access="observe",
+            ),
+            user_id=user_id,
+        )
     )
     in_place_result = json.loads(in_place)
     assert in_place_result["ok"] is False
@@ -1170,27 +1253,31 @@ def test_manage_curation_runs_validates_in_place_and_transcript_rules():
 
     unsafe_output_bank = json.loads(
         manage_curation_runs(
-            CurationRunAction(
-                action="create",
-                source_bank_id="source_bank",
-                output_bank_id="source_bank",
-                output_mode="in_place",
-                tool_access="operate",
-            ),
-            user_id=user_id,
+            ManageCurationRunsParams(
+                options=CurationRunAction(
+                    action="create",
+                    source_bank_id="source_bank",
+                    output_bank_id="source_bank",
+                    output_mode="in_place",
+                    tool_access="operate",
+                ),
+                user_id=user_id,
+            )
         )
     )
     assert unsafe_output_bank["ok"] is False
     assert unsafe_output_bank["error"]["message"] == "output_mode=in_place does not allow output_bank_id override"
 
     transcript = manage_curation_runs(
-        CurationRunAction(
-            action="create",
-            source_bank_id="source_bank",
-            tool_access="observe",
-            transcript_bundle=[{"role": "user", "content": "Remember this"}],
-        ),
-        user_id=user_id,
+        ManageCurationRunsParams(
+            options=CurationRunAction(
+                action="create",
+                source_bank_id="source_bank",
+                tool_access="observe",
+                transcript_bundle=[{"role": "user", "content": "Remember this"}],
+            ),
+            user_id=user_id,
+        )
     )
     transcript_result = json.loads(transcript)
     assert transcript_result["ok"] is False
@@ -1235,12 +1322,18 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
     ):
         created = json.loads(
             manage_curation_runs(
-                CurationRunAction(action="create", source_bank_id="source_bank"),
-                user_id=user_id,
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="create", source_bank_id="source_bank"),
+                    user_id=user_id,
+                )
             )
         )
         fetched = json.loads(
-            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
+            manage_curation_runs(
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
+                )
+            )
         )
         assert fetched["run"]["status"] == "failed"
         assert fetched["run"]["output_bank_id"].startswith("curation:")
@@ -1287,20 +1380,24 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
     ):
         created = json.loads(
             manage_curation_runs(
-                CurationRunAction(
-                    action="create",
-                    source_bank_id="source_bank",
-                    output_mode="in_place",
-                    tool_access="operate",
-                    policy_mode="preserve",
-                ),
-                user_id=user_id,
+                ManageCurationRunsParams(
+                    options=CurationRunAction(
+                        action="create",
+                        source_bank_id="source_bank",
+                        output_mode="in_place",
+                        tool_access="operate",
+                        policy_mode="preserve",
+                    ),
+                    user_id=user_id,
+                )
             )
         )
         run = created["run"]
-        fetched = json.loads(manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id))[
-            "run"
-        ]
+        fetched = json.loads(
+            manage_curation_runs(
+                ManageCurationRunsParams(options=CurationRunAction(action="get", run_id=run["id"]), user_id=user_id)
+            )
+        )["run"]
 
     assert fetched["status"] == "completed"
     assert fetched["output_mode"] == "in_place"
@@ -1380,17 +1477,23 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
     ):
         created = json.loads(
             manage_curation_runs(
-                CurationRunAction(
-                    action="create",
-                    source_bank_id="source_bank",
-                    output_mode="in_place",
-                    tool_access="operate",
-                ),
-                user_id=user_id,
+                ManageCurationRunsParams(
+                    options=CurationRunAction(
+                        action="create",
+                        source_bank_id="source_bank",
+                        output_mode="in_place",
+                        tool_access="operate",
+                    ),
+                    user_id=user_id,
+                )
             )
         )
         fetched = json.loads(
-            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
+            manage_curation_runs(
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
+                )
+            )
         )["run"]
 
     assert fetched["status"] == "canceled"
@@ -1463,17 +1566,23 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
     ):
         created = json.loads(
             manage_curation_runs(
-                CurationRunAction(
-                    action="create",
-                    source_bank_id="source_bank",
-                    output_mode="in_place",
-                    tool_access="operate",
-                ),
-                user_id=user_id,
+                ManageCurationRunsParams(
+                    options=CurationRunAction(
+                        action="create",
+                        source_bank_id="source_bank",
+                        output_mode="in_place",
+                        tool_access="operate",
+                    ),
+                    user_id=user_id,
+                )
             )
         )
         fetched = json.loads(
-            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
+            manage_curation_runs(
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id
+                )
+            )
         )["run"]
 
     assert fetched["status"] == "canceled"
@@ -1638,8 +1747,10 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
     ):
         created = json.loads(
             manage_curation_runs(
-                CurationRunAction(action="create", source_bank_id="source_bank"),
-                user_id=user_id,
+                ManageCurationRunsParams(
+                    options=CurationRunAction(action="create", source_bank_id="source_bank"),
+                    user_id=user_id,
+                )
             )
         )
         run = created["run"]
@@ -1664,9 +1775,11 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
 
         set_current_account_id("_test_")
 
-        fetched = json.loads(manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id))[
-            "run"
-        ]
+        fetched = json.loads(
+            manage_curation_runs(
+                ManageCurationRunsParams(options=CurationRunAction(action="get", run_id=run["id"]), user_id=user_id)
+            )
+        )["run"]
 
     conn = sqlite3.connect(db_path)
     output_rows = conn.execute(
@@ -1684,7 +1797,11 @@ def test_manage_curation_runs_list_initializes_schema_for_empty_database():
     db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
 
     with patch("foresight.server.DB_PATH", db_path):
-        listed = json.loads(manage_curation_runs(CurationRunAction(action="list", limit=5), user_id="fresh_user"))
+        listed = json.loads(
+            manage_curation_runs(
+                ManageCurationRunsParams(options=CurationRunAction(action="list", limit=5), user_id="fresh_user")
+            )
+        )
 
     assert listed == {"ok": True, "action": "list", "runs": []}
 
@@ -1932,10 +2049,10 @@ def test_memory_hard_cap_enforcement():
             server_module.DEFAULT_MAX_MEMORY_PER_TENANT = 5
             try:
                 for i in range(5):
-                    result = store_memory(f"test memory {i}")
+                    result = store_memory(StoreMemoryParams(content=f"test memory {i}"))
                     assert "Error" not in result, f"Should not error at {i}: {result}"
                 # Try one more - should fail
-                result = store_memory("overflow test")
+                result = store_memory(StoreMemoryParams(content="overflow test"))
                 assert "Error" in result
                 assert "Memory limit reached" in result
             finally:
@@ -1956,8 +2073,8 @@ def test_memory_budget_metrics_utilization():
     # Store a few memories
     seeded_memory_count = 5
     for i in range(seeded_memory_count):
-        store_memory(f"budget test {i}")
-    result = get_system_status(options=SystemStatusOptions(include_cache_metrics=True))
+        store_memory(StoreMemoryParams(content=f"budget test {i}"))
+    result = get_system_status(GetSystemStatusParams(options=SystemStatusOptions(include_cache_metrics=True)))
     data = json.loads(result)
     assert data["memory_budget"]["current_count"] >= seeded_memory_count
     assert data["memory_budget"]["utilization_pct"] >= 0
@@ -1967,7 +2084,7 @@ def test_memory_budget_metrics_utilization():
 def test_cascade_retrieval_basic():
     """Cascade retrieval returns results when use_cascade is enabled."""
 
-    result = search_memories(SearchOptions(query="test", use_cascade=True, limit=5))
+    result = search_memories(SearchMemoriesParams(options=SearchOptions(query="test", use_cascade=True, limit=5)))
     # Should return results (falls back to hybrid since no embeddings)
     assert "memories" in result.lower() or "found" in result.lower()
 
@@ -1976,7 +2093,7 @@ def test_cascade_retrieval_respects_limit():
     """Cascade retrieval respects the limit parameter."""
 
     limit = 2
-    result = search_memories(SearchOptions(query="test", use_cascade=True, limit=limit))
+    result = search_memories(SearchMemoriesParams(options=SearchOptions(query="test", use_cascade=True, limit=limit)))
     # Count lines in result
     lines = [line for line in result.split("\n") if line.startswith("- [")]
     assert len(lines) <= limit
@@ -2014,7 +2131,7 @@ class TestSystemStatusHealth:
             patch("foresight.server.USER_ID", "test_user"),
             patch("foresight.server.get_context_block_agent"),
         ):
-            inject_context("python type hints and database")
+            inject_context(InjectContextParams(conversation_text="python type hints and database"))
 
         assert "last_run_at" in _last_injection_stats
         assert _last_injection_stats["memories_returned"] == len(results)
@@ -2035,7 +2152,7 @@ class TestSystemStatusHealth:
             patch("foresight.server.USER_ID", "test_user"),
             patch("foresight.server.get_context_block_agent"),
         ):
-            inject_context("clinical note")
+            inject_context(InjectContextParams(conversation_text="clinical note"))
 
         stats_keys = set(_last_injection_stats.keys())
         # Verify no keys that could contain raw memory content
@@ -2049,7 +2166,7 @@ class TestSystemStatusHealth:
     def test_system_status_contains_stale_count(self):
         """get_system_status returns stale_count metric."""
 
-        result = get_system_status()
+        result = get_system_status(GetSystemStatusParams())
         data = json.loads(result)
         assert "stale_count" in data
         assert isinstance(data["stale_count"], int)
@@ -2058,11 +2175,11 @@ class TestSystemStatusHealth:
         """get_system_status returns by_category breakdown."""
 
         # Store memories with different categories
-        store_memory("fact memory one", category="fact", scope="session")
-        store_memory("preference about cats", category="preference", scope="trait")
-        store_memory("decision to use Python", category="decision", scope="arc")
+        store_memory(StoreMemoryParams(content="fact memory one", category="fact", scope="session"))
+        store_memory(StoreMemoryParams(content="preference about cats", category="preference", scope="trait"))
+        store_memory(StoreMemoryParams(content="decision to use Python", category="decision", scope="arc"))
 
-        result = get_system_status()
+        result = get_system_status(GetSystemStatusParams())
         data = json.loads(result)
         assert "by_category" in data
         assert isinstance(data["by_category"], dict)
@@ -2070,7 +2187,7 @@ class TestSystemStatusHealth:
     def test_system_status_contains_last_injection(self):
         """get_system_status returns last_injection field (may be null)."""
 
-        result = get_system_status()
+        result = get_system_status(GetSystemStatusParams())
         data = json.loads(result)
         assert "last_injection" in data
         # May be None if no injection has run this session
@@ -2078,8 +2195,8 @@ class TestSystemStatusHealth:
     def test_system_status_no_memory_content_in_output(self):
         """get_system_status output does not include raw memory content (privacy-safe)."""
 
-        store_memory("very personal therapeutic session content that should be private")
-        result = get_system_status()
+        store_memory(StoreMemoryParams(content="very personal therapeutic session content that should be private"))
+        result = get_system_status(GetSystemStatusParams())
         data = json.loads(result)
         serialized = json.dumps(data)
         # The memory content should NOT appear anywhere in the status output
@@ -2094,19 +2211,21 @@ def test_manage_context_blocks_flat_aliases_and_extra_fields():
     """manage_context_blocks handles block_name, name, block, key aliases and extra fields."""
 
     # Test flat block_name parameter
-    res = manage_context_blocks(action="update", block_name="project_context", content="Test context content")
+    res = manage_context_blocks(
+        ManageContextBlocksParams(action="update", block_name="project_context", content="Test context content")
+    )
     data = json.loads(res)
     assert data["ok"] is True
     assert data["label"] == "project_context"
 
     # Test flat name parameter
-    res2 = manage_context_blocks(action="get", name="project_context")
+    res2 = manage_context_blocks(ManageContextBlocksParams(action="get", name="project_context"))
     data2 = json.loads(res2)
     assert data2["ok"] is True
     assert data2["content"] == "Test context content"
 
     # Test flat block_type parameter
-    res3 = manage_context_blocks(action="get", block_type="project_context")
+    res3 = manage_context_blocks(ManageContextBlocksParams(action="get", block_type="project_context"))
     data3 = json.loads(res3)
     assert data3["ok"] is True
     assert data3["content"] == "Test context content"
@@ -2120,11 +2239,13 @@ def test_manage_memories_flat_parameters():
     """manage_memories folds flat parameters like category, scope, tags into store_options and updates."""
 
     res = manage_memories(
-        action="store",
-        content="Testing flat memory storage",
-        category="fact",
-        scope="session",
-        tags=["test", "flat"],
+        ManageMemoriesParams(
+            action="store",
+            content="Testing flat memory storage",
+            category="fact",
+            scope="session",
+            tags=["test", "flat"],
+        )
     )
     assert "Stored memory" in res or "Duplicate detected" in res
 
@@ -2133,7 +2254,9 @@ def test_manage_memory_versions_flat_parameters():
     """manage_memory_versions handles flat action and memory_id parameters."""
 
     # Test with flat arguments for a non-existent ID
-    res = manage_memory_versions(action="diff", memory_id="nonexistent_id", version1=1, version2=2)
+    res = manage_memory_versions(
+        ManageMemoryVersionsParams(action="diff", memory_id="nonexistent_id", version1=1, version2=2)
+    )
     assert "nonexistent_id" in res
 
     # Test VersionAction extra fields
@@ -2160,7 +2283,7 @@ def test_analyze_memories_flat_parameters():
         )
         mock_get_engine.return_value.reflect.return_value = mock_report
 
-        res = analyze_memories(action="reflect", period="weekly")
+        res = analyze_memories(AnalyzeMemoriesParams(action="reflect", period="weekly"))
         assert res is not None
 
     # Test AnalysisAction extra fields
@@ -2194,7 +2317,9 @@ def test_store_memory_type_roundtrip():
 
     marker = hashlib.md5(b"mem_type").hexdigest()[:8]
     res = manage_memories(
-        action="store", content=f"procedural howto {marker}", memory_type="procedural", user_id="_test_user_"
+        ManageMemoriesParams(
+            action="store", content=f"procedural howto {marker}", memory_type="procedural", user_id="_test_user_"
+        )
     )
     assert "Stored memory" in res or "Duplicate detected" in res
 
@@ -2212,10 +2337,12 @@ def test_store_expires_at_roundtrip():
 
     marker = hashlib.md5(b"expires").hexdigest()[:8]
     res = manage_memories(
-        action="store",
-        content=f"temporary fact {marker}",
-        expires_at="2027-01-01T00:00:00+00:00",
-        user_id="_test_user_",
+        ManageMemoriesParams(
+            action="store",
+            content=f"temporary fact {marker}",
+            expires_at="2027-01-01T00:00:00+00:00",
+            user_id="_test_user_",
+        )
     )
     assert "Stored memory" in res or "Duplicate detected" in res
 
@@ -2234,10 +2361,12 @@ def test_auto_tag_extracts_topical_tags():
 
     marker = hashlib.md5(b"autotag").hexdigest()[:8]
     res = manage_memories(
-        action="store",
-        content=f"we adopted postgresql for storage and redis for caching {marker}",
-        auto_tag=True,
-        user_id="_test_user_",
+        ManageMemoriesParams(
+            action="store",
+            content=f"we adopted postgresql for storage and redis for caching {marker}",
+            auto_tag=True,
+            user_id="_test_user_",
+        )
     )
     assert "Stored memory" in res or "Duplicate detected" in res
 
@@ -2255,11 +2384,13 @@ def test_explicit_tags_win_over_auto_tag():
 
     marker = hashlib.md5(b"explicit").hexdigest()[:8]
     manage_memories(
-        action="store",
-        content=f"explicit tags test {marker}",
-        tags=["explicit_marker"],
-        auto_tag=True,
-        user_id="_test_user_",
+        ManageMemoriesParams(
+            action="store",
+            content=f"explicit tags test {marker}",
+            tags=["explicit_marker"],
+            auto_tag=True,
+            user_id="_test_user_",
+        )
     )
     conn = get_db_connection()
     row = conn.execute(
@@ -2274,10 +2405,16 @@ def test_search_memories_filters_by_category():
     """PIX-4720: list search filters by category."""
 
     marker = hashlib.md5(b"cat").hexdigest()[:8]
-    manage_memories(action="store", content=f"alpha {marker}", category="preference", user_id="_test_user_")
-    manage_memories(action="store", content=f"beta {marker}", category="fact", user_id="_test_user_")
+    manage_memories(
+        ManageMemoriesParams(action="store", content=f"alpha {marker}", category="preference", user_id="_test_user_")
+    )
+    manage_memories(
+        ManageMemoriesParams(action="store", content=f"beta {marker}", category="fact", user_id="_test_user_")
+    )
 
-    res = search_memories(SearchOptions(query_type="list", category="preference"), user_id="_test_user_")
+    res = search_memories(
+        SearchMemoriesParams(options=SearchOptions(query_type="list", category="preference"), user_id="_test_user_")
+    )
     assert f"alpha {marker}"[:40] in res or "alpha" in res
     assert "beta" not in res
 
@@ -2286,10 +2423,16 @@ def test_search_memories_filters_by_tags():
     """PIX-4720: list search filters to memories carrying a tag."""
 
     marker = hashlib.md5(b"tagfilter").hexdigest()[:8]
-    manage_memories(action="store", content=f"work item {marker}", tags=["work"], user_id="_test_user_")
-    manage_memories(action="store", content=f"personal item {marker}", tags=["home"], user_id="_test_user_")
+    manage_memories(
+        ManageMemoriesParams(action="store", content=f"work item {marker}", tags=["work"], user_id="_test_user_")
+    )
+    manage_memories(
+        ManageMemoriesParams(action="store", content=f"personal item {marker}", tags=["home"], user_id="_test_user_")
+    )
 
-    res = search_memories(SearchOptions(query_type="list", tags=["work"]), user_id="_test_user_")
+    res = search_memories(
+        SearchMemoriesParams(options=SearchOptions(query_type="list", tags=["work"]), user_id="_test_user_")
+    )
     assert "work item" in res
     assert "personal item" not in res
 
@@ -2299,11 +2442,13 @@ def test_search_memories_excludes_expired():
 
     marker = hashlib.md5(b"expired_filter").hexdigest()[:8]
     manage_memories(
-        action="store", content=f"gone {marker}", expires_at="2020-01-01T00:00:00+00:00", user_id="_test_user_"
+        ManageMemoriesParams(
+            action="store", content=f"gone {marker}", expires_at="2020-01-01T00:00:00+00:00", user_id="_test_user_"
+        )
     )
-    manage_memories(action="store", content=f"alive {marker}", user_id="_test_user_")
+    manage_memories(ManageMemoriesParams(action="store", content=f"alive {marker}", user_id="_test_user_"))
 
-    res = search_memories(SearchOptions(query_type="list"), user_id="_test_user_")
+    res = search_memories(SearchMemoriesParams(options=SearchOptions(query_type="list"), user_id="_test_user_"))
     assert "gone" not in res
     assert "alive" in res
 
@@ -2326,12 +2471,14 @@ def test_process_session_transcript_infer_false_stores_verbatim():
         patch("foresight.server._bridge_capture_memories_to_blocks", return_value=[]),
     ):
         res = process_session_transcript(
-            session_id=f"sess-{marker}",
-            messages=messages,
-            user_id="_test_user_",
-            project_path="/tmp",
-            infer=False,
-            instructions="focus on greetings",
+            ProcessSessionTranscriptParams(
+                session_id=f"sess-{marker}",
+                messages=messages,
+                user_id="_test_user_",
+                project_path="/tmp",
+                infer=False,
+                instructions="focus on greetings",
+            )
         )
     assert "Processed transcript" in res
 

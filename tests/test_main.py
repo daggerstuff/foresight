@@ -72,7 +72,7 @@ def test_status_human_formats_payload_budget_weights_and_injection_health():
         patch.object(out, "_stderr_console", Console(file=stderr_buffer, force_terminal=False, color_system=None)),
     ):
         out.configure(mode="human", color=False, pipe_safe=False, verbose=False)
-        system_commands.status()
+        system_commands.status(user_id=None)
 
     rendered = stderr_buffer.getvalue()
     assert "Payload Budget" in rendered

@@ -156,7 +156,7 @@ def ingest_document_file(
     }
     if opts.char_budget is not None:
         kwargs["char_budget"] = opts.char_budget
-    return server.create_document(**kwargs)
+    return server.create_document(server.CreateDocumentParams(**kwargs))
 
 
 def ingest_document_file_json(*args: Any, **kwargs: Any) -> dict[str, Any]:
