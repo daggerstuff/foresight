@@ -18,10 +18,7 @@ try:
         ProviderField,
     )
 except ImportError:
-    KIND_BOOL = "bool"
-    KIND_NUMBER = "number"
-    KIND_SECRET = "secret"
-    KIND_TEXT = "text"
+    KIND_BOOL, KIND_NUMBER, KIND_SECRET, KIND_TEXT = ("bool", "number", "secret", "text")
 
     class ProviderConfigSchema:  # type: ignore[no-redef]
         def __init__(self, **kwargs: Any) -> None:

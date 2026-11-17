@@ -11,9 +11,10 @@ transcripts on stop/compact, and teaches Claude the Foresight skill.
 | `.claude-plugin/plugin.json` | Claude Code plugin manifest |
 | `.mcp.json` | Registers the `foresight` MCP server (`http://127.0.0.1:8764/mcp`) |
 | `hooks/hooks.json` | UserPromptSubmit / PreCompact / PostCompact / Stop / SessionEnd hooks |
-| `hooks/foresight-hook.sh` | Hook implementation (context injection + transcript capture) |
+| `hooks/foresight_hook.py` | Hook implementation (context injection + transcript capture) |
 | `skills/foresight/SKILL.md` | Teaches Claude every Foresight MCP tool and best practices |
 | `install.sh` | One-shot installer for Claude Code **and** Claude Desktop |
+| `install_support.py` | Config-writing helpers invoked by `install.sh` |
 
 ## Quick install
 

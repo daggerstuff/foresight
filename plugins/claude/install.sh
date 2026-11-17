@@ -102,7 +102,7 @@ if [ "$REMOTE_HOST" -eq 1 ] && [ -z "$API_KEY" ]; then
   _info "Re-run with:  --api-key <key>   (provision via: foresight user create)"
 fi
 
-# ~/.config/foresight/credentials.env — read by foresight-hook.sh (chmod 600).
+# ~/.config/foresight/credentials.env — read by foresight_hook.py (chmod 600).
 CREDS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/foresight"
 CREDS_FILE="$CREDS_DIR/credentials.env"
 if [ -n "$API_KEY" ] || [ -n "$IDENTITY" ]; then
@@ -112,32 +112,7 @@ if [ -n "$API_KEY" ] || [ -n "$IDENTITY" ]; then
     mkdir -p "$CREDS_DIR"
     touch "$CREDS_FILE"
     chmod 600 "$CREDS_FILE"
-    CREDS_FILE="$CREDS_FILE" API_KEY="$API_KEY" IDENTITY="$IDENTITY" python3 - <<'PY'
-import os, pathlib, re
-
-p = pathlib.Path(os.environ["CREDS_FILE"])
-updates = {}
-if os.environ.get("API_KEY"):
-    updates["FORESIGHT_API_KEY"] = os.environ["API_KEY"]
-if os.environ.get("IDENTITY"):
-    updates["FORESIGHT_IDENTITY"] = os.environ["IDENTITY"]
-
-lines = []
-seen = set()
-if p.exists():
-    for line in p.read_text().splitlines():
-        m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-        if m and m.group(1) in updates:
-            lines.append(f"{m.group(1)}={updates[m.group(1)]}")
-            seen.add(m.group(1))
-        else:
-            lines.append(line)
-for k, v in updates.items():
-    if k not in seen:
-        lines.append(f"{k}={v}")
-p.write_text("\n".join(lines).rstrip() + "\n")
-os.chmod(p, 0o600)
-PY
+    CREDS_FILE="$CREDS_FILE" API_KEY="$API_KEY" IDENTITY="$IDENTITY" python3 "$PLUGIN_DIR/install_support.py" credentials
     _ok "Wrote credentials to $CREDS_FILE"
   fi
 fi
@@ -151,7 +126,9 @@ if [ "$DO_CLAUDE_CODE" -eq 1 ]; then
   if [ ! -d "$CLAUDE_DIR" ] && ! command -v claude >/dev/null 2>&1; then
     _info "Claude Code not detected — skipping (install Claude Code or pass --desktop only)"
   else
-    HOOK_DEST="$CLAUDE_DIR/hooks/foresight-hook.sh"
+    HOOK_DEST="$CLAUDE_DIR/hooks/foresight_hook.py"
+    HOOK_SRC="$PLUGIN_DIR/hooks/foresight_hook.py"
+    LEGACY_HOOK_DEST="$CLAUDE_DIR/hooks/foresight-hook.sh"
     SKILL_SRC="$PLUGIN_DIR/skills/foresight/SKILL.md"
 
     # Resolve skill destination — users often symlink ~/.claude/skills/<name>
@@ -173,7 +150,10 @@ if [ "$DO_CLAUDE_CODE" -eq 1 ]; then
     fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
-      printf "  [dry-run] cp %s %s\n" "$PLUGIN_DIR/hooks/foresight-hook.sh" "$HOOK_DEST"
+      printf "  [dry-run] cp %s %s\n" "$HOOK_SRC" "$HOOK_DEST"
+      if [ -e "$LEGACY_HOOK_DEST" ]; then
+        printf "  [dry-run] rm %s\n" "$LEGACY_HOOK_DEST"
+      fi
       if [ -n "$SKILL_SKIP" ]; then
         printf "  [dry-run] skip skill: %s\n" "$SKILL_SKIP"
       else
@@ -182,8 +162,9 @@ if [ "$DO_CLAUDE_CODE" -eq 1 ]; then
     else
       mkdir -p "$CLAUDE_DIR/hooks"
       [ -z "$SKILL_SKIP" ] && mkdir -p "$SKILL_DEST_DIR"
-      cp "$PLUGIN_DIR/hooks/foresight-hook.sh" "$HOOK_DEST"
+      cp "$HOOK_SRC" "$HOOK_DEST"
       chmod +x "$HOOK_DEST"
+      rm -f "$LEGACY_HOOK_DEST"
       if [ -n "$SKILL_SKIP" ]; then
         _warn "Skill install skipped: $SKILL_SKIP"
       else
@@ -197,77 +178,17 @@ if [ "$DO_CLAUDE_CODE" -eq 1 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
       printf "  [dry-run] merge mcpServers.foresight into %s\n" "$CLAUDE_JSON"
     else
-      CLAUDE_JSON="$CLAUDE_JSON" MCP_URL="$MCP_URL" python3 - <<'PY'
-import json, os, pathlib, sys
-
-p = pathlib.Path(os.environ["CLAUDE_JSON"])
-data = {}
-if p.exists():
-    try:
-        data = json.loads(p.read_text())
-    except Exception as e:
-        sys.exit(f"cannot parse {p}: {e}")
-
-mcp = data.setdefault("mcpServers", {})
-entry = {"type": "http", "url": os.environ["MCP_URL"]}
-# ${FORESIGHT_API_KEY} expands from the Claude Code process env, which we
-# populate via ~/.claude/settings.json "env" below (or the user's shell).
-entry["headers"] = {"Authorization": "Bearer ${FORESIGHT_API_KEY}"}
-mcp["foresight"] = entry
-p.write_text(json.dumps(data, indent=2) + "\n")
-PY
+      CLAUDE_JSON="$CLAUDE_JSON" MCP_URL="$MCP_URL" python3 "$PLUGIN_DIR/install_support.py" claude-json
       _ok "Registered foresight MCP server in ~/.claude.json"
     fi
 
     # Merge hooks into ~/.claude/settings.json (idempotent)
     SETTINGS="$CLAUDE_DIR/settings.json"
-    HOOK_CMD="bash '$CLAUDE_DIR/hooks/foresight-hook.sh'"
+    HOOK_CMD="python3 '$CLAUDE_DIR/hooks/foresight_hook.py'"
     if [ "$DRY_RUN" -eq 1 ]; then
       printf "  [dry-run] merge foresight hooks into %s\n" "$SETTINGS"
     else
-      SETTINGS="$SETTINGS" HOOK_CMD="$HOOK_CMD" API_KEY="$API_KEY" IDENTITY="$IDENTITY" python3 - <<'PY'
-import json, os, pathlib, sys
-
-p = pathlib.Path(os.environ["SETTINGS"])
-data = {}
-if p.exists():
-    try:
-        data = json.loads(p.read_text())
-    except Exception as e:
-        sys.exit(f"cannot parse {p}: {e}")
-
-# Feed ${FORESIGHT_API_KEY} expansion in ~/.claude.json mcp headers.
-env = data.setdefault("env", {})
-if os.environ.get("API_KEY"):
-    env["FORESIGHT_API_KEY"] = os.environ["API_KEY"]
-if os.environ.get("IDENTITY"):
-    env["FORESIGHT_IDENTITY"] = os.environ["IDENTITY"]
-
-cmd_prefix = os.environ["HOOK_CMD"]
-hooks = data.setdefault("hooks", {})
-
-def add(event, action, timeout):
-    command = f"{cmd_prefix} {action}"
-    entries = hooks.setdefault(event, [])
-    # Skip if a foresight hook for this action already exists
-    for entry in entries:
-        for h in entry.get("hooks", []):
-            if "foresight-hook.sh" in str(h.get("command", "")) and action in str(h.get("command", "")):
-                return
-    matcher = "*" if event == "UserPromptSubmit" else None
-    entry = {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
-    if matcher:
-        entry = {"matcher": matcher, **entry}
-    entries.append(entry)
-
-add("UserPromptSubmit", "prompt", 15)
-add("PreCompact", "precompact", 20)
-add("PostCompact", "postcompact", 20)
-add("Stop", "stop", 15)
-add("SessionEnd", "stop", 15)
-
-p.write_text(json.dumps(data, indent=2) + "\n")
-PY
+      SETTINGS="$SETTINGS" HOOK_CMD="$HOOK_CMD" API_KEY="$API_KEY" IDENTITY="$IDENTITY" python3 "$PLUGIN_DIR/install_support.py" settings
       _ok "Registered foresight hooks in ~/.claude/settings.json"
     fi
   fi
@@ -292,34 +213,7 @@ if [ "$DO_DESKTOP" -eq 1 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
       printf "  [dry-run] merge mcpServers.foresight into %s\n" "$DESKTOP_CONFIG"
     else
-      DESKTOP_CONFIG="$DESKTOP_CONFIG" MCP_URL="$MCP_URL" DESKTOP_STDIO="$DESKTOP_STDIO" API_KEY="$API_KEY" python3 - <<'PY'
-import json, os, pathlib, sys
-
-p = pathlib.Path(os.environ["DESKTOP_CONFIG"])
-data = {}
-if p.exists():
-    try:
-        data = json.loads(p.read_text())
-    except Exception as e:
-        sys.exit(f"cannot parse {p}: {e}")
-
-mcp = data.setdefault("mcpServers", {})
-if os.environ.get("DESKTOP_STDIO") == "1":
-    entry = {"command": "foresight-server"}
-    env = {k: v for k, v in os.environ.items() if k.startswith("FORESIGHT_") and v}
-    if env:
-        entry["env"] = env
-    mcp["foresight"] = entry
-else:
-    entry = {"type": "http", "url": os.environ["MCP_URL"]}
-    api_key = os.environ.get("API_KEY", "")
-    if api_key:
-        entry["headers"] = {"Authorization": f"Bearer {api_key}"}
-    mcp["foresight"] = entry
-
-p.parent.mkdir(parents=True, exist_ok=True)
-p.write_text(json.dumps(data, indent=2) + "\n")
-PY
+      DESKTOP_CONFIG="$DESKTOP_CONFIG" MCP_URL="$MCP_URL" DESKTOP_STDIO="$DESKTOP_STDIO" API_KEY="$API_KEY" python3 "$PLUGIN_DIR/install_support.py" desktop
       if [ "$DESKTOP_STDIO" -eq 1 ]; then
         _ok "Registered foresight MCP server (stdio: foresight-server) in Claude Desktop config"
       else

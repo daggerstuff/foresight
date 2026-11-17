@@ -182,7 +182,7 @@ Add to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash '$HOME/.claude/hooks/foresight-hook.sh' prompt",
+            "command": "python3 '$HOME/.claude/hooks/foresight_hook.py' prompt",
             "timeout": 5
           }
         ]
@@ -194,7 +194,7 @@ Add to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash '$HOME/.claude/hooks/foresight-hook.sh' stop",
+            "command": "python3 '$HOME/.claude/hooks/foresight_hook.py' stop",
             "timeout": 10
           }
         ]

@@ -24,6 +24,7 @@ Config (env vars, profile-scoped via secret scope):
 
 from __future__ import annotations
 
+import http.client
 import importlib
 import json
 import logging
@@ -31,10 +32,9 @@ import os
 import re
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -117,6 +117,8 @@ PRE_COMPRESS_CHECKPOINT_API_VERSION = 2
 _DEFAULT_URL = "http://127.0.0.1:8764"
 _DEFAULT_GLYPH = "🔮"
 _USER_AGENT = "hermes-foresight/2.0"
+_MASKED_FIELD = True
+_HTTP_CLIENT_ERROR = 400
 
 
 def _load_config(hermes_home: Path | None) -> dict[str, Any]:
@@ -149,6 +151,28 @@ def _detect_git_root(start_path: Path | str | None = None) -> str | None:
         if (parent / ".git").exists():
             return str(parent)
     return str(cur) if start_path else None
+
+
+def _send(
+    method: str,
+    url: str,
+    data: bytes | None,
+    headers: dict[str, str],
+    timeout: float,
+) -> tuple[int, str, bytes]:
+    """Issue one request against the configured endpoint and return status, reason, body."""
+    parts = urllib.parse.urlsplit(url)
+    target = parts.path or "/"
+    if parts.query:
+        target = f"{target}?{parts.query}"
+    connection_type = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(parts.hostname or "", parts.port, timeout=timeout)
+    try:
+        connection.request(method, target, body=data, headers=headers)
+        response = connection.getresponse()
+        return response.status, str(response.reason), response.read()
+    finally:
+        connection.close()
 
 
 @dataclass(frozen=True)
@@ -194,28 +218,24 @@ class _Client:
                 url = f"{url}?{query_str}"
 
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-            return json.loads(raw.decode("utf-8")) if raw else {}
-        except urllib.error.HTTPError as exc:
+            status, reason, raw = _send(method, url, data, headers, timeout)
+        except OSError as exc:
+            logger.debug("Foresight connection error (%s %s): %s", method, path, exc)
+            raise RuntimeError(f"Connection failed: {exc}") from exc
+        if status >= _HTTP_CLIENT_ERROR:
             err_body = ""
-            try:
-                err_body = exc.read().decode("utf-8")
+            with suppress(Exception):
+                err_body = raw.decode("utf-8")
                 parsed = json.loads(err_body)
                 if isinstance(parsed, dict) and "detail" in parsed:
                     err_body = parsed["detail"]
                 elif isinstance(parsed, dict) and "error" in parsed:
                     err_body = str(parsed["error"])
-            except Exception:
-                pass
-            msg = f"HTTP {exc.code}: {err_body or exc.reason}"
+            msg = f"HTTP {status}: {err_body or reason}"
             logger.debug("Foresight HTTP error (%s %s): %s", method, path, msg)
-            raise RuntimeError(msg) from exc
-        except urllib.error.URLError as exc:
-            logger.debug("Foresight connection error (%s %s): %s", method, path, exc.reason)
-            raise RuntimeError(f"Connection failed: {exc.reason}") from exc
+            raise RuntimeError(msg)
+        return json.loads(raw.decode("utf-8")) if raw else {}
 
     def health(self) -> dict[str, Any]:
         """Check server connectivity and latency."""
@@ -445,7 +465,7 @@ class ForesightMemoryProvider(MemoryProvider):
             {
                 "key": "api_key",
                 "description": "Foresight API key (Bearer token; optional on localhost)",
-                "secret": True,
+                "secret": _MASKED_FIELD,
                 "env_var": "FORESIGHT_API_KEY",
             },
             {

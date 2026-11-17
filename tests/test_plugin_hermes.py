@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from plugins.hermes import (
     PRE_COMPRESS_CHECKPOINT_API_VERSION,
@@ -18,26 +22,79 @@ from plugins.hermes.cli import register_cli
 # sync_turn records the user turn and the assistant reply.
 SYNC_TURN_MESSAGE_COUNT = 2
 
+# _Client.request defaults to an 8 second socket timeout.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 8.0
+
 
 class TestClient:
     def test_request_headers_and_url(self):
         client = _Client(base_url="http://test-server:8764", api_key="test-key", user_id="test-user")
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps({"ok": True, "count": 42}).encode("utf-8")
-            mock_urlopen.return_value.__enter__.return_value = mock_resp
+        with patch("plugins.hermes._send") as mock_send:
+            mock_send.return_value = (200, "OK", json.dumps({"ok": True, "count": 42}).encode("utf-8"))
 
             res = client.request("POST", "/test", body={"hello": "world"}, params={"limit": 5})
 
             assert res == {"ok": True, "count": 42}
-            assert mock_urlopen.call_count == 1
-            req = mock_urlopen.call_args[0][0]
-            assert req.full_url == "http://test-server:8764/test?limit=5"
-            assert req.get_header("Authorization") == "Bearer test-key"
-            assert req.get_header("X-user-id") == "test-user"
-            assert req.get_header("Content-type") == "application/json"
-            assert req.get_header("User-agent") == "hermes-foresight/2.0"
-            assert json.loads(req.data.decode("utf-8")) == {"hello": "world"}
+            assert mock_send.call_count == 1
+            method, url, data, headers, timeout = mock_send.call_args[0]
+            assert method == "POST"
+            assert url == "http://test-server:8764/test?limit=5"
+            assert headers["Authorization"] == "Bearer test-key"
+            assert headers["X-User-Id"] == "test-user"
+            assert headers["Content-Type"] == "application/json"
+            assert headers["User-Agent"] == "hermes-foresight/2.0"
+            assert json.loads(data.decode("utf-8")) == {"hello": "world"}
+            assert timeout == DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+    def test_request_transport_round_trip(self):
+        received = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                received["path"] = self.path
+                received["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+                received["user_id"] = self.headers.get("X-User-Id")
+                payload = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = _Client(base_url=f"http://127.0.0.1:{server.server_port}", api_key="", user_id="chad")
+            assert client.request("POST", "/memories", body={"content": "note"}, params={"limit": 2}) == {"ok": True}
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert received["path"] == "/memories?limit=2"
+        assert received["body"] == {"content": "note"}
+        assert received["user_id"] == "chad"
+
+    def test_request_error_status(self):
+        client = _Client(base_url="http://test-server:8764", api_key="", user_id="")
+        with (
+            patch("plugins.hermes._send") as mock_send,
+            pytest.raises(RuntimeError, match="HTTP 404: no such memory"),
+        ):
+            mock_send.return_value = (404, "Not Found", json.dumps({"detail": "no such memory"}).encode("utf-8"))
+            client.request("GET", "/memories/missing")
+
+    def test_request_connection_failure(self):
+        client = _Client(base_url="http://test-server:8764", api_key="", user_id="")
+        with (
+            patch("plugins.hermes._send", side_effect=ConnectionRefusedError("refused")),
+            pytest.raises(RuntimeError, match="Connection failed: refused"),
+        ):
+            client.request("GET", "/memories")
 
     def test_health_check(self):
         client = _Client(base_url="http://test-server:8764", api_key="", user_id="chad")
