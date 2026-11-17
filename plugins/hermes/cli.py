@@ -46,6 +46,7 @@ except (ImportError, ValueError):
     spec = importlib.util.spec_from_file_location("_foresight_init", str(init_path))
     if spec is not None and spec.loader is not None:
         _init_mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = _init_mod
         spec.loader.exec_module(_init_mod)
         _exports: dict[str, Any] = {
             "_DEFAULT_URL": getattr(_init_mod, "_DEFAULT_URL", "http://127.0.0.1:8764"),

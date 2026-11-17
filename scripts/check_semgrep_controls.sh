@@ -7,7 +7,7 @@
 # Why this exists
 # ---------------------------------------------------------------------------
 # The rule is a list of declared coverage: five source classes, nine sink
-# methods, sixteen sanitizer patterns. Nothing in the rule enforces that those
+# methods, eight sanitizer patterns. Nothing in the rule enforces that those
 # declarations match reality, and one of them already stopped matching: source
 # class 5 was written for a Typer app, Typer was removed, and `@$APP.command`
 # went on matching nothing while the gate printed "0 findings" and read as full

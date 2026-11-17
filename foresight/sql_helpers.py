@@ -55,13 +55,24 @@ def placeholders(count: int) -> str:
 
 
 def join_sql_parts(*parts: str) -> str:
-    """Concatenate the parts of one SQL statement.
+    """Concatenate SQL statement fragments into one string.
 
-    The single place where statement text is assembled, so every caller
-    composes a statement from three kinds of part only: literal SQL,
-    ``placeholders()`` output, and identifiers that passed
-    :func:`validate_identifier` or :func:`quote_identifier`. Values are never
-    interpolated — they are bound parameters.
+    This is a plain ``"".join(parts)`` and nothing more. It does not validate,
+    quote, escape or bind anything, it does not check that a fragment came from
+    :func:`placeholders`, :func:`build_in_clause`, :func:`build_type_filter`,
+    :func:`validate_identifier` or :func:`quote_identifier`, and it makes no
+    guarantee about the result. A caller that passes a value which has not
+    already been proven safe produces an injectable statement.
+
+    The SQL-injection rule in ``semgrep/sql-injection.yaml`` does not list this
+    function as a sanitizer for the same reason: it is a pass-through, so taint
+    flows through it into the statement text.
+
+    Args:
+        *parts: Statement fragments, concatenated verbatim in the given order.
+
+    Returns:
+        The concatenated statement text.
     """
     return "".join(parts)
 

@@ -6,16 +6,18 @@ query string, path parameters, form body, JSON body, raw body and headers. That
 family is live: it is what this repository actually runs.
 
 The Flask family is not. There is no Flask code and no Flask dependency in this
-tree, so the ten ``request.*`` patterns are declared coverage with no caller,
-and two of them describe shapes Flask does not have: ``request.json`` is a
-property there, not a callable, and Flask has no ``request.body`` (its raw body
-is ``request.data``). ``flask_json_call`` and ``flask_body`` below pin what the
-rule declares, not what Flask exposes -- which means the live Flask shapes
-``request.json`` and ``request.data`` are not covered by the rule at all. See
-the comment on that block in ``semgrep/sql-injection.yaml``.
+tree, so the eight ``request.*`` patterns are declared coverage with no caller.
+Two shapes the rule used to declare were removed because Flask does not have
+them: ``request.json`` is a property there, not a callable, and Flask has no
+``request.body`` (its raw body is ``request.data``). The live Flask shapes
+``request.json`` and ``request.data`` are therefore not covered by the Flask
+block at all; see the comment on that block in ``semgrep/sql-injection.yaml``.
 
-The rule lists ten patterns per family, so this fixture carries one function per
-pattern -- twenty in total. Every function reaches one ``execute`` sink.
+The Starlette family lists ten patterns and the Flask family eight, so this
+fixture carries ten functions for the first and ten for the second: the eight
+declared Flask shapes plus ``flask_json_call`` and ``flask_body``, which are
+reported by the ``$REQ.json()`` and ``$REQ.body`` Starlette patterns above.
+Twenty functions in total, every one of them reaching one ``execute`` sink.
 
 Expected findings: 20.
 """
@@ -162,14 +164,14 @@ def flask_get_json(request) -> None:
 
 @mcp.tool()
 def flask_json_call(request) -> None:
-    """``request.json()`` -- the shape the rule declares; Flask's is a property."""
+    """``request.json()`` -- reported by ``$REQ.json()``; Flask's is a property."""
     cur = _cursor()
     cur.execute(f"SELECT * FROM t WHERE a = '{request.json()}'")
 
 
 @mcp.tool()
 def flask_body(request) -> None:
-    """``request.body`` -- the shape the rule declares; Flask's is ``.data``."""
+    """``request.body`` -- reported by ``$REQ.body``; Flask spells it ``.data``."""
     cur = _cursor()
     cur.execute(f"SELECT * FROM t WHERE a = '{request.body}'")
 

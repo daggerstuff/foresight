@@ -1,9 +1,9 @@
 positive_mcp_tool_params.py.txt	4	source class 1: @mcp.tool handler parameters (positional, keyword-only, async, async keyword-only)
 positive_mcp_arguments.py.txt	4	source class 2: arguments / tool_args / tool_input mapping, subscript and .get()
-positive_http_request.py.txt	20	source class 3: all ten Starlette Request patterns and all ten flask request patterns
+positive_http_request.py.txt	20	source class 3: all ten Starlette Request patterns and all eight flask request patterns
 positive_http_route.py.txt	7	source class 4: @app.get / post / put / patch / delete / route / api_route handler parameters
 positive_cli_sources.py.txt	3	source class 5: sys.argv[index], os.environ[key], os.environ.get()
 positive_assembly.py.txt	5	assembly: f-string, + concatenation, % formatting, .format(), join_sql_parts() pass-through
 positive_sink_methods.py.txt	9	sinks: execute, executemany, executescript, execute_many, execute_returning, fetch, fetch_one, _fetch_rows, _execute_sql
 negative_bound_parameters.py.txt	0	bound parameters: source reaches a sink only as the parameter argument
-negative_sanitizers.py.txt	0	sanitizers: all sixteen declared patterns, bare and module-qualified
+negative_sanitizers.py.txt	0	sanitizers: all eight declared patterns, exercised in bare and module-qualified call form

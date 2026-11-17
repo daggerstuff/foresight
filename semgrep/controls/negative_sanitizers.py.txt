@@ -2,8 +2,12 @@
 
 Each function takes a live MCP tool parameter, passes it through one sanitizer,
 and interpolates the *returned* value into statement text. The rule lists eight
-sanitizer names, each in a bare and a module-qualified form, so sixteen
-functions appear here.
+sanitizer patterns, one per sanitizer name, each written as ``$M.<name>(...)``.
+Semgrep resolves that form against a bare call as well whenever the name is
+bound at module level in the scanned file, which is how every call site in this
+repository is written, so both call forms are exercised here: sixteen functions
+in all. A bare call to a name that is bound nowhere would be a NameError, so the
+unqualified form carries no coverage of its own and the rule no longer lists it.
 
 Silence means the sanitizer is recognised. It does not mean "nothing was
 scanned": the source idiom is the one ``positive_mcp_tool_params.py.txt`` pins
@@ -20,6 +24,8 @@ import sqlite3
 
 from mcp.server.fastmcp import FastMCP
 
+from foresight.hybrid_retriever import _namespace_frag
+from foresight.server import _build_filter_fragments
 from foresight.sql_helpers import (
     VALID_TABLE_NAMES,
     build_in_clause,
@@ -29,6 +35,7 @@ from foresight.sql_helpers import (
     quote_identifier,
     validate_identifier,
 )
+from scripts.migrate_sqlite_to_ghost import _quote_identifier
 
 mcp = FastMCP("controls")
 

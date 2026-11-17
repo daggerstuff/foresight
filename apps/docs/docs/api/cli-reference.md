@@ -110,10 +110,19 @@ foresight blocks get guidance
 foresight blocks update guidance "Keep updates short and concrete."
 
 # Create a reviewable curation run
-foresight curate create   --source-bank-id default   --policy-mode rebalance   --tool-access observe   --output-mode reviewable_output   --instructions "Merge duplicates and preserve durable preferences"
+foresight curate create \
+  --source-bank-id default \
+  --policy-mode rebalance \
+  --tool-access observe \
+  --output-mode reviewable_output \
+  --instructions "Merge duplicates and preserve durable preferences"
 
 # Create a transcript-aware in-place run
-foresight curate create   --source-bank-id default   --tool-access operate   --output-mode in_place   --transcript-bundle /tmp/transcript-bundle.json
+foresight curate create \
+  --source-bank-id default \
+  --tool-access operate \
+  --output-mode in_place \
+  --transcript-bundle /tmp/transcript-bundle.json
 
 # Inspect run state
 foresight curate list
