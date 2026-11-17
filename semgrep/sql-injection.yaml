@@ -123,15 +123,16 @@ rules:
               - pattern: $REQ.headers[$KEY]
       # The Flask shapes below are declared but unexercised: this repository has
       # no Flask code and no Flask dependency -- the REST surface is Starlette.
-      # Two of them cannot match real Flask code either, so read them as
-      # declared coverage rather than observed usage: `request.json` is a
-      # property in Flask, not a callable, and Flask has no `request.body` (its
-      # raw body is `request.data`). The consequence is that the live Flask
-      # shapes `request.json` and `request.data` are NOT covered by this file.
-      # They are pinned here anyway because
-      # semgrep/controls/positive_http_request.py.txt asserts the declared set;
-      # if Flask ever lands in this tree, add the two attribute patterns and
-      # their fixtures in the same commit.
+      # Read them as declared coverage, not observed usage. Two patterns that
+      # described shapes Flask does not have were removed rather than kept as
+      # decoration: `request.json(...)` calls a property in Flask, and Flask has
+      # no `request.body` (its raw body is `request.data`). The live Flask
+      # shapes `request.json` and `request.data` are therefore NOT covered by
+      # this block, and the two sinks in
+      # semgrep/controls/positive_http_request.py.txt that use them are reported
+      # by the `$REQ.json()` and `$REQ.body` patterns above. If Flask ever lands
+      # in this tree, add the two attribute patterns and their fixtures in the
+      # same commit.
       - pattern-either:
           - pattern: request.args
           - pattern: request.args[$KEY]
@@ -140,8 +141,6 @@ rules:
           - pattern: request.form[$KEY]
           - pattern: request.values[$KEY]
           - pattern: request.get_json(...)
-          - pattern: request.json(...)
-          - pattern: request.body
           - pattern: request.headers[$KEY]
 
       # 4. HTTP route handler parameters (Starlette / FastAPI style decorators).
@@ -185,18 +184,13 @@ rules:
     pattern-sanitizers:
       - pattern-either:
           # Regex-proves a plain identifier, raises ValueError otherwise.
-          - pattern: quote_identifier(...)
           - pattern: $M.quote_identifier(...)
           # Frozen-allowlist check, raises ValueError otherwise.
-          - pattern: validate_identifier(...)
           - pattern: $M.validate_identifier(...)
           # Emits only "?" separators, never caller data.
-          - pattern: placeholders(...)
           - pattern: $M.placeholders(...)
           # Emit only "?" separators, and return the values as bound params.
-          - pattern: build_in_clause(...)
           - pattern: $M.build_in_clause(...)
-          - pattern: build_type_filter(...)
           - pattern: $M.build_type_filter(...)
           # The two project-local fragment builders, trusted on the same terms
           # as build_in_clause/build_type_filter above: every value they are
@@ -207,14 +201,11 @@ rules:
           # code path that formats a caller value into the fragment text, which
           # is what separates them from join_sql_parts(), which is not listed
           # here on purpose.
-          - pattern: _build_filter_fragments(...)
           - pattern: $M._build_filter_fragments(...)
-          - pattern: _namespace_frag(...)
           - pattern: $M._namespace_frag(...)
           # Project-local twin of quote_identifier in
           # scripts/migrate_sqlite_to_ghost.py; same regex-prove-then-quote
           # body, verified by reading it.
-          - pattern: _quote_identifier(...)
           - pattern: $M._quote_identifier(...)
 
     # ------------------------------------------------------------------

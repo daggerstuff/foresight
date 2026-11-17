@@ -15,7 +15,7 @@ import contextlib
 import sys
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from foresight.config import load_dotenv_walkup
 
@@ -235,7 +235,10 @@ def main(argv: list[str] | None = None) -> int:
         namespace.command_parser.error(f"unrecognized arguments: {' '.join(extras)}")
     _configure(namespace)
     params_type = namespace.params_type
-    params = params_type(**{name: getattr(namespace, name) for name in params_type.model_fields})
+    try:
+        params = params_type(**{name: getattr(namespace, name) for name in params_type.model_fields})
+    except ValidationError as exc:
+        namespace.command_parser.error(str(exc))
     try:
         invoke(namespace.handler, params)
     except UsageError as exc:

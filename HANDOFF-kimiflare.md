@@ -57,7 +57,8 @@ These were completed before this handoff and verified:
 ### Root cause
 
 `foresight/foresight/server.py` was migrated to be **Postgres-only** (no SQLite
-fallback by design — see `get_db_connection()` at `server.py:536`, which raises
+fallback by design — see `get_db_connection()` at
+`connection_pool.py:480`, which raises
 `RuntimeError: Database backend not initialized. Call _initialize_backend() first
 (requires FORESIGHT_DB_URL)`). The test suite was **not** migrated alongside it.
 

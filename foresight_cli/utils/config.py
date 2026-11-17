@@ -76,6 +76,8 @@ class CliConfig:
             try:
                 raw = json.loads(CONFIG_PATH.read_text())
                 config_data.update(raw)
+                if config_data.get("user_id") is None:
+                    config_data["user_id"] = DEFAULTS["user_id"]
             except (json.JSONDecodeError, OSError):
                 pass
 
