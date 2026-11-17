@@ -1,4 +1,5 @@
 overrides:
   source-map-js: 1.2.2
+  minimatch: 11.0.8
 allowBuilds:
   esbuild: true
