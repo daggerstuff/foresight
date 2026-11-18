@@ -3161,6 +3161,11 @@ def _id_lookup_json(
     return json.dumps({"id": mid, "found": True, "item": _memory_record(row, tenant_id, uid)})
 
 
+# Ranked hybrid results are a top-k, so every page of one query has to be cut
+# from the same candidate window or page two can repeat page one's first hit.
+HYBRID_PAGE_WINDOW = 100
+
+
 def _hybrid_search_options(options: SearchOptions, tenant_id: str, *, limit: int | None = None) -> HybridSearchOptions:
     """Translate the tool's search options into hybrid retriever options."""
     return HybridSearchOptions(
@@ -3235,7 +3240,7 @@ def _hybrid_search_json(
     defect the list path was fixed for.
     """
     try:
-        fetch_limit = options.limit + options.offset if options.offset > 0 else options.limit
+        fetch_limit = max(options.limit + options.offset, HYBRID_PAGE_WINDOW)
         hybrid_result, trace = _trace_retrieval(
             query,
             uid,
