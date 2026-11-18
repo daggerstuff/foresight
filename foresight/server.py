@@ -3344,10 +3344,13 @@ def _hydrate_hybrid_records(hits: list[Any], uid: str, tenant_id: str) -> list[d
     ids = [hit.memory_id for hit in hits]
     if not ids:
         return []
-    placeholders = ", ".join("?" for _ in ids)
     conn = get_db_connection()
     rows = conn.execute(
-        f"SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
+        join_sql_parts(
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND id IN (",
+            placeholders(len(ids)),
+            ")",
+        ),
         (uid, tenant_id, *ids),
     ).fetchall()
     conn.close()
