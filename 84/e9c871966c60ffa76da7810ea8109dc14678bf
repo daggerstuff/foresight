@@ -1,0 +1,44 @@
+README.md
+  s_7d4811cf1b0ba7::t_74227029f289a1 96
+tests/test_structured_retrieval.py
+  s_7d4811cf1b0ba7::t_416fbb054d8579 1-35,40,43-138
+  s_7d4811cf1b0ba7::t_786975f02b9e64 36-39
+  s_7d4811cf1b0ba7::t_3547e413880567 41-42
+tests/test_memory_update_fields.py
+  s_7d4811cf1b0ba7::t_c1eaa59d27658f 38-39
+  s_7d4811cf1b0ba7::t_eafbf8656b4f28 1-37,40-131
+foresight/server.py
+  s_7d4811cf1b0ba7::t_12cd6225e7eb24 3284-3290,3296-3297,3301-3303,3305-3315,3318-3378
+  s_7d4811cf1b0ba7::t_6c18860dc0e057 2865-2869
+  s_7d4811cf1b0ba7::t_32dc3dec66419e 3316-3317
+  s_7d4811cf1b0ba7::t_7233a8f0dd78f7 3456,3458
+  s_7d4811cf1b0ba7::t_db390439179005 366-372
+  s_7d4811cf1b0ba7::t_16333ed9da1a14 3420-3422
+  s_7d4811cf1b0ba7::t_b4ee29c959d3a2 2465-2479
+  s_7d4811cf1b0ba7::t_f4f7e9a6827a1e 3457
+  s_7d4811cf1b0ba7::t_206297d61979d5 3211-3260
+  s_7d4811cf1b0ba7::t_01c9c95aadfe15 2979
+  s_7d4811cf1b0ba7::t_f1d406ef02c743 334-342
+  s_7d4811cf1b0ba7::t_70ec7d4c188eeb 3269-3272
+  s_7d4811cf1b0ba7::t_877c577635777f 658-664
+  s_7d4811cf1b0ba7::t_8933e1ad8e52da 3119-3149
+  s_7d4811cf1b0ba7::t_6588823da883c7 3262,3273-3283
+  s_7d4811cf1b0ba7::t_e6ae1f6597e83f 3150
+  s_7d4811cf1b0ba7::t_ea9bf3d81918bf 3261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "84e9c871966c60ffa76da7810ea8109dc14678bf",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
