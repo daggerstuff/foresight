@@ -614,7 +614,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         policy: RankingPolicy,
-        limit: int,
+        options: HybridSearchOptions,
     ) -> tuple:
         """Cache key includes the rerank-stage state, the effective signal
         weights, and the namespace lane, so cached results are only reused
@@ -633,7 +633,8 @@ class HybridRetriever:
             tuple(sorted(policy.weights.items())),
             tuple(policy.rewrite_signature),
             policy.namespace,
-            limit,
+            options.limit,
+            options.min_importance,
         )
 
     def _get_cached_result(self, cache_key: tuple) -> Any | None:
@@ -722,7 +723,7 @@ class HybridRetriever:
                 rewrite_signature=rewrite_signature,
                 namespace=(options.agent_id, options.project),
             ),
-            limit,
+            options,
         )
 
         if use_cache:
