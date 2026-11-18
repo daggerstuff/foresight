@@ -95,6 +95,15 @@ class UpdateMemoryBody(BaseModel):
     is_sensitive: bool | None = Field(default=None, description="Sensitivity override")
     relation_type: str | None = Field(default=None, description="Relationship type")
     related_memory_id: str | None = Field(default=None, description="Related memory ID")
+    importance: float | None = Field(default=None, ge=0.0, le=1.0, description="New importance score (0.0 to 1.0)")
+    emotional_context: dict[str, object] | None = Field(default=None, description="New emotional metadata")
+    metrics: dict[str, object] | None = Field(default=None, description="New empathy metrics")
+    expires_at: str | float | int | None = Field(
+        default=None, description="New expiration (ISO-8601 or epoch seconds); empty string clears it"
+    )
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None, description="New memory type (episodic, semantic, procedural)"
+    )
 
 
 class SearchBody(BaseModel):
@@ -647,6 +656,11 @@ async def _handle_patch_memory(request: Request) -> Response:
                 is_sensitive=body.is_sensitive,
                 relation_type=body.relation_type,
                 related_memory_id=body.related_memory_id,
+                importance=body.importance,
+                emotional_context=body.emotional_context,
+                metrics=body.metrics,
+                expires_at=body.expires_at,
+                memory_type=body.memory_type,
             ),
         )
     finally:

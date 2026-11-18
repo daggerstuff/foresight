@@ -614,6 +614,7 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         policy: RankingPolicy,
+        options: HybridSearchOptions,
     ) -> tuple:
         """Cache key includes the rerank-stage state, the effective signal
         weights, and the namespace lane, so cached results are only reused
@@ -621,7 +622,9 @@ class HybridRetriever:
         per-request `signal_weights` override or agent/project lane must
         never be served from a differently-scoped result). The rewrite
         signature (normalized query variants) keeps rewritten and legacy
-        searches from sharing cache entries."""
+        searches from sharing cache entries. The limit is part of the key
+        because the cached value is a top-k slice: a wider request must not be
+        served a narrower result."""
         return (
             _normalize_query(query),
             user_id,
@@ -630,6 +633,8 @@ class HybridRetriever:
             tuple(sorted(policy.weights.items())),
             tuple(policy.rewrite_signature),
             policy.namespace,
+            options.limit,
+            options.min_importance,
         )
 
     def _get_cached_result(self, cache_key: tuple) -> Any | None:
@@ -718,6 +723,7 @@ class HybridRetriever:
                 rewrite_signature=rewrite_signature,
                 namespace=(options.agent_id, options.project),
             ),
+            options,
         )
 
         if use_cache:
