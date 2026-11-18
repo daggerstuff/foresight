@@ -331,6 +331,15 @@ class MemoryUpdateOptions(BaseModel):
     related_memory_id: str | None = Field(
         default=None, description="ID of the memory this one relates to (paired with relation_type)"
     )
+    importance: float | None = Field(default=None, description="New importance score (0.0 to 1.0)")
+    emotional_context: dict[str, Any] | None = Field(default=None, description="New emotional metadata")
+    metrics: dict[str, Any] | None = Field(default=None, description="New empathy metrics")
+    expires_at: str | float | int | None = Field(
+        default=None, description="New per-memory expiration (ISO-8601 or epoch seconds)"
+    )
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None, description="New memory taxonomy type"
+    )
 
 
 DEFAULT_CASCADE_DEPTH = 2
@@ -353,6 +362,13 @@ class SearchOptions(BaseModel):
     debug: bool = Field(
         default=False,
         description="Return structured trace with timing and signal metadata instead of formatted results",
+    )
+    response_format: Literal["text", "json"] = Field(
+        default="text",
+        description=(
+            "Response encoding. 'text' returns the formatted summary; 'json' returns records with "
+            "untruncated content, a page count, and the total number of matches for the query."
+        ),
     )
     min_score: float = Field(default=0.0, description="Minimum cosine similarity for semantic search [-1.0, 1.0]")
     provider: str | None = Field(default=None, description="Embedder provider name for semantic search")
@@ -638,6 +654,13 @@ class SearchMemoriesParams(BaseModel):
     debug: bool | None = Field(
         default=None,
         description="Return structured trace with timing and signal metadata instead of formatted results",
+    )
+    response_format: Literal["text", "json"] | None = Field(
+        default=None,
+        description=(
+            "Response encoding. 'text' returns the formatted summary; 'json' returns records with "
+            "untruncated content, a page count, and the total number of matches for the query."
+        ),
     )
     min_score: float | None = Field(
         default=None, description="Minimum cosine similarity for semantic search [-1.0, 1.0]"
@@ -2439,6 +2462,21 @@ def _collect_update_columns(
     if updates.tags:
         updates_list.append("tags = ?")
         values.append(json.dumps(updates.tags))
+    if updates.importance is not None:
+        updates_list.append("importance = ?")
+        values.append(float(updates.importance))
+    if updates.emotional_context is not None:
+        updates_list.append("emotional_context = ?")
+        values.append(json.dumps(updates.emotional_context))
+    if updates.metrics is not None:
+        updates_list.append("metrics = ?")
+        values.append(json.dumps(updates.metrics))
+    if updates.expires_at is not None:
+        updates_list.append("expires_at = ?")
+        values.append(_normalize_expires_at(updates.expires_at))
+    if updates.memory_type is not None:
+        updates_list.append("memory_type = ?")
+        values.append(updates.memory_type)
     return updates_list, values
 
 
@@ -2824,6 +2862,11 @@ def manage_memories(
         relation_type=params.relation_type,
         related_memory_id=params.related_memory_id,
         content=params.content,
+        importance=params.importance,
+        emotional_context=params.emotional_context,
+        metrics=params.metrics,
+        expires_at=params.expires_at,
+        memory_type=params.memory_type,
     )
 
     store_options = _merge_store_options(params.store_options, flat_store_kwargs)
@@ -2933,6 +2976,7 @@ def _search_options_from_params(params: SearchMemoriesParams) -> SearchOptions:
             cascade_depth=params.cascade_depth,
             cascade_limit=params.cascade_limit,
             debug=params.debug,
+            response_format=params.response_format,
             min_score=params.min_score,
             provider=params.provider,
             category=params.category,
@@ -3072,6 +3116,38 @@ def _id_lookup_payload(
     return detail
 
 
+def _id_lookup_json(
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+    hook_ctx: MemoryHookContext,
+) -> str:
+    """Answer a direct memory-id lookup as JSON."""
+    mid = options.memory_id or options.query
+    if not mid:
+        return json.dumps({"error": "memory_id or query (as ID) required for id lookup."})
+    conn = get_db_connection()
+    frag, fparams = _build_filter_fragments(filters)
+    now_iso = datetime.now(UTC).isoformat()
+    row = conn.execute(
+        join_sql_parts(
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            frag,
+            " AND (expires_at IS NULL OR expires_at >= ?)",
+        ),
+        (mid, uid, tenant_id, *fparams, now_iso),
+    ).fetchone()
+    conn.close()
+
+    hook_ctx.memory_id = mid
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+    if not row:
+        return json.dumps({"id": mid, "found": False, "item": None})
+    get_event_bus_with_stream().publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
+    return json.dumps({"id": mid, "found": True, "item": _memory_record(row, tenant_id, uid)})
+
+
 def _hybrid_search_options(options: SearchOptions, tenant_id: str) -> HybridSearchOptions:
     """Translate the tool's search options into hybrid retriever options."""
     return HybridSearchOptions(
@@ -3132,6 +3208,159 @@ def _hybrid_search_payload(
         return None
 
 
+def _hybrid_search_json(
+    query: str,
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    hook_ctx: MemoryHookContext,
+) -> str | None:
+    """Answer a hybrid query as JSON, or None when hybrid retrieval could not serve it.
+
+    ``total`` is null here on purpose: hybrid retrieval returns a ranked top-k and
+    exposes no match count, and reporting the page size as a total is the exact
+    defect the list path was fixed for.
+    """
+    try:
+        hybrid_result, trace = _trace_retrieval(
+            query,
+            uid,
+            tenant_id,
+            _hybrid_search_options(options, tenant_id),
+        )
+        if options.debug:
+            return json.dumps(trace.to_dict(), indent=2)
+        if not hybrid_result.results:
+            return None
+        _auto_reinforce_batch([hit.memory_id for hit in hybrid_result.results], uid, tenant_id)
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+        items = [
+            {
+                "id": hit.memory_id,
+                "content": hit.content,
+                "score": hit.combined_score,
+                "signals": list(hit.source_signals) if hit.source_signals else ["hybrid"],
+            }
+            for hit in hybrid_result.results
+        ]
+        return json.dumps(
+            {
+                "query_type": "hybrid",
+                "count": len(items),
+                "total": None,
+                "limit": options.limit,
+                "offset": options.offset,
+                "has_more": None,
+                "items": items,
+            }
+        )
+    except Exception as e:
+        logger.debug(f"Hybrid search failed: {e}")
+        return None
+
+
+def _json_search_payload(
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+    hook_ctx: MemoryHookContext,
+) -> str:
+    """Answer a query with structured records instead of prose.
+
+    Semantic search already returns JSON, so it passes through unchanged.
+    """
+    if options.query_type == "semantic":
+        return _semantic_search_payload(options, uid, tenant_id, filters, hook_ctx)
+    if options.query_type == "id" or options.memory_id:
+        return _id_lookup_json(options, uid, tenant_id, filters, hook_ctx)
+    if options.use_hybrid and options.query:
+        hybrid_json = _hybrid_search_json(options.query, options, uid, tenant_id, hook_ctx)
+        if hybrid_json is not None:
+            return hybrid_json
+    return _keyword_search_json(options, uid, tenant_id, filters, hook_ctx)
+
+
+def _keyword_search_where(
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+) -> tuple[str, tuple[Any, ...]]:
+    """Build the WHERE clause shared by the text and JSON list/keyword paths."""
+    frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
+    now_iso = datetime.now(UTC).isoformat()
+    expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
+    if options.query:
+        escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        where_sql = join_sql_parts(
+            " WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'",
+            frag,
+            expiry_sql,
+        )
+        return where_sql, (uid, tenant_id, f"%{escaped}%", *fparams, now_iso)
+    where_sql = join_sql_parts(" WHERE user_id = ? AND tenant_id = ?", frag, expiry_sql)
+    return where_sql, (uid, tenant_id, *fparams, now_iso)
+
+
+def _memory_record(row: Any, tenant_id: str, uid: str) -> dict[str, Any]:
+    """Serialise one ``memories`` row for the structured response."""
+    return {
+        "id": row["id"],
+        "content": decrypt_if_encrypted(row["content"], tenant_id=tenant_id, user_id=uid),
+        "category": row["category"],
+        "scope": row["scope"],
+        "retention": row["retention"],
+        "tags": json.loads(row["tags"]) if row["tags"] else [],
+        "importance": row["importance"],
+        "emotional_context": json.loads(row["emotional_context"]) if row["emotional_context"] else None,
+        "metrics": json.loads(row["metrics"]) if row["metrics"] else None,
+        "memory_type": row["memory_type"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "expires_at": row["expires_at"],
+        "agent_id": row["agent_id"],
+        "project": row["project"],
+        "is_ghost": bool(row["is_ghost"]),
+    }
+
+
+def _keyword_search_json(
+    options: SearchOptions,
+    uid: str,
+    tenant_id: str,
+    filters: MemoryFilters,
+    hook_ctx: MemoryHookContext,
+) -> str:
+    """Answer a list/keyword query as JSON, carrying the match total the prose cannot."""
+    conn = get_db_connection()
+    where_sql, where_params = _keyword_search_where(options, uid, tenant_id, filters)
+    order_sql = "" if options.query else " ORDER BY created_at DESC"
+    rows = conn.execute(
+        join_sql_parts("SELECT * FROM memories", where_sql, order_sql, " LIMIT ? OFFSET ?"),
+        (*where_params, options.limit, options.offset),
+    ).fetchall()
+    total_row = conn.execute(join_sql_parts("SELECT COUNT(*) AS n FROM memories", where_sql), where_params).fetchone()
+    conn.close()
+    total = int(total_row["n"]) if total_row else 0
+
+    items = [_memory_record(r, tenant_id, uid) for r in rows]
+    if items:
+        _auto_reinforce_batch([r["id"] for r in rows], uid, tenant_id)
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+    return json.dumps(
+        {
+            "query_type": options.query_type,
+            "count": len(items),
+            "total": total,
+            "limit": options.limit,
+            "offset": options.offset,
+            "has_more": options.offset + len(items) < total,
+            "items": items,
+        }
+    )
+
+
 def _keyword_search_payload(
     options: SearchOptions,
     uid: str,
@@ -3141,28 +3370,12 @@ def _keyword_search_payload(
 ) -> str:
     """Answer a list/keyword query."""
     conn = get_db_connection()
-    frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
-    now_iso = datetime.now(UTC).isoformat()
-    expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
-    if options.query:
-        escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-        query_sql = join_sql_parts(
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'",
-            frag,
-            expiry_sql,
-            " LIMIT ? OFFSET ?",
-        )
-        query_params = (uid, tenant_id, f"%{escaped}%", *fparams, now_iso, options.limit, options.offset)
-    else:
-        query_sql = join_sql_parts(
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ?",
-            frag,
-            expiry_sql,
-            " ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        )
-        query_params = (uid, tenant_id, *fparams, now_iso, options.limit, options.offset)
-
-    rows = conn.execute(query_sql, query_params).fetchall()
+    where_sql, where_params = _keyword_search_where(options, uid, tenant_id, filters)
+    order_sql = "" if options.query else " ORDER BY created_at DESC"
+    rows = conn.execute(
+        join_sql_parts("SELECT * FROM memories", where_sql, order_sql, " LIMIT ? OFFSET ?"),
+        (*where_params, options.limit, options.offset),
+    ).fetchall()
     conn.close()
 
     if not rows:
@@ -3204,8 +3417,9 @@ def search_memories(
             field's description is advertised in the tool schema.
 
     Returns:
-        Formatted results, a structured trace when ``debug`` is set, or a
-        JSON payload for semantic search.
+        Formatted results, a structured trace when ``debug`` is set, a JSON
+        payload for semantic search, or a JSON payload with records and the
+        match total when ``response_format`` is ``"json"``.
     """
     options = params.options or _search_options_from_params(params)
 
@@ -3238,6 +3452,9 @@ def search_memories(
     abort_message = _emit_pre_retrieve_hooks(hook_ctx, options)
     if abort_message:
         return abort_message
+
+    if options.response_format == "json":
+        return _json_search_payload(options, uid, tenant_id, filters, hook_ctx)
 
     # 0. Semantic vector search
     if options.query_type == "semantic":
