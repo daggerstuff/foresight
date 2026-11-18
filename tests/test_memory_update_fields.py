@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 
 import pytest
 
@@ -100,15 +101,31 @@ def test_expiration_can_be_set_after_storage():
         )
     )
 
-    assert str(_get(memory_id)["expires_at"]).startswith("2030-01-01")
+    stored = datetime.fromisoformat(str(_get(memory_id)["expires_at"]))
+    assert stored == datetime(2030, 1, 1, tzinfo=UTC)
 
 
 def test_flat_arguments_reach_the_update_path():
     memory_id = _store("flat update probe")
 
-    manage_memories(ManageMemoriesParams(action="update", memory_id=memory_id, importance=0.8))
+    manage_memories(
+        ManageMemoriesParams(
+            action="update",
+            memory_id=memory_id,
+            importance=0.8,
+            emotional_context={"valence": 0.4},
+            metrics={"empathy": 0.6},
+            expires_at="2031-05-06T07:08:09+00:00",
+            memory_type="procedural",
+        )
+    )
 
-    assert _get(memory_id)["importance"] == pytest.approx(0.8)
+    item = _get(memory_id)
+    assert item["importance"] == pytest.approx(0.8)
+    assert item["emotional_context"] == {"valence": 0.4}
+    assert item["metrics"] == {"empathy": 0.6}
+    assert datetime.fromisoformat(str(item["expires_at"])) == datetime(2031, 5, 6, 7, 8, 9, tzinfo=UTC)
+    assert item["memory_type"] == "procedural"
 
 
 def test_update_still_reports_missing_memories():

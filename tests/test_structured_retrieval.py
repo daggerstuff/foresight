@@ -85,17 +85,15 @@ def test_json_returns_untruncated_content():
     payload = json.loads(search_memories(SearchMemoriesParams(query_type="list", response_format="json")))
     content = payload["items"][0]["content"]
 
-    assert content.endswith(tail)
-    assert len(content) > LONG_TAIL_LEN
+    assert content == f"structured retrieval {tail}"
 
 
 def test_text_format_is_unchanged():
-    _store("legacy prose probe")
+    memory_id = _store("legacy prose probe")
 
     result = search_memories(SearchMemoriesParams(query_type="list"))
 
-    assert result.startswith("Memories (1 found):")
-    assert "[0]" not in result
+    assert result == f"Memories (1 found):\n- [{memory_id}] (session/short_term) legacy prose probe..."
 
 
 def test_id_lookup_json_returns_the_record():
@@ -135,4 +133,5 @@ def test_keyword_json_respects_column_filters():
     )
 
     assert payload["total"] == 1
+    assert len(payload["items"]) == 1
     assert payload["items"][0]["category"] == "alpha"

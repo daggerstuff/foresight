@@ -34,7 +34,7 @@ from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
 from mcp.shared.auth import OAuthClientInformationFull
 from mcp.types import TextContent
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
@@ -253,7 +253,7 @@ class MemoryOptions(BaseModel):
     retention: str = Field(
         default="short_term", description="Retention policy: ephemeral, short_term, long_term, or permanent"
     )
-    importance: float = Field(default=0.5, description="Initial importance score (0.0 to 1.0)")
+    importance: float = Field(default=0.5, ge=0.0, le=1.0, description="Initial importance score (0.0 to 1.0)")
     emotional_context: dict[str, Any] | None = Field(
         default=None, description="Emotional metadata (valence, arousal, dominance, primary_emotion, intensity)"
     )
@@ -331,7 +331,7 @@ class MemoryUpdateOptions(BaseModel):
     related_memory_id: str | None = Field(
         default=None, description="ID of the memory this one relates to (paired with relation_type)"
     )
-    importance: float | None = Field(default=None, description="New importance score (0.0 to 1.0)")
+    importance: float | None = Field(default=None, ge=0.0, le=1.0, description="New importance score (0.0 to 1.0)")
     emotional_context: dict[str, Any] | None = Field(default=None, description="New emotional metadata")
     metrics: dict[str, Any] | None = Field(default=None, description="New empathy metrics")
     expires_at: str | float | int | None = Field(
@@ -367,7 +367,8 @@ class SearchOptions(BaseModel):
         default="text",
         description=(
             "Response encoding. 'text' returns the formatted summary; 'json' returns records with "
-            "untruncated content, a page count, and the total number of matches for the query."
+            "untruncated content, a page count, and — for list and keyword pages — the exact match total. "
+            "Hybrid results carry total: null, and an id lookup returns its own {id, found, item} shape."
         ),
     )
     min_score: float = Field(default=0.0, description="Minimum cosine similarity for semantic search [-1.0, 1.0]")
@@ -612,7 +613,7 @@ class ManageMemoriesParams(BaseModel):
     retention: str | None = Field(
         default=None, description="Flat retention policy (ephemeral, short_term, long_term, permanent)"
     )
-    importance: float | None = Field(default=None, description="Flat importance score (0.0 to 1.0)")
+    importance: float | None = Field(default=None, ge=0.0, le=1.0, description="Flat importance score (0.0 to 1.0)")
     tags: list[str] | None = Field(default=None, description="Flat tags list")
     is_sensitive: bool | None = Field(default=None, description="Flat sensitivity override")
     relation_type: str | None = Field(default=None, description="Flat relationship type")
@@ -659,7 +660,8 @@ class SearchMemoriesParams(BaseModel):
         default=None,
         description=(
             "Response encoding. 'text' returns the formatted summary; 'json' returns records with "
-            "untruncated content, a page count, and the total number of matches for the query."
+            "untruncated content, a page count, and — for list and keyword pages — the exact match total. "
+            "Hybrid results carry total: null, and an id lookup returns its own {id, found, item} shape."
         ),
     )
     min_score: float | None = Field(
@@ -969,7 +971,7 @@ class StoreMemoryParams(BaseModel):
     retention: str = Field(
         default="short_term", description="Retention policy: ephemeral, short_term, long_term, permanent"
     )
-    importance: float = Field(default=0.5, description="Initial importance score (0.0 to 1.0)")
+    importance: float = Field(default=0.5, ge=0.0, le=1.0, description="Initial importance score (0.0 to 1.0)")
     emotional_context: dict[str, Any] | None = Field(default=None, description="Emotional metadata")
     metrics: dict[str, Any] | None = Field(default=None, description="Empathy metrics")
     relation_type: str | None = Field(default=None, description="Optional typed relationship to another memory")
@@ -1092,11 +1094,15 @@ def _epoch_seconds_to_iso(value: float) -> str | None:
 def _iso_text_to_iso(text: str) -> str | None:
     """Parse an ISO-8601 or epoch-seconds string as ISO-8601 UTC, or None."""
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        with contextlib.suppress(ValueError):
-            return datetime.fromtimestamp(float(text), tz=UTC).isoformat()
-        return None
+        try:
+            return _epoch_seconds_to_iso(float(text))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
 
 
 def _normalize_expires_at(value: str | float | int | None) -> str | None:
@@ -2485,6 +2491,13 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     if not options.memory_id or not options.updates:
         return "Error: memory_id and updates required for 'update' action"
 
+    expires_at = options.updates.expires_at
+    if expires_at not in (None, "") and _normalize_expires_at(expires_at) is None:
+        return (
+            f"Error: expires_at {expires_at!r} is not an ISO-8601 timestamp or epoch seconds. "
+            'Pass "" to clear an expiration.'
+        )
+
     # ── PRE_UPDATE hook ────────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
         action="update",
@@ -2773,9 +2786,7 @@ def _flat_kwargs(**fields: Any) -> dict[str, Any]:
 def _merge_store_options(store_options: Any, flat_kwargs: dict[str, Any]) -> Any:
     """Fold the flat store arguments into the store options object."""
     if store_options is None and flat_kwargs:
-        with contextlib.suppress(Exception):
-            return MemoryOptions(**flat_kwargs)
-        return store_options
+        return MemoryOptions(**flat_kwargs)
     if store_options is not None:
         for k, v in flat_kwargs.items():
             if getattr(store_options, k, None) is None or k in ("category", "scope", "retention"):
@@ -2786,9 +2797,7 @@ def _merge_store_options(store_options: Any, flat_kwargs: dict[str, Any]) -> Any
 def _merge_update_options(updates: Any, flat_kwargs: dict[str, Any]) -> Any:
     """Fold the flat update arguments into the update options object."""
     if updates is None and flat_kwargs:
-        with contextlib.suppress(Exception):
-            return MemoryUpdateOptions(**flat_kwargs)
-        return updates
+        return MemoryUpdateOptions(**flat_kwargs)
     if updates is not None:
         for k, v in flat_kwargs.items():
             if getattr(updates, k, None) is None:
@@ -2869,8 +2878,11 @@ def manage_memories(
         memory_type=params.memory_type,
     )
 
-    store_options = _merge_store_options(params.store_options, flat_store_kwargs)
-    updates = _merge_update_options(params.updates, flat_update_kwargs)
+    try:
+        store_options = _merge_store_options(params.store_options, flat_store_kwargs)
+        updates = _merge_update_options(params.updates, flat_update_kwargs)
+    except ValidationError as exc:
+        return f"Error: invalid memory fields: {exc.errors()}"
 
     if options is None:
         if action is None:
@@ -3081,7 +3093,7 @@ def _id_lookup_payload(
     if not mid:
         return "Error: memory_id or query (as ID) required for id lookup."
     conn = get_db_connection()
-    frag, fparams = _build_filter_fragments(filters)
+    frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
     row = conn.execute(
         join_sql_parts(
@@ -3128,7 +3140,7 @@ def _id_lookup_json(
     if not mid:
         return json.dumps({"error": "memory_id or query (as ID) required for id lookup."})
     conn = get_db_connection()
-    frag, fparams = _build_filter_fragments(filters)
+    frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
     row = conn.execute(
         join_sql_parts(
@@ -3140,19 +3152,20 @@ def _id_lookup_json(
     ).fetchone()
     conn.close()
 
+    if not row:
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
+        return json.dumps({"id": mid, "found": False, "item": None})
     hook_ctx.memory_id = mid
     get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-    if not row:
-        return json.dumps({"id": mid, "found": False, "item": None})
     get_event_bus_with_stream().publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
     return json.dumps({"id": mid, "found": True, "item": _memory_record(row, tenant_id, uid)})
 
 
-def _hybrid_search_options(options: SearchOptions, tenant_id: str) -> HybridSearchOptions:
+def _hybrid_search_options(options: SearchOptions, tenant_id: str, *, limit: int | None = None) -> HybridSearchOptions:
     """Translate the tool's search options into hybrid retriever options."""
     return HybridSearchOptions(
         tenant_id=tenant_id,
-        limit=options.limit,
+        limit=limit if limit is not None else options.limit,
         min_importance=options.min_importance,
         use_keyword=True,
         use_tfidf_cosine=True,
@@ -3222,27 +3235,24 @@ def _hybrid_search_json(
     defect the list path was fixed for.
     """
     try:
+        fetch_limit = options.limit + options.offset if options.offset > 0 else options.limit
         hybrid_result, trace = _trace_retrieval(
             query,
             uid,
             tenant_id,
-            _hybrid_search_options(options, tenant_id),
+            _hybrid_search_options(options, tenant_id, limit=fetch_limit),
         )
         if options.debug:
             return json.dumps(trace.to_dict(), indent=2)
         if not hybrid_result.results:
             return None
-        _auto_reinforce_batch([hit.memory_id for hit in hybrid_result.results], uid, tenant_id)
+        hits = hybrid_result.results[options.offset :] if options.offset > 0 else hybrid_result.results
+        hits = hits[: options.limit]
+        if not hits:
+            return None
+        _auto_reinforce_batch([hit.memory_id for hit in hits], uid, tenant_id)
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-        items = [
-            {
-                "id": hit.memory_id,
-                "content": hit.content,
-                "score": hit.combined_score,
-                "signals": list(hit.source_signals) if hit.source_signals else ["hybrid"],
-            }
-            for hit in hybrid_result.results
-        ]
+        items = _hydrate_hybrid_records(hits, uid, tenant_id)
         return json.dumps(
             {
                 "query_type": "hybrid",
@@ -3325,6 +3335,35 @@ def _memory_record(row: Any, tenant_id: str, uid: str) -> dict[str, Any]:
     }
 
 
+def _hydrate_hybrid_records(hits: list[Any], uid: str, tenant_id: str) -> list[dict[str, Any]]:
+    """Merge ranked hybrid hits with their stored records, in rank order.
+
+    Hybrid retrieval returns ids and scores only; a consumer that needs the
+    memory's metadata would otherwise issue one lookup per hit.
+    """
+    ids = [hit.memory_id for hit in hits]
+    if not ids:
+        return []
+    placeholders = ", ".join("?" for _ in ids)
+    conn = get_db_connection()
+    rows = conn.execute(
+        f"SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
+        (uid, tenant_id, *ids),
+    ).fetchall()
+    conn.close()
+    by_id = {row["id"]: row for row in rows}
+    items: list[dict[str, Any]] = []
+    for hit in hits:
+        row = by_id.get(hit.memory_id)
+        if row is None:
+            continue
+        record = _memory_record(row, tenant_id, uid)
+        record["score"] = hit.combined_score
+        record["signals"] = list(hit.source_signals) if hit.source_signals else ["hybrid"]
+        items.append(record)
+    return items
+
+
 def _keyword_search_json(
     options: SearchOptions,
     uid: str,
@@ -3335,14 +3374,22 @@ def _keyword_search_json(
     """Answer a list/keyword query as JSON, carrying the match total the prose cannot."""
     conn = get_db_connection()
     where_sql, where_params = _keyword_search_where(options, uid, tenant_id, filters)
-    order_sql = "" if options.query else " ORDER BY created_at DESC"
+    order_sql = " ORDER BY created_at DESC, id DESC"
+    count_sql = join_sql_parts("SELECT COUNT(*) FROM memories", where_sql)
     rows = conn.execute(
-        join_sql_parts("SELECT * FROM memories", where_sql, order_sql, " LIMIT ? OFFSET ?"),
-        (*where_params, options.limit, options.offset),
+        join_sql_parts(
+            "SELECT *, (", count_sql, ") AS _total FROM memories", where_sql, order_sql, " LIMIT ? OFFSET ?"
+        ),
+        (*where_params, *where_params, options.limit, options.offset),
     ).fetchall()
-    total_row = conn.execute(join_sql_parts("SELECT COUNT(*) AS n FROM memories", where_sql), where_params).fetchone()
+    if rows:
+        total = int(rows[0]["_total"])
+    else:
+        total_row = conn.execute(
+            join_sql_parts("SELECT COUNT(*) AS n FROM memories", where_sql), where_params
+        ).fetchone()
+        total = int(total_row["n"]) if total_row else 0
     conn.close()
-    total = int(total_row["n"]) if total_row else 0
 
     items = [_memory_record(r, tenant_id, uid) for r in rows]
     if items:
@@ -3371,7 +3418,7 @@ def _keyword_search_payload(
     """Answer a list/keyword query."""
     conn = get_db_connection()
     where_sql, where_params = _keyword_search_where(options, uid, tenant_id, filters)
-    order_sql = "" if options.query else " ORDER BY created_at DESC"
+    order_sql = " ORDER BY created_at DESC, id DESC"
     rows = conn.execute(
         join_sql_parts("SELECT * FROM memories", where_sql, order_sql, " LIMIT ? OFFSET ?"),
         (*where_params, options.limit, options.offset),
@@ -3418,8 +3465,11 @@ def search_memories(
 
     Returns:
         Formatted results, a structured trace when ``debug`` is set, a JSON
-        payload for semantic search, or a JSON payload with records and the
-        match total when ``response_format`` is ``"json"``.
+        payload for semantic search, or a JSON payload with records when
+        ``response_format`` is ``"json"``. List and keyword pages carry the
+        exact match total; hybrid results carry ``total: null`` because the
+        retriever ranks a top-k and exposes no count; an id lookup returns
+        ``{id, found, item}``.
     """
     options = params.options or _search_options_from_params(params)
 
@@ -3451,7 +3501,7 @@ def search_memories(
     )
     abort_message = _emit_pre_retrieve_hooks(hook_ctx, options)
     if abort_message:
-        return abort_message
+        return json.dumps({"error": abort_message}) if options.response_format == "json" else abort_message
 
     if options.response_format == "json":
         return _json_search_payload(options, uid, tenant_id, filters, hook_ctx)
