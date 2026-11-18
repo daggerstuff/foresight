@@ -101,7 +101,9 @@ class UpdateMemoryBody(BaseModel):
     expires_at: str | float | int | None = Field(
         default=None, description="New expiration (ISO-8601 or epoch seconds); empty string clears it"
     )
-    memory_type: str | None = Field(default=None, description="New memory type (episodic, semantic, procedural)")
+    memory_type: Literal["episodic", "semantic", "procedural"] | None = Field(
+        default=None, description="New memory type (episodic, semantic, procedural)"
+    )
 
 
 class SearchBody(BaseModel):

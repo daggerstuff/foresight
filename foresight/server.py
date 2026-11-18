@@ -3344,14 +3344,15 @@ def _hydrate_hybrid_records(hits: list[Any], uid: str, tenant_id: str) -> list[d
     ids = [hit.memory_id for hit in hits]
     if not ids:
         return []
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     rows = conn.execute(
         join_sql_parts(
             "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND id IN (",
             placeholders(len(ids)),
-            ")",
+            ") AND (expires_at IS NULL OR expires_at >= ?)",
         ),
-        (uid, tenant_id, *ids),
+        (uid, tenant_id, *ids, now_iso),
     ).fetchall()
     conn.close()
     by_id = {row["id"]: row for row in rows}
