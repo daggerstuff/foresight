@@ -32,6 +32,7 @@ from .commands import (
     memory,
     rrf,
     security,
+    sync,
     system,
     users,
 )
@@ -104,6 +105,7 @@ _ALIASES = (
     ("reflect", analysis, "reflect"),
     ("profile", analysis, "profile"),
     ("prove", benchmark, "run"),
+    ("sync", sync, "sync"),
 )
 
 

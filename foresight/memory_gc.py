@@ -21,6 +21,7 @@ from psycopg import errors as psycopg_errors
 from .config import DB_PATH, DB_URL, raw_retention_window_days
 from .connection_pool import get_pool
 from .dependent_cleanup import purge_dead_synthesized_from_ids
+from .retention_policy import apply_expiry_policies
 from .sql_helpers import join_sql_parts
 
 logger = logging.getLogger("foresight_memory_gc")
@@ -86,6 +87,8 @@ class GCStats:
     orphan_embeddings_cleaned: int = 0
     orphan_dependents_cleaned: int = 0
     raw_events_tombstoned: int = 0
+    policy_expired: int = 0
+    expired_purged: int = 0
     gc_duration_seconds: float = 0.0
     bytes_freed: int = 0
 
@@ -197,6 +200,23 @@ def _purge_explicit_expiry(ctx: _GCRunContext) -> None:
     except (sqlite3.OperationalError, psycopg_errors.UndefinedTable):
         pass
 
+    ctx.conn.commit()
+
+
+def _apply_expiry_policies(ctx: _GCRunContext) -> None:
+    """Phase 1.7: stamp policy-expired memories; purge per purge_expired_after.
+
+    Reversible expiry only — ``purge_expired_after`` (default 'never') is the
+    sole destructive path. A missing memory_policies table or expiry columns
+    (older schemas) degrades to a no-op.
+    """
+    try:
+        result = apply_expiry_policies(ctx.conn, ctx.tenant_id, ctx.start_time)
+    except Exception as exc:
+        logger.warning("retention policy pass skipped: %s", exc)
+        return
+    ctx.stats.policy_expired += result.get("expired", 0)
+    ctx.stats.expired_purged += result.get("purged", 0)
     ctx.conn.commit()
 
 
@@ -376,6 +396,7 @@ class MemoryGC:
             )
             _purge_retention_expired(ctx, ttls)
             _purge_explicit_expiry(ctx)
+            _apply_expiry_policies(ctx)
             _prune_decay_events(ctx)
             _prune_maintenance_events(ctx)
             _prune_merge_history(ctx)

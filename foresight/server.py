@@ -39,6 +39,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from . import connection_pool, oauth_store, reflect as reflect_mod
+from .activity_log import record_activity
 from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
 from .auth_oauth import ForesightOAuthProvider, OAuthEndpointOptions
 from .backend import RedisCompanion, create_backend
@@ -53,6 +54,7 @@ from .backend.schema_ddl import (
 )
 from .block_registry import InjectionPoint, initialize_default_blocks
 from .capture import CaptureOptions, ReprocessOptions, get_capture_pipeline
+from .client_attribution import AttributionMiddleware, load_cursors, resolve_source_tool, save_cursors
 from .clustering import ClusterResult, cluster_memories
 from .config import (
     BANK_ID,
@@ -173,6 +175,7 @@ from .reflection_narrative import (
     generate_insight_narrative,
 )
 from .rest_api import register_rest_routes
+from .retention_policy import expire_memory, restore_memory
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
     SemanticSearchError as _SemanticSearchError,
@@ -304,6 +307,14 @@ class MemoryOptions(BaseModel):
         default=None,
         description="Project namespace lane this memory belongs to (default: shared 'default' lane)",
     )
+    source_tool: str | None = Field(
+        default=None,
+        description=(
+            "Explicit calling-tool attribution (e.g. 'claude-code', 'cursor'). "
+            "When omitted, resolved from FORESIGHT_CLIENT, the MCP clientInfo "
+            "handshake, or known environment markers."
+        ),
+    )
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -404,6 +415,13 @@ class SearchOptions(BaseModel):
     project: str | None = Field(
         default=None,
         description="Namespace lane: restrict retrieval to this project plus the shared 'default' lane",
+    )
+    include_expired: bool = Field(
+        default=False,
+        description=(
+            "Recall policy-expired memories (expired_at set) in addition to live ones. "
+            "Expired memories are labelled with expired_at/expired_by in records."
+        ),
     )
 
 
@@ -542,8 +560,10 @@ class EntityQuery(BaseModel):
 class MemoryAction(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    action: Literal["store", "update", "delete", "archive"] = Field(..., description="Action to perform")
-    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
+    action: Literal["store", "update", "delete", "archive", "expire", "restore"] = Field(
+        ..., description="Action to perform"
+    )
+    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive/expire/restore")
     content: str | None = Field(default=None, description="Content for store/update")
     options: MemoryOptions | None = Field(default=None, description="Options for store")
     updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
@@ -601,10 +621,10 @@ class ManageMemoriesParams(BaseModel):
 
     options: MemoryAction | None = Field(default=None, description="Action and parameters")
     user_id: str | None = Field(default=None, description="Optional user ID override")
-    action: Literal["store", "update", "delete", "archive"] | None = Field(
+    action: Literal["store", "update", "delete", "archive", "expire", "restore"] | None = Field(
         default=None, description="Action to perform (fallback when options is not provided)"
     )
-    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
+    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive/expire/restore")
     content: str | None = Field(default=None, description="Content for store/update")
     store_options: MemoryOptions | None = Field(default=None, description="Options for store")
     updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
@@ -629,6 +649,9 @@ class ManageMemoriesParams(BaseModel):
     auto_tag: bool | None = Field(default=None, description="Flat switch to derive topical tags deterministically")
     agent_id: str | None = Field(default=None, description="Flat namespace lane for store (default: shared lane)")
     project: str | None = Field(default=None, description="Flat project namespace lane for store")
+    source_tool: str | None = Field(
+        default=None, description="Flat calling-tool attribution override for store"
+    )
 
 
 class SearchMemoriesParams(BaseModel):
@@ -679,6 +702,10 @@ class SearchMemoriesParams(BaseModel):
     )
     agent_id: str | None = Field(default=None, description="Namespace lane filter (own lane + shared 'default')")
     project: str | None = Field(default=None, description="Project namespace lane filter (own lane + shared 'default')")
+    include_expired: bool | None = Field(
+        default=None,
+        description="Recall policy-expired memories (expired_at set) alongside live ones",
+    )
 
 
 class ManageContextBlocksParams(BaseModel):
@@ -1957,7 +1984,7 @@ if _oauth_base_url:
         website_url="https://foresight.vectorize.io",
         version="0.19.0",
         auth=_oauth_provider,
-        middleware=[TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+        middleware=[TenantMiddleware(), AttributionMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
     )
 else:
     mcp = FastMCP(
@@ -1965,7 +1992,13 @@ else:
         instructions=FORESIGHT_SERVER_INSTRUCTIONS,
         website_url="https://foresight.vectorize.io",
         version="0.19.0",
-        middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+        middleware=[
+            AuthMiddleware(),
+            TenantMiddleware(),
+            AttributionMiddleware(),
+            InputValidationMiddleware(),
+            RateLimitMiddleware(),
+        ],
     )
 
 # REST surface (PIX-4704 Phase A): HTTP endpoints wrapping the same tool
@@ -2273,8 +2306,9 @@ def _insert_memory_row(conn, request: _StoreRequest, memory: MemoryObject) -> bo
     insert_sql = (
         "INSERT INTO memories (id, user_id, tenant_id, bank_id, category, scope, retention, "
         "content, content_hash, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags, is_sensitive, sensitivity_reason, expires_at, memory_type, agent_id, project) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "created_at, updated_at, tags, is_sensitive, sensitivity_reason, expires_at, memory_type, "
+        "agent_id, project, source_tool) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     insert_params = (
         memory.id,
@@ -2299,6 +2333,7 @@ def _insert_memory_row(conn, request: _StoreRequest, memory: MemoryObject) -> bo
         opts.memory_type or "semantic",
         opts.agent_id or "default",
         opts.project or "default",
+        getattr(opts, "source_tool", None),
     )
     if _supports_execute_returning(conn):
         conn.execute_returning(insert_sql, insert_params).fetchone()
@@ -2363,6 +2398,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if not content:
         return "Error: Content is required for 'store' action"
     opts = options.options or MemoryOptions()
+    if opts.source_tool is None:
+        opts.source_tool = resolve_source_tool()
 
     # ── PRE_STORE hook ─────────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
@@ -2410,6 +2447,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
 
     hook_ctx.memory_id = memory.id
     get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
+    record_activity("memory.store", n=1, tool=opts.source_tool)
 
     return f"Stored memory {memory.id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
 
@@ -2778,6 +2816,42 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
+def _handle_memory_expire(uid: str, tenant_id: str, memory_id: str | None) -> str:
+    """Mark a memory expired (reversible middle state, excluded from default retrieval)."""
+    if not memory_id:
+        return "Error: memory_id required for 'expire' action"
+    conn = get_db_connection()
+    try:
+        if not expire_memory(conn, memory_id, uid, tenant_id, expired_by="manual"):
+            return f"Memory {memory_id} not found."
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
+    except Exception as exc:
+        logger.debug("mental model invalidation failed: %s", exc)
+    return f"Expired memory {memory_id}. It is excluded from default retrieval; restore to bring it back."
+
+
+def _handle_memory_restore(uid: str, tenant_id: str, memory_id: str | None) -> str:
+    """Clear the expiry stamp on a memory so default retrieval sees it again."""
+    if not memory_id:
+        return "Error: memory_id required for 'restore' action"
+    conn = get_db_connection()
+    try:
+        if not restore_memory(conn, memory_id, uid, tenant_id):
+            return f"Memory {memory_id} not found or not expired."
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
+    except Exception as exc:
+        logger.debug("mental model invalidation failed: %s", exc)
+    return f"Restored memory {memory_id}."
+
+
 def _flat_kwargs(**fields: Any) -> dict[str, Any]:
     """Keep only the flat tool arguments the caller actually supplied."""
     return {name: value for name, value in fields.items() if value is not None}
@@ -2812,6 +2886,8 @@ def _dispatch_memory_action(uid: str, tenant_id: str, options: MemoryAction) -> 
         "update": lambda: _handle_memory_update(uid, tenant_id, options),
         "delete": lambda: _handle_memory_delete(uid, tenant_id, options.memory_id),
         "archive": lambda: _handle_memory_archive(uid, tenant_id, options.memory_id),
+        "expire": lambda: _handle_memory_expire(uid, tenant_id, options.memory_id),
+        "restore": lambda: _handle_memory_restore(uid, tenant_id, options.memory_id),
     }
     handler = handlers.get(options.action)
     if handler is None:
@@ -2858,6 +2934,7 @@ def manage_memories(
         auto_tag=params.auto_tag,
         agent_id=params.agent_id,
         project=params.project,
+        source_tool=params.source_tool,
         relation_type=params.relation_type,
         related_memory_id=params.related_memory_id,
         is_sensitive=params.is_sensitive,
@@ -3000,6 +3077,7 @@ def _search_options_from_params(params: SearchMemoriesParams) -> SearchOptions:
             signal_weights=params.signal_weights,
             agent_id=params.agent_id,
             project=params.project,
+            include_expired=params.include_expired,
         )
     )
 
@@ -3021,6 +3099,7 @@ def _filter_semantic_matches(
     uid: str,
     tenant_id: str,
     filters: MemoryFilters,
+    include_expired: bool = False,
 ) -> list[Any]:
     """Keep the semantic matches whose row is live and passes the column filters."""
     match_ids = [m.memory_id for m in matches]
@@ -3044,6 +3123,7 @@ def _filter_semantic_matches(
         for m in matches
         if (row := by_id.get(m.memory_id))
         and not _is_expired_row(row, now_iso)
+        and (include_expired or not row.get("expired_at"))
         and (not filters.any_set() or _memory_matches_filters(row, filters))
     ]
 
@@ -3074,7 +3154,7 @@ def _semantic_search_payload(
     # PIX-4720/4721: filter semantic matches by column filters and drop
     # already-expired memories. ANN top-k is fetched first, so this is a
     # post-filter over the returned IDs (may return fewer than limit).
-    result.matches = _filter_semantic_matches(result.matches, uid, tenant_id, filters)
+    result.matches = _filter_semantic_matches(result.matches, uid, tenant_id, filters, options.include_expired)
     # Reinforce surfaced memories (closes decay loop).
     _auto_reinforce_batch([m.memory_id for m in result.matches], uid, tenant_id)
     get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
@@ -3095,11 +3175,13 @@ def _id_lookup_payload(
     conn = get_db_connection()
     frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
+    expiry_frag = "" if options.include_expired else " AND expired_at IS NULL"
     row = conn.execute(
         join_sql_parts(
             "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
             frag,
             " AND (expires_at IS NULL OR expires_at >= ?)",
+            expiry_frag,
         ),
         (mid, uid, tenant_id, *fparams, now_iso),
     ).fetchone()
@@ -3142,11 +3224,13 @@ def _id_lookup_json(
     conn = get_db_connection()
     frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
+    expiry_frag = "" if options.include_expired else " AND expired_at IS NULL"
     row = conn.execute(
         join_sql_parts(
             "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
             frag,
             " AND (expires_at IS NULL OR expires_at >= ?)",
+            expiry_frag,
         ),
         (mid, uid, tenant_id, *fparams, now_iso),
     ).fetchone()
@@ -3188,6 +3272,7 @@ def _hybrid_search_options(options: SearchOptions, tenant_id: str, *, limit: int
         max_rewrite_variants=options.max_rewrite_variants,
         agent_id=options.agent_id,
         project=options.project,
+        include_expired=options.include_expired,
     )
 
 
@@ -3257,7 +3342,7 @@ def _hybrid_search_json(
             return None
         _auto_reinforce_batch([hit.memory_id for hit in hits], uid, tenant_id)
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-        items = _hydrate_hybrid_records(hits, uid, tenant_id)
+        items = _hydrate_hybrid_records(hits, uid, tenant_id, options.include_expired)
         return json.dumps(
             {
                 "query_type": "hybrid",
@@ -3306,15 +3391,17 @@ def _keyword_search_where(
     frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
     expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
+    policy_frag = "" if options.include_expired else " AND expired_at IS NULL"
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         where_sql = join_sql_parts(
             " WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'",
             frag,
             expiry_sql,
+            policy_frag,
         )
         return where_sql, (uid, tenant_id, f"%{escaped}%", *fparams, now_iso)
-    where_sql = join_sql_parts(" WHERE user_id = ? AND tenant_id = ?", frag, expiry_sql)
+    where_sql = join_sql_parts(" WHERE user_id = ? AND tenant_id = ?", frag, expiry_sql, policy_frag)
     return where_sql, (uid, tenant_id, *fparams, now_iso)
 
 
@@ -3334,13 +3421,18 @@ def _memory_record(row: Any, tenant_id: str, uid: str) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "expires_at": row["expires_at"],
+        "expired_at": row.get("expired_at"),
+        "expired_by": row.get("expired_by"),
+        "source_tool": row.get("source_tool"),
         "agent_id": row["agent_id"],
         "project": row["project"],
         "is_ghost": bool(row["is_ghost"]),
     }
 
 
-def _hydrate_hybrid_records(hits: list[Any], uid: str, tenant_id: str) -> list[dict[str, Any]]:
+def _hydrate_hybrid_records(
+    hits: list[Any], uid: str, tenant_id: str, include_expired: bool = False
+) -> list[dict[str, Any]]:
     """Merge ranked hybrid hits with their stored records, in rank order.
 
     Hybrid retrieval returns ids and scores only; a consumer that needs the
@@ -3350,12 +3442,14 @@ def _hydrate_hybrid_records(hits: list[Any], uid: str, tenant_id: str) -> list[d
     if not ids:
         return []
     now_iso = datetime.now(UTC).isoformat()
+    policy_frag = "" if include_expired else " AND expired_at IS NULL"
     conn = get_db_connection()
     rows = conn.execute(
         join_sql_parts(
             "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND id IN (",
             placeholders(len(ids)),
             ") AND (expires_at IS NULL OR expires_at >= ?)",
+            policy_frag,
         ),
         (uid, tenant_id, *ids, now_iso),
     ).fetchall()
@@ -3512,6 +3606,8 @@ def search_memories(
     if abort_message:
         return json.dumps({"error": abort_message}) if options.response_format == "json" else abort_message
 
+    record_activity("search", n=1)
+
     if options.response_format == "json":
         return _json_search_payload(options, uid, tenant_id, filters, hook_ctx)
 
@@ -3531,6 +3627,78 @@ def search_memories(
 
     # 3. Fallback to basic list/keyword search
     return _keyword_search_payload(options, uid, tenant_id, filters, hook_ctx)
+
+
+@mcp.tool(output_schema=None)
+def get_catch_up(
+    project: str | None = None,
+    tool: str | None = None,
+    limit: int = 20,
+    user_id: str | None = None,
+) -> str:
+    """Return memories written since this tool's last catch-up checkpoint.
+
+    Catches a coding agent up on what other tools (or earlier sessions)
+    stored for the same ``(user, tool, project)`` lane. The cursor lives in
+    ``~/.foresight/cursors.json``; the first call only initializes it and
+    returns an empty result.
+
+    Args:
+        project: Project lane to catch up on (default: shared ``"default"`` lane).
+        tool: Calling-tool name for the cursor key. Defaults to the resolved
+            source tool (FORESIGHT_CLIENT / clientInfo / env markers).
+        limit: Maximum memories to return (capped at 20).
+        user_id: Optional user ID override.
+
+    Returns:
+        One ``- [CATEGORY] content (from <tool>)`` line per memory, or a
+        notice when this is the first catch-up for the cursor.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+    resolved_tool = tool or resolve_source_tool()
+    project_lane = project or "default"
+    cursor_key = f"{uid}:{resolved_tool}:{project_lane}"
+    cap = max(1, min(int(limit), 20))
+
+    cursors = load_cursors()
+    cursor = cursors.get(cursor_key)
+    now_iso = datetime.now(UTC).isoformat()
+    if cursor is None:
+        cursors[cursor_key] = now_iso
+        save_cursors(cursors)
+        record_activity("catch_up", n=0, tool=resolved_tool)
+        return "Catch-up initialized; no prior cursor existed. Next call returns new memories."
+
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, content, category, source_tool, created_at FROM memories "
+            "WHERE user_id = ? AND tenant_id = ? AND project = ? AND is_ghost = 0 "
+            "AND expired_at IS NULL AND created_at > ? "
+            "ORDER BY created_at ASC LIMIT ?",
+            (uid, tenant_id, project_lane, cursor, cap),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        record_activity("catch_up", n=0, tool=resolved_tool)
+        return "No new memories since last catch-up."
+
+    latest = max(str(r["created_at"]) for r in rows)
+    cursors[cursor_key] = latest
+    save_cursors(cursors)
+
+    lines = []
+    for r in rows:
+        content = decrypt_if_encrypted(r["content"], tenant_id=tenant_id, user_id=uid)
+        content = " ".join(str(content).split())
+        category = (r["category"] or "general").upper()
+        origin = r["source_tool"] or "unknown"
+        lines.append(f"- [{category}] {content} (from {origin})")
+    record_activity("catch_up", n=len(lines), tool=resolved_tool)
+    return "\n".join(lines)
 
 
 @mcp.tool(output_schema=None)
@@ -4152,8 +4320,8 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                     "INSERT INTO memories "
                     "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
                     "created_at, updated_at, tags, emotional_context, metrics, "
-                    "is_ghost, synthesized_from, is_sensitive, sensitivity_reason) "
-                    "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?) "
+                    "is_ghost, synthesized_from, is_sensitive, sensitivity_reason, source_tool) "
+                    "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?, ?) "
                     "ON CONFLICT (id) DO NOTHING",
                     (
                         mid,
@@ -4167,6 +4335,7 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                         now,
                         1 if is_sensitive_bit else 0,
                         sensitivity_reason,
+                        resolve_source_tool(),
                     ),
                 )
                 stored += 1
@@ -4739,7 +4908,7 @@ def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 
         """SELECT id, content, category, importance, strength_trend,
         activation_count, tags, emotional_context, created_at, scope, retention
         FROM memories
-        WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND is_ghost = 0
+        WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND is_ghost = 0 AND expired_at IS NULL
         ORDER BY importance DESC, created_at DESC
         LIMIT ?""",
         (uid, tenant_id, bank_id, limit),
@@ -4949,8 +5118,9 @@ def _insert_curation_entries(
             conn.execute(
                 "INSERT INTO memories "
                 "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
-                "created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, importance) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)",
+                "created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, "
+                "importance, source_tool) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?)",
                 (
                     memory_id,
                     entry["content"],
@@ -4964,6 +5134,7 @@ def _insert_curation_entries(
                     now,
                     json.dumps(entry.get("tags", [])),
                     entry.get("importance", 0.75),
+                    resolve_source_tool(),
                 ),
             )
             created_ids.append(memory_id)
@@ -6178,7 +6349,7 @@ def _fetch_session_memories_raw(
         return conn.execute(
             "SELECT id, content, importance, scope, category, created_at, tags "
             "FROM memories "
-            "WHERE user_id = ? AND tenant_id = ? AND scope = 'session' AND is_ghost = 0 "
+            "WHERE user_id = ? AND tenant_id = ? AND scope = 'session' AND is_ghost = 0 AND expired_at IS NULL "
             "ORDER BY importance DESC, created_at DESC "
             "LIMIT ?",
             (uid, tenant_id, limit),
@@ -6201,7 +6372,7 @@ def _fetch_high_confidence_memories(
             "FROM memories "
             "WHERE user_id = ? AND tenant_id = ? "
             "AND scope IN ('arc', 'fact', 'trait') "
-            "AND importance >= ? AND is_ghost = 0 "
+            "AND importance >= ? AND is_ghost = 0 AND expired_at IS NULL "
             "ORDER BY importance DESC, created_at DESC "
             "LIMIT ?",
             (uid, tenant_id, min_importance, limit),
@@ -7959,7 +8130,7 @@ def _fetch_memories_for_clustering(
         rows = conn.execute(
             """SELECT id, content, user_id, tenant_id
                FROM memories
-               WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0
+               WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 AND expired_at IS NULL
                ORDER BY created_at DESC
                LIMIT ?""",
             (uid, tenant_id, limit),
@@ -8281,6 +8452,7 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
                     WHERE r.source_memory_id = m.id AND r.relationship_type = 'derives') AS parent_count
             FROM memories m
             WHERE m.user_id = ? AND m.tenant_id = ? AND m.inferred = 1 AND m.is_ghost = 0
+              AND m.expired_at IS NULL
               AND (m.review_status IS NULL OR m.review_status != 'declined')
             ORDER BY parent_count DESC, m.created_at DESC
             LIMIT ?
@@ -8563,7 +8735,8 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     synthesizer = get_enhanced_synthesizer() if options.enhanced else get_memory_system()["synthesizer"]
     conn = get_db_connection()
     rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
+        "AND expired_at IS NULL ORDER BY created_at DESC LIMIT ?",
         (uid, tenant_id, options.limit),
     ).fetchall()
     conn.close()

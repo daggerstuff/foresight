@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from .client_attribution import resolve_source_tool
 from .config import BANK_ID, raw_retention_enabled
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
@@ -770,8 +771,8 @@ class CapturePipeline:
             """INSERT INTO memories
                (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                 created_at, updated_at, tags, emotional_context, metrics,
-                is_ghost, synthesized_from, importance)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
+                is_ghost, synthesized_from, importance, source_tool)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?)
                ON CONFLICT (id) DO NOTHING""",
             (
                 mid,
@@ -787,6 +788,7 @@ class CapturePipeline:
                 ctx.now,
                 json.dumps(candidate.tags),
                 candidate.importance,
+                resolve_source_tool(),
             ),
         )
         conn.commit()
@@ -942,9 +944,9 @@ class CapturePipeline:
                 """INSERT INTO memories
                    (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                     created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from,
-                    importance, memory_type)
+                    importance, memory_type, source_tool)
                    VALUES (?, ?, ?, 'session', 'short_term', 'episodic', ?, ?, ?, ?, ?, ?, '{}', ?, 0, '[]', \
-?, 'episodic')
+?, 'episodic', ?)
                    ON CONFLICT (id) DO NOTHING""",
                 (
                     mid,
@@ -958,6 +960,7 @@ class CapturePipeline:
                     json.dumps(tags),
                     json.dumps(metrics),
                     1.0,
+                    resolve_source_tool(),
                 ),
             )
             conn.commit()
@@ -1017,8 +1020,8 @@ class CapturePipeline:
                     """INSERT INTO memories
                        (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                         created_at, updated_at, tags, emotional_context, metrics,
-                        is_ghost, synthesized_from, importance)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
+                        is_ghost, synthesized_from, importance, source_tool)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?)
                        ON CONFLICT (id) DO NOTHING""",
                     (
                         mid,
@@ -1034,6 +1037,7 @@ class CapturePipeline:
                         now,
                         json.dumps(candidate.tags),
                         candidate.importance,
+                        resolve_source_tool(),
                     ),
                 )
                 conn.commit()
