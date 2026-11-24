@@ -1,0 +1,57 @@
+foresight/server.py
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 43
+  s_7d4811cf1b0ba7::t_55059c896346b4 2522-2528
+  s_7d4811cf1b0ba7::t_4fd53eeba7bb17 2519-2521
+  h_07d84030f79d30 187,2516-2518,2545-2546
+foresight/audit.py
+  s_7d4811cf1b0ba7::t_43b62e41dc8c4b 265-269
+  s_7d4811cf1b0ba7::t_a29851739852ea 48,263-264,270-279
+  s_7d4811cf1b0ba7::t_2e655124e0f7d8 280-282
+  s_7d4811cf1b0ba7::t_b3d5e0c806db5c 59
+  s_7d4811cf1b0ba7::t_54be877164e5e0 283-319,326,329-332
+tests/test_secret_defense.py
+  s_7d4811cf1b0ba7::t_b8206ddcea13bf 111,116-118
+  s_7d4811cf1b0ba7::t_a0a1f2d94138f8 55-56,58-64,67
+  s_7d4811cf1b0ba7::t_72bc976df72fe7 165-170
+  s_7d4811cf1b0ba7::t_575a0a92e86940 1-15,138-161,164,171-245
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 16-43,49,53,57,65-66,68-87,90-98,101-104,106-110,112-115,119-125,128-137
+  h_07d84030f79d30 44-48,50-52,54,88-89,99-100,105,126-127,162-163
+foresight/capture.py
+  s_7d4811cf1b0ba7::t_119fbeb38aed0c 993-997
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 24,29,568-569,793-795,998
+  s_7d4811cf1b0ba7::t_01d55ff93c0971 790-792
+  s_7d4811cf1b0ba7::t_6207bdddf09235 570-572
+  s_7d4811cf1b0ba7::t_55d339850d40f6 796-798
+  s_7d4811cf1b0ba7::t_70dae17e3815a5 999-1001
+  h_07d84030f79d30 573-579,799-804,829-830,847,1002-1006,1017,1019,1034
+foresight/sensitivity.py
+  s_7d4811cf1b0ba7::t_a29851739852ea 92-93
+  s_7d4811cf1b0ba7::t_b8206ddcea13bf 90,99,101,105-107,120,136-141
+  s_7d4811cf1b0ba7::t_81957db63f88ea 29,78-89,91,94-98,100,102-104,108-119,121-135,142-246,299-301
+plugins/claude/hooks/foresight_hook.py
+  h_07d84030f79d30 7,132-153
+  s_7d4811cf1b0ba7::t_f8db00fa40c444 154-155
+  s_7d4811cf1b0ba7::t_9ef4275cb39ea5 156-157
+  h_07d84030f79d30 185,310-311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fa80fa082ffefd6de57955b560c8c9acca3781cf",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  },
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
