@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import redis as _redis
 from pydantic import BaseModel, ConfigDict, Field
 
+from foresight.capabilities import get_capabilities_report
 from foresight.config import raw_retention_enabled
 from foresight.context_cache import get_context_cache
 from foresight.server import (
@@ -524,6 +525,46 @@ def _doctor_check_schema(report: _DoctorReport) -> None:
         report.check("Schema version", False, f"check failed: {exc!s}")
 
 
+def _doctor_check_capabilities(report: _DoctorReport) -> dict[str, Any]:
+    """Check subsystem capabilities (FOR-18 / PIX-448)."""
+    caps = get_capabilities_report()
+    embedder = caps.get("embedder", {})
+    if embedder.get("real"):
+        report.check("Embedder capability", True, f"real ({embedder.get('provider')} / {embedder.get('dimension')}d)")
+    else:
+        report.check("Embedder capability", True, f"local-hash fallback ({embedder.get('dimension')}d)")
+
+    reranker = caps.get("reranker", {})
+    if reranker.get("active"):
+        report.check("Reranker capability", True, f"active ({reranker.get('provider')})")
+    elif reranker.get("enabled"):
+        report.check("Reranker capability", False, "enabled but unavailable")
+    else:
+        report.check("Reranker capability", True, "disabled (default)")
+
+    llm = caps.get("llm", {})
+    if llm.get("configured"):
+        report.check("LLM capability", True, f"{llm.get('provider')}/{llm.get('model') or 'default'}")
+    else:
+        report.check("LLM capability", True, "not configured (extractive/rules fallback)")
+
+    enc = caps.get("encryption", {})
+    if enc.get("enabled"):
+        report.check("Encryption capability", True, f"{enc.get('algorithm')} (key present)")
+    else:
+        report.check("Encryption capability", True, "disabled (plaintext store)")
+
+    redis = caps.get("redis", {})
+    if redis.get("connected"):
+        report.check("Redis capability", True, "connected")
+    elif redis.get("configured"):
+        report.check("Redis capability", False, "configured but unreachable")
+    else:
+        report.check("Redis capability", True, "not configured (in-memory cache fallback)")
+
+    return caps
+
+
 def _doctor_print_summary(report: _DoctorReport) -> None:
     """Print the pass/fail tally and any active env overrides."""
     if out.get_settings().mode != "agent":
@@ -557,7 +598,21 @@ def doctor(params: SystemDoctorParams) -> None:
     _doctor_check_redis(report)
     _doctor_check_mcp_port(report)
     _doctor_check_schema(report)
+    caps = _doctor_check_capabilities(report)
     _doctor_print_summary(report)
+
+    if out.get_settings().mode == "json":
+        out.stdout(
+            json.dumps(
+                {
+                    "passed": report.passed,
+                    "failed": report.failed,
+                    "warnings": report.warnings,
+                    "capabilities": caps,
+                },
+                indent=2,
+            )
+        )
 
     if report.failed > 0:
         raise SystemExit(1)

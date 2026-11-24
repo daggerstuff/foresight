@@ -105,6 +105,17 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `get_system_status`          | Health telemetry, cache statistics, and memory counts                | `include_trends=True`                             |
 | `export_profile`             | Signed portable profile export (profile + mental models + observations) | `format="json"\|"markdown"`, `agent_id`, `project` |
 
+### Subsystem Capabilities & Fallback Transparency (FOR-18)
+`get_system_status` and `foresight doctor` expose an explicit `capabilities` block detailing live components:
+- `embedder`: active embedding provider (`fastembed`, `openai`, or deterministic `local-hash` fallback), dimension, and model.
+- `reranker`: cross-encoder status (`enabled`, `active`, `provider`).
+- `llm`: configured status, provider, and model.
+- `encryption`: AES-256-GCM status and key readiness.
+- `redis`: presence and connectivity of the companion cache.
+
+Tool results that execute on an unconfigured or degraded fallback path carry explicit indicators:
+`degraded: true` and `degraded_reason: "..."` (e.g. extractive `reflect` fallback, rule-based entity extraction).
+
 **Namespace lanes:** `manage_memories`, `search_memories`, `inject_context`,
 `reflect`, `manage_mental_models`, `curate_observations`,
 `manage_context_blocks`, and `query_memories_temporal` accept optional

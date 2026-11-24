@@ -54,6 +54,10 @@ agents.
   budgeted `[Patterns]` lane). `profile_export.py` renders the synthesized
   profile plus the derived layer as an HMAC-signed portable document
   (`export_profile` / `GET /profile/export`).
+- **Capabilities & Transparency** — `capabilities.py`: `get_system_status` and
+  `foresight doctor` publish live subsystem capability reports (embedder, reranker,
+  LLM, encryption, Redis). Operations executing on fallback paths return
+  `degraded: true` with a descriptive reason (FOR-18).
 - **Relationships** — `memory_relationships.py` + `graph_store.py` link memories
   to each other (ghost nodes, entity links).
 - **Multi-tenancy** — `auth.py` + `tenant_middleware.py`; every store and query

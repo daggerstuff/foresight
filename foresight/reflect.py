@@ -260,7 +260,8 @@ def reflect(
     tokens_used = max(1, (len(question) + len(answer) + sum(len(c["content_excerpt"]) for c in citations)) // 4)
     latency_ms = (time.perf_counter() - t0) * 1000
 
-    return {
+    is_degraded = synthesized_by == "extractive"
+    result_payload: dict[str, Any] = {
         "answer": answer,
         "citations": citations,
         "memories_considered": len(candidates),
@@ -269,7 +270,12 @@ def reflect(
         "cached": False,
         "synthesized_by": synthesized_by,
         "latency_ms": round(latency_ms, 2),
+        "degraded": is_degraded,
     }
+    if is_degraded:
+        result_payload["degraded_reason"] = "extractive reflect fallback (LLM synthesis unavailable or unconfigured)"
+
+    return result_payload
 
 
 # ---------------------------------------------------------------------------

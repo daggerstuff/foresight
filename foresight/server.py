@@ -53,6 +53,7 @@ from .backend.schema_ddl import (
     POSTGRES_ONLY_MIGRATIONS,
 )
 from .block_registry import InjectionPoint, initialize_default_blocks
+from .capabilities import get_capabilities_report
 from .capture import CaptureOptions, ReprocessOptions, get_capture_pipeline
 from .client_attribution import AttributionMiddleware, load_cursors, resolve_source_tool, save_cursors
 from .clustering import ClusterResult, cluster_memories
@@ -3765,6 +3766,7 @@ def reflect(
                 "mental_model_id": model["id"],
                 "synthesized_by": "mental_model",
                 "latency_ms": 0.0,
+                "degraded": False,
             }
             get_telemetry_store().record_reflect(cached=True, answer_chars=len(model["answer"]), latency_ms=0.0)
             return json.dumps(payload, indent=2, ensure_ascii=False)
@@ -7616,6 +7618,7 @@ def get_system_status(
     if opts.include_cache_metrics:
         _add_cache_metrics(result, opts, count)
     result["encryption"] = get_encryption_engine().get_status().to_dict()
+    result["capabilities"] = get_capabilities_report(tenant_id)
     return json.dumps(result, indent=2)
 
 
