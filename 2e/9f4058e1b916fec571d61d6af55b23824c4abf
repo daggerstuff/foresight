@@ -1,0 +1,37 @@
+tests/test_retention_cli.py
+  s_7d4811cf1b0ba7::t_437d770da79be7 15-22,24-29,66-81
+  s_7d4811cf1b0ba7::t_c3131df400b7de 82-83
+foresight_cli/commands/retention.py
+  s_7d4811cf1b0ba7::t_437d770da79be7 13,64-66,84-85,90-93
+foresight/subconscious.py
+  s_7d4811cf1b0ba7::t_b2b6c42d594383 1225-1254,1261,1265
+  s_7d4811cf1b0ba7::t_2d224ea7f3bb96 47
+foresight/client_attribution.py
+  s_7d4811cf1b0ba7::t_437d770da79be7 267-272,275-276,278-282
+tests/test_memanto_upgrades.py
+  s_7d4811cf1b0ba7::t_437d770da79be7 217-220,226-227,229-231
+plugins/claude/hooks/foresight_hook.py
+  s_7d4811cf1b0ba7::t_437d770da79be7 92-101,107-108,252-272,280-282,296-303,688-689,692
+foresight/context_blocks.py
+  s_7d4811cf1b0ba7::t_b2b6c42d594383 177-178,180,236
+tests/test_context_blocks_expiry.py
+  s_7d4811cf1b0ba7::t_437d770da79be7 51-59,61-62
+tests/test_memory_maintenance.py
+  s_7d4811cf1b0ba7::t_437d770da79be7 246-247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2e9f4058e1b916fec571d61d6af55b23824c4abf",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
