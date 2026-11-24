@@ -1,0 +1,60 @@
+foresight/audit.py
+  h_07d84030f79d30 48,59,263-319,326,329-332
+  s_7d4811cf1b0ba7::t_a29851739852ea 48,59,263-278
+  s_7d4811cf1b0ba7::t_2e655124e0f7d8 279-281
+  s_7d4811cf1b0ba7::t_54be877164e5e0 282-319,326,329-332
+foresight/capture.py
+  h_07d84030f79d30 24,29,568-579,790-804,829-830,847,993-1006,1017,1019,1034
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 24,29,568-579,790-804,829-830,847,993-1001
+  s_7d4811cf1b0ba7::t_119fbeb38aed0c 1002-1006,1017,1019,1034
+foresight/sensitivity.py
+  h_07d84030f79d30 29,78-246,299-301
+  s_7d4811cf1b0ba7::t_a29851739852ea 92-93
+  s_7d4811cf1b0ba7::t_81957db63f88ea 29,78-91,94-246,299-301
+foresight/server.py
+  h_07d84030f79d30 43,188,2517-2529,2546-2547
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 43,188,2517-2525
+  s_7d4811cf1b0ba7::t_a29851739852ea 2546-2547
+  s_7d4811cf1b0ba7::t_7a4118026c4646 2526-2529
+  s_7d4811cf1b0ba7::t_7f168c3d7de2e7 135,6086-6087,6091-6092,6286-6307,10158-10178
+  s_7d4811cf1b0ba7::t_40faeddc3b3224 10179-10180
+plugins/claude/hooks/foresight_hook.py
+  h_07d84030f79d30 7,166-175,178-192,220,345-346
+  s_7d4811cf1b0ba7::t_7f168c3d7de2e7 29-62,176-177,376-413
+  s_7d4811cf1b0ba7::t_98a6e6dcb5b663 530-539
+tests/test_secret_defense.py
+  h_07d84030f79d30 1-21,1-21,23-25,23-25,27-42,27-42,59-71,59-60,66,70,74,74,82-83,82-83,85,85,93-94,93-94,100-135,100-112,115-123,126-129,131-135,137-140,137-140,144-270,144-150,153-186,189-270
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 16-21,23-25,27-42,59-60,66,70,74,82-83,85,93-94,100-112,115-123,126-129,131-135,137-140,144-150,153-162
+  s_7d4811cf1b0ba7::t_72bc976df72fe7 190-195
+  s_7d4811cf1b0ba7::t_575a0a92e86940 1-15,163-186,189,196-270
+foresight/telemetry.py
+  s_7d4811cf1b0ba7::t_bfb046f9b261f9 56-58,89-91,171-207,209-211,241-245
+  s_7d4811cf1b0ba7::t_eac33273206269 25,208
+foresight/rrf_tuning.py
+  s_7d4811cf1b0ba7::t_bfb046f9b261f9 30-32,49,72,98,306-345
+foresight/injection_budget.py
+  s_7d4811cf1b0ba7::t_f5766c0e0b64e9 409-427
+tests/test_gated_recall.py
+  s_7d4811cf1b0ba7::t_8d09de0add6143 1-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "af3f2c52c0c560c2ea73d60b319ea74cb6a0f396",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  },
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
