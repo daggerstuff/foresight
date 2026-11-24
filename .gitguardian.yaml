@@ -34,3 +34,4 @@ secret:
     # detections. No trailing slash — that rule applies to entries naming a
     # directory, and this entry names a single file.
     - .github/workflows/publish.yml
+    - tests/test_secret_defense.py

@@ -21,9 +21,12 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from .audit import record_secret_defense_event, secret_defense_metadata
+from .client_attribution import resolve_source_tool
 from .config import BANK_ID, raw_retention_enabled
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
+from .sensitivity import evaluate_secrets
 from .sql_helpers import join_sql_parts, placeholders
 from .tenant_context import get_current_account_id
 
@@ -460,6 +463,10 @@ class DedupeEngine:
                 if not union:
                     continue
                 jaccard = len(candidate_words & existing_words) / len(union)
+                # Word overlap alone never proves equivalence: a reversal ("not"),
+                # a changed number, or reordered wording all keep most tokens.
+                # Only an exact content hash (phase 1) is a duplicate; anything
+                # else stays a near duplicate and is stored with a derives edge.
                 if jaccard >= cls.JACCARD_THRESHOLD:
                     return DedupeResult(
                         status="NEAR_DUPLICATE",
@@ -552,6 +559,18 @@ class CapturePipeline:
             if not content:
                 raw_event_ids.append(None)
                 continue
+            sec_verdict = evaluate_secrets(content, tenant_id=ref.tenant_id)
+            if sec_verdict.action_taken != "clean":
+                record_secret_defense_event(
+                    ref.tenant_id,
+                    ref.user_id,
+                    ref.session_id or f"raw_{idx}",
+                    secret_defense_metadata(sec_verdict),
+                )
+            if sec_verdict.blocked:
+                raw_event_ids.append(None)
+                continue
+            content = sec_verdict.content
             rid = self._generate_raw_event_id(ref, idx, role, content)
             raw_event_ids.append(rid)
             rows.append(
@@ -657,8 +676,9 @@ class CapturePipeline:
         if not candidates:
             return stats
 
-        candidate_map = self._dedupe_candidates(candidates, user_id, tid, stats)
+        candidate_map, duplicate_links = self._dedupe_candidates(candidates, user_id, tid, stats)
         self._persist_candidates(candidate_map, _PersistContext(user_id=user_id, tenant_id=tid, now=now), stats)
+        self._link_duplicate_provenance(duplicate_links, tid, now)
 
         logger.info(
             "Session %s: %d candidates → %d stored, %d duplicates, %d near-dups",
@@ -704,11 +724,13 @@ class CapturePipeline:
         user_id: str,
         tid: str,
         stats: CaptureStats,
-    ) -> dict[str, list[tuple[CapturedMemory, DedupeResult]]]:
+    ) -> tuple[dict[str, list[tuple[CapturedMemory, DedupeResult]]], list[tuple[str, str]]]:
         """Group candidates by category, counting exact and near duplicates.
 
         Near duplicates are kept — they are stored as new memories and linked to
-        their predecessor with a ``derives`` edge.
+        their predecessor with a ``derives`` edge. Exact duplicates are dropped
+        from storage but returned as ``(memory_id, raw_event_id)`` pairs so the
+        observation still lands in ``memory_provenance``.
         """
         candidate_map: dict[str, list[tuple[CapturedMemory, DedupeResult]]] = {
             "decision": [],
@@ -718,10 +740,13 @@ class CapturePipeline:
             "pending_item": [],
         }
 
+        duplicate_links: list[tuple[str, str]] = []
         for candidate in candidates:
             dedupe = self.dedupe.check(candidate, user_id, tid, db_path=self.db_path)
             if dedupe.status == "DUPLICATE":
                 stats.duplicates += 1
+                if dedupe.existing_id and candidate.raw_event_id:
+                    duplicate_links.append((dedupe.existing_id, candidate.raw_event_id))
                 continue
 
             if dedupe.status == "NEAR_DUPLICATE":
@@ -732,7 +757,59 @@ class CapturePipeline:
 
             candidate_map[candidate.category].append((candidate, dedupe))
 
-        return candidate_map
+        return candidate_map, duplicate_links
+
+    @staticmethod
+    def _duplicate_is_current(
+        conn: Any,
+        memory_id: str | None,
+        candidate: CapturedMemory,
+        user_id: str,
+        tenant_id: str,
+    ) -> bool:
+        """True when the stored row still holds the text its hash was taken from.
+
+        The read is scoped like the dedupe lookup. A memory saved by hand holds
+        the plain text (no auto-capture prefix), so both forms count as the same
+        content. Encrypted content we cannot read falls back to trusting the
+        hash, so a normal duplicate is never stored twice just because the row
+        is ciphered.
+        """
+        if not memory_id:
+            return False
+        row = conn.execute(
+            "SELECT content FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (memory_id, user_id, tenant_id),
+        ).fetchone()
+        if row is None:
+            return False
+        stored = row["content"] if hasattr(row, "keys") else row[0]
+        stored = "" if stored is None else str(stored)
+        if stored.startswith("enc:"):
+            return True
+        expected = {
+            _content_hash(candidate.content),
+            _content_hash(f"[auto-captured/{candidate.category}] {candidate.content}"),
+        }
+        return _content_hash(stored) in expected
+
+    def _link_duplicate_provenance(
+        self,
+        links: list[tuple[str, str]],
+        tenant_id: str,
+        now: str,
+    ) -> None:
+        """Record provenance for captures that only reinforced an existing row."""
+        if not links:
+            return
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            for memory_id, raw_event_id in links:
+                self._link_provenance(conn, memory_id, raw_event_id, tenant_id, now)
+        finally:
+            pool.release(conn)
+            conn.close()
 
     def _persist_candidates(
         self,
@@ -762,16 +839,50 @@ class CapturePipeline:
         stats: CaptureStats,
     ) -> None:
         """Insert one candidate, link its provenance, and record any derives edge."""
-        content = f"[auto-captured/{candidate.category}] {candidate.content}"
+        # FOR-46 / PIX-440: Secret-aware write defense
+        sec_verdict = evaluate_secrets(candidate.content, tenant_id=ctx.tenant_id, lane=candidate.scope)
+        if sec_verdict.action_taken != "clean":
+            record_secret_defense_event(
+                ctx.tenant_id,
+                ctx.user_id,
+                candidate.category,
+                secret_defense_metadata(sec_verdict, lane=candidate.scope),
+            )
+        if sec_verdict.blocked:
+            # One blocked candidate is not a session-level skip: the rest of
+            # the candidates still get stored.
+            stats.skipped_candidates += 1
+            return
+        candidate.content = sec_verdict.content
+
+        clean_cand = re.sub(r"^\[auto-captured/[^\]]+\]\s*", "", candidate.content).strip()
+        content = f"[auto-captured/{candidate.category}] {clean_cand}"
         h = _content_hash(content)
+
+        existing = conn.execute(
+            """SELECT id FROM memories
+               WHERE user_id = ? AND tenant_id = ? AND content_hash = ?
+                 AND (is_ghost = 0 OR is_ghost IS NULL) LIMIT 1""",
+            (ctx.user_id, ctx.tenant_id, h),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? WHERE id = ?",
+                (ctx.now, existing["id"]),
+            )
+            # The reused row still needs this observation as provenance.
+            self._link_provenance(conn, existing["id"], candidate.raw_event_id, ctx.tenant_id, ctx.now)
+            conn.commit()
+            return
+
         mid = hashlib.sha256(f"{content}{ctx.now}".encode()).hexdigest()[:16]
 
         conn.execute(
             """INSERT INTO memories
                (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                 created_at, updated_at, tags, emotional_context, metrics,
-                is_ghost, synthesized_from, importance)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
+                is_ghost, synthesized_from, importance, source_tool, is_sensitive)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?, ?)
                ON CONFLICT (id) DO NOTHING""",
             (
                 mid,
@@ -787,6 +898,8 @@ class CapturePipeline:
                 ctx.now,
                 json.dumps(candidate.tags),
                 candidate.importance,
+                resolve_source_tool(),
+                1 if sec_verdict.flagged else 0,
             ),
         )
         conn.commit()
@@ -811,7 +924,7 @@ class CapturePipeline:
 
         if dedupe.status != "DUPLICATE":
             stats.stored += 1
-            stats.stored_items.append((candidate.category, candidate.content))
+            stats.stored_items.append((candidate.category, clean_cand))
 
     def reprocess(
         self,
@@ -932,6 +1045,20 @@ class CapturePipeline:
         transcript = "\n".join(f"{m.get('role', 'unknown')}: {m.get('content', '') or ''}" for m in messages).strip()
         if not transcript:
             return 0, "", None
+
+        # FOR-46 / PIX-440: Secret-aware write defense
+        sec_verdict = evaluate_secrets(transcript, tenant_id=ref.tenant_id)
+        if sec_verdict.action_taken != "clean":
+            record_secret_defense_event(
+                ref.tenant_id,
+                ref.user_id,
+                ref.session_id or "verbatim",
+                secret_defense_metadata(sec_verdict),
+            )
+        if sec_verdict.blocked:
+            return 0, "", None
+        transcript = sec_verdict.content
+
         mid = hashlib.sha256(f"{transcript}{now}".encode()).hexdigest()[:16]
         tags = ["verbatim"]
         metrics = {"capture_instructions": options.instructions} if options.instructions else {}
@@ -942,9 +1069,9 @@ class CapturePipeline:
                 """INSERT INTO memories
                    (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                     created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from,
-                    importance, memory_type)
+                    importance, memory_type, source_tool, is_sensitive)
                    VALUES (?, ?, ?, 'session', 'short_term', 'episodic', ?, ?, ?, ?, ?, ?, '{}', ?, 0, '[]', \
-?, 'episodic')
+?, 'episodic', ?, ?)
                    ON CONFLICT (id) DO NOTHING""",
                 (
                     mid,
@@ -958,6 +1085,8 @@ class CapturePipeline:
                     json.dumps(tags),
                     json.dumps(metrics),
                     1.0,
+                    resolve_source_tool(),
+                    1 if sec_verdict.flagged else 0,
                 ),
             )
             conn.commit()
@@ -1006,8 +1135,35 @@ class CapturePipeline:
         conn = pool.acquire()
         try:
             for candidate in candidates:
+                # FOR-46 / PIX-440: in-flight writes go through the same
+                # secret defense as transcript capture.
+                sec_verdict = evaluate_secrets(candidate.content, tenant_id=tid, lane=candidate.scope)
+                if sec_verdict.action_taken != "clean":
+                    record_secret_defense_event(
+                        tid,
+                        user_id,
+                        candidate.category,
+                        secret_defense_metadata(sec_verdict, lane=candidate.scope),
+                    )
+                if sec_verdict.blocked:
+                    continue
+                candidate.content = sec_verdict.content
+
                 dedupe = self.dedupe.check(candidate, user_id, tid, db_path=self.db_path)
+                if sec_verdict.flagged and dedupe.status == "NEAR_DUPLICATE":
+                    # Redaction placeholders inflate word overlap, so two
+                    # different redacted captures must not be linked; an exact
+                    # hash match still reinforces instead of duplicating.
+                    dedupe = DedupeResult(status="UNIQUE")
+                if dedupe.status == "DUPLICATE" and not self._duplicate_is_current(
+                    conn, dedupe.existing_id, candidate, user_id, tid
+                ):
+                    # A stored hash can be stale: editing or redacting a memory
+                    # does not refresh it, so only a live content match counts.
+                    dedupe = DedupeResult(status="UNIQUE")
                 if dedupe.status == "DUPLICATE":
+                    if dedupe.existing_id:
+                        self._link_provenance(conn, dedupe.existing_id, candidate.raw_event_id, tid, now)
                     continue
 
                 mid = hashlib.sha256(f"{candidate.content}{now}".encode()).hexdigest()[:16]
@@ -1017,8 +1173,8 @@ class CapturePipeline:
                     """INSERT INTO memories
                        (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                         created_at, updated_at, tags, emotional_context, metrics,
-                        is_ghost, synthesized_from, importance)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)
+                        is_ghost, synthesized_from, importance, source_tool, is_sensitive)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?, ?)
                        ON CONFLICT (id) DO NOTHING""",
                     (
                         mid,
@@ -1034,6 +1190,8 @@ class CapturePipeline:
                         now,
                         json.dumps(candidate.tags),
                         candidate.importance,
+                        resolve_source_tool(),
+                        1 if sec_verdict.flagged else 0,
                     ),
                 )
                 conn.commit()

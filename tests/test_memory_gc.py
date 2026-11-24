@@ -4,6 +4,7 @@ Covers all four phases: expired retention, decay events pruning,
 maintenance events pruning, and orphan cleanup.
 """
 
+import json
 import sqlite3
 import tempfile
 from dataclasses import dataclass
@@ -51,8 +52,23 @@ def _make_test_db() -> str:
             emotional_context TEXT,
             metrics TEXT,
             tags TEXT,
+            source_tool TEXT,
+            updated_at TEXT,
             created_at TEXT NOT NULL,
-            expires_at TEXT
+            expires_at TEXT,
+            expired_at TEXT,
+            expired_by TEXT,
+            is_sensitive INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS memory_policies (
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            preset TEXT,
+            policy_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, user_id)
         )"""
     )
     conn.execute(
@@ -354,6 +370,128 @@ class TestPhase1ExpiredRetention:
         conn2 = sqlite3.connect(db_path)
         remaining = conn2.execute("SELECT id FROM memories").fetchall()
         assert [r[0] for r in remaining] == ["m2"]
+        conn2.close()
+
+    def test_policy_expired_rows_survive_retention_sweep(self) -> None:
+        """A reversibly expired row is restorable, so the TTL sweep must skip it."""
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        old = (datetime.now(UTC) - timedelta(days=14)).isoformat()
+        _insert_memory(conn, "m1", "stamped", _MemoryRow(retention="short_term", created_at=old))
+        conn.execute("UPDATE memories SET expired_at = ? WHERE id = 'm1'", (datetime.now(UTC).isoformat(),))
+        conn.commit()
+        conn.close()
+
+        gc = MemoryGC(db_path)
+        stats = gc.run(tenant_id="t1")
+
+        assert stats.expired_memories_found == 0
+        assert stats.expired_memories_deleted == 0
+
+        conn2 = sqlite3.connect(db_path)
+        assert conn2.execute("SELECT id FROM memories").fetchall() == [("m1",)]
+        conn2.close()
+
+    def test_explicit_expiry_deletes_policy_expired_rows(self) -> None:
+        """A user-set ``expires_at`` outranks the reversible policy stamp."""
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        _insert_memory(conn, "m1", "explicit", _MemoryRow(retention="long_term"))
+        conn.execute(
+            "UPDATE memories SET expires_at = ?, expired_at = ? WHERE id = 'm1'",
+            (past, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        gc = MemoryGC(db_path)
+        stats = gc.run(tenant_id="t1")
+
+        assert stats.expired_memories_deleted == 1
+
+        conn2 = sqlite3.connect(db_path)
+        assert conn2.execute("SELECT id FROM memories").fetchall() == []
+        conn2.close()
+
+    def test_policy_pinned_row_survives_retention_sweep(self) -> None:
+        """A rule with expire_after='never' outranks the legacy short-term TTL."""
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        old = (datetime.now(UTC) - timedelta(days=14)).isoformat()
+        _insert_memory(conn, "pinned", "pinned note", _MemoryRow(retention="short_term", created_at=old))
+        _insert_memory(conn, "ttl", "plain note", _MemoryRow(retention="short_term", created_at=old))
+        conn.execute("UPDATE memories SET category = 'note' WHERE id = 'pinned'")
+        conn.execute(
+            "INSERT INTO memory_policies (tenant_id, user_id, preset, policy_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "t1",
+                "u1",
+                "custom",
+                json.dumps(
+                    {
+                        "rules": [{"name": "pin-notes", "match": {"category": "note"}, "expire_after": "never"}],
+                        "purge_expired_after": "never",
+                    }
+                ),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        stats = MemoryGC(db_path).run(tenant_id="t1")
+
+        assert stats.expired_memories_deleted == 1
+        conn2 = sqlite3.connect(db_path)
+        assert conn2.execute("SELECT id FROM memories").fetchall() == [("pinned",)]
+        conn2.close()
+
+    def test_explicit_expiry_outranks_policy_pin(self) -> None:
+        """An explicit expires_at is the user's own deadline, even for a pinned row."""
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        _insert_memory(conn, "pinned", "pinned note", _MemoryRow(retention="short_term"))
+        conn.execute("UPDATE memories SET category = 'note', expires_at = ? WHERE id = 'pinned'", (past,))
+        conn.execute(
+            "INSERT INTO memory_policies (tenant_id, user_id, preset, policy_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "t1",
+                "u1",
+                "custom",
+                json.dumps(
+                    {
+                        "rules": [{"name": "pin-notes", "match": {"category": "note"}, "expire_after": "never"}],
+                        "purge_expired_after": "never",
+                    }
+                ),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        MemoryGC(db_path).run(tenant_id="t1")
+
+        conn2 = sqlite3.connect(db_path)
+        assert conn2.execute("SELECT id FROM memories").fetchall() == []
+        conn2.close()
+
+    def test_sensitive_rows_survive_legacy_sweeps(self) -> None:
+        """The is_sensitive contract forbids automatic archival by TTL."""
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        old = (datetime.now(UTC) - timedelta(days=14)).isoformat()
+        _insert_memory(conn, "sensitive", "private note", _MemoryRow(retention="short_term", created_at=old))
+        conn.execute("UPDATE memories SET is_sensitive = 1 WHERE id = 'sensitive'")
+        conn.commit()
+        conn.close()
+
+        MemoryGC(db_path).run(tenant_id="t1")
+
+        conn2 = sqlite3.connect(db_path)
+        assert conn2.execute("SELECT id FROM memories").fetchall() == [("sensitive",)]
         conn2.close()
 
     def test_batch_limiting(self) -> None:

@@ -39,6 +39,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from . import connection_pool, oauth_store, reflect as reflect_mod
+from .activity_log import record_activity
+from .audit import record_secret_defense_event, secret_defense_metadata
 from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
 from .auth_oauth import ForesightOAuthProvider, OAuthEndpointOptions
 from .backend import RedisCompanion, create_backend
@@ -52,7 +54,9 @@ from .backend.schema_ddl import (
     POSTGRES_ONLY_MIGRATIONS,
 )
 from .block_registry import InjectionPoint, initialize_default_blocks
+from .capabilities import get_capabilities_report
 from .capture import CaptureOptions, ReprocessOptions, get_capture_pipeline
+from .client_attribution import AttributionMiddleware, read_cursor, resolve_source_tool, update_cursor
 from .clustering import ClusterResult, cluster_memories
 from .config import (
     BANK_ID,
@@ -128,6 +132,7 @@ from .injection_budget import (
     Lane,
     LaneItem,
     format_budgeted_payload,
+    format_static_and_safety,
 )
 from .llm_client import TenantLLMClient
 from .llm_errors import LLMError, LLMNotConfiguredError
@@ -173,13 +178,14 @@ from .reflection_narrative import (
     generate_insight_narrative,
 )
 from .rest_api import register_rest_routes
+from .retention_policy import expire_memory, restore_memory
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
     SemanticSearchError as _SemanticSearchError,
     SemanticSearchOptions,
     get_semantic_search,
 )
-from .sensitivity import resolve_is_sensitive
+from .sensitivity import evaluate_secrets, resolve_is_sensitive
 from .sql_helpers import join_sql_parts, placeholders, quote_identifier
 from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sync_manager
 from .telemetry import get_telemetry_store
@@ -304,6 +310,18 @@ class MemoryOptions(BaseModel):
         default=None,
         description="Project namespace lane this memory belongs to (default: shared 'default' lane)",
     )
+    source_tool: str | None = Field(
+        default=None,
+        description=(
+            "Explicit calling-tool attribution (e.g. 'claude-code', 'cursor'). "
+            "When omitted, resolved from FORESIGHT_CLIENT, the MCP clientInfo "
+            "handshake, or known environment markers."
+        ),
+    )
+    response_format: Literal["text", "json"] = Field(
+        default="text",
+        description="Output format: 'text' (default) or 'json' (structured schema with candidates).",
+    )
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -404,6 +422,13 @@ class SearchOptions(BaseModel):
     project: str | None = Field(
         default=None,
         description="Namespace lane: restrict retrieval to this project plus the shared 'default' lane",
+    )
+    include_expired: bool = Field(
+        default=False,
+        description=(
+            "Recall policy-expired memories (expired_at set) in addition to live ones. "
+            "Expired memories are labelled with expired_at/expired_by in records."
+        ),
     )
 
 
@@ -542,11 +567,17 @@ class EntityQuery(BaseModel):
 class MemoryAction(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    action: Literal["store", "update", "delete", "archive"] = Field(..., description="Action to perform")
-    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
+    action: Literal["store", "update", "delete", "archive", "expire", "restore"] = Field(
+        ..., description="Action to perform"
+    )
+    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive/expire/restore")
     content: str | None = Field(default=None, description="Content for store/update")
     options: MemoryOptions | None = Field(default=None, description="Options for store")
     updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
+    response_format: Literal["text", "json"] = Field(
+        default="text",
+        description="Output format: 'text' (default) or 'json'.",
+    )
 
 
 class InferredAction(BaseModel):
@@ -601,10 +632,10 @@ class ManageMemoriesParams(BaseModel):
 
     options: MemoryAction | None = Field(default=None, description="Action and parameters")
     user_id: str | None = Field(default=None, description="Optional user ID override")
-    action: Literal["store", "update", "delete", "archive"] | None = Field(
+    action: Literal["store", "update", "delete", "archive", "expire", "restore"] | None = Field(
         default=None, description="Action to perform (fallback when options is not provided)"
     )
-    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
+    memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive/expire/restore")
     content: str | None = Field(default=None, description="Content for store/update")
     store_options: MemoryOptions | None = Field(default=None, description="Options for store")
     updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
@@ -629,6 +660,11 @@ class ManageMemoriesParams(BaseModel):
     auto_tag: bool | None = Field(default=None, description="Flat switch to derive topical tags deterministically")
     agent_id: str | None = Field(default=None, description="Flat namespace lane for store (default: shared lane)")
     project: str | None = Field(default=None, description="Flat project namespace lane for store")
+    source_tool: str | None = Field(default=None, description="Flat calling-tool attribution override for store")
+    response_format: Literal["text", "json"] | None = Field(
+        default=None,
+        description="Flat output format: 'text' (default) or 'json' (structured schema with candidates).",
+    )
 
 
 class SearchMemoriesParams(BaseModel):
@@ -679,6 +715,10 @@ class SearchMemoriesParams(BaseModel):
     )
     agent_id: str | None = Field(default=None, description="Namespace lane filter (own lane + shared 'default')")
     project: str | None = Field(default=None, description="Project namespace lane filter (own lane + shared 'default')")
+    include_expired: bool | None = Field(
+        default=None,
+        description="Recall policy-expired memories (expired_at set) alongside live ones",
+    )
 
 
 class ManageContextBlocksParams(BaseModel):
@@ -1401,7 +1441,10 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
         raise RateLimitExceededError(remaining=remaining, reset_time=reset_time)
 
 
-SCHEMA_VERSION = 17
+# Highest version in the backend migration ledger. Kept as a compatibility
+# constant for callers that imported it; backend_migrations.run_migrations is
+# authoritative for applying schema versions.
+SCHEMA_VERSION = max(MIGRATIONS)
 
 
 def _seed_default_tenant(conn) -> None:
@@ -1957,7 +2000,7 @@ if _oauth_base_url:
         website_url="https://foresight.vectorize.io",
         version="0.19.0",
         auth=_oauth_provider,
-        middleware=[TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+        middleware=[TenantMiddleware(), AttributionMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
     )
 else:
     mcp = FastMCP(
@@ -1965,7 +2008,13 @@ else:
         instructions=FORESIGHT_SERVER_INSTRUCTIONS,
         website_url="https://foresight.vectorize.io",
         version="0.19.0",
-        middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+        middleware=[
+            AuthMiddleware(),
+            TenantMiddleware(),
+            AttributionMiddleware(),
+            InputValidationMiddleware(),
+            RateLimitMiddleware(),
+        ],
     )
 
 # REST surface (PIX-4704 Phase A): HTTP endpoints wrapping the same tool
@@ -2273,8 +2322,9 @@ def _insert_memory_row(conn, request: _StoreRequest, memory: MemoryObject) -> bo
     insert_sql = (
         "INSERT INTO memories (id, user_id, tenant_id, bank_id, category, scope, retention, "
         "content, content_hash, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags, is_sensitive, sensitivity_reason, expires_at, memory_type, agent_id, project) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "created_at, updated_at, tags, is_sensitive, sensitivity_reason, expires_at, memory_type, "
+        "agent_id, project, source_tool) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     insert_params = (
         memory.id,
@@ -2299,6 +2349,7 @@ def _insert_memory_row(conn, request: _StoreRequest, memory: MemoryObject) -> bo
         opts.memory_type or "semantic",
         opts.agent_id or "default",
         opts.project or "default",
+        getattr(opts, "source_tool", None),
     )
     if _supports_execute_returning(conn):
         conn.execute_returning(insert_sql, insert_params).fetchone()
@@ -2355,14 +2406,151 @@ def _link_related_memory(request: _StoreRequest, memory_id: str) -> None:
         logger.warning(f"Failed to create memory relationship: {exc}")
 
 
+_HIGH_SIMILARITY_SCORE = 0.5
+_TFIDF_SUPPORT_SCORE = 0.4
+_RRF_SUPPORT_SCORE = 0.02
+_CANDIDATE_PREVIEW_LEN = 80
+_CANDIDATE_SEARCH_QUERY_LEN = 500
+
+
+def _suggest_relation_type(new_content: str, cand_content: str, score: float, cand_result: Any = None) -> str:
+    """Heuristic determination of candidate relationship type without LLM call."""
+    new_lower = new_content.lower()
+    cand_lower = cand_content.lower()
+
+    contradiction_markers = (
+        "instead of",
+        "no longer",
+        "corrected",
+        "deprecated",
+        "replaced by",
+        "changed from",
+        "never mind",
+        "mistake",
+    )
+    if any(m in new_lower for m in contradiction_markers):
+        return "contradicts"
+
+    causal_markers = (
+        "because",
+        "due to",
+        "caused by",
+        "results in",
+        "therefore",
+        "as a result",
+        "leads to",
+        "consequently",
+    )
+    if any(m in new_lower or m in cand_lower for m in causal_markers):
+        return "derives"
+
+    vector_score = getattr(cand_result, "vector_score", 0.0) or 0.0
+    tfidf_score = getattr(cand_result, "tfidf_cosine_score", 0.0) or 0.0
+    if (
+        vector_score >= _HIGH_SIMILARITY_SCORE
+        or tfidf_score >= _TFIDF_SUPPORT_SCORE
+        or (cand_result is not None and score >= _RRF_SUPPORT_SCORE)
+    ):
+        return "supports"
+    if cand_result is None and score >= _HIGH_SIMILARITY_SCORE:
+        return "supports"
+
+    return "related"
+
+
+def _find_link_candidates(
+    request: _StoreRequest,
+    memory_id: str,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """
+    Find write-time link suggestion candidates for a newly stored memory.
+    FOR-22 / PIX-449: bounded latency, vector/hybrid retriever query, zero extra LLM calls.
+    """
+    candidates: list[dict[str, Any]] = []
+    try:
+        options = HybridSearchOptions(
+            tenant_id=request.tenant_id,
+            limit=limit + 3,
+            fast_path_enabled=False,
+            agent_id=getattr(request.opts, "agent_id", None),
+            project=getattr(request.opts, "project", None),
+        )
+        search_text = (
+            request.content[:_CANDIDATE_SEARCH_QUERY_LEN]
+            if len(request.content) > _CANDIDATE_SEARCH_QUERY_LEN
+            else request.content
+        )
+        retriever = get_hybrid_retriever()
+        search_result = retriever.search(search_text, request.uid, options=options)
+        for r in search_result.results:
+            if r.memory_id == memory_id:
+                continue
+            score = float(r.combined_score or r.rrf_score or 0.0)
+            if score <= 0.0:
+                continue
+            rel_type = _suggest_relation_type(request.content, r.content, score, cand_result=r)
+            preview = (
+                (r.content[:_CANDIDATE_PREVIEW_LEN] + "...") if len(r.content) > _CANDIDATE_PREVIEW_LEN else r.content
+            )
+            candidates.append(
+                {
+                    "memory_id": r.memory_id,
+                    "score": round(score, 4),
+                    "suggested_relation": rel_type,
+                    "preview": preview,
+                }
+            )
+            if len(candidates) >= limit:
+                break
+    except Exception as exc:
+        logger.warning(f"Failed to find write-time link candidates: {exc}")
+    return candidates
+
+
+def _resolve_response_format(options: MemoryAction, opts: MemoryOptions) -> str:
+    """Resolve JSON vs text output format preferring explicit caller overrides."""
+    fmt = getattr(opts, "response_format", None) or "text"
+    opt_fmt = getattr(options, "response_format", None)
+    if opt_fmt and opt_fmt != "text":
+        return str(opt_fmt)
+    return str(fmt)
+
+
+def _evaluate_store_secrets(content: str, tenant_id: str, uid: str, opts: MemoryOptions) -> tuple[str, str | None]:
+    """Run secret-aware write defense and record any audit event."""
+    sec_verdict = evaluate_secrets(content, tenant_id=tenant_id, lane=opts.agent_id)
+    if sec_verdict.action_taken != "clean":
+        record_secret_defense_event(
+            tenant_id,
+            uid,
+            "store",
+            secret_defense_metadata(sec_verdict, lane=opts.agent_id),
+        )
+    if sec_verdict.flagged and opts.is_sensitive is None:
+        opts.is_sensitive = True
+    abort = (
+        "Error: Memory store blocked by secret defense policy (credentials detected)." if sec_verdict.blocked else None
+    )
+    return sec_verdict.content, abort
+
+
 def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
     """Helper to handle memory storage."""
-    if not options.content:
-        return "Error: Content is required for 'store' action"
-    content = options.content.strip()
-    if not content:
-        return "Error: Content is required for 'store' action"
     opts = options.options or MemoryOptions()
+    response_format = _resolve_response_format(options, opts)
+
+    def _format_error(msg: str) -> str:
+        return json.dumps({"error": msg}) if response_format == "json" else msg
+
+    if not options.content or not options.content.strip():
+        return _format_error("Error: Content is required for 'store' action")
+    raw_content = options.content.strip()
+
+    # FOR-46 / PIX-440: Secret-aware write defense
+    content, sec_abort = _evaluate_store_secrets(raw_content, tenant_id, uid, opts)
+    if opts.source_tool is None:
+        opts.source_tool = resolve_source_tool()
 
     # ── PRE_STORE hook ─────────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
@@ -2376,19 +2564,24 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         importance=getattr(opts, "importance", 0.5),
         tags=getattr(opts, "tags", None),
     )
-    abort_message = _emit_pre_store_hooks(hook_ctx, options, opts)
+    abort_message = _emit_pre_store_hooks(hook_ctx, options, opts) or sec_abort
     if abort_message:
-        return abort_message
+        return _format_error(abort_message)
 
     # Hard cap enforcement: check memory count per tenant
     conn = get_db_connection()
     if _tenant_memory_count(conn, uid, tenant_id) >= DEFAULT_MAX_MEMORY_PER_TENANT:
         conn.close()
-        return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
+        err_cap = f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
+        return _format_error(err_cap)
 
     duplicate_message = _bump_duplicate_memory(conn, uid, tenant_id, _content_hash(content))
     if duplicate_message:
-        return duplicate_message
+        return (
+            json.dumps({"status": "duplicate", "message": duplicate_message, "candidates": []})
+            if response_format == "json"
+            else duplicate_message
+        )
 
     request = _StoreRequest(uid=uid, tenant_id=tenant_id, content=content, opts=opts)
     memory, gate_result = _build_stored_memory(request)
@@ -2405,13 +2598,37 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         _link_related_memory(request, memory.id)
     event_content = "[REDACTED - sensitive]" if is_sensitive_bit else content
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory.id, content=event_content, actor=uid))
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
 
     hook_ctx.memory_id = memory.id
     get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
+    record_activity("memory.store", n=1, tool=opts.source_tool)
 
-    return f"Stored memory {memory.id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
+    candidates = _find_link_candidates(
+        request,
+        memory.id,
+        limit=3,
+    )
+
+    if response_format == "json":
+        return json.dumps(
+            {
+                "status": "stored",
+                "memory_id": memory.id,
+                "gate": gate_result.decision,
+                "reason": gate_result.reason,
+                "candidates": candidates,
+            }
+        )
+
+    msg = f"Stored memory {memory.id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
+    if candidates:
+        cand_summary = ", ".join(
+            f"{c['memory_id']} ({c['suggested_relation']}, score={c['score']})" for c in candidates
+        )
+        msg += f". Candidates: [{cand_summary}]"
+    return msg
 
 
 def _emit_pre_update_hooks(hook_ctx: MemoryHookContext) -> str | None:
@@ -2452,8 +2669,10 @@ def _collect_update_columns(
             tenant_id=tenant_id,
             user_id=uid,
         )
-        updates_list.extend(["content = ?", "version = ?"])
-        values.extend([stored_content, (row["version"] or 1) + 1])
+        # Refresh the hash with the text: a stale hash makes later captures of
+        # the redacted wording look like duplicates of content that is gone.
+        updates_list.extend(["content = ?", "content_hash = ?", "version = ?"])
+        values.extend([stored_content, _content_hash(updates.content.strip()), (row["version"] or 1) + 1])
         updates_list.extend(["is_sensitive = ?", "sensitivity_reason = ?"])
         values.extend([1 if is_sensitive_bit else 0, sensitivity_reason])
     if updates.category:
@@ -2486,28 +2705,66 @@ def _collect_update_columns(
     return updates_list, values
 
 
-def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> str:
-    """Helper to handle memory updates."""
+def _validate_memory_update_params(options: MemoryAction) -> tuple[str, MemoryUpdateOptions] | str:
+    """Validate common parameters for update action; returns (memory_id, updates) or error string."""
     if not options.memory_id or not options.updates:
         return "Error: memory_id and updates required for 'update' action"
-
     expires_at = options.updates.expires_at
     if expires_at not in (None, "") and _normalize_expires_at(expires_at) is None:
         return (
             f"Error: expires_at {expires_at!r} is not an ISO-8601 timestamp or epoch seconds. "
             'Pass "" to clear an expiration.'
         )
+    return options.memory_id, options.updates
+
+
+def _evaluate_update_secrets(
+    updates: MemoryUpdateOptions,
+    tenant_id: str,
+    uid: str,
+    options: MemoryAction,
+) -> str | None:
+    """Run secret defense on updated content; returns error message if blocked."""
+    if not updates.content:
+        return None
+    lane = updates.scope or (options.options.agent_id if options.options else None)
+    sec_verdict = evaluate_secrets(updates.content.strip(), tenant_id=tenant_id, lane=lane)
+    if sec_verdict.action_taken != "clean":
+        record_secret_defense_event(
+            tenant_id,
+            uid,
+            "update",
+            secret_defense_metadata(sec_verdict, lane=lane),
+        )
+    if sec_verdict.blocked:
+        return "Error: Memory update blocked by secret defense policy (credentials detected)."
+    updates.content = sec_verdict.content
+    if sec_verdict.flagged and updates.is_sensitive is None:
+        updates.is_sensitive = True
+    return None
+
+
+def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Helper to handle memory updates."""
+    validated = _validate_memory_update_params(options)
+    if isinstance(validated, str):
+        return validated
+    memory_id, updates = validated
+
+    sec_err = _evaluate_update_secrets(updates, tenant_id, uid, options)
+    if sec_err:
+        return sec_err
 
     # ── PRE_UPDATE hook ────────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
         action="update",
-        memory_id=options.memory_id,
+        memory_id=memory_id,
         user_id=uid,
         tenant_id=tenant_id,
-        content=options.updates.content,
-        category=options.updates.category,
-        scope=options.updates.scope,
-        retention=options.updates.retention,
+        content=updates.content,
+        category=updates.category,
+        scope=updates.scope,
+        retention=updates.retention,
     )
     abort_message = _emit_pre_update_hooks(hook_ctx)
     if abort_message:
@@ -2515,18 +2772,18 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
     ).fetchone()
     if not row:
         conn.close()
-        return f"Memory {options.memory_id} not found."
-    updates_list, values = _collect_update_columns(row, options.memory_id, options.updates, tenant_id, uid)
+        return f"Memory {memory_id} not found."
+    updates_list, values = _collect_update_columns(row, memory_id, updates, tenant_id, uid)
     if not updates_list:
         conn.close()
         return "No updates provided."
     updates_list.append("updated_at = ?")
     values.append(datetime.now(UTC).isoformat())
-    values.extend([options.memory_id, uid, tenant_id])
+    values.extend([memory_id, uid, tenant_id])
     update_sql = join_sql_parts(
         "UPDATE memories SET ",
         ", ".join(updates_list),
@@ -2545,26 +2802,26 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     new_evt = "[REDACTED - sensitive]" if was_sensitive else (effective_content or "")
     get_event_bus_with_stream().publish(
         memory_updated(
-            memory_id=options.memory_id,
+            memory_id=memory_id,
             old_content=old_evt,
             new_content=new_evt,
             actor=uid,
         )
     )
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
 
     # ── POST_UPDATE hook ───────────────────────────────────────────────
     hook_ctx.old_content = row["content"]
     hook_ctx.content = effective_content or row["content"]
     get_memory_hook_registry().emit_post(MemoryHookType.POST_UPDATE, hook_ctx)
     # Create memory relationship if specified
-    if options.updates.relation_type and options.updates.related_memory_id:
+    if updates.relation_type and updates.related_memory_id:
         store = get_memory_relationship_store()
         try:
             store.link_memories(
-                source_memory_id=options.memory_id,
-                target_memory_id=options.updates.related_memory_id,
-                relationship_type=options.updates.relation_type,
+                source_memory_id=memory_id,
+                target_memory_id=updates.related_memory_id,
+                relationship_type=updates.relation_type,
                 user_id=uid,
                 options=LinkMemoriesOptions(tenant_id=tenant_id),
             )
@@ -2715,7 +2972,7 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     get_event_bus_with_stream().publish(memory_deleted(memory_id=memory_id, actor=uid))
     conn.commit()
     conn.close()
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     try:
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
@@ -2778,6 +3035,52 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
+def _invalidate_recall_caches(user_id: str, tenant_id: str) -> None:
+    """Drop cached retrieval results after a visibility change (expire/restore)."""
+    try:
+        get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
+    except Exception as exc:
+        logger.debug("retrieval cache invalidation failed: %s", exc)
+
+
+def _handle_memory_expire(uid: str, tenant_id: str, memory_id: str | None) -> str:
+    """Mark a memory expired (reversible middle state, excluded from default retrieval)."""
+    if not memory_id:
+        return "Error: memory_id required for 'expire' action"
+    conn = get_db_connection()
+    try:
+        if not expire_memory(conn, memory_id, uid, tenant_id, expired_by="manual"):
+            return f"Memory {memory_id} not found."
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
+    except Exception as exc:
+        logger.debug("mental model invalidation failed: %s", exc)
+    _invalidate_recall_caches(uid, tenant_id)
+    return f"Expired memory {memory_id}. It is excluded from default retrieval; restore to bring it back."
+
+
+def _handle_memory_restore(uid: str, tenant_id: str, memory_id: str | None) -> str:
+    """Clear the expiry stamp on a memory so default retrieval sees it again."""
+    if not memory_id:
+        return "Error: memory_id required for 'restore' action"
+    conn = get_db_connection()
+    try:
+        if not restore_memory(conn, memory_id, uid, tenant_id):
+            return f"Memory {memory_id} not found or not expired."
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
+    except Exception as exc:
+        logger.debug("mental model invalidation failed: %s", exc)
+    _invalidate_recall_caches(uid, tenant_id)
+    return f"Restored memory {memory_id}."
+
+
 def _flat_kwargs(**fields: Any) -> dict[str, Any]:
     """Keep only the flat tool arguments the caller actually supplied."""
     return {name: value for name, value in fields.items() if value is not None}
@@ -2812,6 +3115,8 @@ def _dispatch_memory_action(uid: str, tenant_id: str, options: MemoryAction) -> 
         "update": lambda: _handle_memory_update(uid, tenant_id, options),
         "delete": lambda: _handle_memory_delete(uid, tenant_id, options.memory_id),
         "archive": lambda: _handle_memory_archive(uid, tenant_id, options.memory_id),
+        "expire": lambda: _handle_memory_expire(uid, tenant_id, options.memory_id),
+        "restore": lambda: _handle_memory_restore(uid, tenant_id, options.memory_id),
     }
     handler = handlers.get(options.action)
     if handler is None:
@@ -2858,9 +3163,11 @@ def manage_memories(
         auto_tag=params.auto_tag,
         agent_id=params.agent_id,
         project=params.project,
+        source_tool=params.source_tool,
         relation_type=params.relation_type,
         related_memory_id=params.related_memory_id,
         is_sensitive=params.is_sensitive,
+        response_format=params.response_format,
     )
     flat_update_kwargs = _flat_kwargs(
         category=params.category,
@@ -2893,8 +3200,11 @@ def manage_memories(
             content=params.content,
             options=store_options,
             updates=updates,
+            response_format=params.response_format or "text",
         )
     else:
+        if params.response_format is not None:
+            options.response_format = params.response_format
         if options.options is None and store_options is not None:
             options.options = store_options
         if options.updates is None and updates is not None:
@@ -3000,6 +3310,7 @@ def _search_options_from_params(params: SearchMemoriesParams) -> SearchOptions:
             signal_weights=params.signal_weights,
             agent_id=params.agent_id,
             project=params.project,
+            include_expired=params.include_expired,
         )
     )
 
@@ -3021,6 +3332,7 @@ def _filter_semantic_matches(
     uid: str,
     tenant_id: str,
     filters: MemoryFilters,
+    include_expired: bool = False,
 ) -> list[Any]:
     """Keep the semantic matches whose row is live and passes the column filters."""
     match_ids = [m.memory_id for m in matches]
@@ -3044,6 +3356,7 @@ def _filter_semantic_matches(
         for m in matches
         if (row := by_id.get(m.memory_id))
         and not _is_expired_row(row, now_iso)
+        and (include_expired or not row.get("expired_at"))
         and (not filters.any_set() or _memory_matches_filters(row, filters))
     ]
 
@@ -3065,8 +3378,10 @@ def _semantic_search_payload(
             query=options.query,
             user_id=uid,
             options=SemanticSearchOptions(
+                tenant_id=tenant_id,
                 limit=options.limit,
                 min_score=options.min_score,
+                include_expired=options.include_expired,
             ),
         )
     except _SemanticSearchError as exc:
@@ -3074,7 +3389,7 @@ def _semantic_search_payload(
     # PIX-4720/4721: filter semantic matches by column filters and drop
     # already-expired memories. ANN top-k is fetched first, so this is a
     # post-filter over the returned IDs (may return fewer than limit).
-    result.matches = _filter_semantic_matches(result.matches, uid, tenant_id, filters)
+    result.matches = _filter_semantic_matches(result.matches, uid, tenant_id, filters, options.include_expired)
     # Reinforce surfaced memories (closes decay loop).
     _auto_reinforce_batch([m.memory_id for m in result.matches], uid, tenant_id)
     get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
@@ -3095,11 +3410,13 @@ def _id_lookup_payload(
     conn = get_db_connection()
     frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
+    expiry_frag = "" if options.include_expired else " AND expired_at IS NULL"
     row = conn.execute(
         join_sql_parts(
             "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
             frag,
             " AND (expires_at IS NULL OR expires_at >= ?)",
+            expiry_frag,
         ),
         (mid, uid, tenant_id, *fparams, now_iso),
     ).fetchone()
@@ -3142,11 +3459,13 @@ def _id_lookup_json(
     conn = get_db_connection()
     frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
+    expiry_frag = "" if options.include_expired else " AND expired_at IS NULL"
     row = conn.execute(
         join_sql_parts(
             "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
             frag,
             " AND (expires_at IS NULL OR expires_at >= ?)",
+            expiry_frag,
         ),
         (mid, uid, tenant_id, *fparams, now_iso),
     ).fetchone()
@@ -3188,6 +3507,7 @@ def _hybrid_search_options(options: SearchOptions, tenant_id: str, *, limit: int
         max_rewrite_variants=options.max_rewrite_variants,
         agent_id=options.agent_id,
         project=options.project,
+        include_expired=options.include_expired,
     )
 
 
@@ -3257,7 +3577,7 @@ def _hybrid_search_json(
             return None
         _auto_reinforce_batch([hit.memory_id for hit in hits], uid, tenant_id)
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
-        items = _hydrate_hybrid_records(hits, uid, tenant_id)
+        items = _hydrate_hybrid_records(hits, uid, tenant_id, options.include_expired)
         return json.dumps(
             {
                 "query_type": "hybrid",
@@ -3306,15 +3626,17 @@ def _keyword_search_where(
     frag, fparams = _build_filter_fragments(filters, agent_id=options.agent_id, project=options.project)
     now_iso = datetime.now(UTC).isoformat()
     expiry_sql = " AND (expires_at IS NULL OR expires_at >= ?)"
+    policy_frag = "" if options.include_expired else " AND expired_at IS NULL"
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         where_sql = join_sql_parts(
             " WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!'",
             frag,
             expiry_sql,
+            policy_frag,
         )
         return where_sql, (uid, tenant_id, f"%{escaped}%", *fparams, now_iso)
-    where_sql = join_sql_parts(" WHERE user_id = ? AND tenant_id = ?", frag, expiry_sql)
+    where_sql = join_sql_parts(" WHERE user_id = ? AND tenant_id = ?", frag, expiry_sql, policy_frag)
     return where_sql, (uid, tenant_id, *fparams, now_iso)
 
 
@@ -3334,13 +3656,18 @@ def _memory_record(row: Any, tenant_id: str, uid: str) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "expires_at": row["expires_at"],
+        "expired_at": row.get("expired_at"),
+        "expired_by": row.get("expired_by"),
+        "source_tool": row.get("source_tool"),
         "agent_id": row["agent_id"],
         "project": row["project"],
         "is_ghost": bool(row["is_ghost"]),
     }
 
 
-def _hydrate_hybrid_records(hits: list[Any], uid: str, tenant_id: str) -> list[dict[str, Any]]:
+def _hydrate_hybrid_records(
+    hits: list[Any], uid: str, tenant_id: str, include_expired: bool = False
+) -> list[dict[str, Any]]:
     """Merge ranked hybrid hits with their stored records, in rank order.
 
     Hybrid retrieval returns ids and scores only; a consumer that needs the
@@ -3350,12 +3677,14 @@ def _hydrate_hybrid_records(hits: list[Any], uid: str, tenant_id: str) -> list[d
     if not ids:
         return []
     now_iso = datetime.now(UTC).isoformat()
+    policy_frag = "" if include_expired else " AND expired_at IS NULL"
     conn = get_db_connection()
     rows = conn.execute(
         join_sql_parts(
             "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND id IN (",
             placeholders(len(ids)),
             ") AND (expires_at IS NULL OR expires_at >= ?)",
+            policy_frag,
         ),
         (uid, tenant_id, *ids, now_iso),
     ).fetchall()
@@ -3512,6 +3841,8 @@ def search_memories(
     if abort_message:
         return json.dumps({"error": abort_message}) if options.response_format == "json" else abort_message
 
+    record_activity("search", n=1)
+
     if options.response_format == "json":
         return _json_search_payload(options, uid, tenant_id, filters, hook_ctx)
 
@@ -3531,6 +3862,114 @@ def search_memories(
 
     # 3. Fallback to basic list/keyword search
     return _keyword_search_payload(options, uid, tenant_id, filters, hook_ctx)
+
+
+@mcp.tool(output_schema=None)
+def get_catch_up(
+    project: str | None = None,
+    tool: str | None = None,
+    limit: int = 20,
+    user_id: str | None = None,
+) -> str:
+    """Return memories written since this tool's last catch-up checkpoint.
+
+    Catches a coding agent up on what other tools (or earlier sessions)
+    stored for the same ``(user, tool, project)`` lane. The cursor lives in
+    ``~/.foresight/cursors.json``; the first call only initializes it and
+    returns an empty result.
+
+    Args:
+        project: Project lane to catch up on. A named lane also returns rows
+            from the shared ``"default"`` lane and rows with no project, matching
+            retrieval semantics; the default is the shared lane alone.
+        tool: Calling-tool name for the cursor key. Defaults to the resolved
+            source tool (FORESIGHT_CLIENT / clientInfo / env markers).
+        limit: Maximum memories to return (capped at 20).
+        user_id: Optional user ID override.
+
+    Returns:
+        One ``- [CATEGORY] content (from <tool>)`` line per memory, or a
+        notice when this is the first catch-up for the cursor.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_account_id()
+    resolved_tool = tool or resolve_source_tool()
+    project_lane = project or "default"
+    # The cursor is per tenant as well: the same user/tool/project in another
+    # tenant is a different lane and must not skip that tenant's memories.
+    cursor_key = f"{tenant_id}:{uid}:{resolved_tool}:{project_lane}"
+    cap = max(1, min(int(limit), 20))
+
+    cursor = read_cursor(cursor_key)
+    now_iso = datetime.now(UTC).isoformat()
+    if cursor is None:
+        update_cursor(cursor_key, f"{now_iso}#")
+        record_activity("catch_up", n=0, tool=resolved_tool)
+        return "Catch-up initialized; no prior cursor existed. Next call returns new memories."
+
+    last_ts, _, last_id = cursor.partition("#")
+    conn = get_db_connection()
+    try:
+        try:
+            if last_id:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL AND (expires_at IS NULL OR expires_at > ?) "
+                    "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, now_iso, last_ts, last_ts, last_id, cap),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL AND (expires_at IS NULL OR expires_at > ?) "
+                    "AND created_at > ? "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, now_iso, last_ts, cap),
+                ).fetchall()
+        except Exception:
+            if last_id:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL "
+                    "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, last_ts, last_ts, last_id, cap),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL AND created_at > ? "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, last_ts, cap),
+                ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        record_activity("catch_up", n=0, tool=resolved_tool)
+        return "No new memories since last catch-up."
+
+    last_row = rows[-1]
+    update_cursor(cursor_key, f"{last_row['created_at']}#{last_row['id']}")
+
+    lines = []
+    for r in rows:
+        content = decrypt_if_encrypted(r["content"], tenant_id=tenant_id, user_id=uid)
+        content = " ".join(str(content).split())
+        category = (r["category"] or "general").upper()
+        origin = r["source_tool"] or "unknown"
+        lines.append(f"- [{category}] {content} (from {origin})")
+    record_activity("catch_up", n=len(lines), tool=resolved_tool)
+    return "\n".join(lines)
 
 
 @mcp.tool(output_schema=None)
@@ -3594,9 +4033,12 @@ def reflect(
                 "cached": True,
                 "cached_at": model["created_at"],
                 "mental_model_id": model["id"],
-                "synthesized_by": "mental_model",
+                "synthesized_by": model.get("synthesized_by") or "mental_model",
                 "latency_ms": 0.0,
+                "degraded": bool(model.get("degraded")),
             }
+            if model.get("degraded"):
+                payload["degraded_reason"] = "cached extractive reflect answer (LLM synthesis was unavailable)"
             get_telemetry_store().record_reflect(cached=True, answer_chars=len(model["answer"]), latency_ms=0.0)
             return json.dumps(payload, indent=2, ensure_ascii=False)
         # Citations no longer resolve — drop the stale model and recompute.
@@ -4129,14 +4571,44 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
             recent = lines[-5:]
 
             for line in recent:
-                content = f"[{block_name}] {line}"
+                clean_line = re.sub(
+                    r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+                    "",
+                    line,
+                    flags=re.IGNORECASE,
+                ).strip()
+                clean_line = re.sub(
+                    r"\[(?:user_preferences|pending_items|session_patterns|project_context)\]\s*",
+                    "",
+                    clean_line,
+                    flags=re.IGNORECASE,
+                ).strip(" -")
+                if not clean_line:
+                    continue
+
+                # FOR-46: block content reaches this insert without passing
+                # through the store handler, so run the same write defense.
+                verdict = evaluate_secrets(clean_line, tenant_id=get_current_account_id())
+                if verdict.action_taken != "clean":
+                    record_secret_defense_event(
+                        get_current_account_id(),
+                        uid,
+                        category,
+                        secret_defense_metadata(verdict),
+                    )
+                if verdict.blocked:
+                    continue
+                clean_line = verdict.content
+
+                content = f"[{block_name}] {clean_line}"
                 tenant_id = get_current_account_id()
                 content_h = _content_hash(content)
+                clean_h = _content_hash(clean_line)
                 existing = conn.execute(
                     "SELECT id, activation_count FROM memories "
-                    "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
+                    "WHERE user_id = ? AND tenant_id = ? AND (content_hash = ? OR content_hash = ?) AND is_ghost = 0 "
                     "ORDER BY created_at DESC LIMIT 1",
-                    (uid, tenant_id, content_h),
+                    (uid, tenant_id, content_h, clean_h),
                 ).fetchone()
                 if existing:
                     conn.execute(
@@ -4152,8 +4624,8 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                     "INSERT INTO memories "
                     "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
                     "created_at, updated_at, tags, emotional_context, metrics, "
-                    "is_ghost, synthesized_from, is_sensitive, sensitivity_reason) "
-                    "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?) "
+                    "is_ghost, synthesized_from, is_sensitive, sensitivity_reason, source_tool) "
+                    "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?, ?) "
                     "ON CONFLICT (id) DO NOTHING",
                     (
                         mid,
@@ -4165,8 +4637,9 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                         tenant_id,
                         now,
                         now,
-                        1 if is_sensitive_bit else 0,
+                        1 if (is_sensitive_bit or verdict.flagged) else 0,
                         sensitivity_reason,
+                        resolve_source_tool(),
                     ),
                 )
                 stored += 1
@@ -4205,15 +4678,34 @@ def _bridge_capture_memories_to_blocks(
         content = raw_content.strip()
         if not content:
             continue
+        clean_content = re.sub(
+            r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        ).strip(" -")
+        if not clean_content:
+            continue
         block = agent.state.get_block(label)
         existing_lines = (
-            {ln.strip() for ln in block.content.splitlines() if ln.strip()} if block and not block.is_empty() else set()
+            {
+                re.sub(
+                    r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+                    "",
+                    ln.strip(),
+                    flags=re.IGNORECASE,
+                ).strip(" -")
+                for ln in block.content.splitlines()
+                if ln.strip()
+            }
+            if block and not block.is_empty()
+            else set()
         )
-        if content in existing_lines:
+        if clean_content in existing_lines:
             continue
-        agent.state.append_to_block(label, content)
-        modified_labels.add(label)
-        appended += 1
+        if agent.state.append_to_block(label, clean_content):
+            modified_labels.add(label)
+            appended += 1
     for label in modified_labels:
         agent._persist_block(label)
     return appended
@@ -4312,6 +4804,9 @@ def process_session_transcript(
         bridged = _bridge_capture_memories_to_blocks(agent, stats.stored_items)
         if bridged:
             _bridge_context_blocks_to_memories(agent, uid)
+
+    # Hands-off auto cleanup and distillation of context blocks
+    _distill_context_blocks(uid, tenant_id)
 
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
 
@@ -4739,7 +5234,7 @@ def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 
         """SELECT id, content, category, importance, strength_trend,
         activation_count, tags, emotional_context, created_at, scope, retention
         FROM memories
-        WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND is_ghost = 0
+        WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND is_ghost = 0 AND expired_at IS NULL
         ORDER BY importance DESC, created_at DESC
         LIMIT ?""",
         (uid, tenant_id, bank_id, limit),
@@ -4949,8 +5444,9 @@ def _insert_curation_entries(
             conn.execute(
                 "INSERT INTO memories "
                 "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
-                "created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, importance) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)",
+                "created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, "
+                "importance, source_tool) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?)",
                 (
                     memory_id,
                     entry["content"],
@@ -4964,6 +5460,7 @@ def _insert_curation_entries(
                     now,
                     json.dumps(entry.get("tags", [])),
                     entry.get("importance", 0.75),
+                    resolve_source_tool(),
                 ),
             )
             created_ids.append(memory_id)
@@ -5711,9 +6208,15 @@ def inject_context(
             uid, tenant_id, terms, agent_id=agent_id, project=project
         )
         legacy_formatted = _format_injection_output(view)
+        top_score = max((m.combined_score for m in memories), default=0.0)
+        static_safety_text = _format_static_and_safety_lanes(uid, tenant_id, agent_id=agent_id, project=project)
         payload: dict[str, Any] = {
             "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
             "memories": [m.to_dict() for m in memories],
+            # Unrounded: the hook's score gate compares this against a
+            # threshold, and rounding can lift a just-below result above it.
+            "top_score": float(top_score),
+            "static_and_safety": static_safety_text,
             "context_blocks": blocks_by_point,
             "patterns": _active_observations(uid, tenant_id, agent_id=agent_id, project=project),
         }
@@ -5905,6 +6408,26 @@ def _join_sections(sections: list[list[str]]) -> list[str]:
             lines.append("")
         lines.extend(section)
     return lines
+
+
+def _format_static_and_safety_lanes(
+    uid: str,
+    tenant_id: str,
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> str:
+    """Format static and safety lanes for inclusion during gated recall."""
+    block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
+    lane_items: dict[Lane, list[LaneItem]] = {Lane.STATIC: [], Lane.SAFETY: []}
+    user_prefs = block_agent.state.get_block(USER_PREFERENCES)
+    if user_prefs and not user_prefs.is_empty():
+        lane_items[Lane.STATIC].append(
+            LaneItem(id="user_preferences", content=user_prefs.content, score=0.9, lane=Lane.STATIC)
+        )
+    safety = block_agent.state.get_block("safety") or block_agent.state.get_block("safety_notes")
+    if safety and not safety.is_empty():
+        lane_items[Lane.SAFETY].append(LaneItem(id="safety", content=safety.content, score=1.0, lane=Lane.SAFETY))
+    return format_static_and_safety(lane_items)
 
 
 def _format_injection_output(view: InjectionView) -> str:
@@ -6178,7 +6701,7 @@ def _fetch_session_memories_raw(
         return conn.execute(
             "SELECT id, content, importance, scope, category, created_at, tags "
             "FROM memories "
-            "WHERE user_id = ? AND tenant_id = ? AND scope = 'session' AND is_ghost = 0 "
+            "WHERE user_id = ? AND tenant_id = ? AND scope = 'session' AND is_ghost = 0 AND expired_at IS NULL "
             "ORDER BY importance DESC, created_at DESC "
             "LIMIT ?",
             (uid, tenant_id, limit),
@@ -6201,7 +6724,7 @@ def _fetch_high_confidence_memories(
             "FROM memories "
             "WHERE user_id = ? AND tenant_id = ? "
             "AND scope IN ('arc', 'fact', 'trait') "
-            "AND importance >= ? AND is_ghost = 0 "
+            "AND importance >= ? AND is_ghost = 0 AND expired_at IS NULL "
             "ORDER BY importance DESC, created_at DESC "
             "LIMIT ?",
             (uid, tenant_id, min_importance, limit),
@@ -6600,13 +7123,13 @@ def _start_maintenance_gc_thread() -> None:
     contradict mode is intentionally excluded — it flags for admin review only
     and should not run unattended.
     """
-    interval_hours = float(os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS", "24"))
+    interval_hours = float(os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS", "1"))
     if not (isinstance(interval_hours, (int, float)) and interval_hours > 0 and math.isfinite(interval_hours)):
         logger.warning(
-            "Invalid FORESIGHT_MAINTENANCE_INTERVAL_HOURS=%r, falling back to 24h",
+            "Invalid FORESIGHT_MAINTENANCE_INTERVAL_HOURS=%r, falling back to 1h",
             os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS"),
         )
-        interval_hours = 24.0
+        interval_hours = 1.0
 
     def _maintenance_loop() -> None:
         time.sleep(60)
@@ -7406,6 +7929,7 @@ def get_system_status(
     if opts.include_cache_metrics:
         _add_cache_metrics(result, opts, count)
     result["encryption"] = get_encryption_engine().get_status().to_dict()
+    result["capabilities"] = get_capabilities_report(tenant_id)
     return json.dumps(result, indent=2)
 
 
@@ -7693,14 +8217,9 @@ def manage_entities(action: EntityAction, user_id: str | None = None) -> str:
             return "Content is required for entity extraction"
         extractor = get_entity_extractor()
         result = _run_async(extractor.extract(action.content))
-        return json.dumps(
-            {
-                "user_id": uid,
-                "entities": [e.to_dict() for e in result.entities],
-                "relationships": [r.to_dict() for r in result.relationships],
-            },
-            indent=2,
-        )
+        # to_dict carries the degradation fields (degraded / degraded_reason),
+        # so a salvaged LLM response is reported instead of looking complete.
+        return json.dumps({"user_id": uid, **result.to_dict()}, indent=2)
 
     if action.action == "link":
         if not action.memory_id or not action.entity_ids:
@@ -7959,7 +8478,7 @@ def _fetch_memories_for_clustering(
         rows = conn.execute(
             """SELECT id, content, user_id, tenant_id
                FROM memories
-               WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0
+               WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 AND expired_at IS NULL
                ORDER BY created_at DESC
                LIMIT ?""",
             (uid, tenant_id, limit),
@@ -8281,6 +8800,7 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
                     WHERE r.source_memory_id = m.id AND r.relationship_type = 'derives') AS parent_count
             FROM memories m
             WHERE m.user_id = ? AND m.tenant_id = ? AND m.inferred = 1 AND m.is_ghost = 0
+              AND m.expired_at IS NULL
               AND (m.review_status IS NULL OR m.review_status != 'declined')
             ORDER BY parent_count DESC, m.created_at DESC
             LIMIT ?
@@ -8334,7 +8854,7 @@ def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=False, status="approved")
 
@@ -8365,7 +8885,7 @@ def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: s
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     return _tool_response(
         ok=True, action="decline", memory_id=memory_id, already_applied=False, status="declined", reason=reason
@@ -8395,7 +8915,7 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     return _tool_response(ok=True, action="undo", memory_id=memory_id, status="unreviewed")
 
@@ -8563,7 +9083,8 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     synthesizer = get_enhanced_synthesizer() if options.enhanced else get_memory_system()["synthesizer"]
     conn = get_db_connection()
     rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
+        "AND expired_at IS NULL ORDER BY created_at DESC LIMIT ?",
         (uid, tenant_id, options.limit),
     ).fetchall()
     conn.close()
@@ -9752,6 +10273,28 @@ async def ui_api_inject(request: Any) -> Any:
     except Exception:
         data = {"formatted": str(res)}
     return JSONResponse(data if isinstance(data, dict) else {"formatted": str(res)})
+
+
+@mcp.custom_route("/ui/api/telemetry/gating", methods=["POST"])
+@_ui_protected
+async def ui_api_telemetry_gating(request: Any) -> Any:
+    """Record a gated recall decision from client hooks."""
+    try:
+        body = await request.json()
+        surface = str(body.get("surface") or "claude_hook")
+        decision = str(body.get("decision") or "injected")
+        top_score = float(body.get("top_score") or 0.0)
+        threshold = float(body.get("threshold") or 0.0)
+        get_telemetry_store().record_gating(
+            surface=surface,
+            decision=decision,
+            top_score=top_score,
+            threshold=threshold,
+        )
+        return JSONResponse({"ok": True, "recorded": decision})
+    except Exception as e:
+        logger.warning("Telemetry gating recording failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
 @mcp.custom_route("/ui/api/capture", methods=["POST"])

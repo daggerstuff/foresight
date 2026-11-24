@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from rich.console import Console
 
+import foresight
 import foresight.__main__ as main_module
 from foresight_cli.cli import main as cli_main
 from foresight_cli.commands import system as system_commands
@@ -31,6 +35,31 @@ def test_main_help_prints_usage(capsys):
         main_module.main()
 
     assert "Usage: foresight-server" in capsys.readouterr().out
+
+
+def test_main_version_prints_version(capsys):
+
+    with patch.object(main_module.sys, "argv", ["foresight-server", "--version"]):
+        main_module.main()
+
+    assert capsys.readouterr().out.strip() == f"foresight {foresight.__version__}"
+
+
+def test_cli_version_prints_version(capsys):
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main(["--version"])
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"foresight {foresight.__version__}"
+
+
+def test_version_matches_pyproject():
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+
+    assert foresight.__version__ == declared
 
 
 def test_status_human_formats_payload_budget_weights_and_injection_health():

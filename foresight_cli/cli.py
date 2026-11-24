@@ -17,6 +17,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from foresight import __version__ as foresight_version
 from foresight.config import load_dotenv_walkup
 
 from . import completion
@@ -30,8 +31,10 @@ from .commands import (
     eval as eval_cmd,
     graph,
     memory,
+    retention,
     rrf,
     security,
+    sync,
     system,
     users,
 )
@@ -83,6 +86,7 @@ _GROUPS = (
     ("documents", "Manage source documents and chunks.", documents),
     ("graph", "Graph, entity, and clustering operations.", graph),
     ("decay", "Decay, strength, recovery, and relevance.", decay),
+    ("retention", "Inspect and set declarative retention policies.", retention),
 )
 
 _ALIASES = (
@@ -104,6 +108,7 @@ _ALIASES = (
     ("reflect", analysis, "reflect"),
     ("profile", analysis, "profile"),
     ("prove", benchmark, "run"),
+    ("sync", sync, "sync"),
 )
 
 
@@ -163,6 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", "-j", dest="global_json", action="store_true", help=SUPPRESS)
     parser.add_argument("--user-id", "-u", dest="global_user_id", default=None, help=SUPPRESS)
     parser.add_argument("--verbose", "-v", dest="global_verbose", action="store_true", help="Verbose output")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"foresight {foresight_version}",
+        help="Show the version and exit.",
+    )
     parser.add_argument(
         "--install-completion",
         dest="global_install_completion",

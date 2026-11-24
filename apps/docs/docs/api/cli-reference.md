@@ -28,6 +28,7 @@ uv run python scripts/foresight-cli.py --help
 | `--json`, `-j`              | Emit the raw backend JSON envelope or a wrapped error envelope | `false` |
 | `--user-id`, `-u`           | Override the active user ID                                    | auto    |
 | `--verbose`, `-v`           | Verbose output                                                 | `false` |
+| `--version`                 | Print the version and exit                                     | -       |
 | `--install-completion`      | Install completion for the current shell                       | `false` |
 | `--show-completion [SHELL]` | Print the completion script for the current shell and exit     | none    |
 

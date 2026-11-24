@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -22,6 +23,7 @@ logger = logging.getLogger("foresight_telemetry")
 
 # Rolling window of latency samples kept for percentile reporting.
 LATENCY_WINDOW_SIZE = 100
+MAX_RECENT_GATING_DECISIONS = 50
 
 DEFAULT_TELEMETRY_PATH = Path(
     os.environ.get("FORESIGHT_TELEMETRY_PATH", Path.home() / ".config" / "foresight" / "telemetry.json")
@@ -52,6 +54,9 @@ class TelemetryData:
     total_cost_saved_usd: float = 0.0
     recent_latencies_ms: list[float] = field(default_factory=list)
     surfaces: dict[str, dict[str, Any]] = field(default_factory=dict)
+    total_gated_turns: int = 0
+    total_injected_turns: int = 0
+    gating_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
     reflect_calls: int = 0
     reflect_cache_hits: int = 0
     reflect_cache_misses: int = 0
@@ -82,6 +87,9 @@ class TelemetryStore:
                         total_cost_saved_usd=raw.get("total_cost_saved_usd", 0.0),
                         recent_latencies_ms=raw.get("recent_latencies_ms", []),
                         surfaces=raw.get("surfaces", {}),
+                        total_gated_turns=raw.get("total_gated_turns", 0),
+                        total_injected_turns=raw.get("total_injected_turns", 0),
+                        gating_decisions=raw.get("gating_decisions", {}),
                         reflect_calls=raw.get("reflect_calls", 0),
                         reflect_cache_hits=raw.get("reflect_cache_hits", 0),
                         reflect_cache_misses=raw.get("reflect_cache_misses", 0),
@@ -161,6 +169,55 @@ class TelemetryStore:
             self._save_locked()
         self.record_injection(surface="reflect", injected_chars=answer_chars, latency_ms=latency_ms)
 
+    def record_gating(
+        self,
+        surface: str = "generic",
+        *,
+        decision: str,
+        top_score: float = 0.0,
+        threshold: float = 0.0,
+    ) -> None:
+        """Record a gated recall decision (gated vs injected) for A/B tracking."""
+        decision = (decision or "").strip().lower()
+        if decision not in ("gated", "injected"):
+            # The summary counters only recognize these two; persisting anything
+            # else would show decisions that never appear in the totals.
+            raise ValueError(f"unknown gating decision {decision!r}; expected 'gated' or 'injected'")
+        # NaN/inf would be written verbatim and make the JSON summary invalid.
+        score = top_score if math.isfinite(top_score) else None
+        thresh = threshold if math.isfinite(threshold) else None
+        with self._lock:
+            self._data.last_updated = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if decision == "gated":
+                self._data.total_gated_turns += 1
+            elif decision == "injected":
+                self._data.total_injected_turns += 1
+
+            surf_key = surface.strip().lower() or "generic"
+            if surf_key not in self._data.gating_decisions:
+                self._data.gating_decisions[surf_key] = {
+                    "gated": 0,
+                    "injected": 0,
+                    "recent_decisions": [],
+                }
+            entry = self._data.gating_decisions[surf_key]
+            if decision == "gated":
+                entry["gated"] = entry.get("gated", 0) + 1
+            elif decision == "injected":
+                entry["injected"] = entry.get("injected", 0) + 1
+            recent = entry.setdefault("recent_decisions", [])
+            recent.append(
+                {
+                    "decision": decision,
+                    "top_score": round(score, 4) if score is not None else None,
+                    "threshold": round(thresh, 4) if thresh is not None else None,
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            )
+            if len(recent) > MAX_RECENT_GATING_DECISIONS:
+                recent.pop(0)
+            self._save_locked()
+
     def get_summary(self) -> dict[str, Any]:
         """Return structured telemetry dashboard data."""
         with self._lock:
@@ -190,6 +247,11 @@ class TelemetryStore:
                 "latency_p95_ms": round(p95, 1),
                 "latency_avg_ms": round(avg_lat, 1),
                 "surfaces": self._data.surfaces,
+                "gating": {
+                    "total_gated": self._data.total_gated_turns,
+                    "total_injected": self._data.total_injected_turns,
+                    "surfaces": self._data.gating_decisions,
+                },
                 "reflect_calls": self._data.reflect_calls,
                 "reflect_cache_hits": self._data.reflect_cache_hits,
                 "reflect_cache_misses": self._data.reflect_cache_misses,

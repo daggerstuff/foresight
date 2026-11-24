@@ -73,7 +73,7 @@ Out of scope:
 | Context blocks             | Sensitive      | Distilled user preferences, project state, patterns — cross-session by design |
 | Tenant / user identifiers  | Internal       | Every store and query is scoped by `tenant_id` + `user_id`                    |
 | `FORESIGHT_ENCRYPTION_KEY` | Secret         | AES-256-GCM master key; optional at-rest encryption layer                     |
-| `FORESIGHT_DB_URL`         | Secret         | Database DSN (Postgres or SQLite path)                                        |
+| `FORESIGHT_DB_URL`         | Secret         | PostgreSQL DSN (required at runtime; SQLite is test-only)                     |
 | LLM provider API keys      | Secret         | Outbound-only; used for extraction and semantic search backends               |
 
 ### Trust Boundaries
@@ -83,7 +83,7 @@ Agent / CLI client ──── MCP protocol (stdio | HTTP) ────▶ Fore
                                                             │
                               ┌─────────────────────────────┼──────────────────────────┐
                               ▼                             ▼                          ▼
-                    Postgres / SQLite                LLM provider APIs            Redis / Kafka
+                    PostgreSQL 17 + pgvector         LLM provider APIs            Redis / Kafka
                     (memory store)                   (outbound, extraction)       (companion streams)
 ```
 

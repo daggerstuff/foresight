@@ -406,3 +406,21 @@ def format_budgeted_payload(
         total_chars=len(formatted),
         budget=budget,
     )
+
+
+def format_static_and_safety(lane_items: dict[Lane, list[LaneItem]]) -> str:
+    """Format only static and safety lanes, ignoring retrieval and dynamic lanes.
+
+    Ensures static profile preferences and clinical safety notes are preserved
+    even when memory retrieval is below the gating threshold.
+    """
+    sections: list[str] = []
+    for lane in (Lane.STATIC, Lane.SAFETY):
+        items = lane_items.get(lane, [])
+        if not items:
+            continue
+        lane_lines = [f"- [{item.id}] {item.content.strip()}" for item in items if item.content.strip()]
+        if lane_lines:
+            sections.append(f"[{lane.value}]")
+            sections.extend(lane_lines)
+    return "\n".join(sections)

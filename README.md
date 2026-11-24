@@ -105,6 +105,21 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `get_system_status`          | Health telemetry, cache statistics, and memory counts                | `include_trends=True`                             |
 | `export_profile`             | Signed portable profile export (profile + mental models + observations) | `format="json"\|"markdown"`, `agent_id`, `project` |
 
+### Subsystem Capabilities & Fallback Transparency (FOR-18)
+`get_system_status` and `foresight doctor` expose an explicit `capabilities` block detailing live components:
+- `embedder`: active embedding provider (`fastembed`, `openai`, or deterministic `local-hash` fallback), dimension, and model.
+- `reranker`: cross-encoder status (`enabled`, `active`, `provider`).
+- `llm`: configured status, provider, and model.
+- `encryption`: AES-256-GCM status and key readiness.
+- `redis`: presence and connectivity of the companion cache.
+
+`reflect` and entity extraction report their own fallbacks in-band with
+`degraded: true` and `degraded_reason: "..."` (extractive answers, salvaged
+LLM JSON, rule-based extraction). Retrieval has no per-result fallback flag:
+hits served by the deterministic `local-hash` embedder are identified by
+`capabilities.embedder` (`provider: "local-hash"`, `real: false`) in
+`get_system_status` and `foresight doctor`.
+
 **Namespace lanes:** `manage_memories`, `search_memories`, `inject_context`,
 `reflect`, `manage_mental_models`, `curate_observations`,
 `manage_context_blocks`, and `query_memories_temporal` accept optional
@@ -121,7 +136,8 @@ see-everything behavior. Context blocks also accept `visibility`
 | :------------------------- | :------------------------- | :-------------------------------------------------- |
 | `FORESIGHT_DB_URL`         | _Required_                 | PostgreSQL connection string with SSL enabled       |
 | `FORESIGHT_ENCRYPTION_KEY` | _Optional_                 | Master AES-256-GCM symmetric key (32 bytes hex/b64) |
-| `REDIS_URL`                | `redis://localhost:6379/0` | Ephemeral cache and distributed lock store          |
+| `FORESIGHT_REDIS_URL`      | _Optional_ (`""`)          | Ephemeral cache and distributed lock store          |
+| `REDIS_URL`                | _Optional_                 | Infrastructure fallback for `FORESIGHT_REDIS_URL`   |
 | `FORESIGHT_DEFAULT_TENANT` | `default`                  | Default tenant isolation domain                     |
 | `FORESIGHT_LLM_PROVIDER`   | `anthropic`                | LLM extraction provider (`anthropic`, `openai`)     |
 | `FORESIGHT_RATE_LIMIT`     | `60`                       | Max tool calls per minute per tenant                |
@@ -137,6 +153,15 @@ see-everything behavior. Context blocks also accept `visibility`
   cryptographic key identifiers.
 - **Tenant Isolation**: Mandatory tenant segregation on every database query and
   embedding lookup.
+- **Retention & Expiry**: `foresight retention set` writes the declarative policy
+  that garbage collection applies. Policy-expired memories leave default recall
+  but stay restorable until `purge_expired_after` (default `never`). A memory's
+  own `expires_at` is different: once that deadline passes, the next GC run
+  hard-deletes it — it is not restorable and `purge_expired_after` does not
+  apply. A *future* `expires_at` does not shield a memory from a policy rule, so
+  a 30-day-old memory matching a `7d` rule still expires on schedule. Memories
+  marked `is_sensitive` are never auto-expired, purged, or archived — delete them
+  explicitly if that is what you want.
 - For complete threat modeling and trust boundary details, see
   [THREAT_MODEL.md](THREAT_MODEL.md) and [SECURITY.md](SECURITY.md).
 
@@ -165,7 +190,15 @@ and published results — live in [BENCHMARKS.md](BENCHMARKS.md).
 ## 🚀 Deployment & Operational Runbooks
 
 Foresight supports containerized Docker execution as well as systemd daemon orchestration:
-- **Docker Compose**: Launch PostgreSQL with pgvector, Redis, and Foresight MCP server via `docker compose up -d`.
+- **Docker Compose**: `docker-compose.yml` forwards `FORESIGHT_DB_URL`, `FORESIGHT_REDIS_URL`, and `REDIS_URL` from your shell into the service, so export them before launching:
+
+  ```bash
+  export FORESIGHT_DB_URL="postgresql://user:pass@host:5432/foresight"
+  export FORESIGHT_REDIS_URL="redis://host:6379/0"   # optional
+  docker compose up -d
+  ```
+
+  The compose file defines only the server; provide PostgreSQL 17 + pgvector and Redis separately (or with a compose override).
 - **Systemd Service**: A reference service definition is provided in `foresight.service` for standalone production host deployment.
 - **Connection Pool Tuning**: Configure `MAX_CONNECTIONS` and `POOL_RECYCLE_SECONDS` to prevent connection exhaustion.
 - **Circuit Breaker Policies**: Upstream LLM extraction requests fail over automatically when transient provider rate limits occur.

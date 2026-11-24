@@ -391,7 +391,7 @@ from .websocket.subscriptions import (
     reset_subscription_manager as reset_subscription_manager,
 )
 
-__version__ = "1.2.0"
+__version__ = "0.19.0"
 __all__ = [
     "DEFAULT_BLOCK_SCHEMAS",
     "DEFAULT_CHUNK_CHAR_BUDGET",

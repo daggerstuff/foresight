@@ -695,6 +695,53 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_context_blocks_namespace "
         "ON context_blocks(tenant_id, user_id, agent_id, project, visibility)",
     ],
+    26: [
+        # Memanto-inspired upgrades:
+        # - source_tool: which coding tool (claude-code, cursor, codex, ...) wrote
+        #   the memory, resolved per request. Distinct from source_service,
+        #   which tracks internal writers (foresight / ai-services / astro).
+        # - expired_at / expired_by: reversible expiry state. Expired memories
+        #   are excluded from default retrieval but recallable via
+        #   include_expired; restore clears the stamp. expired_by records the
+        #   cause: 'policy:<rule>' | 'manual' | 'conflict-resolution' |
+        #   'retention:<category>'. purge_expired_after is the only destructive
+        #   path and defaults to 'never'.
+        # - memory_policies: declarative per-(tenant, user) retention policy
+        #   (retention map + ordered rules + purge window) as JSON.
+        "ALTER TABLE memories ADD COLUMN source_tool TEXT",
+        "ALTER TABLE memories ADD COLUMN expired_at TEXT",
+        "ALTER TABLE memories ADD COLUMN expired_by TEXT",
+        """CREATE TABLE IF NOT EXISTS memory_policies (
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            preset TEXT,
+            policy_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, user_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_memory_policies_scope ON memory_policies(tenant_id, user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_expired ON memories(tenant_id, user_id, expired_at)",
+    ],
+    27: [
+        # Cached reflections keep the synthesis mode that produced them, so a
+        # mental-model cache hit reports the same degraded status (and reason)
+        # as the answer it replays instead of claiming a clean LLM synthesis.
+        "ALTER TABLE mental_models ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE mental_models ADD COLUMN synthesized_by TEXT",
+    ],
+    28: [
+        # Context blocks track whether their content is machine-generated, so
+        # distillation can refresh its own output without overwriting a
+        # hand-edited block.
+        "ALTER TABLE context_blocks ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0",
+    ],
+    29: [
+        # Models written before the provenance column existed have unknown
+        # provenance; mark them stale so they are recomputed instead of
+        # reported as clean. Kept out of migration 27 because databases that
+        # already recorded 27 would never re-run it.
+        "UPDATE mental_models SET stale = 1 WHERE synthesized_by IS NULL",
+    ],
 }
 
 

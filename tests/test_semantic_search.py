@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from foresight.semantic_search import (
     SemanticMatch,
     SemanticSearch,
     SemanticSearchError,
+    SemanticSearchOptions,
     SemanticSearchResult,
     cosine_similarity,
     deserialize_vector,
@@ -176,6 +178,42 @@ def test_index_memory_persists_vector():
     assert row is not None
     assert row[1] == LOCAL_HASH_DIM
     assert row[2] == LOCAL_HASH_DIM * 4
+
+
+def test_search_excludes_expired_unless_requested():
+    """Default recall drops expired_at and past expires_at; include_expired keeps only the former."""
+    db = _make_test_db()
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE memories (
+            id TEXT PRIMARY KEY, tenant_id TEXT, user_id TEXT, content TEXT,
+            expired_at TEXT, expires_at TEXT
+        )"""
+    )
+    now = datetime.now(UTC).isoformat()
+    past = "2000-01-01T00:00:00+00:00"
+    conn.execute("INSERT INTO memories VALUES ('live','default','u1','hello',NULL,NULL)")
+    conn.execute("INSERT INTO memories VALUES ('revoked','default','u1','hello',?,NULL)", (now,))
+    conn.execute("INSERT INTO memories VALUES ('scheduled','default','u1','hello',NULL,?)", (past,))
+    conn.commit()
+    conn.close()
+
+    with _patched_db(db) as store:
+        for mid in ("live", "revoked", "scheduled"):
+            store.index_memory(memory_id=mid, text="hello world", user_id="u1")
+        default = store.search(
+            "hello world",
+            "u1",
+            options=SemanticSearchOptions(tenant_id="default", limit=10, min_score=0.0),
+        )
+        inclusive = store.search(
+            "hello world",
+            "u1",
+            options=SemanticSearchOptions(tenant_id="default", limit=10, min_score=0.0, include_expired=True),
+        )
+
+    assert {m.memory_id for m in default.matches} == {"live"}
+    assert {m.memory_id for m in inclusive.matches} == {"live", "revoked"}
 
 
 def test_index_memory_upserts_on_conflict():

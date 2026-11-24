@@ -11,13 +11,20 @@ uv sync --group dev          # installs runtime + dev deps into .venv
 export FORESIGHT_DB_URL='postgresql://user:pass@host:5432/db?sslmode=require'
 ```
 
-No Postgres handy? The test suite runs on SQLite automatically; only a handful
-of Postgres-specific paths need the real thing (CI provides one).
+No Postgres handy? Unit tests use SQLite fixtures, but the pytest harness
+derives a `foresight_test` Postgres DSN from `FORESIGHT_DB_URL` and skips the
+suite when it is absent. Set `FORESIGHT_DB_URL` (CI provides one) to run the
+full suite.
+
+`FORESIGHT_TEST_DB_URL` overrides the derived DSN outright and takes
+precedence. Either way, the harness **truncates every application table** in
+that database before and after each test, so point it only at a disposable
+database — never at one whose data you care about, and never at production.
 
 ## Daily Commands
 
 ```bash
-uv run pytest tests/ -x -q            # tests (SQLite-backed)
+uv run pytest tests/ -x -q            # tests (truncates the disposable test DB)
 uv run pytest tests/test_foo.py -q    # one file while iterating
 uv run ruff check .                   # lint — must pass, zero suppressions
 uv run pyright                        # type check
@@ -34,8 +41,8 @@ uv run bandit -c pyproject.toml -r foresight foresight_cli scripts
    `tests/test_memory_scope.py`.
 3. **Secrets are env-only.** Nothing hardcodes, logs, or echoes
    `FORESIGHT_DB_URL`, `FORESIGHT_ENCRYPTION_KEY`, or provider keys.
-4. **SQLite is for tests; Postgres is for prod.** Don't add SQLite-only SQL to
-   production paths.
+4. **SQLite is test-only; Postgres is the runtime.** Don't add SQLite-only SQL
+   to production paths.
 5. **Match the house style.** Lazy imports in the server hot path, singleton
    accessors via module-level `get_*()` functions, pydantic validation at tool
    boundaries. See [ARCHITECTURE.md](ARCHITECTURE.md) for the map.

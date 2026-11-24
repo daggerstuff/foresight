@@ -294,7 +294,10 @@ def _make_test_db():
             synthesized_from TEXT,
             is_sensitive INTEGER DEFAULT 0,
             sensitivity_reason TEXT,
-            activation_count INTEGER DEFAULT 0
+            activation_count INTEGER DEFAULT 0,
+            source_tool TEXT,
+            expired_at TEXT,
+            expires_at TEXT
         )"""
     )
     conn.execute(
@@ -346,6 +349,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "compaction_lifecycle",
         "curate_observations",
         "export_profile",
+        "get_catch_up",
         "get_system_status",
         "inject_context",
         "ingest_document_file",
@@ -1076,6 +1080,7 @@ def _make_curation_test_db():
             decay_rate REAL DEFAULT 0.01, retrieval_count INTEGER DEFAULT 0,
             strength_trend TEXT DEFAULT 'stable', last_retrieved_at TEXT,
             related_memory_id TEXT, superseded_by TEXT,
+            source_tool TEXT, expired_at TEXT, expires_at TEXT,
             accessed_at TEXT DEFAULT CURRENT_TIMESTAMP
         )"""
     )
@@ -2026,7 +2031,9 @@ def test_memory_hard_cap_enforcement():
             activation_count INTEGER DEFAULT 1,
             importance REAL DEFAULT 0.5,
             is_sensitive INTEGER NOT NULL DEFAULT 0,
-            sensitivity_reason TEXT
+            sensitivity_reason TEXT,
+            expired_at TEXT,
+            expires_at TEXT
         )""")
         conn.commit()
         conn.close()

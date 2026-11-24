@@ -183,6 +183,9 @@ class HybridSearchOptions:
     # None = unscoped (legacy behavior, sees every lane).
     agent_id: str | None = None
     project: str | None = None
+    # Reversible expiry: expired memories (expired_at set) are excluded from
+    # default retrieval; include_expired=True recalls them explicitly.
+    include_expired: bool = False
 
 
 VALID_SIGNAL_WEIGHT_KEYS = frozenset({"keyword", "tfidf_cosine", "vector", "graph", "temporal"})
@@ -496,8 +499,9 @@ class HybridRetriever:
         # TF-IDF cache: maps (user_id, tenant_id) -> {"idf": dict, "doc_count": int,
         #   "docs": dict[id, list[str]]}
         # Invalidated when doc_count changes (new/deleted memories).
-        # Key: (user_id, tenant_id, agent_id, project) — the full namespace.
-        self._tfidf_cache: dict[tuple[str, str, str | None, str | None], dict[str, Any]] = {}
+        # Key: (user_id, tenant_id, agent_id, project, include_expired) — the
+        # full namespace plus the expiry visibility flag.
+        self._tfidf_cache: dict[tuple[str, str, str | None, str | None, bool], dict[str, Any]] = {}
         self._tfidf_cache_lock = threading.Lock()
         self._schema_cache: dict[str, set[str]] = {}
         self._result_cache: OrderedDict[tuple, Any] = OrderedDict()
@@ -575,8 +579,8 @@ class HybridRetriever:
         if table_name in self._schema_cache:
             return self._schema_cache[table_name]
 
-        if self._backend is not None:
-            # Backend path: assume standard schema
+        if self._backend is not None and getattr(self._backend, "backend_type", None) == "postgresql":
+            # Postgres backend: assume standard schema
             if table_name == "memory_entities":
                 cols: set[str] = {
                     "id",
@@ -608,6 +612,26 @@ class HybridRetriever:
         self._schema_cache[table_name] = cols
         return cols
 
+    def _memories_has_expiry(self) -> bool:
+        """True when the memories table carries the expired_at column.
+
+        Postgres is migration-managed so the column is assumed present; other
+        backends (SQLite test schemas) are introspected via PRAGMA.
+        """
+        backend = self._backend
+        if backend is not None and getattr(backend, "backend_type", None) == "postgresql":
+            return True
+        return "expired_at" in self._detect_columns("memories")
+
+    def _expiry_frag(self, options: HybridSearchOptions | None, alias: str = "") -> str:
+        """SQL fragment excluding policy-expired memories, or "" when inapplicable."""
+        if options is not None and options.include_expired:
+            return ""
+        if not self._memories_has_expiry():
+            return ""
+        prefix = f"{alias}." if alias else ""
+        return f" AND {prefix}expired_at IS NULL"
+
     def _cache_key(
         self,
         query: str,
@@ -635,6 +659,7 @@ class HybridRetriever:
             policy.namespace,
             options.limit,
             options.min_importance,
+            options.include_expired,
         )
 
     def _get_cached_result(self, cache_key: tuple) -> Any | None:
@@ -856,6 +881,8 @@ class HybridRetriever:
         fetch_window = min(fetch_window, len(merged))
         top_ids = [mid for mid, _ in merged[:fetch_window]]
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, options.tenant_id, options)
+        if not options.include_expired:
+            memories = {mid: row for mid, row in memories.items() if not row.get("expired_at")}
         if has_filters:
             now_iso = datetime.now(UTC).isoformat()
             memories = {mid: row for mid, row in memories.items() if _row_matches_filters(row, options, now_iso)}
@@ -945,6 +972,8 @@ class HybridRetriever:
         )
         top_ids = [mid for mid, _ in merged[: options.limit]]
         memories = self._fetch_memories_for_top_ids(top_ids, user_id, options.tenant_id, options)
+        if not options.include_expired:
+            memories = {mid: row for mid, row in memories.items() if not row.get("expired_at")}
         results = self._build_results(merged, memories, options.limit, rankings)
         return self._make_search_result(results, all_ids, rankings, extra_signals={"fast_path": "early_termination"})
 
@@ -1033,6 +1062,7 @@ class HybridRetriever:
 
         like_clauses = " OR ".join(["content LIKE ? ESCAPE '!'" for _ in terms])
         ns_frag, ns_params = _namespace_frag(options)
+        expiry_frag = self._expiry_frag(options)
         params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
         rows = self._fetch_rows(
@@ -1047,6 +1077,7 @@ class HybridRetriever:
             )
             """,
                 ns_frag,
+                expiry_frag,
                 """
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
@@ -1088,13 +1119,21 @@ class HybridRetriever:
             "doc_count" - int
         """
         ns_frag, ns_params = _namespace_frag(options)
-        cache_key = (user_id, tenant_id, options.agent_id if options else None, options.project if options else None)
+        expiry_frag = self._expiry_frag(options)
+        cache_key = (
+            user_id,
+            tenant_id,
+            options.agent_id if options else None,
+            options.project if options else None,
+            options.include_expired if options else False,
+        )
 
         def _count() -> int:
             rows = self._fetch_rows(
                 join_sql_parts(
                     "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
                     ns_frag,
+                    expiry_frag,
                 ),
                 (user_id, tenant_id, *ns_params),
             )
@@ -1110,6 +1149,7 @@ class HybridRetriever:
             join_sql_parts(
                 "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
                 ns_frag,
+                expiry_frag,
             ),
             (user_id, tenant_id, *ns_params),
         )
@@ -1131,6 +1171,20 @@ class HybridRetriever:
             self._tfidf_cache[cache_key] = entry
 
         return entry
+
+    def invalidate_caches(self, user_id: str | None = None, tenant_id: str | None = None) -> None:
+        """Drop cached results after a write that changes what recall may return.
+
+        The result cache is keyed only by request shape, so expiry, restore,
+        and policy expiry can leave a cached answer serving a now-expired
+        memory (or hiding a restored one). The TF-IDF cache is refreshed by
+        its visibility-aware doc count; the explicit clear here just avoids
+        waiting for that check.
+        """
+        with self._result_cache_lock:
+            self._result_cache.clear()
+        if user_id and tenant_id:
+            self.invalidate_tfidf_cache(user_id, tenant_id)
 
     def invalidate_tfidf_cache(self, user_id: str, tenant_id: str) -> None:
         """Explicitly invalidate the TF-IDF cache for a user/tenant scope.
@@ -1308,6 +1362,7 @@ class HybridRetriever:
             ", COALESCE(AVG(me.confidence), 1.0) as avg_entity_conf" if has_confidence else ", 1.0 as avg_entity_conf"
         )
         ns_frag, ns_params = _namespace_frag(options, alias="m")
+        expiry_frag = self._expiry_frag(options, alias="m")
         rows = self._fetch_rows(
             join_sql_parts(
                 """
@@ -1323,6 +1378,7 @@ class HybridRetriever:
             INNER JOIN memories m ON m.id = mel.memory_id
                 AND m.tenant_id = ? AND m.user_id = ? AND m.is_ghost = 0""",
                 ns_frag,
+                expiry_frag,
                 """
             LEFT JOIN memory_entities me ON me.id = mel.entity_id
                 AND me.user_id = ?
@@ -1446,6 +1502,7 @@ class HybridRetriever:
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
         ns_frag, ns_params = _namespace_frag(options)
+        expiry_frag = self._expiry_frag(options)
         rows = self._fetch_rows(
             join_sql_parts(
                 """
@@ -1457,6 +1514,7 @@ class HybridRetriever:
             AND importance >= ?
             AND is_ghost = 0""",
                 ns_frag,
+                expiry_frag,
                 """
             ORDER BY created_at DESC
             LIMIT ?
@@ -1570,12 +1628,15 @@ class HybridRetriever:
 
         id_slots = placeholders(len(memory_ids))
         ns_frag, ns_params = _namespace_frag(options)
+        expiry_col = ", expired_at" if self._memories_has_expiry() else ""
         rows = self._fetch_rows(
             join_sql_parts(
                 """
             SELECT id, content, category, importance,
                    strength_trend, created_at, current_strength,
-                   is_latest, inferred, superseded_by
+                   is_latest, inferred, superseded_by""",
+                expiry_col,
+                """
             FROM memories
             WHERE id IN (""",
                 id_slots,
@@ -1583,6 +1644,7 @@ class HybridRetriever:
             )
             AND user_id = ? AND tenant_id = ?""",
                 ns_frag,
+                self._expiry_frag(options),
                 """
         """,
             ),
@@ -1600,6 +1662,7 @@ class HybridRetriever:
                 "is_latest": bool(row["is_latest"]),
                 "inferred": bool(row["inferred"]),
                 "superseded_by": row["superseded_by"],
+                "expired_at": row.get("expired_at"),
             }
             for row in rows
         }
@@ -1617,7 +1680,7 @@ class HybridRetriever:
         return self._tfidf_cosine_search(query, user_id, tenant_id, limit * 3, options=options)
 
     def _run_vector_search(
-        self, query: str, user_id: str, tenant_id: str, limit: int, _options: HybridSearchOptions | None = None
+        self, query: str, user_id: str, tenant_id: str, limit: int, options: HybridSearchOptions | None = None
     ) -> dict[str, int]:
         """Run embedding cosine search and return {memory_id: rank}.
 
@@ -1625,7 +1688,13 @@ class HybridRetriever:
         store is unavailable or nothing has been indexed yet, so hybrid
         search still works on the lexical/graph/temporal signals alone.
         """
-        return self._vector_search(query, user_id, tenant_id, limit * 3)
+        return self._vector_search(
+            query,
+            user_id,
+            tenant_id,
+            limit * 3,
+            include_expired=bool(options and options.include_expired),
+        )
 
     def _vector_search(
         self,
@@ -1633,8 +1702,16 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
+        *,
+        include_expired: bool = False,
     ) -> dict[str, int]:
-        """Embedding cosine similarity search over `memory_embeddings`."""
+        """Embedding cosine similarity search over `memory_embeddings`.
+
+        Expired memories are excluded in the vector query itself unless
+        ``include_expired`` is set; post-filtering them after the vector
+        window is fixed lets expired hits starve live matches ranked below
+        the cutoff.
+        """
         if not query or not query.strip():
             return {}
         store = self._get_vector_store()
@@ -1644,7 +1721,12 @@ class HybridRetriever:
             result = store.search(
                 query,
                 user_id,
-                options=SemanticSearchOptions(tenant_id=tenant_id, limit=limit, min_score=0.0),
+                options=SemanticSearchOptions(
+                    tenant_id=tenant_id,
+                    limit=limit,
+                    min_score=0.0,
+                    include_expired=include_expired,
+                ),
             )
         except Exception as exc:
             logger.debug("vector signal unavailable: %s", exc)

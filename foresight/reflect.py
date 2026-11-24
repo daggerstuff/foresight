@@ -260,7 +260,8 @@ def reflect(
     tokens_used = max(1, (len(question) + len(answer) + sum(len(c["content_excerpt"]) for c in citations)) // 4)
     latency_ms = (time.perf_counter() - t0) * 1000
 
-    return {
+    is_degraded = synthesized_by == "extractive"
+    result_payload: dict[str, Any] = {
         "answer": answer,
         "citations": citations,
         "memories_considered": len(candidates),
@@ -269,7 +270,12 @@ def reflect(
         "cached": False,
         "synthesized_by": synthesized_by,
         "latency_ms": round(latency_ms, 2),
+        "degraded": is_degraded,
     }
+    if is_degraded:
+        result_payload["degraded_reason"] = "extractive reflect fallback (LLM synthesis unavailable or unconfigured)"
+
+    return result_payload
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +298,8 @@ def _mental_model_row(row: dict) -> dict[str, Any]:
         "created_at": row["created_at"],
         "expires_at": row.get("expires_at"),
         "stale": bool(row.get("stale", 0)),
+        "degraded": bool(row.get("degraded", 0)),
+        "synthesized_by": row.get("synthesized_by"),
     }
 
 
@@ -357,19 +365,31 @@ def store_mental_model(
             "AND namespace_agent_id = ?",
             (tenant_id, user_id, qkey, agent_id),
         )
+    degraded = 1 if result.get("degraded") else 0
+    synthesized_by = result.get("synthesized_by")
     if existing:
         _execute(
             "UPDATE mental_models SET question_text = ?, answer = ?, citations_json = ?, "
-            "expires_at = ?, stale = 0, last_hit_at = ? WHERE id = ?",
-            (question, result.get("answer", ""), citations_json, expires_at, now_iso, existing["id"]),
+            "expires_at = ?, stale = 0, last_hit_at = ?, degraded = ?, synthesized_by = ? WHERE id = ?",
+            (
+                question,
+                result.get("answer", ""),
+                citations_json,
+                expires_at,
+                now_iso,
+                degraded,
+                synthesized_by,
+                existing["id"],
+            ),
         )
         return existing["id"]
     model_id = hashlib.sha256(f"{tenant_id}:{user_id}:{agent_id or ''}:{qkey}".encode()).hexdigest()[:16]
     _execute(
         """INSERT INTO mental_models
         (id, tenant_id, user_id, namespace_agent_id, question_key, question_text,
-         answer, citations_json, hit_count, last_hit_at, created_at, expires_at, stale)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0)""",
+         answer, citations_json, hit_count, last_hit_at, created_at, expires_at, stale,
+         degraded, synthesized_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?)""",
         (
             model_id,
             tenant_id,
@@ -382,6 +402,8 @@ def store_mental_model(
             now_iso,
             now_iso,
             expires_at,
+            degraded,
+            synthesized_by,
         ),
     )
     return model_id

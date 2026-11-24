@@ -65,6 +65,7 @@ from .embedding_validation import (
     EmbeddingDimensionError,
     validate_embedding_dimension,
 )
+from .sql_helpers import join_sql_parts
 from .tenant_context import get_current_account_id
 
 logger = logging.getLogger("foresight_semantic_search")
@@ -481,7 +482,7 @@ class SemanticSearchResult:
 class _VectorQuery:
     """One already-embedded query, resolved to a single tenant/user/provider lane.
 
-    The ANN and scan paths take the same six values; passing them as one value
+    The ANN and scan paths take the same values; passing them as one value
     keeps the vector next to the scope it was validated for.
     """
 
@@ -491,6 +492,7 @@ class _VectorQuery:
     provider: str
     limit: int
     min_score: float
+    include_expired: bool = False
 
 
 @dataclass
@@ -501,6 +503,9 @@ class SemanticSearchOptions:
     limit: int = 10
     min_score: float = 0.0
     provider: str | None = None
+    # Default recall excludes policy-expired memories (they stay recallable
+    # only when a caller opts in).
+    include_expired: bool = False
 
 
 def _validate_user_tenant(user_id: str, tenant_id: str) -> None:
@@ -805,19 +810,46 @@ class SemanticSearch:
         tables never feed wrong-width vectors into it.
         """
         literal = _vector_literal(query.vector)
-        rows = conn.execute(
+        # Expiry predicates belong inside the ANN query: the LIMIT is applied
+        # by the index, so filtering afterwards lets dead hits consume the
+        # window and starve live matches ranked below them. The scheduled
+        # ``expires_at`` deadline applies in both modes; only the reversible
+        # ``expired_at`` stamp is opt-in via include_expired.
+        expired_predicate = "" if query.include_expired else "AND m.expired_at IS NULL "
+        sql = join_sql_parts(
             """
-            SELECT memory_id,
-                   1 - (embedding::vector(384) <=> ?::vector(384)) AS score
-            FROM memory_embeddings
-            WHERE tenant_id = ? AND user_id = ? AND provider = ?
-              AND dimension = 384
-              AND embedding IS NOT NULL
-              AND 1 - (embedding::vector(384) <=> ?::vector(384)) >= ?
-            ORDER BY embedding::vector(384) <=> ?::vector(384)
+            SELECT e.memory_id,
+                   1 - (e.embedding::vector(384) <=> ?::vector(384)) AS score
+            FROM memory_embeddings e
+            JOIN memories m
+              ON m.id = e.memory_id
+             AND m.tenant_id = e.tenant_id
+             AND m.user_id = e.user_id
+            WHERE e.tenant_id = ? AND e.user_id = ? AND e.provider = ?
+              AND e.dimension = 384
+              AND e.embedding IS NOT NULL
+              AND (m.expires_at IS NULL OR m.expires_at > ?)
+            """,
+            expired_predicate,
+            """
+              AND 1 - (e.embedding::vector(384) <=> ?::vector(384)) >= ?
+            ORDER BY e.embedding::vector(384) <=> ?::vector(384)
             LIMIT ?
             """,
-            (literal, query.tenant_id, query.user_id, query.provider, literal, query.min_score, literal, query.limit),
+        )
+        rows = conn.execute(
+            sql,
+            (
+                literal,
+                query.tenant_id,
+                query.user_id,
+                query.provider,
+                datetime.now(UTC).isoformat(),
+                literal,
+                query.min_score,
+                literal,
+                query.limit,
+            ),
         ).fetchall()
         return [
             SemanticMatch(
@@ -849,6 +881,7 @@ class SemanticSearch:
         limit: int = overrides.get("limit", options.limit)
         min_score: float = overrides.get("min_score", options.min_score)
         provider: str | None = overrides.get("provider", options.provider)
+        include_expired: bool = bool(overrides.get("include_expired", options.include_expired))
 
         if not query or not query.strip():
             raise SemanticSearchError("query must be a non-empty string")
@@ -874,6 +907,7 @@ class SemanticSearch:
             provider=prov,
             limit=limit,
             min_score=min_score,
+            include_expired=include_expired,
         )
         conn = self._connect()
         try:
@@ -896,6 +930,33 @@ class SemanticSearch:
             matches=matches[:limit],
         )
 
+    def _has_expiry_columns(self, conn: Any) -> bool:
+        """True when the memories table carries the expiry columns (cached).
+
+        Only a definitively missing table/column is remembered as "absent"; a
+        transient error propagates instead of silently disabling expiry
+        filtering for the lifetime of this instance.
+        """
+        cached = getattr(self, "_expiry_columns", None)
+        if cached is not None:
+            return bool(cached)
+        try:
+            conn.execute("SELECT expired_at, expires_at FROM memories LIMIT 0")
+        except Exception as exc:
+            message = str(exc).lower()
+            missing = (
+                "no such column" in message
+                or "no such table" in message
+                or "does not exist" in message
+                or "undefinedcolumn" in message
+            )
+            if not missing:
+                raise
+            self._expiry_columns = False
+            return False
+        self._expiry_columns = True
+        return True
+
     def _search_scan(self, conn: Any, query: _VectorQuery) -> list[SemanticMatch]:
         """Python cosine scan over stored float32 blobs (non-ANN fallback)."""
         rows = conn.execute(
@@ -907,8 +968,25 @@ class SemanticSearch:
             (query.tenant_id, query.user_id, query.provider),
         ).fetchall()
 
+        excluded_ids: set[str] = set()
+        if self._has_expiry_columns(conn):
+            now_iso = datetime.now(UTC).isoformat()
+            if query.include_expired:
+                sql = (
+                    "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? "
+                    "AND expires_at IS NOT NULL AND expires_at < ?"
+                )
+            else:
+                sql = (
+                    "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? "
+                    "AND (expired_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at < ?))"
+                )
+            excluded_ids = {r["id"] for r in conn.execute(sql, (query.tenant_id, query.user_id, now_iso)).fetchall()}
+
         matches: list[SemanticMatch] = []
         for r in rows:
+            if r["memory_id"] in excluded_ids:
+                continue
             dim = int(r["dimension"])
             if dim != len(query.vector):
                 logger.warning(
