@@ -159,6 +159,125 @@ def clear_subconscious_block(label: str, user_id: str, tenant_id: str = "default
     clear_context_block(label, user_id, tenant_id)
 
 
+_LEAKED_BLOCK_RE = re.compile(
+    r"^\[(?:session_patterns|user_preferences|pending_items)\]",
+    re.IGNORECASE,
+)
+
+
+def _distill_preferences(conn: Any, agent: Any, user_id: str, tenant_id: str) -> bool:
+    pref_rows = conn.execute(
+        """
+        SELECT content FROM memories
+        WHERE user_id = ? AND tenant_id = ?
+          AND (category = 'preference' OR scope = 'trait')
+          AND (is_ghost = 0 OR is_ghost IS NULL)
+        ORDER BY importance DESC, updated_at DESC
+        LIMIT 10
+        """,
+        (user_id, tenant_id),
+    ).fetchall()
+    if not pref_rows:
+        return False
+
+    unique_rules: list[str] = []
+    seen_token_sets: list[set[str]] = []
+
+    for r in pref_rows:
+        content = (r["content"] or "").strip()
+        if not content:
+            continue
+        clean = re.sub(
+            r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        ).strip()
+        clean = re.sub(
+            r"\[(?:user_preferences|pending_items|session_patterns|project_context)\]\s*",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip(" -")
+        if not clean:
+            continue
+        words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
+        is_redundant = any(
+            len(words & s) / max(1, len(words | s)) > REDUNDANCY_JACCARD_THRESHOLD for s in seen_token_sets
+        )
+        if not is_redundant:
+            seen_token_sets.append(words)
+            unique_rules.append(f"- {clean}")
+
+    if not unique_rules:
+        return False
+
+    current_pref = agent.get_block("user_preferences") or ""
+    new_pref = "\n".join(unique_rules[:8])
+    if current_pref.strip() != new_pref.strip() or "pnpm" in new_pref.lower():
+        agent.update_block("user_preferences", new_pref)
+        return True
+    return False
+
+
+def _distill_project_context(conn: Any, agent: Any, user_id: str, tenant_id: str) -> bool:
+    arc_rows = conn.execute(
+        """
+        SELECT content FROM memories
+        WHERE user_id = ? AND tenant_id = ?
+          AND (scope = 'arc' OR category IN ('decision', 'fact'))
+          AND (is_ghost = 0 OR is_ghost IS NULL)
+        ORDER BY importance DESC, updated_at DESC
+        LIMIT 12
+        """,
+        (user_id, tenant_id),
+    ).fetchall()
+    if not arc_rows:
+        return False
+
+    unique_arc: list[str] = []
+    seen_arc_tokens: list[set[str]] = []
+
+    for r in arc_rows:
+        content = (r["content"] or "").strip()
+        if not content:
+            continue
+        if _LEAKED_BLOCK_RE.match(content) or content.lower().startswith("hot files:"):
+            continue
+
+        clean = re.sub(
+            r"^(\s*-\s*)*(\[(?:project_context|auto-captured/\w+)\]\s*-?\s*)+",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        ).strip(" -")
+        if not clean:
+            continue
+
+        words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
+        is_redundant = any(
+            len(words & s) / max(1, len(words | s)) > REDUNDANCY_JACCARD_THRESHOLD for s in seen_arc_tokens
+        )
+        if not is_redundant:
+            seen_arc_tokens.append(words)
+            unique_arc.append(f"- {clean}")
+
+    if not unique_arc:
+        return False
+
+    current_proj = agent.get_block("project_context") or ""
+    new_proj = "\n".join(unique_arc[:6])
+    if (
+        not current_proj.strip()
+        or current_proj.strip() == "Default project context."
+        or current_proj.strip() != new_proj.strip()
+        or "postgres" in new_proj.lower()
+    ):
+        agent.update_block("project_context", new_proj)
+        return True
+    return False
+
+
 def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dict[str, Any]:
     """Automatically synthesize and update context blocks from stored memories.
 
@@ -172,70 +291,10 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
     try:
         conn = get_db_connection()
         try:
-            # 1. Distill Preferences / Traits with semantic deduplication
-            pref_rows = conn.execute(
-                """
-                SELECT content FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                  AND (category = 'preference' OR scope = 'trait')
-                  AND (is_ghost = 0 OR is_ghost IS NULL)
-                ORDER BY importance DESC, updated_at DESC
-                LIMIT 10
-                """,
-                (user_id, tenant_id),
-            ).fetchall()
-
-            if pref_rows:
-                unique_rules: list[str] = []
-                seen_token_sets: list[set[str]] = []
-
-                for r in pref_rows:
-                    content = (r["content"] or "").strip()
-                    if not content:
-                        continue
-                    clean = re.sub(r"^\[auto-captured/\w+\]\s*", "", content)
-                    words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
-                    # Check redundancy against existing rules (Jaccard similarity > 0.5)
-                    is_redundant = any(
-                        len(words & s) / max(1, len(words | s)) > REDUNDANCY_JACCARD_THRESHOLD for s in seen_token_sets
-                    )
-                    if not is_redundant:
-                        seen_token_sets.append(words)
-                        unique_rules.append(f"- {clean}")
-
-                if unique_rules:
-                    current_pref = agent.get_block("user_preferences") or ""
-                    new_pref = "\n".join(unique_rules[:8])
-                    if current_pref.strip() != new_pref.strip() or "pnpm" in new_pref.lower():
-                        agent.update_block("user_preferences", new_pref)
-                        updated_blocks.append("user_preferences")
-
-            # 2. Distill Active Project Context from 'arc' and recent decisions
-            arc_rows = conn.execute(
-                """
-                SELECT content FROM memories
-                WHERE user_id = ? AND tenant_id = ?
-                  AND (scope = 'arc' OR category IN ('decision', 'fact'))
-                  AND (is_ghost = 0 OR is_ghost IS NULL)
-                ORDER BY importance DESC, updated_at DESC
-                LIMIT 8
-                """,
-                (user_id, tenant_id),
-            ).fetchall()
-
-            if arc_rows:
-                arc_lines = [f"- {(r['content'] or '').strip()}" for r in arc_rows if r["content"]]
-                if arc_lines:
-                    current_proj = agent.get_block("project_context") or ""
-                    new_proj = "\n".join(arc_lines[:6])
-                    if (
-                        not current_proj.strip()
-                        or current_proj.strip() == "Default project context."
-                        or "postgres" in new_proj.lower()
-                    ):
-                        agent.update_block("project_context", new_proj)
-                        updated_blocks.append("project_context")
-
+            if _distill_preferences(conn, agent, user_id, tenant_id):
+                updated_blocks.append("user_preferences")
+            if _distill_project_context(conn, agent, user_id, tenant_id):
+                updated_blocks.append("project_context")
         finally:
             conn.close()
 
@@ -243,3 +302,4 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
         logger.debug("auto_distill_context_blocks exception (non-fatal): %s", e)
 
     return {"ok": True, "distilled_blocks": updated_blocks}
+

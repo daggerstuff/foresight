@@ -21,8 +21,13 @@ from foresight.backend.backend_migrations import (
     run_migrations,
 )
 from foresight.backend.postgres_backend import PostgresBackend
-from foresight.server import init_db
+from foresight.server import SCHEMA_VERSION, init_db
 from tests._sqlite_backend import SqliteBackend
+
+
+def test_schema_version_constant_mirrors_backend_ledger():
+    assert max(SCHEMA_MIGRATIONS) == SCHEMA_VERSION
+
 
 # =============================================================================
 # SQLite backend — primary test surface (no external services required)

@@ -395,6 +395,7 @@ class DedupeEngine:
     """Check candidates against stored memories for exact or near duplicates."""
 
     JACCARD_THRESHOLD = 0.55
+    HIGH_SIMILARITY_DUPLICATE_THRESHOLD = 0.85
     RECENT_WINDOW_HOURS = 72  # check against last 72h of memories
 
     @classmethod
@@ -461,6 +462,15 @@ class DedupeEngine:
                 if not union:
                     continue
                 jaccard = len(candidate_words & existing_words) / len(union)
+                if jaccard >= cls.HIGH_SIMILARITY_DUPLICATE_THRESHOLD:
+                    now = datetime.now(UTC).isoformat()
+                    conn.execute(
+                        """UPDATE memories SET activation_count = activation_count + 1, updated_at = ?
+                           WHERE id = ?""",
+                        (now, row["id"]),
+                    )
+                    conn.commit()
+                    return DedupeResult(status="DUPLICATE", existing_id=row["id"], similarity=round(jaccard, 4))
                 if jaccard >= cls.JACCARD_THRESHOLD:
                     return DedupeResult(
                         status="NEAR_DUPLICATE",
@@ -763,8 +773,24 @@ class CapturePipeline:
         stats: CaptureStats,
     ) -> None:
         """Insert one candidate, link its provenance, and record any derives edge."""
-        content = f"[auto-captured/{candidate.category}] {candidate.content}"
+        clean_cand = re.sub(r"^\[auto-captured/[^\]]+\]\s*", "", candidate.content).strip()
+        content = f"[auto-captured/{candidate.category}] {clean_cand}"
         h = _content_hash(content)
+
+        existing = conn.execute(
+            """SELECT id FROM memories
+               WHERE user_id = ? AND tenant_id = ? AND content_hash = ?
+                 AND (is_ghost = 0 OR is_ghost IS NULL) LIMIT 1""",
+            (ctx.user_id, ctx.tenant_id, h),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? WHERE id = ?",
+                (ctx.now, existing["id"]),
+            )
+            conn.commit()
+            return
+
         mid = hashlib.sha256(f"{content}{ctx.now}".encode()).hexdigest()[:16]
 
         conn.execute(
@@ -813,7 +839,7 @@ class CapturePipeline:
 
         if dedupe.status != "DUPLICATE":
             stats.stored += 1
-            stats.stored_items.append((candidate.category, candidate.content))
+            stats.stored_items.append((candidate.category, clean_cand))
 
     def reprocess(
         self,

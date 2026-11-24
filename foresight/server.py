@@ -649,9 +649,7 @@ class ManageMemoriesParams(BaseModel):
     auto_tag: bool | None = Field(default=None, description="Flat switch to derive topical tags deterministically")
     agent_id: str | None = Field(default=None, description="Flat namespace lane for store (default: shared lane)")
     project: str | None = Field(default=None, description="Flat project namespace lane for store")
-    source_tool: str | None = Field(
-        default=None, description="Flat calling-tool attribution override for store"
-    )
+    source_tool: str | None = Field(default=None, description="Flat calling-tool attribution override for store")
 
 
 class SearchMemoriesParams(BaseModel):
@@ -1428,7 +1426,10 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
         raise RateLimitExceededError(remaining=remaining, reset_time=reset_time)
 
 
-SCHEMA_VERSION = 17
+# Highest version in the backend migration ledger. Kept as a compatibility
+# constant for callers that imported it; backend_migrations.run_migrations is
+# authoritative for applying schema versions.
+SCHEMA_VERSION = max(MIGRATIONS)
 
 
 def _seed_default_tenant(conn) -> None:
@@ -4297,14 +4298,30 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
             recent = lines[-5:]
 
             for line in recent:
-                content = f"[{block_name}] {line}"
+                clean_line = re.sub(
+                    r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+                    "",
+                    line,
+                    flags=re.IGNORECASE,
+                ).strip()
+                clean_line = re.sub(
+                    r"\[(?:user_preferences|pending_items|session_patterns|project_context)\]\s*",
+                    "",
+                    clean_line,
+                    flags=re.IGNORECASE,
+                ).strip(" -")
+                if not clean_line:
+                    continue
+
+                content = f"[{block_name}] {clean_line}"
                 tenant_id = get_current_account_id()
                 content_h = _content_hash(content)
+                clean_h = _content_hash(clean_line)
                 existing = conn.execute(
                     "SELECT id, activation_count FROM memories "
-                    "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
+                    "WHERE user_id = ? AND tenant_id = ? AND (content_hash = ? OR content_hash = ?) AND is_ghost = 0 "
                     "ORDER BY created_at DESC LIMIT 1",
-                    (uid, tenant_id, content_h),
+                    (uid, tenant_id, content_h, clean_h),
                 ).fetchone()
                 if existing:
                     conn.execute(
@@ -4374,15 +4391,34 @@ def _bridge_capture_memories_to_blocks(
         content = raw_content.strip()
         if not content:
             continue
+        clean_content = re.sub(
+            r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        ).strip(" -")
+        if not clean_content:
+            continue
         block = agent.state.get_block(label)
         existing_lines = (
-            {ln.strip() for ln in block.content.splitlines() if ln.strip()} if block and not block.is_empty() else set()
+            {
+                re.sub(
+                    r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+                    "",
+                    ln.strip(),
+                    flags=re.IGNORECASE,
+                ).strip(" -")
+                for ln in block.content.splitlines()
+                if ln.strip()
+            }
+            if block and not block.is_empty()
+            else set()
         )
-        if content in existing_lines:
+        if clean_content in existing_lines:
             continue
-        agent.state.append_to_block(label, content)
-        modified_labels.add(label)
-        appended += 1
+        if agent.state.append_to_block(label, clean_content):
+            modified_labels.add(label)
+            appended += 1
     for label in modified_labels:
         agent._persist_block(label)
     return appended
@@ -4481,6 +4517,9 @@ def process_session_transcript(
         bridged = _bridge_capture_memories_to_blocks(agent, stats.stored_items)
         if bridged:
             _bridge_context_blocks_to_memories(agent, uid)
+
+    # Hands-off auto cleanup and distillation of context blocks
+    _distill_context_blocks(uid, tenant_id)
 
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
 
@@ -6771,13 +6810,13 @@ def _start_maintenance_gc_thread() -> None:
     contradict mode is intentionally excluded — it flags for admin review only
     and should not run unattended.
     """
-    interval_hours = float(os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS", "24"))
+    interval_hours = float(os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS", "1"))
     if not (isinstance(interval_hours, (int, float)) and interval_hours > 0 and math.isfinite(interval_hours)):
         logger.warning(
-            "Invalid FORESIGHT_MAINTENANCE_INTERVAL_HOURS=%r, falling back to 24h",
+            "Invalid FORESIGHT_MAINTENANCE_INTERVAL_HOURS=%r, falling back to 1h",
             os.environ.get("FORESIGHT_MAINTENANCE_INTERVAL_HOURS"),
         )
-        interval_hours = 24.0
+        interval_hours = 1.0
 
     def _maintenance_loop() -> None:
         time.sleep(60)

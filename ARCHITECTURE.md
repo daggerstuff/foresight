@@ -20,7 +20,7 @@ agents.
             └──────────┬──────────┘
                        ▼
           ┌──────────────────────────────┐
-          │  Postgres (prod) / SQLite    │
+          │  PostgreSQL 17 + pgvector    │
           │  + vector store + graph store│
           └──────────────────────────────┘
 ```
@@ -30,13 +30,13 @@ agents.
 | Path                       | What it is                                                        |
 | -------------------------- | ----------------------------------------------------------------- |
 | `foresight/`               | Core Python package — the MCP server and the entire memory engine |
-| `foresight_cli/`           | Python CLI (Typer) and TUI (Textual), thin shells over the core   |
+| `foresight_cli/`           | Python CLI (argparse) and TUI (Textual), thin shells over the core |
 | `cli/`                     | TypeScript reimplementation of the CLI (Node agents)              |
 | `packages/foresight-core/` | Shared TypeScript core for `cli/`                                 |
 | `apps/docs/`               | Docusaurus documentation site                                     |
 | `plugins/`                 | Drop-in integrations (Claude/Copilot hooks, auto-inject scripts)  |
 | `scripts/`                 | Operational utilities (migration, diagnostics)                    |
-| `tests/`                   | Pytest suite (SQLite-backed for speed; Postgres in CI)            |
+| `tests/`                   | Pytest suite (Postgres harness; SQLite fixtures for unit tests)   |
 
 ## Core Subsystems (`foresight/`)
 
@@ -64,9 +64,9 @@ agents.
   `'default'` lane.
 - **Encryption** — `encryption.py`: optional AES-256-GCM at-rest layer with key
   rotation (`FORESIGHT_ENCRYPTION_KEY`).
-- **Resilience** — `circuit_breaker.py`, `connection_pool.py` (Postgres pool
-  with SQLite fallback), `event_bus.py` (pub/sub), `hooks.py` (pre/post memory
-  hooks).
+- **Resilience** — `circuit_breaker.py`, `connection_pool.py` (Postgres pool;
+  SQLite exists only in test backends), `event_bus.py` (pub/sub), `hooks.py`
+  (pre/post memory hooks).
 - **Observability** — `telemetry.py` (injection latency/counts), `audit.py`
   (action audit trail), `eval_harness.py` / `proof_benchmark.py`
   (retrieval-quality scoring).
@@ -100,9 +100,9 @@ agents.
 ## Dependency Direction
 
 ```
-foresight_cli  ──▶  foresight  ──▶  backends (psycopg / sqlite3 / redis / kafka)
+foresight_cli  ──▶  foresight  ──▶  backends (psycopg / redis / kafka; sqlite3 test-only)
      │                  │
-     └── textual/typer  └── fastmcp, pydantic
+     └── textual        └── fastmcp, pydantic
 ```
 
 `cli/` (TypeScript) has no runtime dependency on the Python packages; it speaks

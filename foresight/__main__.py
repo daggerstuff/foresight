@@ -3,11 +3,10 @@
 
 from __future__ import annotations
 
-import contextlib
 import json as _json
 import sys
-from importlib.metadata import PackageNotFoundError
 
+from . import __version__
 from .config import load_dotenv_walkup
 from .server import (
     GetSystemStatusParams,
@@ -39,8 +38,7 @@ def main() -> None:
         return
 
     if "--version" in sys.argv:
-        with contextlib.suppress(PackageNotFoundError):
-            pass
+        sys.stdout.write(f"foresight {__version__}\n")
         return
 
     host: str | None = None

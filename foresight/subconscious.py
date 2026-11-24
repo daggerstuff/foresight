@@ -33,6 +33,7 @@ logger = logging.getLogger("foresight_context_blocks")
 
 # Default cap on the number of items appended to a context block.
 DEFAULT_MAX_BLOCK_ITEMS = 10
+BLOCK_NEAR_DUP_THRESHOLD = 0.70
 
 # One extracted fact must not dominate a block, so every snippet is windowed to
 # this many characters before it is appended.
@@ -302,15 +303,79 @@ class ContextBlockState:
                 char_limit=schema.char_limit if hasattr(schema, "char_limit") else 5000,
             )
 
-    def append_to_block(self, label: str, content: str, max_items: int = DEFAULT_MAX_BLOCK_ITEMS) -> None:
-        """Append content to a block (for pending items, preferences, etc.)."""
+    def append_to_block(self, label: str, content: str, max_items: int = DEFAULT_MAX_BLOCK_ITEMS) -> bool:
+        """Append content to a block with automatic deduplication, prefix cleanup, and item bounds.
+
+        Returns True if the item was newly appended, or False if skipped as duplicate or invalid.
+        """
         block = self.get_block(label)
-        if block:
-            # Don't append if block is empty/default.
-            if max_items != DEFAULT_MAX_BLOCK_ITEMS:
-                logger.debug("append_to_block max_items is reserved for future trimming: %s", max_items)
-            new_content = content.strip() if block.is_empty() else f"{block.content}\n{content.strip()}"
-            self.update_block(label, new_content)
+        if not block:
+            return False
+
+        raw = content.strip()
+        # 1. Clean repetitive category or block label prefixes (e.g. - [user_preferences] ...)
+        clean = re.sub(
+            r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+            "",
+            raw,
+            flags=re.IGNORECASE,
+        ).strip()
+        clean = re.sub(
+            r"\[(?:user_preferences|pending_items|session_patterns|project_context)\]\s*",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not clean:
+            return False
+
+        formatted = clean if clean.startswith("- ") else f"- {clean}"
+        if block.is_empty():
+            self.update_block(label, formatted)
+            return True
+
+        # 2. Deduplicate against existing lines in the block
+        existing_lines = [
+            line_item.strip()
+            for line_item in block.content.splitlines()
+            if line_item.strip() and not line_item.strip().startswith("#")
+        ]
+
+        # Extract core text without timestamps [YYYY-MM-DD...] for comparison
+        clean_no_ts = re.sub(r"\[\d{4}-\d{2}-\d{2}[^\]]*\]", "", clean).strip(" -")
+        cand_words = set(re.findall(r"\w{3,}", clean_no_ts.lower()))
+
+        for eline in existing_lines:
+            el_clean = re.sub(
+                r"^(\s*-\s*)*(\[(?:user_preferences|pending_items|session_patterns|project_context|auto-captured/\w+)\]\s*-?\s*)+",
+                "",
+                eline,
+                flags=re.IGNORECASE,
+            ).strip()
+            el_no_ts = re.sub(r"\[\d{4}-\d{2}-\d{2}[^\]]*\]", "", el_clean).strip(" -")
+
+            # Exact match, case-insensitive match, or substring match
+            if clean_no_ts.lower() == el_no_ts.lower() or (clean_no_ts and clean_no_ts in el_no_ts):
+                return False  # Duplicate item already present, skip append
+
+            # High token overlap check
+            el_words = set(re.findall(r"\w{3,}", el_no_ts.lower()))
+            if cand_words and el_words:
+                overlap = len(cand_words & el_words) / len(cand_words | el_words)
+                if overlap >= BLOCK_NEAR_DUP_THRESHOLD:
+                    return False  # Near-duplicate item already present, skip append
+
+        # 3. Append and enforce max_items bounds
+        all_lines = [line_item.strip() for line_item in block.content.splitlines() if line_item.strip()]
+        all_lines.append(formatted)
+
+        headers = [line_item for line_item in all_lines if line_item.startswith("#")]
+        items = [line_item for line_item in all_lines if not line_item.startswith("#")]
+        if len(items) > max_items:
+            items = items[-max_items:]
+        new_content = "\n".join(headers + items) if headers else "\n".join(items)
+        self.update_block(label, new_content)
+        return True
 
     def to_whisper_xml(self) -> str:
         """Convert guidance block to XML whisper format."""

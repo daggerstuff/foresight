@@ -268,6 +268,61 @@ def _build_word_map(memories: list[dict[str, Any]]) -> dict[str, tuple[frozenset
     return word_map
 
 
+MERGE_OVERLAP_THRESHOLD = 0.80
+
+
+def _match_or_replace_segment(
+    words: set[str],
+    norm: str,
+    seen_normalized_list: list[str],
+) -> tuple[bool, int | None]:
+    """Check if segment is duplicate or should replace an existing shorter segment."""
+    for idx, seen_norm in enumerate(seen_normalized_list):
+        if norm == seen_norm:
+            return True, None
+        seen_words = set(seen_norm.split())
+        if words and seen_words:
+            overlap = len(words & seen_words) / len(words | seen_words)
+            if overlap >= MERGE_OVERLAP_THRESHOLD:
+                if len(words) > len(seen_words) and seen_words.issubset(words):
+                    return True, idx
+                return True, None
+    return False, None
+
+
+def _merge_unique_content(existing: str, additional: list[str]) -> str:
+    """Merge content from duplicate memories without repeating identical sentences, lines, or clauses."""
+    parts: list[str] = []
+    seen_normalized_list: list[str] = []
+
+    for chunk in [existing, *additional]:
+        if not chunk:
+            continue
+        # Split on newlines or sentence terminators (.!?)
+        segments = re.split(r"(?<=[.!?])\s+|\n+", chunk.strip())
+        for seg in segments:
+            s_clean = seg.strip(" \t\r\n-•*")
+            if not s_clean:
+                continue
+            # Normalize for deduplication
+            norm = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", s_clean.lower()))
+            if not norm:
+                continue
+            is_dup, replace_idx = _match_or_replace_segment(set(norm.split()), norm, seen_normalized_list)
+            if replace_idx is not None:
+                parts[replace_idx] = s_clean
+                seen_normalized_list[replace_idx] = norm
+            elif not is_dup:
+                seen_normalized_list.append(norm)
+                parts.append(s_clean)
+
+    if not parts:
+        return existing
+    if any("\n" in c for c in [existing, *additional]) or any(c.startswith("-") for c in [existing, *additional]):
+        return "\n".join(f"- {p}" if not p.startswith("-") else p for p in parts)
+    return ". ".join(p.rstrip(". ") for p in parts) + ("." if not parts[-1].endswith((".", "!", "?")) else "")
+
+
 class MemoryMaintenanceJob:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or DB_PATH
@@ -410,7 +465,82 @@ class MemoryMaintenanceJob:
             for r in rows
         ]
 
+    def _auto_consolidate_exact_duplicates(
+        self,
+        conn: Any,
+        config: MaintenanceConfig,
+        stats: MaintenanceStats,
+    ) -> None:
+        """Automatically find and consolidate identical memories (matching content_hash)."""
+        if config.sensitive_only:
+            sensitivity_filter = "AND COALESCE(is_sensitive, 0) = 1"
+        else:
+            sensitivity_filter = "AND COALESCE(is_sensitive, 0) = 0"
+        try:
+            cursor = conn.execute(
+                join_sql_parts(
+                    """
+                    SELECT content_hash, COUNT(*) AS dup_count
+                    FROM memories
+                    WHERE user_id = ? AND tenant_id = ? AND (is_ghost = 0 OR is_ghost IS NULL)
+                      AND content_hash IS NOT NULL AND content_hash != ''
+                    """,
+                    sensitivity_filter,
+                    """
+                    GROUP BY content_hash
+                    HAVING COUNT(*) > 1
+                    LIMIT ?
+                    """,
+                ),
+                (config.user_id, config.tenant_id, config.batch_size),
+            )
+            dup_groups = cursor.fetchall()
+            if not dup_groups:
+                return
+
+            now_iso = datetime.now(UTC).isoformat()
+            for group in dup_groups:
+                ch = group["content_hash"]
+                rows = conn.execute(
+                    """
+                    SELECT id, content, activation_count, created_at, synthesized_from
+                    FROM memories
+                    WHERE user_id = ? AND tenant_id = ? AND content_hash = ?
+                      AND (is_ghost = 0 OR is_ghost IS NULL)
+                    ORDER BY activation_count DESC, created_at ASC
+                    """,
+                    (config.user_id, config.tenant_id, ch),
+                ).fetchall()
+                if len(rows) < MIN_CLUSTER_MEMBERS:
+                    continue
+
+                primary = rows[0]
+                primary_id = primary["id"]
+                other_ids = [r["id"] for r in rows[1:]]
+                total_activations = sum(r["activation_count"] or 0 for r in rows)
+
+                conn.execute(
+                    """
+                    UPDATE memories
+                    SET activation_count = ?, updated_at = ?
+                    WHERE id = ? AND user_id = ? AND tenant_id = ?
+                    """,
+                    (total_activations, now_iso, primary_id, config.user_id, config.tenant_id),
+                )
+
+                raw_synth = primary["synthesized_from"]
+                existing_synth = set(re.findall(r"\w+", raw_synth or "")) if raw_synth else set()
+                self._ghost_merged_memories(conn, other_ids, existing_synth, config)
+                stats.duplicates_auto_consolidated += len(other_ids)
+                stats.duplicates_found += len(other_ids)
+
+            conn.commit()
+        except Exception as e:
+            logger.debug("auto_consolidate_exact_duplicates skipped: %s", e)
+
     def _run_consolidate(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
+        self._auto_consolidate_exact_duplicates(conn, config, stats)
+
         # Count sensitive rows in scope before the SQL filter so the audit
         # log captures them even when they short-circuit clustering.
         if not config.sensitive_only:
@@ -526,9 +656,7 @@ class MemoryMaintenanceJob:
 
         additional_content = _fetch_merge_sources(conn, other_ids, config, existing_synth)
 
-        combined = existing_content
-        if additional_content:
-            combined = existing_content + " " + " ".join(additional_content)
+        combined = _merge_unique_content(existing_content, additional_content)
 
         now_iso = datetime.now(UTC).isoformat()
         next_version = self._snapshot_pre_merge_version(conn, primary_id, config, existing_content, now_iso)

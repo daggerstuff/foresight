@@ -165,7 +165,7 @@ and published results — live in [BENCHMARKS.md](BENCHMARKS.md).
 ## 🚀 Deployment & Operational Runbooks
 
 Foresight supports containerized Docker execution as well as systemd daemon orchestration:
-- **Docker Compose**: Launch PostgreSQL with pgvector, Redis, and Foresight MCP server via `docker compose up -d`.
+- **Docker Compose**: Launch the Foresight MCP server via `docker compose up -d`. The compose file defines only the server; provide PostgreSQL 17 + pgvector and Redis separately and pass `FORESIGHT_DB_URL`/`REDIS_URL` into the service.
 - **Systemd Service**: A reference service definition is provided in `foresight.service` for standalone production host deployment.
 - **Connection Pool Tuning**: Configure `MAX_CONNECTIONS` and `POOL_RECYCLE_SECONDS` to prevent connection exhaustion.
 - **Circuit Breaker Policies**: Upstream LLM extraction requests fail over automatically when transient provider rate limits occur.
