@@ -1,0 +1,91 @@
+foresight/telemetry.py
+  s_7d4811cf1b0ba7::t_526829690dc0ac 180-184
+foresight/sensitivity.py
+  s_7d4811cf1b0ba7::t_b8206ddcea13bf 90,98-99,101,103,107-109,122,135-138,142-147
+CONTRIBUTING.md
+  s_7d4811cf1b0ba7::t_526829690dc0ac 19-24,28
+tests/test_memanto_upgrades.py
+  s_7d4811cf1b0ba7::t_b3d5e0c806db5c 403,405,416
+  s_7d4811cf1b0ba7::t_6d661edbe962a2 51-52,93-114,342,382,417
+  s_7d4811cf1b0ba7::t_d1daa0fc9d0fd2 456,464
+foresight/config.py
+  s_7d4811cf1b0ba7::t_526829690dc0ac 65-67
+foresight/retention_policy.py
+  s_7d4811cf1b0ba7::t_6d661edbe962a2 473,477-478,498-499
+  s_7d4811cf1b0ba7::t_e8dcada7cc5f63 471-472
+foresight_cli/commands/retention.py
+  s_7d4811cf1b0ba7::t_526829690dc0ac 1-131,133-161
+  s_7d4811cf1b0ba7::t_45ce4a3773ec7c 132
+foresight/capabilities.py
+  s_7d4811cf1b0ba7::t_526829690dc0ac 103
+  s_7d4811cf1b0ba7::t_b8206ddcea13bf 50,77-92
+  s_7d4811cf1b0ba7::t_b3d5e0c806db5c 19,21
+  s_7d4811cf1b0ba7::t_7b05a3c9b0fe07 13,16,39-43,45,51-52,54,56,58-59,63-64,70,73-76,98
+plugins/claude/hooks/foresight_hook.py
+  s_7d4811cf1b0ba7::t_f8db00fa40c444 13,31-34,40-60,62,85,96,132,216-253,383,393,626-629
+  s_7d4811cf1b0ba7::t_744f094a81c05d 368-369,373-381,384-391,394-395,399,424,426,459-461,463,496-498,500,520-522,527-529,533-537,555-557,559,574-575,581,587,593-625
+  s_7d4811cf1b0ba7::t_53bfb48bc599a1 382
+foresight/reflect.py
+  s_7d4811cf1b0ba7::t_526829690dc0ac 301-302,368-369,373-383,390-392,405-406
+foresight_cli/commands/system.py
+  s_7d4811cf1b0ba7::t_b8206ddcea13bf 533-535
+  s_7d4811cf1b0ba7::t_526829690dc0ac 408-412,415,419,487,616-624
+  s_7d4811cf1b0ba7::t_952d67ed72939d 532,540-554,575
+tests/test_gated_recall.py
+  s_7d4811cf1b0ba7::t_f5db7deae6672d 118-133,141,143-146,149,157-170,174-210,213-218,220,222-224
+  s_7d4811cf1b0ba7::t_04aa160173aa01 211-212
+foresight/audit.py
+  s_7d4811cf1b0ba7::t_b3d5e0c806db5c 59-60
+  s_7d4811cf1b0ba7::t_43b62e41dc8c4b 119-123,271-275
+foresight/server.py
+  s_7d4811cf1b0ba7::t_45ce4a3773ec7c 4541-4554,4592
+  s_7d4811cf1b0ba7::t_4918d15b1ef425 59,3859,3862,3866,3869-3905,3913-3914,3988,3990,3992-3993,8172-8174
+  s_7d4811cf1b0ba7::t_6d661edbe962a2 2475,2601,2615-2623,2628,2771,2935,8809,8840,8870
+  s_7d4811cf1b0ba7::t_f8db00fa40c444 2520-2521,2532-2533
+  s_7d4811cf1b0ba7::t_1a3d73132f74ec 2534-2536
+docker-compose.yml
+  s_7d4811cf1b0ba7::t_526829690dc0ac 11
+  s_7d4811cf1b0ba7::t_03d84c88ab919e 10,12
+README.md
+  s_7d4811cf1b0ba7::t_526829690dc0ac 116-121,139-140,184-192
+foresight_cli/cli.py
+  s_7d4811cf1b0ba7::t_526829690dc0ac 34,89
+tests/test_secret_defense.py
+  s_7d4811cf1b0ba7::t_a0a1f2d94138f8 55-56,58-64,67
+  s_7d4811cf1b0ba7::t_b8206ddcea13bf 111,116-118
+foresight/client_attribution.py
+  s_7d4811cf1b0ba7::t_744f094a81c05d 48-49,174-177
+  s_7d4811cf1b0ba7::t_2c3052ab3f3be1 178-179
+foresight/capture.py
+  s_7d4811cf1b0ba7::t_01d55ff93c0971 466-469,794-796,1078-1091,1103-1104,1121
+foresight/context_blocks.py
+  s_7d4811cf1b0ba7::t_a757b11f4f45d0 26,173,183,203-209,229,239,257-261,268-270
+foresight/instruction_sync.py
+  s_7d4811cf1b0ba7::t_0767cd9f768b0c 46,53,57-62,64-66,68-75,81-85,89,94-95,99,122-123,147-150,156,160-163,176,183-185,188-194,204-205
+foresight/memory_maintenance.py
+  s_7d4811cf1b0ba7::t_61055b4dcb4baa 272-278,280,292-293,295-296,302-305,369-373,462-465,492-493,498-500,503,805-807
+foresight/subconscious.py
+  s_7d4811cf1b0ba7::t_b6a7a9253dc181 36-60,331,333-335,337-338,344-348,353-365,368,370-377
+foresight_cli/commands/sync.py
+  s_7d4811cf1b0ba7::t_1c7fc7da80ea4d 39-43,54-65,90-96
+foresight/backend/schema_ddl.py
+  s_7d4811cf1b0ba7::t_e7f39978ad2547 725-731
+foresight/entity_extractor.py
+  s_7d4811cf1b0ba7::t_8b9f0599adb202 579,586,620-625
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a88a9a0e26d3d3db489cd29906e0526ef67a3fb2",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
