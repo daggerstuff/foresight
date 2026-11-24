@@ -1,0 +1,30 @@
+foresight/sensitivity.py
+  s_7d4811cf1b0ba7::t_18304a0afc1c51 161-162,168-179,183-187,218,224-227
+plugins/claude/hooks/foresight_hook.py
+  s_7d4811cf1b0ba7::t_18304a0afc1c51 93-97,100-101,104-105,259-260,266-273,277-281,310,316-319
+tests/test_memory_maintenance.py
+  s_7d4811cf1b0ba7::t_18304a0afc1c51 263-272,274-289
+  s_7d4811cf1b0ba7::t_151df93a8df1f3 273
+foresight/subconscious.py
+  s_7d4811cf1b0ba7::t_18304a0afc1c51 47-51,1239-1240,1246
+foresight/context_blocks.py
+  s_7d4811cf1b0ba7::t_18304a0afc1c51 235-237
+foresight_cli/commands/retention.py
+  s_7d4811cf1b0ba7::t_18304a0afc1c51 93-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "30ab34cfecad6afef3130cda5d10c740282a3c85",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
