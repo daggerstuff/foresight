@@ -1,0 +1,24 @@
+foresight/audit.py
+  h_07d84030f79d30 48,59,263-319,326,329-332
+foresight/capture.py
+  h_07d84030f79d30 24,29,568-579,790-804,829-830,847,993-1006,1017,1019,1034
+foresight/sensitivity.py
+  h_07d84030f79d30 29,78-246,299-301
+foresight/server.py
+  h_07d84030f79d30 43,187,2516-2528,2545-2546
+plugins/claude/hooks/foresight_hook.py
+  h_07d84030f79d30 7,132-157,185,310-311
+tests/test_secret_defense.py
+  h_07d84030f79d30 1-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4d6576643f70b635f6ad9c72f4806cca7fa8bec6",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
