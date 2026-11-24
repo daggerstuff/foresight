@@ -35,3 +35,8 @@ secret:
     # directory, and this entry names a single file.
     - .github/workflows/publish.yml
     - tests/test_secret_defense.py
+    # The scrubber's own tests: every sample here is a synthetic fixture that
+    # exists to prove redaction works. Both files build them from fragments so
+    # no complete literal is stored, but a future fixture edit would otherwise
+    # re-open the same incident. Scoped to these two files, never to `tests/`.
+    - tests/test_gated_recall.py
