@@ -1,0 +1,67 @@
+foresight/memory_gc.py
+  s_7d4811cf1b0ba7::t_c155d26b9342f9 25,112-121,146-147,164-170,176-177,189,205,208-209,215,222,233,410,412
+foresight/backend/schema_ddl.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 732-737
+CONTRIBUTING.md
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 22
+foresight_cli/commands/sync.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 57
+foresight/semantic_search.py
+  s_7d4811cf1b0ba7::t_c155d26b9342f9 813-817,831,842-852,933-945,957-970,974
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 68,818-819,832-834,838-839
+foresight/server.py
+  s_7d4811cf1b0ba7::t_c155d26b9342f9 3341,3344
+plugins/claude/hooks/foresight_hook.py
+  s_7d4811cf1b0ba7::t_a8399938e32d00 203-206
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 634-638
+foresight/audit.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 273-275
+foresight/subconscious.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 186-188,195,200,313,325,524,544,554,571-573,576-587,1164-1170,1175-1176,1184
+foresight/sensitivity.py
+  s_7d4811cf1b0ba7::t_a8399938e32d00 100-101,103-106
+tests/test_gated_recall.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 195
+foresight/retention_policy.py
+  s_7d4811cf1b0ba7::t_c155d26b9342f9 509-514
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 344-354,361,363,366-367,369-375,458-459
+  s_7d4811cf1b0ba7::t_483c6bd04838a5 209-211,457,460-468,472,487,490-491
+tests/test_memory_gc.py
+  s_7d4811cf1b0ba7::t_c155d26b9342f9 60,450-495
+  s_7d4811cf1b0ba7::t_0b63aa838abcc5 496
+foresight_cli/commands/retention.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 12,14,18-24,49,68-80,88,93-101,105-113,134,141-144,147-149,160-161,166-171,182
+foresight/capture.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 1092-1098
+foresight/context_blocks.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 268-278
+foresight/hybrid_retriever.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 1178-1182
+foresight_cli/commands/system.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 406,414,615
+foresight/instruction_sync.py
+  s_7d4811cf1b0ba7::t_d1caf644fe95d1 141,149,156,213
+  s_7d4811cf1b0ba7::t_a8399938e32d00 142-145,150,155,210,214
+tests/test_semantic_search.py
+  s_7d4811cf1b0ba7::t_d1caf644fe95d1 10
+  s_7d4811cf1b0ba7::t_c155d26b9342f9 25,183-212
+  s_7d4811cf1b0ba7::t_e9929cf8a71bad 213-214
+foresight/rrf_tuning.py
+  s_7d4811cf1b0ba7::t_a5e4dc74bd6a2f 349-357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "827f91c3c0bc70c29be0473686ea0e99e5f2ee45",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
