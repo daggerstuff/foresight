@@ -95,7 +95,7 @@ def test_secret_patterns_detection_and_redaction():
         ("postgres://" + "app_user:" + "mock_pw" + "@db.internal:5432/production", "connection_string"),
         ("api_" + "key" + " = 'abcdef" + "1234567890" + "abcdef'", "assignment_secret"),
         ("pass" + "word" + " = 'mock" + "Password123!'", "assignment_password"),
-        ('{"client_' + 'sec' + 'ret": "mock' + '-token-12345"}', "assignment_secret"),
+        ('{"client_' + "sec" + 'ret": "mock' + '-token-12345"}', "assignment_secret"),
         ("DB_" + "PASS" + "WORD" + '="mock' + '-token-12345"', "assignment_password"),
     ]
 
