@@ -40,6 +40,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 
 from . import connection_pool, oauth_store, reflect as reflect_mod
 from .activity_log import record_activity
+from .audit import record_secret_defense_event, secret_defense_metadata
 from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
 from .auth_oauth import ForesightOAuthProvider, OAuthEndpointOptions
 from .backend import RedisCompanion, create_backend
@@ -183,7 +184,7 @@ from .semantic_search import (
     SemanticSearchOptions,
     get_semantic_search,
 )
-from .sensitivity import resolve_is_sensitive
+from .sensitivity import evaluate_secrets, resolve_is_sensitive
 from .sql_helpers import join_sql_parts, placeholders, quote_identifier
 from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sync_manager
 from .telemetry import get_telemetry_store
@@ -2512,6 +2513,19 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if not options.content or not options.content.strip():
         return _format_error("Error: Content is required for 'store' action")
     content = options.content.strip()
+
+    # FOR-46 / PIX-440: Secret-aware write defense
+    sec_verdict = evaluate_secrets(content, tenant_id=tenant_id, lane=opts.agent_id)
+    if sec_verdict.action_taken != "clean":
+        record_secret_defense_event(
+            tenant_id,
+            uid,
+            "store",
+            secret_defense_metadata(sec_verdict, lane=opts.agent_id),
+        )
+    content = sec_verdict.content
+    if sec_verdict.flagged and opts.is_sensitive is None:
+        opts.is_sensitive = True
     if opts.source_tool is None:
         opts.source_tool = resolve_source_tool()
 
@@ -2528,6 +2542,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         tags=getattr(opts, "tags", None),
     )
     abort_message = _emit_pre_store_hooks(hook_ctx, options, opts)
+    if sec_verdict.blocked:
+        abort_message = "Error: Memory store blocked by secret defense policy (credentials detected)."
     if abort_message:
         return _format_error(abort_message)
 

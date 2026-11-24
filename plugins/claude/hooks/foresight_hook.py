@@ -4,6 +4,7 @@
 import http.client
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -128,6 +129,32 @@ def _summary_text(hook_input):
     return ""
 
 
+_SECRET_PATTERNS = [
+    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"(?i)\baws_secret_access_key\s*=\s*[A-Za-z0-9/+=]{40}\b"),
+    re.compile(r"\bxox[baprs]-[0-9a-zA-Z-]{10,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9-_=]+\.eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]+\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"),
+    re.compile(
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+    ),
+    re.compile(r"\b(?:postgres|postgresql|mysql|mongodb|redis|amqp|mssql):\/\/[^\s:@]+:[^\s:@]+@[^\s\/]+"),
+    re.compile(r"(?i)\b(?:api_key|apikey|client_secret|auth_token)\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.]{16,})[\"']?"),
+    re.compile(r"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*[\"']?([^\s\"']{8,})[\"']?"),
+]
+
+
+def _scrub_secrets(text: str) -> str:
+    """Scrub sensitive credentials from captured hook text (FOR-46)."""
+    out = text
+    for p in _SECRET_PATTERNS:
+        out = p.sub("[REDACTED-SECRET]", out)
+    return out
+
+
 def _transcript_tail(hook_input, n_lines=TRANSCRIPT_TAIL_LINES):
     """Read the last few entries of the session transcript JSONL.
 
@@ -155,7 +182,7 @@ def _transcript_tail(hook_input, n_lines=TRANSCRIPT_TAIL_LINES):
         text = _msg_text(message) if isinstance(message, dict) else ""
         text = text.strip()
         if text and "FORESIGHT CONTINUITY" not in text:
-            out.append(text)
+            out.append(_scrub_secrets(text))
     return out
 
 
@@ -280,7 +307,8 @@ if action == "capture":
                 )
 
 elif "prompt" in event_name.lower() or action == "prompt":
-    prompt_text = str(hook_input.get("prompt") or hook_input.get("text") or hook_input.get("message") or "")
+    raw_prompt = str(hook_input.get("prompt") or hook_input.get("text") or hook_input.get("message") or "")
+    prompt_text = _scrub_secrets(raw_prompt)
     session_id = str(hook_input.get("session_id") or DEFAULT_SESSION_ID)
     messages = hook_input.get("messages") or []
 

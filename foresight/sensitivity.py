@@ -26,6 +26,7 @@ import functools
 import os
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 # Shortest override keyword accepted from FORESIGHT_SENSITIVITY_KEYWORDS.
 MIN_KEYWORD_CHARS = 3
@@ -72,6 +73,175 @@ class SensitivityVerdict:
     is_sensitive: bool
     reason: str | None
     matched_pattern: str | None
+
+
+SecretDefenseMode = Literal["flag", "redact", "block"]
+DEFAULT_SECRET_DEFENSE_MODE: SecretDefenseMode = "redact"
+
+# FOR-46 / PIX-440 Secrets pattern pack
+_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
+    "anthropic_key": re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
+    "openai_key": re.compile(r"\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+    "github_token": re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"),
+    "aws_access_key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    "aws_secret_key": re.compile(r"(?i)\baws_secret_access_key\s*=\s*[A-Za-z0-9/+=]{40}\b"),
+    "slack_token": re.compile(r"\bxox[baprs]-[0-9a-zA-Z-]{10,}\b"),
+    "jwt_token": re.compile(r"\beyJ[A-Za-z0-9-_=]+\.eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]+\b"),
+    "bearer_token": re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"),
+    "private_key": re.compile(
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+        r"[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+    ),
+    "connection_string": re.compile(
+        r"\b(?:postgres|postgresql|mysql|mongodb|redis|amqp|mssql):\/\/[^\s:@]+:[^\s:@]+@[^\s\/]+"
+    ),
+    "assignment_secret": re.compile(
+        r"(?i)\b(?:api_key|apikey|client_secret|auth_token)\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.]{16,})[\"']?"
+    ),
+    "assignment_password": re.compile(
+        r"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*[\"']?([^\s\"']{8,})[\"']?"
+    ),
+}
+
+_TENANT_DEFENSE_POLICIES: dict[str, SecretDefenseMode] = {}
+_LANE_DEFENSE_POLICIES: dict[str, SecretDefenseMode] = {}
+
+
+def set_secret_defense_policy(
+    mode: SecretDefenseMode,
+    *,
+    tenant_id: str | None = None,
+    lane: str | None = None,
+) -> None:
+    """Set secret defense policy for a specific tenant or lane."""
+    if mode not in ("flag", "redact", "block"):
+        raise ValueError(f"Invalid secret defense mode: {mode}. Allowed: flag, redact, block")
+    if lane:
+        _LANE_DEFENSE_POLICIES[lane] = mode
+    elif tenant_id:
+        _TENANT_DEFENSE_POLICIES[tenant_id] = mode
+    else:
+        _TENANT_DEFENSE_POLICIES["default"] = mode
+
+
+def get_secret_defense_policy(
+    tenant_id: str | None = None,
+    lane: str | None = None,
+) -> SecretDefenseMode:
+    """Resolve the active secret defense policy for a tenant/lane."""
+    if lane and lane in _LANE_DEFENSE_POLICIES:
+        return _LANE_DEFENSE_POLICIES[lane]
+    tid = tenant_id or "default"
+    if tid in _TENANT_DEFENSE_POLICIES:
+        return _TENANT_DEFENSE_POLICIES[tid]
+    env_mode = os.environ.get("FORESIGHT_SECRET_DEFENSE_MODE", "").strip().lower()
+    if env_mode in ("flag", "redact", "block"):
+        return env_mode  # type: ignore[return-value]
+    return DEFAULT_SECRET_DEFENSE_MODE
+
+
+def reset_secret_defense_policies() -> None:
+    """Reset dynamic tenant/lane policy overrides (useful in tests)."""
+    _TENANT_DEFENSE_POLICIES.clear()
+    _LANE_DEFENSE_POLICIES.clear()
+
+
+def _redact_secrets(text: str) -> tuple[str, list[str]]:
+    """Scan and redact known secrets, returning the sanitized string and detected types."""
+    detected: list[str] = []
+    redacted = text
+    for stype, pattern in _SECRET_PATTERNS.items():
+        if pattern.search(redacted):
+            detected.append(stype)
+            if pattern.groups > 0:
+
+                def _make_repl(secret_type: str):
+                    def _repl(m: re.Match[str]) -> str:
+                        val = m.group(1)
+                        full = m.group(0)
+                        return full.replace(val, f"[REDACTED-SECRET:{secret_type}]")
+
+                    return _repl
+
+                redacted = pattern.sub(_make_repl(stype), redacted)
+            else:
+                redacted = pattern.sub(f"[REDACTED-SECRET:{stype}]", redacted)
+    return redacted, detected
+
+
+@dataclass(frozen=True)
+class SecretDefenseVerdict:
+    """Outcome of evaluating credentials/secrets defense policy on text."""
+
+    content: str
+    blocked: bool
+    flagged: bool
+    detected_secrets: tuple[str, ...]
+    mode: SecretDefenseMode
+    action_taken: str  # "clean", "flagged", "redacted", "blocked"
+
+
+def evaluate_secrets(
+    content: str | None,
+    mode: SecretDefenseMode | None = None,
+    *,
+    tenant_id: str | None = None,
+    lane: str | None = None,
+) -> SecretDefenseVerdict:
+    """
+    Scan content for credentials and enforce the per-tenant/lane defense policy.
+    FOR-46 / PIX-440: mode=flag|redact|block before encryption and storage.
+    Default mode is 'redact'.
+    """
+    effective_mode = mode or get_secret_defense_policy(tenant_id, lane)
+    if not content:
+        return SecretDefenseVerdict(
+            content="",
+            blocked=False,
+            flagged=False,
+            detected_secrets=(),
+            mode=effective_mode,
+            action_taken="clean",
+        )
+
+    redacted_text, detected = _redact_secrets(content)
+    if not detected:
+        return SecretDefenseVerdict(
+            content=content,
+            blocked=False,
+            flagged=False,
+            detected_secrets=(),
+            mode=effective_mode,
+            action_taken="clean",
+        )
+
+    deduped = tuple(sorted(set(detected)))
+    if effective_mode == "block":
+        return SecretDefenseVerdict(
+            content="",
+            blocked=True,
+            flagged=True,
+            detected_secrets=deduped,
+            mode=effective_mode,
+            action_taken="blocked",
+        )
+    if effective_mode == "flag":
+        return SecretDefenseVerdict(
+            content=content,
+            blocked=False,
+            flagged=True,
+            detected_secrets=deduped,
+            mode=effective_mode,
+            action_taken="flagged",
+        )
+    return SecretDefenseVerdict(
+        content=redacted_text,
+        blocked=False,
+        flagged=True,
+        detected_secrets=deduped,
+        mode=effective_mode,
+        action_taken="redacted",
+    )
 
 
 def _compile_default_patterns() -> list[re.Pattern[str]]:
@@ -126,6 +296,9 @@ class SensitivityDetector:
             match = pattern.search(content)
             if match is not None:
                 return SensitivityVerdict(True, "pii_pattern", match.group(0))
+        sec_verdict = evaluate_secrets(content)
+        if sec_verdict.detected_secrets:
+            return SensitivityVerdict(True, "secret_pattern", sec_verdict.detected_secrets[0])
         for word in self._keywords:
             if word and word in lowered:
                 return SensitivityVerdict(True, "clinical_keyword", word)

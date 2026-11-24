@@ -45,6 +45,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .config import DB_PATH
 from .connection_pool import get_pool
 from .sql_helpers import join_sql_parts
 
@@ -55,6 +56,7 @@ NARRATIVE_FAILED = "narrative_failed"
 NARRATIVE_CACHE_HIT = "narrative_cache_hit"
 LLM_CALL_SUCCEEDED = "llm_call_succeeded"
 LLM_CALL_FAILED = "llm_call_failed"
+SECRET_DEFENSE = "secret_defense"
 
 _SCHEMA_STATEMENTS = [
     """
@@ -258,12 +260,74 @@ class AuditLog:
         }
 
 
+class _AuditLogSingleton:
+    instance: AuditLog | None = None
+
+
+def get_audit_log(db_path: str | None = None) -> AuditLog:
+    """Get or create the default AuditLog singleton."""
+    if _AuditLogSingleton.instance is None:
+        _AuditLogSingleton.instance = AuditLog(db_path or DB_PATH)
+    return _AuditLogSingleton.instance
+
+
+def reset_audit_log() -> None:
+    """Reset the default AuditLog singleton."""
+    if _AuditLogSingleton.instance is not None:
+        _AuditLogSingleton.instance.close()
+        _AuditLogSingleton.instance = None
+
+
+def secret_defense_metadata(verdict: Any, lane: str | None = None) -> dict[str, Any]:
+    """Build sanitized metadata dictionary for secret defense audit events."""
+    meta: dict[str, Any] = {
+        "action": getattr(verdict, "action_taken", "clean"),
+        "secret_types": list(getattr(verdict, "detected_secrets", ())),
+        "count": len(getattr(verdict, "detected_secrets", ())),
+        "mode": getattr(verdict, "mode", "redact"),
+    }
+    if lane:
+        meta["lane"] = lane
+    return meta
+
+
+def record_secret_defense_event(
+    tenant_id: str,
+    user_id: str,
+    resource_id: str,
+    metadata: dict[str, Any],
+    audit_log: AuditLog | None = None,
+) -> None:
+    """Record a secret defense event without logging secret values (FOR-46 / PIX-440)."""
+    action = metadata.get("action", "clean")
+    secret_types = metadata.get("secret_types", [])
+    if not secret_types and action == "clean":
+        return
+    event = AuditEvent(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        event_type=SECRET_DEFENSE,
+        resource_id=resource_id,
+        metadata=dict(metadata),
+    )
+    try:
+        log = audit_log or get_audit_log()
+        log.record(event)
+    except Exception as exc:
+        logger.warning("Failed to record secret defense audit event: %s", exc)
+
+
 __all__ = [
     "LLM_CALL_FAILED",
     "LLM_CALL_SUCCEEDED",
     "NARRATIVE_CACHE_HIT",
     "NARRATIVE_FAILED",
     "NARRATIVE_GENERATED",
+    "SECRET_DEFENSE",
     "AuditEvent",
     "AuditLog",
+    "get_audit_log",
+    "record_secret_defense_event",
+    "reset_audit_log",
+    "secret_defense_metadata",
 ]

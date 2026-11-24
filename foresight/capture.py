@@ -21,10 +21,12 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from .audit import record_secret_defense_event, secret_defense_metadata
 from .client_attribution import resolve_source_tool
 from .config import BANK_ID, raw_retention_enabled
 from .connection_pool import get_pool
 from .document_layer import content_hash as _content_hash
+from .sensitivity import evaluate_secrets
 from .sql_helpers import join_sql_parts, placeholders
 from .tenant_context import get_current_account_id
 
@@ -563,6 +565,18 @@ class CapturePipeline:
             if not content:
                 raw_event_ids.append(None)
                 continue
+            sec_verdict = evaluate_secrets(content, tenant_id=ref.tenant_id)
+            if sec_verdict.action_taken != "clean":
+                record_secret_defense_event(
+                    ref.tenant_id,
+                    ref.user_id,
+                    ref.session_id or f"raw_{idx}",
+                    secret_defense_metadata(sec_verdict),
+                )
+            if sec_verdict.blocked:
+                raw_event_ids.append(None)
+                continue
+            content = sec_verdict.content
             rid = self._generate_raw_event_id(ref, idx, role, content)
             raw_event_ids.append(rid)
             rows.append(
@@ -773,6 +787,21 @@ class CapturePipeline:
         stats: CaptureStats,
     ) -> None:
         """Insert one candidate, link its provenance, and record any derives edge."""
+        # FOR-46 / PIX-440: Secret-aware write defense
+        sec_verdict = evaluate_secrets(candidate.content, tenant_id=ctx.tenant_id, lane=candidate.scope)
+        if sec_verdict.action_taken != "clean":
+            record_secret_defense_event(
+                ctx.tenant_id,
+                ctx.user_id,
+                candidate.category,
+                secret_defense_metadata(sec_verdict, lane=candidate.scope),
+            )
+        if sec_verdict.blocked:
+            stats.skipped = True
+            stats.skip_reason = "secret_defense_blocked"
+            return
+        candidate.content = sec_verdict.content
+
         clean_cand = re.sub(r"^\[auto-captured/[^\]]+\]\s*", "", candidate.content).strip()
         content = f"[auto-captured/{candidate.category}] {clean_cand}"
         h = _content_hash(content)
@@ -797,8 +826,8 @@ class CapturePipeline:
             """INSERT INTO memories
                (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                 created_at, updated_at, tags, emotional_context, metrics,
-                is_ghost, synthesized_from, importance, source_tool)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?)
+                is_ghost, synthesized_from, importance, source_tool, is_sensitive)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, ?, ?)
                ON CONFLICT (id) DO NOTHING""",
             (
                 mid,
@@ -815,6 +844,7 @@ class CapturePipeline:
                 json.dumps(candidate.tags),
                 candidate.importance,
                 resolve_source_tool(),
+                1 if sec_verdict.flagged else 0,
             ),
         )
         conn.commit()
@@ -960,6 +990,20 @@ class CapturePipeline:
         transcript = "\n".join(f"{m.get('role', 'unknown')}: {m.get('content', '') or ''}" for m in messages).strip()
         if not transcript:
             return 0, "", None
+
+        # FOR-46 / PIX-440: Secret-aware write defense
+        sec_verdict = evaluate_secrets(transcript, tenant_id=ref.tenant_id)
+        if sec_verdict.action_taken != "clean":
+            record_secret_defense_event(
+                ref.tenant_id,
+                ref.user_id,
+                ref.session_id or "verbatim",
+                secret_defense_metadata(sec_verdict),
+            )
+        if sec_verdict.blocked:
+            return 0, "", None
+        transcript = sec_verdict.content
+
         mid = hashlib.sha256(f"{transcript}{now}".encode()).hexdigest()[:16]
         tags = ["verbatim"]
         metrics = {"capture_instructions": options.instructions} if options.instructions else {}
@@ -970,9 +1014,9 @@ class CapturePipeline:
                 """INSERT INTO memories
                    (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
                     created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from,
-                    importance, memory_type, source_tool)
+                    importance, memory_type, source_tool, is_sensitive)
                    VALUES (?, ?, ?, 'session', 'short_term', 'episodic', ?, ?, ?, ?, ?, ?, '{}', ?, 0, '[]', \
-?, 'episodic', ?)
+?, 'episodic', ?, ?)
                    ON CONFLICT (id) DO NOTHING""",
                 (
                     mid,
@@ -987,6 +1031,7 @@ class CapturePipeline:
                     json.dumps(metrics),
                     1.0,
                     resolve_source_tool(),
+                    1 if sec_verdict.flagged else 0,
                 ),
             )
             conn.commit()
