@@ -1,0 +1,40 @@
+foresight/retention_policy.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 133-135,493-495
+tests/test_secret_defense.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 22,26,86-92,95-99,271-331
+foresight/server.py
+  s_7d4811cf1b0ba7::t_f97943e8a6ba31 2754
+  s_7d4811cf1b0ba7::t_61d5cba3400584 2764-2767,2775,2779-2780,2786,2805,2818,2822-2824
+  s_7d4811cf1b0ba7::t_56f7015ed45327 2719-2748,2753,2755-2756
+  s_7d4811cf1b0ba7::t_20f54ff96ae2b4 2708-2709,2718,2749-2752,2761
+tests/test_memanto_upgrades.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 324-328
+tests/test_retention_cli.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 24,26,28-31,48,81,83-94,97-100
+tests/test_gated_recall.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 283-306
+foresight/memory_gc.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 144-167
+foresight/sensitivity.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 164-165,167,190,194-199
+foresight_cli/commands/retention.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 80,95,130,138,146,150,165
+plugins/claude/hooks/foresight_hook.py
+  s_7d4811cf1b0ba7::t_56f7015ed45327 99,101-106,263-264,266,285,289-294
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bf219d870d37d78c91276098f9fb59a914109a8d",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
