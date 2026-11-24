@@ -1,0 +1,24 @@
+tests/test_link_suggestions.py
+  s_7d4811cf1b0ba7::t_34f8ff7b5b891a 1-13,16-18,20-31,36-42,47-51,54-99,102-128,131-133,135-171,173,175
+  s_7d4811cf1b0ba7::t_55059c896346b4 14-15,19,32-35,43-46,52-53,100-101,129-130,134,172,174,176
+foresight/server.py
+  s_7d4811cf1b0ba7::t_34f8ff7b5b891a 322,578,665,2413-2447,2453,2455-2460,2462-2471,2473-2474,2477,2479-2484,2491-2503,2507-2508,2543-2547,2571,2574-2593,3082,3115,3118-3119
+  s_7d4811cf1b0ba7::t_55059c896346b4 2407-2412,2448-2452,2454,2461,2472,2475-2476,2478,2485-2490,2509-2514,2532,2538-2539,2572-2573
+  s_7d4811cf1b0ba7::t_06ff0d42c8920e 319-321,575-577,662-664
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9ff251bdb37ff63a7e510f4ab4e81ac6bd1ceaba",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}

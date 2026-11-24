@@ -1,0 +1,38 @@
+CONTRIBUTING.md
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 14-17,22,39-40
+README.md
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 168
+tests/test_backend_migrations.py
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 24,27-30
+  s_7d4811cf1b0ba7::t_d638f4e8078226 31
+tests/test_main.py
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 4,6,9,12,40-62
+  s_7d4811cf1b0ba7::t_7d8b9365439aa2 63-64
+SECURITY.md
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 76,86
+foresight/__main__.py
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 41
+  s_7d4811cf1b0ba7::t_4e4fc891d8213b 9
+foresight/server.py
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 652
+ARCHITECTURE.md
+  s_7d4811cf1b0ba7::t_4b6f2272043d2c 23,33,39,67-69,103,105
+apps/docs/docs/api/cli-reference.md
+  s_7d4811cf1b0ba7::t_418cd7e9668c05 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a32319af6f369f528bdb26c6e635b3a627e2e8f5",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
