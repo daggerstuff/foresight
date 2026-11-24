@@ -1,0 +1,35 @@
+foresight/audit.py
+  s_7d4811cf1b0ba7::t_a29851739852ea 48,59,263-278
+  s_7d4811cf1b0ba7::t_2e655124e0f7d8 279-281
+  s_7d4811cf1b0ba7::t_54be877164e5e0 282-319,326,329-332
+foresight/server.py
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 43,187,2516-2524
+  s_7d4811cf1b0ba7::t_a29851739852ea 2545-2546
+  s_7d4811cf1b0ba7::t_7a4118026c4646 2525-2528
+foresight/capture.py
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 24,29,568-579,790-804,829-830,847,993-1001
+  s_7d4811cf1b0ba7::t_119fbeb38aed0c 1002-1006,1017,1019,1034
+foresight/sensitivity.py
+  s_7d4811cf1b0ba7::t_a29851739852ea 92-93
+  s_7d4811cf1b0ba7::t_81957db63f88ea 29,78-91,94-246,299-301
+tests/test_secret_defense.py
+  s_7d4811cf1b0ba7::t_77279a7ae2a3c9 16-118
+  s_7d4811cf1b0ba7::t_72bc976df72fe7 145-150
+  s_7d4811cf1b0ba7::t_575a0a92e86940 1-15,119-144,151-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dfe92e6f9d0eb2e5e66f9806a9f432691c11125f",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
