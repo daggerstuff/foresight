@@ -27,6 +27,9 @@ from typing import Any
 logger = logging.getLogger("foresight_rrf_tuning")
 
 
+DEFAULT_GATING_THRESHOLD: float = 0.015
+
+
 @dataclass
 class RRFConfig:
     """Configuration for RRF fusion weights.
@@ -43,6 +46,7 @@ class RRFConfig:
     graph_weight: float = 0.8
     temporal_weight: float = 0.8  # Aligned with HybridRetriever.DEFAULT_WEIGHTS
     entity_weight: float = 0.5  # Separate entity-salience pass (0 = disabled)
+    gating_threshold: float = DEFAULT_GATING_THRESHOLD  # Min fused score for recall injection
 
     # Trend modifiers for temporal scoring
     trend_mod_strengthening: float = 1.2
@@ -65,6 +69,7 @@ class RRFConfig:
             "graph": self.graph_weight,
             "temporal": self.temporal_weight,
             "entity": self.entity_weight,
+            "gating_threshold": self.gating_threshold,
         }
         for k in ("strengthening", "stable", "weakening", "stale"):
             d[f"trend_mod_{k}"] = getattr(self, f"trend_mod_{k}")
@@ -90,6 +95,7 @@ class RRFConfig:
             graph_weight=_num(data.get("graph", 0.8), 0.8),
             temporal_weight=_num(data.get("temporal", 0.8), 0.8),
             entity_weight=_num(data.get("entity", 0.0), 0.0),
+            gating_threshold=_num(data.get("gating_threshold", DEFAULT_GATING_THRESHOLD), DEFAULT_GATING_THRESHOLD),
             trend_mod_strengthening=_num(data.get("trend_mod_strengthening", 1.2), 1.2),
             trend_mod_stable=_num(data.get("trend_mod_stable", 1.0), 1.0),
             trend_mod_weakening=_num(data.get("trend_mod_weakening", 0.8), 0.8),
@@ -297,3 +303,43 @@ def select_variant(
 
     # Default to control
     return ("control", test_config.control_weights)
+
+
+def tune_gating_threshold(
+    scores: list[float],
+    labels: list[bool],
+    *,
+    min_precision: float = 0.8,
+) -> float:
+    """Find the optimal score threshold that achieves at least min_precision.
+
+    Args:
+        scores: Retrieval scores (e.g. top combined RRF scores).
+        labels: Ground truth relevance (True = relevant, False = noise).
+        min_precision: Desired precision target.
+
+    Returns:
+        Optimal gating threshold rounded to 4 decimals.
+    """
+    if not scores or not labels or len(scores) != len(labels):
+        return DEFAULT_GATING_THRESHOLD
+
+    candidate_thresholds = sorted(set(scores))
+    best_threshold = DEFAULT_GATING_THRESHOLD
+    best_f1 = -1.0
+
+    for thresh in candidate_thresholds:
+        tp = sum(1 for s, y in zip(scores, labels, strict=False) if s >= thresh and y)
+        fp = sum(1 for s, y in zip(scores, labels, strict=False) if s >= thresh and not y)
+        fn = sum(1 for s, y in zip(scores, labels, strict=False) if s < thresh and y)
+
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (2 * prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
+
+        if prec >= min_precision and f1 > best_f1:
+            best_f1 = f1
+            best_threshold = thresh
+
+    return round(best_threshold, 4)
+

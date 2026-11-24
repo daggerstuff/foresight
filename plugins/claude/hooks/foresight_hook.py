@@ -26,6 +26,40 @@ CACHE_PATH = os.path.join(CACHE_DIR, "hook-cache.jsonl")
 CACHE_TTL_HOURS = float(os.environ.get("FORESIGHT_CACHE_TTL_HOURS") or DEFAULT_CACHE_TTL_HOURS)
 CACHE_MAX_BYTES = int(os.environ.get("FORESIGHT_CACHE_MAX_BYTES") or DEFAULT_CACHE_MAX_BYTES)
 
+# Gated recall settings (FOR-1)
+GATED_RECALL_ENABLED = os.environ.get("FORESIGHT_GATED_RECALL", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+GATED_RECALL_THRESHOLD = float(
+    os.environ.get("FORESIGHT_GATED_RECALL_THRESHOLD")
+    or os.environ.get("FORESIGHT_RECALL_THRESHOLD")
+    or "0.015"
+)
+REMINDER_LINE = "[FORESIGHT] Persistent memory active. Call inject_context or search_memories to recall stored context."
+WRITE_BACK_NUDGE = (
+    "[FORESIGHT WRITE-BACK] Session produced storable decisions or findings. "
+    "Consider persisting them with capture_in_flight_memory or manage_memories before ending."
+)
+
+_STORABLE_FACT_PATTERNS = [
+    re.compile(r"(?i)\b(?:decided|decision:?|agreed to|we decided|architecture decision)\b"),
+    re.compile(r"(?i)\b(?:fixed|solution was|root cause|the fix was|bug fix:?|resolved by)\b"),
+    re.compile(r"(?i)\b(?:prefer|preference:?|always use|never use|remember to|remember that)\b"),
+    re.compile(r"(?i)\b(?:learned that|key finding|takeaway:?)\b"),
+]
+
+
+def _has_storable_facts(texts):
+    """Check if transcript texts contain storable facts, decisions, or fixes."""
+    for text in texts:
+        for p in _STORABLE_FACT_PATTERNS:
+            if p.search(text):
+                return True
+    return False
+
 # -- Credentials -------------------------------------------------------------
 # Resolution order: environment -> ~/.config/foresight/credentials.env
 # (written by plugins/claude/install.sh; KEY=VALUE, chmod 600).
@@ -139,7 +173,8 @@ _SECRET_PATTERNS = [
     re.compile(r"\beyJ[A-Za-z0-9-_=]+\.eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]+\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"),
     re.compile(
-        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?"
+        r"-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
     ),
     re.compile(r"\b(?:postgres|postgresql|mysql|mongodb|redis|amqp|mssql):\/\/[^\s:@]+:[^\s:@]+@[^\s\/]+"),
     re.compile(r"(?i)\b(?:api_key|apikey|client_secret|auth_token)\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.]{16,})[\"']?"),
@@ -338,7 +373,44 @@ elif "prompt" in event_name.lower() or action == "prompt":
         if status == http.HTTPStatus.OK:
             data = json.loads(body.decode("utf-8"))
             formatted = data.get("formatted", "")
-            if formatted:
+            top_score = float(data.get("top_score") or 0.0)
+            if not top_score and data.get("memories"):
+                top_score = float(data["memories"][0].get("combined_score") or 0.0)
+            static_and_safety = str(data.get("static_and_safety") or "").strip()
+
+            decision = "injected"
+            if GATED_RECALL_ENABLED and top_score < GATED_RECALL_THRESHOLD:
+                decision = "gated"
+
+            with suppress(Exception):
+                _post(
+                    f"{FORESIGHT_URL}/ui/api/telemetry/gating",
+                    {
+                        "surface": "claude_hook",
+                        "decision": decision,
+                        "top_score": top_score,
+                        "threshold": GATED_RECALL_THRESHOLD,
+                    },
+                    timeout=2.0,
+                )
+
+            if decision == "gated":
+                parts = []
+                if static_and_safety:
+                    parts.append(static_and_safety)
+                parts.append(REMINDER_LINE)
+                gated_block = "\n\n".join(parts)
+                sys.stdout.write(
+                    "\n".join(
+                        (
+                            "[FORESIGHT CONTINUITY CONTEXT]",
+                            gated_block,
+                            "[/FORESIGHT CONTINUITY CONTEXT]",
+                        )
+                    )
+                    + "\n"
+                )
+            elif formatted:
                 sys.stdout.write(_prompt_block(formatted) + "\n")
 
 elif "precompact" in event_name.lower() or action == "precompact":
@@ -455,3 +527,13 @@ elif "stop" in event_name.lower() or "end" in event_name.lower() or action in ("
                         "text": "\n".join(tail)[-12000:],
                     }
                 )
+
+    # Check if session produced storable facts and emit write-back nudge (FOR-1)
+    texts_to_check = []
+    if isinstance(tail, list):
+        texts_to_check.extend(tail)
+    if isinstance(messages, list):
+        texts_to_check.extend(_msg_text(m) for m in messages if isinstance(m, dict))
+    if _has_storable_facts(texts_to_check):
+        sys.stdout.write(WRITE_BACK_NUDGE + "\n")
+

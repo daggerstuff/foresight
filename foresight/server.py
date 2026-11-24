@@ -132,6 +132,7 @@ from .injection_budget import (
     Lane,
     LaneItem,
     format_budgeted_payload,
+    format_static_and_safety,
 )
 from .llm_client import TenantLLMClient
 from .llm_errors import LLMError, LLMNotConfiguredError
@@ -6082,9 +6083,13 @@ def inject_context(
             uid, tenant_id, terms, agent_id=agent_id, project=project
         )
         legacy_formatted = _format_injection_output(view)
+        top_score = max((m.combined_score for m in memories), default=0.0)
+        static_safety_text = _format_static_and_safety_lanes(uid, tenant_id, agent_id=agent_id, project=project)
         payload: dict[str, Any] = {
             "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
             "memories": [m.to_dict() for m in memories],
+            "top_score": round(top_score, 4),
+            "static_and_safety": static_safety_text,
             "context_blocks": blocks_by_point,
             "patterns": _active_observations(uid, tenant_id, agent_id=agent_id, project=project),
         }
@@ -6276,6 +6281,28 @@ def _join_sections(sections: list[list[str]]) -> list[str]:
             lines.append("")
         lines.extend(section)
     return lines
+
+
+def _format_static_and_safety_lanes(
+    uid: str,
+    tenant_id: str,
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> str:
+    """Format static and safety lanes for inclusion during gated recall."""
+    block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
+    lane_items: dict[Lane, list[LaneItem]] = {Lane.STATIC: [], Lane.SAFETY: []}
+    user_prefs = block_agent.state.get_block(USER_PREFERENCES)
+    if user_prefs and not user_prefs.is_empty():
+        lane_items[Lane.STATIC].append(
+            LaneItem(id="user_preferences", content=user_prefs.content, score=0.9, lane=Lane.STATIC)
+        )
+    safety = block_agent.state.get_block("safety") or block_agent.state.get_block("safety_notes")
+    if safety and not safety.is_empty():
+        lane_items[Lane.SAFETY].append(
+            LaneItem(id="safety", content=safety.content, score=1.0, lane=Lane.SAFETY)
+        )
+    return format_static_and_safety(lane_items)
 
 
 def _format_injection_output(view: InjectionView) -> str:
@@ -10126,6 +10153,29 @@ async def ui_api_inject(request: Any) -> Any:
     except Exception:
         data = {"formatted": str(res)}
     return JSONResponse(data if isinstance(data, dict) else {"formatted": str(res)})
+
+
+@mcp.custom_route("/ui/api/telemetry/gating", methods=["POST"])
+@_ui_protected
+async def ui_api_telemetry_gating(request: Any) -> Any:
+    """Record a gated recall decision from client hooks."""
+    try:
+        body = await request.json()
+        surface = str(body.get("surface") or "claude_hook")
+        decision = str(body.get("decision") or "injected")
+        top_score = float(body.get("top_score") or 0.0)
+        threshold = float(body.get("threshold") or 0.0)
+        get_telemetry_store().record_gating(
+            surface=surface,
+            decision=decision,
+            top_score=top_score,
+            threshold=threshold,
+        )
+        return JSONResponse({"ok": True, "recorded": decision})
+    except Exception as e:
+        logger.warning("Telemetry gating recording failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
 
 
 @mcp.custom_route("/ui/api/capture", methods=["POST"])
