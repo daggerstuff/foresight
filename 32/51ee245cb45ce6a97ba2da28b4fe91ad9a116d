@@ -1,0 +1,32 @@
+foresight/telemetry.py
+  s_7d4811cf1b0ba7::t_bfb046f9b261f9 56-58,89-91,171-207,209-211,241-245
+  s_7d4811cf1b0ba7::t_eac33273206269 25,208
+foresight/rrf_tuning.py
+  s_7d4811cf1b0ba7::t_bfb046f9b261f9 30-32,49,72,98,306-345
+foresight/server.py
+  s_7d4811cf1b0ba7::t_7f168c3d7de2e7 135,6086-6087,6091-6092,6286-6307,10158-10178
+  s_7d4811cf1b0ba7::t_40faeddc3b3224 10179-10180
+plugins/claude/hooks/foresight_hook.py
+  s_7d4811cf1b0ba7::t_7f168c3d7de2e7 29-62,176-177,376-413
+  s_7d4811cf1b0ba7::t_98a6e6dcb5b663 530-539
+foresight/injection_budget.py
+  s_7d4811cf1b0ba7::t_f5766c0e0b64e9 409-427
+tests/test_gated_recall.py
+  s_7d4811cf1b0ba7::t_8d09de0add6143 1-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3251ee245cb45ce6a97ba2da28b4fe91ad9a116d",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
