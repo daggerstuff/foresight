@@ -316,6 +316,10 @@ class MemoryOptions(BaseModel):
             "handshake, or known environment markers."
         ),
     )
+    response_format: Literal["text", "json"] = Field(
+        default="text",
+        description="Output format: 'text' (default) or 'json' (structured schema with candidates).",
+    )
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -568,6 +572,10 @@ class MemoryAction(BaseModel):
     content: str | None = Field(default=None, description="Content for store/update")
     options: MemoryOptions | None = Field(default=None, description="Options for store")
     updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
+    response_format: Literal["text", "json"] = Field(
+        default="text",
+        description="Output format: 'text' (default) or 'json'.",
+    )
 
 
 class InferredAction(BaseModel):
@@ -651,6 +659,10 @@ class ManageMemoriesParams(BaseModel):
     agent_id: str | None = Field(default=None, description="Flat namespace lane for store (default: shared lane)")
     project: str | None = Field(default=None, description="Flat project namespace lane for store")
     source_tool: str | None = Field(default=None, description="Flat calling-tool attribution override for store")
+    response_format: Literal["text", "json"] | None = Field(
+        default=None,
+        description="Flat output format: 'text' (default) or 'json' (structured schema with candidates).",
+    )
 
 
 class SearchMemoriesParams(BaseModel):
@@ -2392,14 +2404,114 @@ def _link_related_memory(request: _StoreRequest, memory_id: str) -> None:
         logger.warning(f"Failed to create memory relationship: {exc}")
 
 
+_HIGH_SIMILARITY_SCORE = 0.5
+_TFIDF_SUPPORT_SCORE = 0.4
+_RRF_SUPPORT_SCORE = 0.02
+_CANDIDATE_PREVIEW_LEN = 80
+
+
+def _suggest_relation_type(
+    new_content: str, cand_content: str, score: float, cand_result: Any = None
+) -> str:
+    """Heuristic determination of candidate relationship type without LLM call."""
+    new_lower = new_content.lower()
+    cand_lower = cand_content.lower()
+
+    contradiction_markers = (
+        "instead of",
+        "no longer",
+        "corrected",
+        "deprecated",
+        "replaced by",
+        "changed from",
+        "never mind",
+        "mistake",
+    )
+    if any(m in new_lower for m in contradiction_markers):
+        return "contradicts"
+
+    causal_markers = (
+        "because",
+        "due to",
+        "caused by",
+        "results in",
+        "therefore",
+        "as a result",
+        "leads to",
+        "consequently",
+    )
+    if any(m in new_lower or m in cand_lower for m in causal_markers):
+        return "derives"
+
+    vector_score = getattr(cand_result, "vector_score", 0.0) or 0.0
+    tfidf_score = getattr(cand_result, "tfidf_cosine_score", 0.0) or 0.0
+    if (
+        vector_score >= _HIGH_SIMILARITY_SCORE
+        or tfidf_score >= _TFIDF_SUPPORT_SCORE
+        or (cand_result is not None and score >= _RRF_SUPPORT_SCORE)
+    ):
+        return "supports"
+    if cand_result is None and score >= _HIGH_SIMILARITY_SCORE:
+        return "supports"
+
+    return "related"
+
+
+def _find_link_candidates(
+    request: _StoreRequest,
+    memory_id: str,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """
+    Find write-time link suggestion candidates for a newly stored memory.
+    FOR-22 / PIX-449: bounded latency, vector/hybrid retriever query, zero extra LLM calls.
+    """
+    candidates: list[dict[str, Any]] = []
+    try:
+        options = HybridSearchOptions(
+            tenant_id=request.tenant_id,
+            limit=limit + 3,
+            fast_path_enabled=True,
+            agent_id=getattr(request.opts, "agent_id", None),
+            project=getattr(request.opts, "project", None),
+        )
+        search_result = get_hybrid_retriever().search(request.content, request.uid, options=options)
+        for r in search_result.results:
+            if r.memory_id == memory_id:
+                continue
+            score = float(r.combined_score or r.rrf_score or 0.0)
+            if score <= 0.0:
+                continue
+            rel_type = _suggest_relation_type(request.content, r.content, score, cand_result=r)
+            preview = (
+                (r.content[:_CANDIDATE_PREVIEW_LEN] + "...")
+                if len(r.content) > _CANDIDATE_PREVIEW_LEN
+                else r.content
+            )
+            candidates.append({
+                "memory_id": r.memory_id,
+                "score": round(score, 4),
+                "suggested_relation": rel_type,
+                "preview": preview,
+            })
+            if len(candidates) >= limit:
+                break
+    except Exception as exc:
+        logger.warning(f"Failed to find write-time link candidates: {exc}")
+    return candidates
+
+
 def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
     """Helper to handle memory storage."""
-    if not options.content:
-        return "Error: Content is required for 'store' action"
-    content = options.content.strip()
-    if not content:
-        return "Error: Content is required for 'store' action"
     opts = options.options or MemoryOptions()
+    response_format = getattr(options, "response_format", None) or getattr(opts, "response_format", "text")
+
+    def _format_error(msg: str) -> str:
+        return json.dumps({"error": msg}) if response_format == "json" else msg
+
+    if not options.content or not options.content.strip():
+        return _format_error("Error: Content is required for 'store' action")
+    content = options.content.strip()
     if opts.source_tool is None:
         opts.source_tool = resolve_source_tool()
 
@@ -2417,17 +2529,22 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     )
     abort_message = _emit_pre_store_hooks(hook_ctx, options, opts)
     if abort_message:
-        return abort_message
+        return _format_error(abort_message)
 
     # Hard cap enforcement: check memory count per tenant
     conn = get_db_connection()
     if _tenant_memory_count(conn, uid, tenant_id) >= DEFAULT_MAX_MEMORY_PER_TENANT:
         conn.close()
-        return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
+        err_cap = f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
+        return _format_error(err_cap)
 
     duplicate_message = _bump_duplicate_memory(conn, uid, tenant_id, _content_hash(content))
     if duplicate_message:
-        return duplicate_message
+        return (
+            json.dumps({"status": "duplicate", "message": duplicate_message, "candidates": []})
+            if response_format == "json"
+            else duplicate_message
+        )
 
     request = _StoreRequest(uid=uid, tenant_id=tenant_id, content=content, opts=opts)
     memory, gate_result = _build_stored_memory(request)
@@ -2451,7 +2568,29 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
     record_activity("memory.store", n=1, tool=opts.source_tool)
 
-    return f"Stored memory {memory.id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
+    candidates = _find_link_candidates(
+        request,
+        memory.id,
+        limit=3,
+    )
+
+    if response_format == "json":
+        return json.dumps({
+            "status": "stored",
+            "memory_id": memory.id,
+            "gate": gate_result.decision,
+            "reason": gate_result.reason,
+            "candidates": candidates,
+        })
+
+    msg = f"Stored memory {memory.id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
+    if candidates:
+        cand_summary = ", ".join(
+            f"{c['memory_id']} ({c['suggested_relation']}, score={c['score']})"
+            for c in candidates
+        )
+        msg += f". Candidates: [{cand_summary}]"
+    return msg
 
 
 def _emit_pre_update_hooks(hook_ctx: MemoryHookContext) -> str | None:
@@ -2940,6 +3079,7 @@ def manage_memories(
         relation_type=params.relation_type,
         related_memory_id=params.related_memory_id,
         is_sensitive=params.is_sensitive,
+        response_format=params.response_format,
     )
     flat_update_kwargs = _flat_kwargs(
         category=params.category,
@@ -2972,8 +3112,11 @@ def manage_memories(
             content=params.content,
             options=store_options,
             updates=updates,
+            response_format=params.response_format or "text",
         )
     else:
+        if params.response_format is not None:
+            options.response_format = params.response_format
         if options.options is None and store_options is not None:
             options.options = store_options
         if options.updates is None and updates is not None:

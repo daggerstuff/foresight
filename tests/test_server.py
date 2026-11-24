@@ -346,6 +346,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "compaction_lifecycle",
         "curate_observations",
         "export_profile",
+        "get_catch_up",
         "get_system_status",
         "inject_context",
         "ingest_document_file",
