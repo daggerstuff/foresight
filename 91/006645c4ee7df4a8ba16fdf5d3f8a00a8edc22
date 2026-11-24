@@ -1,0 +1,49 @@
+foresight/context_blocks.py
+  s_7d4811cf1b0ba7::t_3386b00942e974 169
+  s_7d4811cf1b0ba7::t_2e42f07877d172 263,294-296
+  s_7d4811cf1b0ba7::t_623646afab5fb3 167-168,170-188,205
+foresight/sensitivity.py
+  s_7d4811cf1b0ba7::t_bcdbc1a3fc86c0 159-190,194-196
+tests/test_server.py
+  s_7d4811cf1b0ba7::t_4eeadd77e02c2a 297-300,1083,2034-2036
+foresight/client_attribution.py
+  s_7d4811cf1b0ba7::t_3501c9e2d62e30 25,34,41-55,168-200,205-207,210-219,223-224,266-275,277-282,285-286
+tests/test_memory_maintenance.py
+  s_7d4811cf1b0ba7::t_3501c9e2d62e30 62-65
+  s_7d4811cf1b0ba7::t_0987da7e9613ed 237-260
+foresight/backend/schema_ddl.py
+  s_7d4811cf1b0ba7::t_3f16e972f6a371 738-743
+  s_7d4811cf1b0ba7::t_4e7c828982c583 744
+foresight/memory_maintenance.py
+  s_7d4811cf1b0ba7::t_3501c9e2d62e30 385-386,390,393,485,494,504,519,526
+tests/test_gated_recall.py
+  s_7d4811cf1b0ba7::t_3386b00942e974 188,196,205-214
+  s_7d4811cf1b0ba7::t_1b2c88b38e097e 215-237
+plugins/claude/hooks/foresight_hook.py
+  s_7d4811cf1b0ba7::t_bcdbc1a3fc86c0 98,241-269,272
+  s_7d4811cf1b0ba7::t_c42031a5c31138 4,87-97,99-116,232,652,655
+tests/test_context_blocks_expiry.py
+  s_7d4811cf1b0ba7::t_3386b00942e974 13,51-60,154-196
+  s_7d4811cf1b0ba7::t_ec5f7f972f5382 197
+tests/test_memanto_upgrades.py
+  s_7d4811cf1b0ba7::t_3501c9e2d62e30 208-228
+  s_7d4811cf1b0ba7::t_d9a7a752ddc4f9 8,498-525
+tests/test_secret_defense.py
+  s_7d4811cf1b0ba7::t_629c1c10b7d97c 42-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "91006645c4ee7df4a8ba16fdf5d3f8a00a8edc22",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
