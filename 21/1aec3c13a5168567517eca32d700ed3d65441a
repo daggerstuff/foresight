@@ -1,0 +1,48 @@
+foresight/context_blocks.py
+  s_7d4811cf1b0ba7::t_a5dce727caa62d 272-274
+foresight/memory_gc.py
+  s_7d4811cf1b0ba7::t_a5dce727caa62d 167-169,180,205,208-212,225,236,413-418
+README.md
+  s_7d4811cf1b0ba7::t_49e3221bee5bfb 156-160
+foresight/rrf_tuning.py
+  s_7d4811cf1b0ba7::t_a5dce727caa62d 329-331
+foresight/capture.py
+  s_7d4811cf1b0ba7::t_a5dce727caa62d 1094-1098
+foresight/semantic_search.py
+  s_7d4811cf1b0ba7::t_a5dce727caa62d 934-939,945-954,956-958
+tests/test_retention_cli.py
+  s_7d4811cf1b0ba7::t_0780aa0d1d1569 1-23,25-29,31,33-39,41-54,56
+  s_7d4811cf1b0ba7::t_66f7928bdf1490 24
+  s_7d4811cf1b0ba7::t_8085a181472958 30
+  s_7d4811cf1b0ba7::t_0e36d4f21566c8 32
+  s_7d4811cf1b0ba7::t_dc4f72aeaa0b20 40
+  s_7d4811cf1b0ba7::t_6a5ccd5bf08dde 55
+tests/test_memory_gc.py
+  s_7d4811cf1b0ba7::t_a5dce727caa62d 395-396,411,414
+tests/test_gated_recall.py
+  s_7d4811cf1b0ba7::t_0780aa0d1d1569 204-217
+tests/test_memanto_upgrades.py
+  s_7d4811cf1b0ba7::t_0780aa0d1d1569 476-492
+foresight/subconscious.py
+  s_7d4811cf1b0ba7::t_49e3221bee5bfb 503-504
+  s_7d4811cf1b0ba7::t_a5dce727caa62d 334,386-388,497,501-502,505,1199-1220,1284-1286,1290
+foresight_cli/commands/retention.py
+  s_7d4811cf1b0ba7::t_0780aa0d1d1569 15,79
+  s_7d4811cf1b0ba7::t_5fab230e14e522 80-87,146,154,156,159,164,170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "211aec3c13a5168567517eca32d700ed3d65441a",
+  "prompts": {},
+  "sessions": {
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
