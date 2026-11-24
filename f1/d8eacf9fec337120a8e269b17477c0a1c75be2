@@ -1,0 +1,14 @@
+plugins/claude/hooks/foresight_hook.py
+  h_07d84030f79d30 594-595,598-605,610-613,616-618,621,623,625,627,631-637
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f1d8eacf9fec337120a8e269b17477c0a1c75be2",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
