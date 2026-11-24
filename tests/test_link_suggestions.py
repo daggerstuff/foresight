@@ -30,8 +30,7 @@ def test_suggest_relation_type_heuristics():
     """Verify heuristic classification handles contradiction, causality, and support."""
     # Contradiction
     assert (
-        _suggest_relation_type("We use Python 3.12 instead of Python 3.10", "We use Python 3.10", 0.6)
-        == "contradicts"
+        _suggest_relation_type("We use Python 3.12 instead of Python 3.10", "We use Python 3.10", 0.6) == "contradicts"
     )
     assert _suggest_relation_type("The old API is deprecated", "Old API docs", 0.4) == "contradicts"
 
@@ -173,4 +172,3 @@ def test_find_link_candidates_resilience():
     with patch("foresight.server.get_hybrid_retriever", side_effect=RuntimeError("Retriever down")):
         cands = _find_link_candidates(req, "m1")
         assert cands == []
-

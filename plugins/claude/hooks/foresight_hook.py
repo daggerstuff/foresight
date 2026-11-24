@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Claude Code hook for automatic Foresight context injection and continuous in-flight capture."""
 
+import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import sys
 import time
 import urllib.parse
 from contextlib import suppress
+from typing import Any
 
 FORESIGHT_URL = os.environ.get("FORESIGHT_MCP_URL") or "http://127.0.0.1:8764"
 DEFAULT_SESSION_ID = "claude-session"
@@ -26,18 +29,38 @@ CACHE_PATH = os.path.join(CACHE_DIR, "hook-cache.jsonl")
 CACHE_TTL_HOURS = float(os.environ.get("FORESIGHT_CACHE_TTL_HOURS") or DEFAULT_CACHE_TTL_HOURS)
 CACHE_MAX_BYTES = int(os.environ.get("FORESIGHT_CACHE_MAX_BYTES") or DEFAULT_CACHE_MAX_BYTES)
 
-# Gated recall settings (FOR-1)
-GATED_RECALL_ENABLED = os.environ.get("FORESIGHT_GATED_RECALL", "true").strip().lower() in (
+# Gated recall settings (FOR-1). Opt-in until a before/after A/B against the
+# retrieval baseline shows the gate does not suppress relevant recall; the
+# /ui/api/telemetry/gating counters exist to collect that evidence.
+GATED_RECALL_ENABLED = os.environ.get("FORESIGHT_GATED_RECALL", "false").strip().lower() in (
     "1",
     "true",
     "yes",
     "on",
 )
-GATED_RECALL_THRESHOLD = float(
-    os.environ.get("FORESIGHT_GATED_RECALL_THRESHOLD")
-    or os.environ.get("FORESIGHT_RECALL_THRESHOLD")
-    or "0.015"
+# Threshold source order: explicit env override, then the persisted RRF config
+# (foresight rrf config set --gating-threshold ...), then the default.
+# Starting threshold: rank-1 fused contributions are ~0.0147 (vector), ~0.0131
+# (graph/temporal), ~0.0115 (semantic), ~0.0164 (keyword), so a single-signal
+# paraphrase match sits just below this value. Recalibrate per deployment with
+# foresight.rrf_tuning.tune_gating_threshold before turning the gate on.
+RRF_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".foresight", "rrf_config.json")
+
+
+def _saved_gating_threshold():
+    """Read ``gating_threshold`` from the persisted RRF config, if usable."""
+    try:
+        with open(RRF_CONFIG_PATH, encoding="utf-8") as handle:
+            value = float(json.load(handle).get("gating_threshold"))
+    except Exception:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+_env_gating_threshold = os.environ.get("FORESIGHT_GATED_RECALL_THRESHOLD") or os.environ.get(
+    "FORESIGHT_RECALL_THRESHOLD"
 )
+GATED_RECALL_THRESHOLD = float(_env_gating_threshold) if _env_gating_threshold else (_saved_gating_threshold() or 0.015)
 REMINDER_LINE = "[FORESIGHT] Persistent memory active. Call inject_context or search_memories to recall stored context."
 WRITE_BACK_NUDGE = (
     "[FORESIGHT WRITE-BACK] Session produced storable decisions or findings. "
@@ -60,6 +83,56 @@ def _has_storable_facts(texts):
                 return True
     return False
 
+
+def _nudge_marker_path(session_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]{1,64}", "_", session_id)[:64] or DEFAULT_SESSION_ID
+    return os.path.join(CACHE_DIR, f"nudge-{safe}.txt")
+
+
+def _storable_fact_lines(texts: list[str]) -> list[str]:
+    """The lines that matched a storable-fact pattern, plus the line after.
+
+    A decision is often a heading plus its body; fingerprinting only the
+    heading would hide a new decision under a repeated heading.
+    """
+    matches: list[str] = []
+    all_lines: list[str] = []
+    for text in texts:
+        all_lines.extend(text.splitlines())
+    for i, line in enumerate(all_lines):
+        if any(p.search(line) for p in _STORABLE_FACT_PATTERNS):
+            matches.append(line.strip())
+            if i + 1 < len(all_lines):
+                matches.append(all_lines[i + 1].strip())
+    return matches
+
+
+def _nudge_already_emitted(session_id: str, texts: list[str]) -> bool:
+    """True when this exact matching content already produced a nudge.
+
+    The transcript tail persists across Stop events, so the same finding would
+    re-emit the nudge on every following turn until it scrolled out of the
+    window. The digest covers only the matching lines, so an unrelated
+    follow-up does not re-open the nudge.
+    """
+    digest = hashlib.sha256("\n".join(texts).encode("utf-8", "replace")).hexdigest()
+    try:
+        with open(_nudge_marker_path(session_id), encoding="utf-8") as handle:
+            return handle.read().strip() == digest
+    except OSError:
+        return False
+
+
+def _mark_nudge_emitted(session_id: str, texts: list[str]) -> None:
+    digest = hashlib.sha256("\n".join(texts).encode("utf-8", "replace")).hexdigest()
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(_nudge_marker_path(session_id), "w", encoding="utf-8") as handle:
+            handle.write(digest)
+    except OSError:
+        pass
+
+
 # -- Credentials -------------------------------------------------------------
 # Resolution order: environment -> ~/.config/foresight/credentials.env
 # (written by plugins/claude/install.sh; KEY=VALUE, chmod 600).
@@ -70,7 +143,7 @@ CREDS_PATH = os.path.join(
 )
 CREDS = {}
 
-PARSE_FAILED = object()
+PARSE_FAILED: object = object()
 
 PROMPT_DIRECTIVES = (
     "## Standing Memory Directives",
@@ -106,7 +179,7 @@ def _load_credentials():
                 CREDS[key.strip()] = value.strip().strip('"').strip("'")
 
 
-def _parse_json(raw):
+def _parse_json(raw: str) -> Any:
     try:
         return json.loads(raw)
     except Exception:
@@ -172,22 +245,135 @@ _SECRET_PATTERNS = [
     re.compile(r"\bxox[baprs]-[0-9a-zA-Z-]{10,}\b"),
     re.compile(r"\beyJ[A-Za-z0-9-_=]+\.eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]+\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"),
-    re.compile(
-        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?"
-        r"-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
-    ),
     re.compile(r"\b(?:postgres|postgresql|mysql|mongodb|redis|amqp|mssql):\/\/[^\s:@]+:[^\s:@]+@[^\s\/]+"),
-    re.compile(r"(?i)\b(?:api_key|apikey|client_secret|auth_token)\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.]{16,})[\"']?"),
-    re.compile(r"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*[\"']?([^\s\"']{8,})[\"']?"),
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])(?:api_key|apikey|client_secret|auth_token)[\"']?\s*[:=]\s*"
+        r"(?:\"(?:\\[\s\S]|[^\"\\]){8,}\"|'(?:\\[\s\S]|[^'\\]){8,}'|[A-Za-z0-9_\-./+=]{16,})"
+    ),
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])(?:password|passwd|pwd)[\"']?\s*[:=]\s*"
+        r"(?:\"(?:\\[\s\S]|[^\"\\]){8,}\"|'(?:\\[\s\S]|[^'\\]){8,}'|[^\s\"']{8,})"
+    ),
 ]
+
+
+_PEM_BEGIN_RE = re.compile(r"-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----")
+_PEM_END_RE = re.compile(r"-----END ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----")
+# One line of base64 key material: a header quoted in prose is not followed by
+# any, so only the marker itself is replaced there. The final body line can be
+# shorter (e.g. 4+ base64 chars).
+_PEM_BODY_LINE_RE = re.compile(r"^[A-Za-z0-9+/=]{16,}$")
+_PEM_FINAL_BODY_LINE_RE = re.compile(r"^[A-Za-z0-9+/=]{4,}$")
+
+
+def _matching_pem_end(text: str, start: int, pem_type: str):
+    """The first END marker of the *same* key type after *start*."""
+    for end in _PEM_END_RE.finditer(text, start):
+        if end.group(1) == pem_type:
+            return end
+    return None
+
+
+def _pem_body_end(text: str, start: int) -> int:
+    """End offset of the base64 body that follows an unterminated header."""
+    pos = start
+    if text.startswith("\r\n", pos):
+        pos += 2
+    elif text.startswith("\n", pos):
+        pos += 1
+    end = pos
+    seen_body = False
+    while pos < len(text):
+        newline = text.find("\n", pos)
+        line = text[pos:] if newline == -1 else text[pos:newline]
+        stripped = line.strip()
+        if _PEM_BODY_LINE_RE.match(stripped):
+            seen_body = True
+        elif seen_body and _PEM_FINAL_BODY_LINE_RE.match(stripped):
+            return len(text) if newline == -1 else newline + 1
+        else:
+            return end
+        pos = len(text) if newline == -1 else newline + 1
+        end = pos
+    return end
+
+
+def _scrub_pem_blocks(text: str) -> str:
+    """Redact every PEM private-key block with a linear scan.
+
+    A bounded regex body let a key larger than the bound reach the transcript
+    untouched. Scanning with ``search`` from a monotonically advancing offset
+    recognises the whole block whatever its length. A header with no END is
+    redacted only as far as its base64 body, so a quoted marker in prose loses
+    nothing else.
+    """
+    if "PRIVATE KEY" not in text:
+        return text
+    pieces: list[str] = []
+    pos = 0
+    while True:
+        begin = _PEM_BEGIN_RE.search(text, pos)
+        if begin is None:
+            pieces.append(text[pos:])
+            return "".join(pieces)
+        end = _matching_pem_end(text, begin.end(), begin.group(1))
+        pieces.append(text[pos : begin.start()])
+        pieces.append("[REDACTED-SECRET]")
+        if end is not None:
+            pos = end.end()
+            continue
+        body_start = begin.end()
+        body_end = _pem_body_end(text, body_start)
+        if body_end <= body_start + 2:
+            pos = body_start
+            continue
+        pos = body_end
 
 
 def _scrub_secrets(text: str) -> str:
     """Scrub sensitive credentials from captured hook text (FOR-46)."""
-    out = text
+    out = _scrub_pem_blocks(text)
     for p in _SECRET_PATTERNS:
         out = p.sub("[REDACTED-SECRET]", out)
     return out
+
+
+def _scrub_messages(messages):
+    """Return message copies with every text part scrubbed before transport."""
+    if not isinstance(messages, list):
+        return []
+    cleaned = []
+    for message in messages:
+        if not isinstance(message, dict):
+            cleaned.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            cleaned.append({**message, "content": _scrub_secrets(content)})
+        elif isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    parts.append({**part, "text": _scrub_secrets(part["text"])})
+                else:
+                    parts.append(part)
+            cleaned.append({**message, "content": parts})
+        else:
+            cleaned.append(message)
+    return cleaned
+
+
+def _recall_scores(data):
+    """Return (formatted, top_score) from an inject response."""
+    formatted = data.get("formatted", "")
+    top_score = float(data.get("top_score") or 0.0)
+    if not top_score and data.get("memories"):
+        top_score = float(data["memories"][0].get("combined_score") or 0.0)
+    return formatted, top_score
+
+
+def _should_gate(top_score: float) -> bool:
+    return GATED_RECALL_ENABLED and top_score < GATED_RECALL_THRESHOLD
 
 
 def _transcript_tail(hook_input, n_lines=TRANSCRIPT_TAIL_LINES):
@@ -303,52 +489,40 @@ _IDENTITY = (
 )
 USER_LANE = _IDENTITY.split("@", 1)[0] if _IDENTITY else ""
 
-action = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else "prompt"
-stdin_text = ""
-with suppress(Exception):
-    stdin_text = sys.stdin.read()
 
-hook_input = {}
-if stdin_text.strip():
-    parsed_input = _parse_json(stdin_text)
-    if parsed_input is not PARSE_FAILED:
-        hook_input = parsed_input
-
-event_name = str(hook_input.get("hook_event_name") or action)
-
-if action == "capture":
-    # Explicit milestone snapshot: reads the transcript tail and stores it.
-    # Usage: foresight_hook.py capture  (with hook JSON on stdin, or bare)
+def _handle_capture(hook_input: dict[str, Any]) -> None:
+    """Explicit milestone snapshot: reads the transcript tail and stores it."""
     session_id = str(hook_input.get("session_id") or DEFAULT_SESSION_ID)
     tail = _transcript_tail(hook_input, n_lines=40)
     text = "\n".join(tail)
-    if text:
-        if MODE == "direct":
-            with suppress(Exception):
-                _post(
-                    f"{FORESIGHT_URL}/ui/api/capture",
-                    {"text": text, "session_id": session_id},
-                    timeout=5.0,
-                )
-        else:
-            with suppress(Exception):
-                _cache_append(
-                    {
-                        "ts": time.time(),
-                        "kind": "milestone",
-                        "session_id": session_id,
-                        "text": text[:12000],
-                    }
-                )
+    if not text:
+        return
+    if MODE == "direct":
+        with suppress(Exception):
+            _post(
+                f"{FORESIGHT_URL}/ui/api/capture",
+                {"text": text, "session_id": session_id},
+                timeout=5.0,
+            )
+    else:
+        with suppress(Exception):
+            _cache_append(
+                {
+                    "ts": time.time(),
+                    "kind": "milestone",
+                    "session_id": session_id,
+                    "text": text[:12000],
+                }
+            )
 
-elif "prompt" in event_name.lower() or action == "prompt":
+
+def _handle_prompt(hook_input: dict[str, Any]) -> None:
+    """Process user prompt, capture in-flight, and inject continuity context."""
     raw_prompt = str(hook_input.get("prompt") or hook_input.get("text") or hook_input.get("message") or "")
     prompt_text = _scrub_secrets(raw_prompt)
     session_id = str(hook_input.get("session_id") or DEFAULT_SESSION_ID)
-    messages = hook_input.get("messages") or []
+    messages = _scrub_messages(hook_input.get("messages") or [])
 
-    # In-flight capture of prompt/messages continuously (direct mode only;
-    # cache mode keeps this in the local ephemeral cache instead)
     if MODE == "direct":
         with suppress(Exception):
             _post(
@@ -372,15 +546,9 @@ elif "prompt" in event_name.lower() or action == "prompt":
         status, body = _post(f"{FORESIGHT_URL}/ui/api/inject", {"text": prompt_text}, timeout=12.0)
         if status == http.HTTPStatus.OK:
             data = json.loads(body.decode("utf-8"))
-            formatted = data.get("formatted", "")
-            top_score = float(data.get("top_score") or 0.0)
-            if not top_score and data.get("memories"):
-                top_score = float(data["memories"][0].get("combined_score") or 0.0)
+            formatted, top_score = _recall_scores(data)
             static_and_safety = str(data.get("static_and_safety") or "").strip()
-
-            decision = "injected"
-            if GATED_RECALL_ENABLED and top_score < GATED_RECALL_THRESHOLD:
-                decision = "gated"
+            decision = "gated" if _should_gate(top_score) else "injected"
 
             with suppress(Exception):
                 _post(
@@ -413,10 +581,11 @@ elif "prompt" in event_name.lower() or action == "prompt":
             elif formatted:
                 sys.stdout.write(_prompt_block(formatted) + "\n")
 
-elif "precompact" in event_name.lower() or action == "precompact":
-    # Capture the pre-compaction state so it survives the summary.
+
+def _handle_precompact(hook_input: dict[str, Any]) -> None:
+    """Capture pre-compaction state so it survives summarization."""
     session_id = str(hook_input.get("session_id") or DEFAULT_SESSION_ID)
-    messages = hook_input.get("messages") or []
+    messages = _scrub_messages(hook_input.get("messages") or [])
     tail = _transcript_tail(hook_input)
     capture_text = "\n".join(_msg_text(message) for message in messages[-40:] if _msg_text(message))
     if tail:
@@ -429,8 +598,6 @@ elif "precompact" in event_name.lower() or action == "precompact":
                 timeout=5.0,
             )
         with suppress(Exception):
-            # REST transcript route — works with API-key auth on local and
-            # remote (OAuth-fronted) deployments alike.
             transcript_messages = messages[-20:]
             if not transcript_messages and tail:
                 transcript_messages = [{"role": "assistant", "content": text} for text in tail[-20:]]
@@ -451,11 +618,11 @@ elif "precompact" in event_name.lower() or action == "precompact":
                     }
                 )
 
-elif "postcompact" in event_name.lower() or action == "postcompact":
-    # Re-inject continuity context right after compaction, keyed on the
-    # compaction summary so retrieval is relevant to the surviving context.
+
+def _handle_postcompact(hook_input: dict[str, Any]) -> None:
+    """Re-inject continuity context right after compaction."""
     session_id = str(hook_input.get("session_id") or DEFAULT_SESSION_ID)
-    summary = str(_summary_text(hook_input))
+    summary = _scrub_secrets(str(_summary_text(hook_input)))
     query = summary[:2000] if summary else "session continuity after compaction"
     with suppress(Exception):
         if summary:
@@ -475,15 +642,24 @@ elif "postcompact" in event_name.lower() or action == "postcompact":
         entry_text = str(entry.get("text") or "").strip()
         if entry_text:
             recent_lines.append(f"- [{entry.get('kind', 'note')}] {entry_text[:400]}")
+    formatted = ""
+    static_and_safety = ""
+    gated = False
     try:
         status, body = _post(f"{FORESIGHT_URL}/ui/api/inject", {"text": query}, timeout=12.0)
         if status == http.HTTPStatus.OK:
             data = json.loads(body.decode("utf-8"))
-            formatted = data.get("formatted", "")
+            formatted, top_score = _recall_scores(data)
+            static_and_safety = str(data.get("static_and_safety") or "").strip()
+            gated = _should_gate(top_score)
     except Exception:
         formatted = ""
     parts = []
-    if formatted:
+    if gated:
+        if static_and_safety:
+            parts.append(static_and_safety)
+        parts.append(REMINDER_LINE)
+    elif formatted:
         parts.append(formatted)
     if recent_lines:
         parts.append("## Recent Local Session Cache (ephemeral, auto-dumped)\n" + "\n".join(recent_lines))
@@ -501,9 +677,11 @@ elif "postcompact" in event_name.lower() or action == "postcompact":
             + "\n"
         )
 
-elif "stop" in event_name.lower() or "end" in event_name.lower() or action in ("stop", "idle"):
+
+def _handle_stop(hook_input: dict[str, Any]) -> None:
+    """Process stop/idle event and emit write-back nudge if findings were generated."""
     session_id = str(hook_input.get("session_id") or DEFAULT_SESSION_ID)
-    messages = hook_input.get("messages") or []
+    messages = _scrub_messages(hook_input.get("messages") or [])
     tail = _transcript_tail(hook_input)
     if MODE == "direct" and (messages or tail):
         with suppress(Exception):
@@ -518,22 +696,76 @@ elif "stop" in event_name.lower() or "end" in event_name.lower() or action in ("
     elif MODE != "direct":
         with suppress(Exception):
             tail = messages or tail
-            if tail:
+            stop_text = "\n".join(t for t in tail if isinstance(t, str))
+            if stop_text:
                 _cache_append(
                     {
                         "ts": time.time(),
                         "kind": "stop",
                         "session_id": session_id,
-                        "text": "\n".join(tail)[-12000:],
+                        "text": stop_text[-12000:],
                     }
                 )
 
-    # Check if session produced storable facts and emit write-back nudge (FOR-1)
     texts_to_check = []
     if isinstance(tail, list):
-        texts_to_check.extend(tail)
+        texts_to_check.extend(t for t in tail if isinstance(t, str))
     if isinstance(messages, list):
         texts_to_check.extend(_msg_text(m) for m in messages if isinstance(m, dict))
-    if _has_storable_facts(texts_to_check):
-        sys.stdout.write(WRITE_BACK_NUDGE + "\n")
+    fact_lines = _storable_fact_lines(texts_to_check)
+    if fact_lines and not _nudge_already_emitted(session_id, fact_lines):
+        # Claude Code surfaces Stop-hook stdout only as a JSON systemMessage.
+        sys.stdout.write(json.dumps({"systemMessage": WRITE_BACK_NUDGE}) + "\n")
+        _mark_nudge_emitted(session_id, fact_lines)
 
+
+def _resolve_action(argv: list[str] | None) -> str:
+    """Determine the action string from argv."""
+    args = sys.argv if argv is None else argv
+    if len(args) > 1 and args[1]:
+        return args[1]
+    if len(args) == 1 and not args[0].endswith(".py"):
+        return args[0]
+    return "prompt"
+
+
+def _read_hook_input(stdin_text: str | None) -> dict[str, Any]:
+    """Read and parse json from stdin if available."""
+    text_in = stdin_text or ""
+    if stdin_text is None:
+        with suppress(Exception):
+            text_in = sys.stdin.read()
+    if not text_in.strip():
+        return {}
+    parsed = _parse_json(text_in)
+    return parsed if parsed is not PARSE_FAILED else {}
+
+
+def _dispatch_hook(action: str, hook_input: dict[str, Any]) -> None:
+    """Route parsed hook payload to its event handler."""
+    event_name = str(hook_input.get("hook_event_name") or action).lower()
+    if action == "capture":
+        _handle_capture(hook_input)
+    elif "prompt" in event_name or (action == "prompt" and not hook_input.get("hook_event_name")):
+        _handle_prompt(hook_input)
+    elif "precompact" in event_name or action == "precompact":
+        _handle_precompact(hook_input)
+    elif "postcompact" in event_name or action == "postcompact":
+        _handle_postcompact(hook_input)
+    elif "stop" in event_name or "end" in event_name or action in ("stop", "idle"):
+        _handle_stop(hook_input)
+
+
+def main(argv: list[str] | None = None, stdin_text: str | None = None) -> None:
+    """Dispatch one hook event from argv and stdin.
+
+    Importing the module only loads configuration (env, credentials file,
+    persisted RRF threshold); the dispatcher and any network call run here.
+    """
+    action = _resolve_action(argv)
+    hook_input = _read_hook_input(stdin_text)
+    _dispatch_hook(action, hook_input)
+
+
+if __name__ == "__main__":
+    main()

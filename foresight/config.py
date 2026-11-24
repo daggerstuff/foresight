@@ -62,7 +62,9 @@ DB_PATH = os.environ.get("FORESIGHT_DB_PATH", None)
 # Optional Redis companion cache (overrides the in-process dict cache when set).
 # See foresight/redis_cache.RedisCache for the consuming API.
 # Format: redis://[:password@]host:port[/db]
-REDIS_URL = os.environ.get("FORESIGHT_REDIS_URL", "")
+# Canonical name first; plain REDIS_URL stays supported as the infrastructure
+# fallback documented in DEPLOYMENT.md and mapped by docker-compose.yml.
+REDIS_URL = os.environ.get("FORESIGHT_REDIS_URL") or os.environ.get("REDIS_URL", "")
 
 # Identity defaults (used when FORESIGHT_IDENTITY not set)
 # FORESIGHT_USER_ID is the single-user override honored by deployments that

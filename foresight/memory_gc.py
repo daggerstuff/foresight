@@ -21,8 +21,9 @@ from psycopg import errors as psycopg_errors
 from .config import DB_PATH, DB_URL, raw_retention_window_days
 from .connection_pool import get_pool
 from .dependent_cleanup import purge_dead_synthesized_from_ids
-from .retention_policy import apply_expiry_policies
-from .sql_helpers import join_sql_parts
+from .hybrid_retriever import get_hybrid_retriever
+from .retention_policy import evaluate_expiry_policies
+from .sql_helpers import join_sql_parts, placeholders
 
 logger = logging.getLogger("foresight_memory_gc")
 
@@ -107,87 +108,123 @@ class _GCRunContext:
     stats: GCStats
 
 
-def _purge_retention_expired(ctx: _GCRunContext, ttls: dict[str, int]) -> None:
-    """Phase 1: delete memories past their retention TTL, in batches."""
+def _delete_eligible(
+    ctx: _GCRunContext,
+    rows: list[Any],
+    governed: set[str],
+    *,
+    recheck_deadline: bool = False,
+) -> None:
+    """Delete the batch rows a policy does not govern, counting them.
+
+    Sensitive rows are never auto-deleted by the legacy sweeps; the
+    ``is_sensitive`` contract forbids automatic archival of them.
+    ``recheck_deadline`` re-reads ``expires_at`` in the delete predicate, so a
+    deadline extended after selection wins; the TTL sweep leaves it off, since
+    a future deadline does not exempt a row from its category retention.
+    """
+    eligible = [
+        (str(r["id"]), int(r["size"] or 0))
+        for r in rows
+        if str(r["id"]) not in governed and not int(r["is_sensitive"] or 0)
+    ]
+    if not eligible:
+        return
+    ids = [mid for mid, _ in eligible]
+    if recheck_deadline:
+        del_sql = join_sql_parts(
+            "DELETE FROM memories WHERE id IN (",
+            placeholders(len(ids)),
+            ") AND (expires_at IS NULL OR expires_at < ?)",
+        )
+        params: list[Any] = [*ids, ctx.start_time.isoformat()]
+    else:
+        del_sql = join_sql_parts("DELETE FROM memories WHERE id IN (", placeholders(len(ids)), ")")
+        params = list(ids)
+
+    # Derive freed bytes and deleted count from the rows actually deleted.
+    deleted_count: int
+    freed: int
+    try:
+        del_sql_ret = join_sql_parts(del_sql, " RETURNING id")
+        cursor = ctx.conn.execute(del_sql_ret, params)
+        deleted_rows = cursor.fetchall() if hasattr(cursor, "fetchall") else None
+    except Exception:
+        deleted_rows = None
+
+    if deleted_rows is not None:
+        deleted_ids = {str(r[0] if isinstance(r, (tuple, list)) else r["id"]) for r in deleted_rows}
+        deleted_count = len(deleted_ids)
+        freed = sum(size for mid, size in eligible if mid in deleted_ids)
+    else:
+        cursor = ctx.conn.execute(del_sql, params)
+        rowcount = getattr(cursor, "rowcount", -1)
+        deleted_count = rowcount if isinstance(rowcount, int) and rowcount >= 0 else len(ids)
+        freed = sum(size for _, size in eligible)
+
+    ctx.stats.expired_memories_found += len(eligible)
+    ctx.stats.expired_memories_deleted += deleted_count
+    ctx.stats.bytes_freed += freed
+
+
+def _purge_retention_expired(ctx: _GCRunContext, ttls: dict[str, int], governed: set[str]) -> None:
+    """Phase 1: delete memories past their retention TTL, in batches.
+
+    Policy-stamped rows are excluded by the query, and rows whose lifecycle a
+    stored policy decides (``governed``, including ``expire_after: "never"``
+    pins) are left to the policy pass — otherwise a pinned short-term memory
+    would still be deleted when its TTL elapsed.
+    """
     for retention, hours in ttls.items():
         cutoff = (ctx.start_time - timedelta(hours=hours)).isoformat()
-
-        # Count found + estimate bytes
-        cursor = ctx.conn.execute(
-            """
-            SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
-            FROM memories
-            WHERE tenant_id = ? AND retention = ? AND created_at < ?
-            """,
-            (ctx.tenant_id, retention, cutoff),
-        )
-        row = cursor.fetchone()
-        count_found = row[0] if row else 0
-        bytes_est = row[1] if row else 0
-        ctx.stats.expired_memories_found += count_found
-        ctx.stats.bytes_freed += bytes_est
-
-        if count_found == 0:
-            continue
-
-        deleted = 0
-        while deleted < count_found:
-            cursor = ctx.conn.execute(
+        last_id = ""
+        while True:
+            rows = ctx.conn.execute(
                 """
-                DELETE FROM memories WHERE id IN (
-                    SELECT id FROM memories
-                    WHERE tenant_id = ? AND retention = ? AND created_at < ?
-                    LIMIT ?
-                )
+                SELECT id, COALESCE(LENGTH(content), 0) AS size,
+                       COALESCE(is_sensitive, 0) AS is_sensitive
+                FROM memories
+                WHERE tenant_id = ? AND retention = ? AND created_at < ?
+                  AND expired_at IS NULL AND id > ?
+                ORDER BY id
+                LIMIT ?
                 """,
-                (ctx.tenant_id, retention, cutoff, ctx.cfg.max_batch_size),
-            )
-            batch = cursor.rowcount
-            deleted += batch
-            if batch == 0:
+                (ctx.tenant_id, retention, cutoff, last_id, ctx.cfg.max_batch_size),
+            ).fetchall()
+            if not rows:
                 break
-
-        ctx.stats.expired_memories_deleted += deleted
+            last_id = str(rows[-1]["id"])
+            _delete_eligible(ctx, rows, governed)
 
     ctx.conn.commit()
 
 
 def _purge_explicit_expiry(ctx: _GCRunContext) -> None:
-    """Phase 1.5: delete memories whose expires_at has passed (PIX-4721)."""
+    """Phase 1.5: delete memories whose expires_at has passed (PIX-4721).
+
+    An explicit ``expires_at`` is the user's own deadline, so it outranks both
+    a policy pin and a reversible ``expired_at`` stamp. Sensitive rows are
+    still never auto-deleted.
+    """
     expiry_cutoff = ctx.start_time.isoformat()
-    cursor = ctx.conn.execute(
-        """
-        SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
-        FROM memories
-        WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
-        """,
-        (ctx.tenant_id, expiry_cutoff),
-    )
-    row = cursor.fetchone()
-    exp_count = row[0] if row else 0
-    exp_bytes = row[1] if row else 0
-    ctx.stats.expired_memories_found += exp_count
-    ctx.stats.bytes_freed += exp_bytes
-
-    if exp_count:
-        deleted = 0
-        while deleted < exp_count:
-            cursor = ctx.conn.execute(
-                """
-                DELETE FROM memories WHERE id IN (
-                    SELECT id FROM memories
-                    WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
-                    LIMIT ?
-                )
-                """,
-                (ctx.tenant_id, expiry_cutoff, ctx.cfg.max_batch_size),
-            )
-            batch = cursor.rowcount
-            deleted += batch
-            if batch == 0:
-                break
-
-        ctx.stats.expired_memories_deleted += deleted
+    last_id = ""
+    while True:
+        rows = ctx.conn.execute(
+            """
+            SELECT id, COALESCE(LENGTH(content), 0) AS size,
+                   COALESCE(is_sensitive, 0) AS is_sensitive
+            FROM memories
+            WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
+              AND id > ?
+            ORDER BY id
+            LIMIT ?
+            """,
+            (ctx.tenant_id, expiry_cutoff, last_id, ctx.cfg.max_batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        last_id = str(rows[-1]["id"])
+        _delete_eligible(ctx, rows, set(), recheck_deadline=True)
 
     # Mental models share the same expires_at sweep semantics —
     # expired reflections are dropped rather than served stale.
@@ -203,21 +240,38 @@ def _purge_explicit_expiry(ctx: _GCRunContext) -> None:
     ctx.conn.commit()
 
 
-def _apply_expiry_policies(ctx: _GCRunContext) -> None:
+def _apply_expiry_policies(ctx: _GCRunContext) -> tuple[set[str], bool]:
     """Phase 1.7: stamp policy-expired memories; purge per purge_expired_after.
 
+    Returns ``(governed_ids, ok)``. The governed set covers rules and category
+    retention (pins included) so the legacy sweeps can skip those rows without
+    a second scan. ``ok`` is False when evaluation failed: the caller must then
+    skip the destructive sweeps rather than treat "unknown" as "nothing is
+    governed" and delete pinned memories.
     Reversible expiry only — ``purge_expired_after`` (default 'never') is the
     sole destructive path. A missing memory_policies table or expiry columns
     (older schemas) degrades to a no-op.
     """
     try:
-        result = apply_expiry_policies(ctx.conn, ctx.tenant_id, ctx.start_time)
+        result, governed = evaluate_expiry_policies(ctx.conn, ctx.tenant_id, ctx.start_time)
     except Exception as exc:
+        # The policy pass may have written part of a batch before failing; on
+        # Postgres the connection stays in a failed transaction until it is
+        # rolled back, which would take the later GC phases down with it.
+        ctx.conn.rollback()
         logger.warning("retention policy pass skipped: %s", exc)
-        return
+        return set(), False
     ctx.stats.policy_expired += result.get("expired", 0)
     ctx.stats.expired_purged += result.get("purged", 0)
     ctx.conn.commit()
+    if result.get("expired") or result.get("purged"):
+        # Visibility changed without a doc-count change, so cached results
+        # would keep serving memories this pass just expired or purged.
+        try:
+            get_hybrid_retriever().invalidate_caches()
+        except Exception as exc:
+            logger.debug("retrieval cache invalidation failed: %s", exc)
+    return governed, True
 
 
 def _prune_decay_events(ctx: _GCRunContext) -> None:
@@ -394,9 +448,13 @@ class MemoryGC:
                 start_time=start_time,
                 stats=stats,
             )
-            _purge_retention_expired(ctx, ttls)
+            governed, policy_ok = _apply_expiry_policies(ctx)
+            if policy_ok:
+                _purge_retention_expired(ctx, ttls, governed)
+            else:
+                # Never run a destructive sweep on an unknown protection set.
+                logger.warning("legacy retention sweep skipped: policy evaluation failed")
             _purge_explicit_expiry(ctx)
-            _apply_expiry_policies(ctx)
             _prune_decay_events(ctx)
             _prune_maintenance_events(ctx)
             _prune_merge_history(ctx)

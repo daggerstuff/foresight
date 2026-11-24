@@ -403,16 +403,22 @@ class _DoctorReport:
     passed: int = 0
     failed: int = 0
     warnings: list[str] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
 
     def check(self, name: str, ok: bool, detail: str = "") -> None:
-        """Record one check and echo its result outside agent mode."""
+        """Record one check and echo its result in human mode only.
+
+        ``json`` mode must emit one parseable document, so the ✓/✗ lines are
+        suppressed there as well as in ``agent`` mode.
+        """
+        self.checks.append({"name": name, "ok": ok, "detail": detail})
         if ok:
             self.passed += 1
-            if out.get_settings().mode != "agent":
+            if out.get_settings().mode not in ("agent", "json"):
                 out.stdout(f"  ✓ {name}", style="green")
         else:
             self.failed += 1
-            if out.get_settings().mode != "agent":
+            if out.get_settings().mode not in ("agent", "json"):
                 out.stdout(f"  ✗ {name}: {detail}", style="red")
 
 
@@ -480,7 +486,7 @@ def _doctor_check_llm(report: _DoctorReport) -> None:
 
 def _doctor_check_redis(report: _DoctorReport) -> None:
     """Check the optional Redis cache is reachable when configured."""
-    redis_url = os.environ.get("FORESIGHT_REDIS_URL", "")
+    redis_url = os.environ.get("FORESIGHT_REDIS_URL") or os.environ.get("REDIS_URL", "")
     if not redis_url:
         report.check("Redis cache", True, "not set (in-process cache fallback)")
         return
@@ -525,14 +531,19 @@ def _doctor_check_schema(report: _DoctorReport) -> None:
         report.check("Schema version", False, f"check failed: {exc!s}")
 
 
-def _doctor_check_capabilities(report: _DoctorReport) -> dict[str, Any]:
-    """Check subsystem capabilities (FOR-18 / PIX-448)."""
-    caps = get_capabilities_report()
-    embedder = caps.get("embedder", {})
-    if embedder.get("real"):
+def _check_embedder_cap(report: _DoctorReport, embedder: dict[str, Any]) -> None:
+    if embedder.get("error"):
+        report.check("Embedder capability", False, f"unavailable: {embedder['error']}")
+    elif embedder.get("real"):
         report.check("Embedder capability", True, f"real ({embedder.get('provider')} / {embedder.get('dimension')}d)")
     else:
         report.check("Embedder capability", True, f"local-hash fallback ({embedder.get('dimension')}d)")
+
+
+def _doctor_check_capabilities(report: _DoctorReport) -> dict[str, Any]:
+    """Check subsystem capabilities (FOR-18 / PIX-448)."""
+    caps = get_capabilities_report()
+    _check_embedder_cap(report, caps.get("embedder", {}))
 
     reranker = caps.get("reranker", {})
     if reranker.get("active"):
@@ -553,14 +564,6 @@ def _doctor_check_capabilities(report: _DoctorReport) -> dict[str, Any]:
         report.check("Encryption capability", True, f"{enc.get('algorithm')} (key present)")
     else:
         report.check("Encryption capability", True, "disabled (plaintext store)")
-
-    redis = caps.get("redis", {})
-    if redis.get("connected"):
-        report.check("Redis capability", True, "connected")
-    elif redis.get("configured"):
-        report.check("Redis capability", False, "configured but unreachable")
-    else:
-        report.check("Redis capability", True, "not configured (in-memory cache fallback)")
 
     return caps
 
@@ -602,16 +605,16 @@ def doctor(params: SystemDoctorParams) -> None:
     _doctor_print_summary(report)
 
     if out.get_settings().mode == "json":
-        out.stdout(
-            json.dumps(
-                {
-                    "passed": report.passed,
-                    "failed": report.failed,
-                    "warnings": report.warnings,
-                    "capabilities": caps,
-                },
-                indent=2,
-            )
+        # print_json writes straight to stdout (no Rich wrapping), so the
+        # document stays parseable even with long check details.
+        out.print_json(
+            {
+                "passed": report.passed,
+                "failed": report.failed,
+                "warnings": report.warnings,
+                "checks": report.checks,
+                "capabilities": caps,
+            }
         )
 
     if report.failed > 0:

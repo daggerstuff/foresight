@@ -28,6 +28,10 @@ logger = logging.getLogger("foresight_rrf_tuning")
 
 
 DEFAULT_GATING_THRESHOLD: float = 0.015
+# Finite "gate everything" sentinel: RRFConfig.from_dict and the hook's
+# persisted-config loader both reject infinity, so calibration uses a value
+# no real fused score can reach instead.
+GATE_ALL_THRESHOLD: float = 1e9
 
 
 @dataclass
@@ -319,13 +323,18 @@ def tune_gating_threshold(
         min_precision: Desired precision target.
 
     Returns:
-        Optimal gating threshold rounded to 4 decimals.
+        Optimal gating threshold rounded down to 4 decimals, or
+        ``GATE_ALL_THRESHOLD`` when no candidate reaches ``min_precision``:
+        gating everything is safer than injecting at a threshold below
+        irrelevant scores. When flooring would drop precision below
+        ``min_precision``, the original (unrounded) candidate score is
+        returned instead, since no 4-decimal value satisfies both bounds.
     """
     if not scores or not labels or len(scores) != len(labels):
         return DEFAULT_GATING_THRESHOLD
 
     candidate_thresholds = sorted(set(scores))
-    best_threshold = DEFAULT_GATING_THRESHOLD
+    best_threshold: float | None = None
     best_f1 = -1.0
 
     for thresh in candidate_thresholds:
@@ -341,5 +350,15 @@ def tune_gating_threshold(
             best_f1 = f1
             best_threshold = thresh
 
-    return round(best_threshold, 4)
-
+    if best_threshold is None:
+        return GATE_ALL_THRESHOLD
+    # Round down: rounding to nearest can lift the threshold above the score
+    # it was selected for and gate out that very positive. Then re-check the
+    # precision target at the rounded value — flooring can also admit a known
+    # irrelevant score just below the selected one.
+    rounded = math.floor(best_threshold * 10000) / 10000
+    tp = sum(1 for s, y in zip(scores, labels, strict=False) if s >= rounded and y)
+    fp = sum(1 for s, y in zip(scores, labels, strict=False) if s >= rounded and not y)
+    if tp + fp == 0 or tp / (tp + fp) >= min_precision:
+        return rounded
+    return best_threshold

@@ -7,7 +7,7 @@ import os
 import sqlite3
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from foresight.memory_maintenance import (
     DUPLICATE_OVERLAP_HIGH,
@@ -59,6 +59,10 @@ def _make_test_db() -> str:
             emotional_context TEXT,
             metrics TEXT,
             tags TEXT,
+            content_hash TEXT,
+            updated_at TEXT,
+            expires_at TEXT,
+            expired_at TEXT,
             created_at TEXT NOT NULL
         )"""
     )
@@ -227,6 +231,59 @@ class TestMaintenanceJobConsolidate:
             cfg = MaintenanceConfig(user_id="u1", tenant_id="t1", modes=["consolidate"])
             stats = job.run(cfg)
             assert stats.duplicates_found >= len(cluster_memories)
+        finally:
+            os.unlink(db_path)
+
+    def test_expired_duplicate_never_ghosts_the_live_copy(self) -> None:
+        db_path = _make_test_db()
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            content = "I feel very happy and grateful today about my progress"
+            _insert_memory(conn, "live", content, _MemoryRow(user_id="u1", tenant_id="t1"))
+            _insert_memory(conn, "expired", content, _MemoryRow(user_id="u1", tenant_id="t1"))
+            past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+            # Same hash on both rows, so the exact-duplicate query is exercised too.
+            conn.execute("UPDATE memories SET content_hash = 'h-live' WHERE id IN ('live', 'expired')")
+            conn.execute("UPDATE memories SET expires_at = ?, activation_count = 9 WHERE id = 'expired'", (past,))
+            conn.commit()
+            conn.close()
+
+            job = MemoryMaintenanceJob(db_path=db_path)
+            cfg = MaintenanceConfig(user_id="u1", tenant_id="t1", modes=["consolidate"])
+            job.run(cfg)
+
+            conn = sqlite3.connect(db_path)
+            ghosts = dict(conn.execute("SELECT id, is_ghost FROM memories").fetchall())
+            conn.close()
+            assert ghosts == {"live": 0, "expired": 0}
+        finally:
+            os.unlink(db_path)
+
+    def test_policy_expired_duplicate_never_ghosts_the_live_copy(self) -> None:
+        db_path = _make_test_db()
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            content = "I feel very happy and grateful today about my progress"
+            _insert_memory(conn, "live", content, _MemoryRow(user_id="u1", tenant_id="t1"))
+            _insert_memory(conn, "stamped", content, _MemoryRow(user_id="u1", tenant_id="t1"))
+            now = datetime.now(UTC).isoformat()
+            conn.execute(
+                "UPDATE memories SET expired_at = ?, activation_count = 9 WHERE id = 'stamped'",
+                (now,),
+            )
+            conn.commit()
+            conn.close()
+
+            job = MemoryMaintenanceJob(db_path=db_path)
+            cfg = MaintenanceConfig(user_id="u1", tenant_id="t1", modes=["consolidate"])
+            job.run(cfg)
+
+            conn = sqlite3.connect(db_path)
+            ghosts = dict(conn.execute("SELECT id, is_ghost FROM memories").fetchall())
+            conn.close()
+            assert ghosts == {"live": 0, "stamped": 0}
         finally:
             os.unlink(db_path)
 
@@ -554,6 +611,82 @@ class TestPairwiseOverlaps:
         scores = job._pairwise_overlaps(memories)
         key: tuple[str, str] = ("a", "b")
         assert scores[key] == 0.0
+
+    def test_reordered_words_are_not_duplicates(self) -> None:
+        job = MemoryMaintenanceJob.__new__(MemoryMaintenanceJob)
+        memories = [
+            {"id": "a", "content": "Alice manages Bob"},
+            {"id": "b", "content": "Bob manages Alice"},
+        ]
+        scores = job._pairwise_overlaps(memories)
+        key: tuple[str, str] = ("a", "b")
+        assert scores[key] < DUPLICATE_OVERLAP_HIGH
+
+    def test_a_one_word_edit_still_scores_high(self) -> None:
+        job = MemoryMaintenanceJob.__new__(MemoryMaintenanceJob)
+        memories = [
+            {"id": "a", "content": "the deploy runs from the sandbox every night"},
+            {"id": "b", "content": "the deploy runs from the sandbox every morning"},
+        ]
+        scores = job._pairwise_overlaps(memories)
+        key: tuple[str, str] = ("a", "b")
+        assert scores[key] >= DUPLICATE_OVERLAP_HIGH
+
+
+class TestGhostMergedGist:
+    def test_gist_is_the_merged_memory_content(self) -> None:
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _insert_memory(conn, "keep", "Deploys run from the sandbox")
+            _insert_memory(conn, "gone", "Deploys run from the sandbox nightly")
+            job = MemoryMaintenanceJob.__new__(MemoryMaintenanceJob)
+            job._ghost_merged_memories(conn, ["gone"], set(), MaintenanceConfig(tenant_id="t1", user_id="u1"))
+            conn.commit()
+            row = conn.execute("SELECT is_ghost, gist FROM memories WHERE id = 'gone'").fetchone()
+            assert row["is_ghost"] == 1
+            assert row["gist"] == "Deploys run from the sandbox nightly"
+            keep = conn.execute("SELECT is_ghost, gist FROM memories WHERE id = 'keep'").fetchone()
+            assert keep["is_ghost"] == 0
+            assert keep["gist"] is None
+        finally:
+            conn.close()
+            os.unlink(db_path)
+
+    def test_gist_is_truncated_to_200_chars(self) -> None:
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            long_content = "cardamom " * 40
+            _insert_memory(conn, "keep", "Deploys run from the sandbox")
+            _insert_memory(conn, "gone", long_content)
+            job = MemoryMaintenanceJob.__new__(MemoryMaintenanceJob)
+            job._ghost_merged_memories(conn, ["gone"], set(), MaintenanceConfig(tenant_id="t1", user_id="u1"))
+            conn.commit()
+            row = conn.execute("SELECT gist FROM memories WHERE id = 'gone'").fetchone()
+            assert row["gist"] == long_content[:200]
+        finally:
+            conn.close()
+            os.unlink(db_path)
+
+    def test_only_the_scoped_tenant_is_ghosted(self) -> None:
+        db_path = _make_test_db()
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            _insert_memory(conn, "keep", "Deploys run from the sandbox")
+            _insert_memory(conn, "mine", "Deploys run nightly", _MemoryRow(tenant_id="t1", user_id="u1"))
+            _insert_memory(conn, "theirs", "Deploys run nightly", _MemoryRow(tenant_id="t2", user_id="u1"))
+            job = MemoryMaintenanceJob.__new__(MemoryMaintenanceJob)
+            job._ghost_merged_memories(conn, ["mine", "theirs"], set(), MaintenanceConfig(tenant_id="t1", user_id="u1"))
+            conn.commit()
+            assert conn.execute("SELECT is_ghost FROM memories WHERE id = 'mine'").fetchone()["is_ghost"] == 1
+            assert conn.execute("SELECT is_ghost FROM memories WHERE id = 'theirs'").fetchone()["is_ghost"] == 0
+        finally:
+            conn.close()
+            os.unlink(db_path)
 
 
 class TestFindSentimentConflict:

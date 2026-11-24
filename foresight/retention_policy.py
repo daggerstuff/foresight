@@ -130,14 +130,24 @@ class RetentionConfig:
         """Parse + validate a policy document; raises :class:`PolicyError`."""
         if not isinstance(data, dict):
             raise PolicyError("policy must be a JSON object")
-        retention = data.get("retention") or {}
+        unknown_top_keys = set(data) - {"retention", "rules", "purge_expired_after"}
+        if unknown_top_keys:
+            raise PolicyError(f"policy has unknown keys: {sorted(unknown_top_keys, key=repr)}")
+        # Only a missing/None section is an empty section; a supplied falsy
+        # value (``""``, ``[]``, ``0``) is malformed and must not silently
+        # disable enforcement.
+        retention = data.get("retention")
+        if retention is None:
+            retention = {}
         if not isinstance(retention, dict):
             raise PolicyError("retention must be an object mapping category -> duration")
         for cat, dur in retention.items():
             _parse_duration(dur, f"retention[{cat!r}]")
 
         rules: list[ExpiryRule] = []
-        raw_rules = data.get("rules") or []
+        raw_rules = data.get("rules")
+        if raw_rules is None:
+            raw_rules = []
         if not isinstance(raw_rules, list):
             raise PolicyError("rules must be a list")
         for i, raw in enumerate(raw_rules):
@@ -189,15 +199,30 @@ def _parse_duration(value: Any, where: str) -> float | None:
 def _parse_rule(raw: Any, index: int) -> ExpiryRule:
     if not isinstance(raw, dict):
         raise PolicyError(f"rules[{index}] must be an object")
+    unknown_rule_keys = set(raw) - {"name", "expire_after", "match"}
+    if unknown_rule_keys:
+        # A misspelled ``match`` would otherwise leave every criterion unset.
+        raise PolicyError(f"rules[{index}] has unknown keys: {sorted(unknown_rule_keys, key=repr)}")
     name = raw.get("name")
     if not isinstance(name, str) or not name.strip():
         raise PolicyError(f"rules[{index}].name is required")
     expire_after = raw.get("expire_after")
     _parse_duration(expire_after, f"rules[{index}].expire_after")
-    match = raw.get("match") or {}
+    match = raw.get("match")
+    if match is None:
+        match = {}
     if not isinstance(match, dict):
         raise PolicyError(f"rules[{index}].match must be an object")
-    tags = match.get("tags") or []
+    unknown = set(match) - {"category", "tags", "source_tool", "confidence_below"}
+    if unknown:
+        # A typo would otherwise leave every criterion unset and match all rows.
+        raise PolicyError(f"rules[{index}].match has unknown keys: {sorted(unknown, key=repr)}")
+    for key in ("category", "source_tool"):
+        if match.get(key) is not None and not isinstance(match[key], str):
+            raise PolicyError(f"rules[{index}].match.{key} must be a string")
+    tags = match.get("tags")
+    if tags is None:
+        tags = []
     if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
         raise PolicyError(f"rules[{index}].match.tags must be a list of strings")
     confidence = match.get("confidence_below")
@@ -306,6 +331,20 @@ def policy_decision(config: RetentionConfig, row: dict[str, Any], now: datetime 
     return f"retention:{category}" if _aged_out(row, duration, now) else None
 
 
+def policy_governs(config: RetentionConfig, row: dict[str, Any]) -> bool:
+    """True when a stored policy decides this row's lifecycle.
+
+    A matching rule (including ``expire_after: "never"`` pins) or a
+    category-level ``retention`` entry means the row is not the legacy TTL
+    sweeps' business — the policy pass stamps it, pins it, or purges it.
+    """
+    for rule in config.rules:
+        if _rule_matches(rule, row):
+            return True
+    category = row.get("category")
+    return bool(category and config.retention.get(category))
+
+
 def is_policy_expired(row: dict[str, Any]) -> bool:
     """True when the row already carries an expiry stamp."""
     return bool(row.get("expired_at"))
@@ -316,23 +355,38 @@ def is_policy_expired(row: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def load_policy(conn: Any, tenant_id: str, user_id: str) -> RetentionConfig | None:
-    """Load the stored policy for (tenant, user); None when unset/invalid."""
+def load_policy_status(
+    conn: Any,
+    tenant_id: str,
+    user_id: str,
+) -> tuple[RetentionConfig | None, str | None]:
+    """Load a stored policy and report why it is missing.
+
+    Returns ``(config, None)`` when valid, ``(None, "missing")`` when no row
+    exists, and ``(None, "invalid: ...")`` when the row cannot be parsed, so
+    operators can tell a typo from an empty configuration.
+    """
     try:
         row = conn.execute(
             "SELECT policy_json FROM memory_policies WHERE tenant_id = ? AND user_id = ?",
             (tenant_id, user_id),
         ).fetchone()
     except Exception:
-        return None
+        return None, "missing"
     if not row:
-        return None
+        return None, "missing"
     raw = row["policy_json"] if isinstance(row, dict) else row[0]
     try:
-        return RetentionConfig.from_dict(json.loads(raw))
-    except (PolicyError, TypeError, ValueError):
+        return RetentionConfig.from_dict(json.loads(raw)), None
+    except (PolicyError, TypeError, ValueError) as exc:
         logger.warning("invalid stored retention policy for %s/%s", tenant_id, user_id)
-        return None
+        return None, f"invalid: {exc}"
+
+
+def load_policy(conn: Any, tenant_id: str, user_id: str) -> RetentionConfig | None:
+    """Load the stored policy for (tenant, user); None when unset/invalid."""
+    config, _error = load_policy_status(conn, tenant_id, user_id)
+    return config
 
 
 def save_policy(
@@ -356,14 +410,26 @@ def save_policy(
     return config
 
 
-def list_policies(conn: Any, tenant_id: str) -> list[tuple[str, RetentionConfig]]:
-    """Return every (user_id, policy) stored for a tenant."""
+def list_policies(
+    conn: Any,
+    tenant_id: str,
+    *,
+    strict: bool = False,
+) -> list[tuple[str, RetentionConfig]]:
+    """Return every (user_id, policy) stored for a tenant.
+
+    ``strict`` re-raises a read failure instead of returning ``[]``: a caller
+    that uses the result to decide what must not be deleted cannot treat an
+    unreadable table as "no policies".
+    """
     try:
         rows = conn.execute(
             "SELECT user_id, policy_json FROM memory_policies WHERE tenant_id = ?",
             (tenant_id,),
         ).fetchall()
     except Exception:
+        if strict:
+            raise
         return []
     out: list[tuple[str, RetentionConfig]] = []
     for row in rows:
@@ -414,27 +480,42 @@ def restore_memory(conn: Any, memory_id: str, user_id: str, tenant_id: str) -> b
 # ---------------------------------------------------------------------------
 
 
-def apply_expiry_policies(conn: Any, tenant_id: str, now: datetime | None = None) -> dict[str, int]:
-    """Expire policy-matched memories and purge per ``purge_expired_after``.
+def evaluate_expiry_policies(
+    conn: Any,
+    tenant_id: str,
+    now: datetime | None = None,
+) -> tuple[dict[str, int], set[str]]:
+    """Apply stored policies once and report which rows they govern.
 
-    Returns ``{"expired": n, "purged": n}``. Missing ``memory_policies`` or
-    expiry columns degrade to a no-op so older schemas keep working.
+    Returns ``(stats, governed_ids)`` where stats is ``{"expired": n,
+    "purged": n}``. The governed set covers rules and category retention
+    (pins included) so the legacy TTL sweeps can skip those rows without a
+    second scan. An unreadable ``memory_policies`` table raises (under strict=True)
+    so memory_gc halts rather than deleting pinned rows under assumed missing policies;
+    missing expiry columns degrade to a no-op.
     """
     now = now or datetime.now(UTC)
     stats = {"expired": 0, "purged": 0}
-    for uid, config in list_policies(conn, tenant_id):
+    governed: set[str] = set()
+    for uid, config in list_policies(conn, tenant_id, strict=True):
         try:
+            # Sensitive rows are never auto-archived (see the is_sensitive
+            # contract in schema_ddl): policy expiry and its purge window
+            # leave them untouched.
             rows = conn.execute(
                 "SELECT id, category, tags, source_tool, importance, current_strength, "
                 "updated_at, created_at FROM memories "
-                "WHERE tenant_id = ? AND user_id = ? AND is_ghost = 0 AND expired_at IS NULL",
+                "WHERE tenant_id = ? AND user_id = ? AND is_ghost = 0 AND expired_at IS NULL "
+                "AND COALESCE(is_sensitive, 0) = 0",
                 (tenant_id, uid),
             ).fetchall()
         except Exception:
             # Schema without expiry columns — nothing to do.
-            return stats
+            return stats, governed
         for row in rows:
             r = dict(row)
+            if policy_governs(config, r):
+                governed.add(str(r["id"]))
             reason = policy_decision(config, r, now)
             if reason:
                 conn.execute(
@@ -447,8 +528,15 @@ def apply_expiry_policies(conn: Any, tenant_id: str, now: datetime | None = None
             cutoff = (now - timedelta(seconds=purge_seconds)).isoformat()
             cur = conn.execute(
                 "DELETE FROM memories WHERE tenant_id = ? AND user_id = ? "
-                "AND expired_at IS NOT NULL AND expired_at < ?",
+                "AND expired_at IS NOT NULL AND expired_at < ? "
+                "AND COALESCE(is_sensitive, 0) = 0",
                 (tenant_id, uid, cutoff),
             )
             stats["purged"] += cur.rowcount or 0
+    return stats, governed
+
+
+def apply_expiry_policies(conn: Any, tenant_id: str, now: datetime | None = None) -> dict[str, int]:
+    """Expire policy-matched memories and purge per ``purge_expired_after``."""
+    stats, _governed = evaluate_expiry_policies(conn, tenant_id, now)
     return stats

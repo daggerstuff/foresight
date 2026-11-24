@@ -16,10 +16,15 @@ derives a `foresight_test` Postgres DSN from `FORESIGHT_DB_URL` and skips the
 suite when it is absent. Set `FORESIGHT_DB_URL` (CI provides one) to run the
 full suite.
 
+`FORESIGHT_TEST_DB_URL` overrides the derived DSN outright and takes
+precedence. Either way, the harness **truncates every application table** in
+that database before and after each test, so point it only at a disposable
+database — never at one whose data you care about, and never at production.
+
 ## Daily Commands
 
 ```bash
-uv run pytest tests/ -x -q            # tests (Postgres harness; SQLite fixtures)
+uv run pytest tests/ -x -q            # tests (truncates the disposable test DB)
 uv run pytest tests/test_foo.py -q    # one file while iterating
 uv run ruff check .                   # lint — must pass, zero suppressions
 uv run pyright                        # type check

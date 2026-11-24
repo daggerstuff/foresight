@@ -576,12 +576,14 @@ Output (raw JSON only, no markdown):
         json_text = self._FENCE_END_RE.sub("", json_text)
         json_text = json_text.strip()
 
+        salvaged = False
         try:
             parsed = json.loads(json_text)
         except json.JSONDecodeError:
             parsed = self._salvage_json(json_text)
             if parsed is None:
                 raise
+            salvaged = True
             logger.warning("Entity extraction JSON was truncated; kept complete elements only")
 
         entities = [
@@ -615,7 +617,12 @@ Output (raw JSON only, no markdown):
             )
 
         relationships.sort(key=lambda r: r.confidence, reverse=True)
-        return ExtractionResult(entities=entities, relationships=relationships[:20], degraded=False)
+        return ExtractionResult(
+            entities=entities,
+            relationships=relationships[:20],
+            degraded=salvaged,
+            degraded_reason="truncated LLM JSON; only complete elements were kept" if salvaged else None,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -424,4 +424,3 @@ def format_static_and_safety(lane_items: dict[Lane, list[LaneItem]]) -> str:
             sections.append(f"[{lane.value}]")
             sections.extend(lane_lines)
     return "\n".join(sections)
-

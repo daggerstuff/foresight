@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -177,6 +178,14 @@ class TelemetryStore:
         threshold: float = 0.0,
     ) -> None:
         """Record a gated recall decision (gated vs injected) for A/B tracking."""
+        decision = (decision or "").strip().lower()
+        if decision not in ("gated", "injected"):
+            # The summary counters only recognize these two; persisting anything
+            # else would show decisions that never appear in the totals.
+            raise ValueError(f"unknown gating decision {decision!r}; expected 'gated' or 'injected'")
+        # NaN/inf would be written verbatim and make the JSON summary invalid.
+        score = top_score if math.isfinite(top_score) else None
+        thresh = threshold if math.isfinite(threshold) else None
         with self._lock:
             self._data.last_updated = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             if decision == "gated":
@@ -200,8 +209,8 @@ class TelemetryStore:
             recent.append(
                 {
                     "decision": decision,
-                    "top_score": round(top_score, 4),
-                    "threshold": round(threshold, 4),
+                    "top_score": round(score, 4) if score is not None else None,
+                    "threshold": round(thresh, 4) if thresh is not None else None,
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
             )

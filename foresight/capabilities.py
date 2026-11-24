@@ -10,12 +10,15 @@ import os
 from typing import Any
 
 from .encryption import get_encryption_engine
+from .llm_client import LLMConfig
 from .reranker import rerank_active, rerank_enabled
 from .semantic_search import get_embedder, resolve_provider
+from .tenant_context import get_current_account_id
 
 try:
-    import redis as _redis
+    import redis as _redis_mod
 
+    _redis: Any = _redis_mod
     _HAS_REDIS = True
 except ImportError:
     _redis = None
@@ -33,56 +36,71 @@ def get_capabilities_report(_tenant_id: str | None = None) -> dict[str, Any]:
           - encryption: enabled flag, key_present flag, algorithm
           - redis: configured flag, connected flag
     """
-    # 1. Embedder capability
-    embedder_provider = resolve_provider()
+    # 1. Embedder capability. Provider resolution and initialization both fail
+    # for a bad provider name or a broken optional dependency; report that as
+    # unavailable instead of crashing the whole diagnostic (or, worse, looking
+    # healthy with a made-up dimension).
+    embedder_error: str | None = None
     try:
+        embedder_provider = resolve_provider()
         embedder = get_embedder()
         dimension = getattr(embedder, "dimension", 384)
         model = getattr(embedder, "model_name", None)
         actual_provider = getattr(embedder, "provider_name", embedder_provider)
-    except Exception:
-        dimension = 384
+    except Exception as exc:
+        embedder_error = str(exc)
+        dimension = None
         model = None
-        actual_provider = embedder_provider
+        actual_provider = os.environ.get("FORESIGHT_EMBEDDING_PROVIDER", "").strip() or "unknown"
 
-    embedder_info = {
+    embedder_info: dict[str, Any] = {
         "provider": actual_provider,
-        "real": actual_provider != "local-hash",
+        "real": embedder_error is None and actual_provider != "local-hash",
+        "available": embedder_error is None,
         "dimension": dimension,
         "model": model,
     }
+    if embedder_error:
+        embedder_info["error"] = embedder_error
 
     # 2. Reranker capability
     reranker_info = {
         "enabled": rerank_enabled(),
         "active": rerank_active(),
-        "provider": (
-            os.environ.get("FORESIGHT_RERANK_PROVIDER", "fastembed").strip() if rerank_enabled() else None
-        ),
+        "provider": (os.environ.get("FORESIGHT_RERANK_PROVIDER", "fastembed").strip() if rerank_enabled() else None),
     }
 
-    # 3. LLM capability
-    llm_provider = os.environ.get("FORESIGHT_LLM_PROVIDER", "").strip().lower()
-    llm_api_key = os.environ.get("FORESIGHT_LLM_API_KEY", "").strip()
-    llm_model = os.environ.get("FORESIGHT_LLM_MODEL", "").strip()
-    supported_local = {"ollama", "vllm", "lmstudio", "none"}
-    llm_configured = bool(llm_provider and (llm_api_key or llm_provider in supported_local))
-    llm_info = {
-        "configured": llm_configured,
-        "provider": llm_provider or None,
-        "model": llm_model or None,
-    }
+    # 3. LLM capability. Use the same resolution the client uses (default
+    # provider, per-tenant key, provider-specific env fallbacks) so this
+    # report agrees with what synthesis will actually do.
+    supported_local = {"ollama", "vllm", "lmstudio"}
+    try:
+        llm_cfg = LLMConfig.from_env(_tenant_id or get_current_account_id())
+    except Exception as exc:
+        llm_info: dict[str, Any] = {
+            "configured": False,
+            "provider": os.environ.get("FORESIGHT_LLM_PROVIDER", "").strip() or None,
+            "model": None,
+            "error": str(exc),
+        }
+    else:
+        llm_info = {
+            "configured": llm_cfg.provider not in ("", "none")
+            and (bool(llm_cfg.api_key) or llm_cfg.provider in supported_local),
+            "provider": llm_cfg.provider or None,
+            "model": llm_cfg.model_for_provider() or None,
+        }
 
     # 4. Encryption capability
     enc_status = get_encryption_engine().get_status().to_dict()
     enc_info = {
         "enabled": bool(enc_status.get("enabled", False)),
-        "key_present": bool(enc_status.get("key_present", False)),
+        "key_present": bool(enc_status.get("key_configured", False)),
         "algorithm": enc_status.get("algorithm", "AES-256-GCM"),
     }
 
     # 5. Redis capability
-    redis_url = os.environ.get("FORESIGHT_REDIS_URL", "").strip()
+    redis_url = (os.environ.get("FORESIGHT_REDIS_URL") or os.environ.get("REDIS_URL") or "").strip()
     redis_connected = False
     if redis_url and _HAS_REDIS and _redis is not None:
         try:

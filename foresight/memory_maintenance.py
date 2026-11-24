@@ -30,6 +30,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import Any
 
 from .clustering import cluster_memories
@@ -76,8 +77,27 @@ SENTIMENT_OPPOSITES: tuple[tuple[str, str], ...] = (
 
 DUPLICATE_OVERLAP_HIGH = 0.70  # Auto-consolidate threshold
 DUPLICATE_OVERLAP_MARGINAL = 0.30  # Flag for admin review
+# A pair whose word order disagrees is never auto-merged: a role reversal
+# ("Alice manages Bob" / "Bob manages Alice") reads as a duplicate by word set
+# but asserts the opposite, and auto-merge ghosts the loser permanently. It
+# still reaches the review queue.
+ORDER_AGREEMENT_FLOOR = 0.40
+ORDER_DISAGREEMENT_CAP = 0.65
 STALE_STRENGTH_THRESHOLD = 0.2
 STALE_IMPORTANCE_THRESHOLD = 0.1
+
+
+def _ordered_grams(content: str) -> set[str]:
+    """Adjacent-word bigrams for one memory, so word order carries weight.
+
+    A one-word memory falls back to that word so single-word duplicates still
+    score; anything longer is compared as ordered pairs.
+    """
+    words = re.findall(r"\b\w+\b", content.lower())
+    pairs = {f"{first} {second}" for first, second in pairwise(words)}
+    return pairs or set(words)
+
+
 LOW_RELEVANCE_IMPORTANCE_THRESHOLD = 0.3
 LOW_RELEVANCE_MIN_AGE_DAYS = 14
 LOW_RELEVANCE_MAX_ACTIVATIONS = 1
@@ -211,8 +231,8 @@ def _fetch_merge_sources(
     other_ids: list[str],
     config: MaintenanceConfig,
     existing_synth: set[str],
-) -> list[str]:
-    """Return the merged memories' content and record their ids as synthesis sources."""
+) -> dict[str, str]:
+    """Return the merged memories' id→content map and record their ids as sources."""
     other_slots = placeholders(len(other_ids))
     rows = conn.execute(
         join_sql_parts(
@@ -223,12 +243,12 @@ def _fetch_merge_sources(
         (*other_ids, config.tenant_id, config.user_id),
     ).fetchall()
 
-    additional_content = []
+    contents: dict[str, str] = {}
     for row in rows:
         if row["content"]:
-            additional_content.append(row["content"])
+            contents[row["id"]] = row["content"]
             existing_synth.add(row["id"])
-    return additional_content
+    return contents
 
 
 _CONTRADICTION_TOPIC_STOPWORDS = frozenset({"that", "with", "from", "have", "this", "been", "were", "they", "their"})
@@ -268,32 +288,16 @@ def _build_word_map(memories: list[dict[str, Any]]) -> dict[str, tuple[frozenset
     return word_map
 
 
-MERGE_OVERLAP_THRESHOLD = 0.80
-
-
-def _match_or_replace_segment(
-    words: set[str],
-    norm: str,
-    seen_normalized_list: list[str],
-) -> tuple[bool, int | None]:
-    """Check if segment is duplicate or should replace an existing shorter segment."""
-    for idx, seen_norm in enumerate(seen_normalized_list):
-        if norm == seen_norm:
-            return True, None
-        seen_words = set(seen_norm.split())
-        if words and seen_words:
-            overlap = len(words & seen_words) / len(words | seen_words)
-            if overlap >= MERGE_OVERLAP_THRESHOLD:
-                if len(words) > len(seen_words) and seen_words.issubset(words):
-                    return True, idx
-                return True, None
-    return False, None
-
-
 def _merge_unique_content(existing: str, additional: list[str]) -> str:
-    """Merge content from duplicate memories without repeating identical sentences, lines, or clauses."""
+    """Merge duplicate memories without repeating identical sentences or lines.
+
+    Only text identical after normalization (case, whitespace, punctuation) is
+    dropped. Statements that differ by a word — a negation, a number, or
+    swapped roles — are distinct, so both survive and the contradict pass can
+    still flag them.
+    """
     parts: list[str] = []
-    seen_normalized_list: list[str] = []
+    seen_normalized: set[str] = set()
 
     for chunk in [existing, *additional]:
         if not chunk:
@@ -301,26 +305,26 @@ def _merge_unique_content(existing: str, additional: list[str]) -> str:
         # Split on newlines or sentence terminators (.!?)
         segments = re.split(r"(?<=[.!?])\s+|\n+", chunk.strip())
         for seg in segments:
-            s_clean = seg.strip(" \t\r\n-•*")
+            # Strip list markers, not sign characters: "-5°C" is a value.
+            s_clean = seg.strip(" \t\r\n•*")
+            s_clean = re.sub(r"^-\s+", "", s_clean).strip()
             if not s_clean:
                 continue
             # Normalize for deduplication
-            norm = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", s_clean.lower()))
-            if not norm:
+            norm = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", s_clean.lower())).strip()
+            if not norm or norm in seen_normalized:
                 continue
-            is_dup, replace_idx = _match_or_replace_segment(set(norm.split()), norm, seen_normalized_list)
-            if replace_idx is not None:
-                parts[replace_idx] = s_clean
-                seen_normalized_list[replace_idx] = norm
-            elif not is_dup:
-                seen_normalized_list.append(norm)
-                parts.append(s_clean)
+            seen_normalized.add(norm)
+            parts.append(s_clean)
 
     if not parts:
         return existing
     if any("\n" in c for c in [existing, *additional]) or any(c.startswith("-") for c in [existing, *additional]):
         return "\n".join(f"- {p}" if not p.startswith("-") else p for p in parts)
-    return ". ".join(p.rstrip(". ") for p in parts) + ("." if not parts[-1].endswith((".", "!", "?")) else "")
+    # Each segment keeps its own terminator; joining with a space preserves the
+    # original punctuation ("Did you know? Yes." stays intact).
+    merged = " ".join(parts)
+    return merged if merged.endswith((".", "!", "?")) else f"{merged}."
 
 
 class MemoryMaintenanceJob:
@@ -384,8 +388,15 @@ class MemoryMaintenanceJob:
         self, conn: Any, config: MaintenanceConfig, extra_where: str = "", extra_params: tuple = ()
     ) -> list[dict[str, Any]]:
         sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
-        where = join_sql_parts("user_id = ? AND tenant_id = ? AND ", sensitivity_filter, extra_where)
-        params = (config.user_id, config.tenant_id, *extra_params)
+        # An expired row must never become the primary of a merge: ghosting a
+        # live duplicate behind it would drop the live content from recall.
+        where = join_sql_parts(
+            "user_id = ? AND tenant_id = ? AND (is_ghost = 0 OR is_ghost IS NULL) AND ",
+            sensitivity_filter,
+            " AND expired_at IS NULL AND (expires_at IS NULL OR expires_at >= ?)",
+            extra_where,
+        )
+        params = (config.user_id, config.tenant_id, datetime.now(UTC).isoformat(), *extra_params)
         cursor = conn.execute(
             join_sql_parts(
                 """
@@ -473,9 +484,11 @@ class MemoryMaintenanceJob:
     ) -> None:
         """Automatically find and consolidate identical memories (matching content_hash)."""
         if config.sensitive_only:
-            sensitivity_filter = "AND COALESCE(is_sensitive, 0) = 1"
-        else:
-            sensitivity_filter = "AND COALESCE(is_sensitive, 0) = 0"
+            # Sensitive memories are never silently merged; a sensitive-only
+            # run stays on the review path.
+            return
+        sensitivity_filter = "AND COALESCE(is_sensitive, 0) = 0"
+        now_iso = datetime.now(UTC).isoformat()
         try:
             cursor = conn.execute(
                 join_sql_parts(
@@ -483,6 +496,8 @@ class MemoryMaintenanceJob:
                     SELECT content_hash, COUNT(*) AS dup_count
                     FROM memories
                     WHERE user_id = ? AND tenant_id = ? AND (is_ghost = 0 OR is_ghost IS NULL)
+                      AND expired_at IS NULL
+                      AND (expires_at IS NULL OR expires_at >= ?)
                       AND content_hash IS NOT NULL AND content_hash != ''
                     """,
                     sensitivity_filter,
@@ -492,24 +507,29 @@ class MemoryMaintenanceJob:
                     LIMIT ?
                     """,
                 ),
-                (config.user_id, config.tenant_id, config.batch_size),
+                (config.user_id, config.tenant_id, now_iso, config.batch_size),
             )
             dup_groups = cursor.fetchall()
             if not dup_groups:
                 return
-
-            now_iso = datetime.now(UTC).isoformat()
             for group in dup_groups:
                 ch = group["content_hash"]
                 rows = conn.execute(
-                    """
+                    join_sql_parts(
+                        """
                     SELECT id, content, activation_count, created_at, synthesized_from
                     FROM memories
                     WHERE user_id = ? AND tenant_id = ? AND content_hash = ?
                       AND (is_ghost = 0 OR is_ghost IS NULL)
+                      AND expired_at IS NULL
+                      AND (expires_at IS NULL OR expires_at >= ?)
+                    """,
+                        sensitivity_filter,
+                        """
                     ORDER BY activation_count DESC, created_at ASC
                     """,
-                    (config.user_id, config.tenant_id, ch),
+                    ),
+                    (config.user_id, config.tenant_id, ch, now_iso),
                 ).fetchall()
                 if len(rows) < MIN_CLUSTER_MEMBERS:
                     continue
@@ -530,7 +550,8 @@ class MemoryMaintenanceJob:
 
                 raw_synth = primary["synthesized_from"]
                 existing_synth = set(re.findall(r"\w+", raw_synth or "")) if raw_synth else set()
-                self._ghost_merged_memories(conn, other_ids, existing_synth, config)
+                contents = {r["id"]: r["content"] or "" for r in rows}
+                self._ghost_merged_memories(conn, other_ids, existing_synth, config, contents)
                 stats.duplicates_auto_consolidated += len(other_ids)
                 stats.duplicates_found += len(other_ids)
 
@@ -626,12 +647,30 @@ class MemoryMaintenanceJob:
         )
 
     def _pairwise_overlaps(self, memories: list[dict[str, Any]]) -> dict[tuple[str, str], float]:
+        """Score every pair by ordered and unordered word overlap.
+
+        The bigram half keeps word order in play: "Alice manages Bob." and "Bob
+        manages Alice." share every word but assert opposite things, and the
+        auto-consolidate path ghosts the loser permanently. The unigram half
+        keeps ordinary near-duplicates (a one-word edit mid-sentence) above the
+        auto-consolidate threshold, so they still merge or reach review.
+        """
         scores: dict[tuple[str, str], float] = {}
         for i, mem_a in enumerate(memories):
             for mem_b in memories[i + 1 :]:
-                words_a = set(re.findall(r"\b\w+\b", (mem_a["content"] or "").lower()))
-                words_b = set(re.findall(r"\b\w+\b", (mem_b["content"] or "").lower()))
-                score = 0.0 if not words_a or not words_b else len(words_a & words_b) / len(words_a | words_b)
+                text_a = mem_a["content"] or ""
+                text_b = mem_b["content"] or ""
+                grams_a = _ordered_grams(text_a)
+                grams_b = _ordered_grams(text_b)
+                bigram = 0.0 if not grams_a or not grams_b else len(grams_a & grams_b) / len(grams_a | grams_b)
+                words_a = set(re.findall(r"\b\w+\b", text_a.lower()))
+                words_b = set(re.findall(r"\b\w+\b", text_b.lower()))
+                unigram = 0.0 if not words_a or not words_b else len(words_a & words_b) / len(words_a | words_b)
+                # Blend the two: a one-word edit stays a near duplicate, while a
+                # reordering stays below the auto-merge threshold.
+                score = (bigram + unigram) / 2
+                if bigram < ORDER_AGREEMENT_FLOOR:
+                    score = min(score, ORDER_DISAGREEMENT_CAP)
                 key = tuple(sorted([mem_a["id"], mem_b["id"]]))
                 scores[key] = score
         return scores
@@ -654,9 +693,9 @@ class MemoryMaintenanceJob:
         existing_content = row["content"] or ""
         existing_synth = set(re.findall(r"\w+", row["synthesized_from"] or "")) if row["synthesized_from"] else set()
 
-        additional_content = _fetch_merge_sources(conn, other_ids, config, existing_synth)
+        merge_sources = _fetch_merge_sources(conn, other_ids, config, existing_synth)
 
-        combined = _merge_unique_content(existing_content, additional_content)
+        combined = _merge_unique_content(existing_content, list(merge_sources.values()))
 
         now_iso = datetime.now(UTC).isoformat()
         next_version = self._snapshot_pre_merge_version(conn, primary_id, config, existing_content, now_iso)
@@ -695,7 +734,7 @@ class MemoryMaintenanceJob:
             now_iso=now_iso,
         )
         self._record_merge_history(conn, cand, config, plan)
-        self._ghost_merged_memories(conn, other_ids, existing_synth, config)
+        self._ghost_merged_memories(conn, other_ids, existing_synth, config, merge_sources)
 
         conn.commit()
 
@@ -788,10 +827,26 @@ class MemoryMaintenanceJob:
         other_ids: list[str],
         existing_synth: set[str],
         config: MaintenanceConfig,
+        contents: dict[str, str] | None = None,
     ) -> None:
-        """Ghost the merged-away memories in a single statement."""
+        """Ghost the merged-away memories in a single statement.
+
+        ``contents`` is the id→content map the caller already loaded; without it
+        the rows are read again. Each ghost keeps its own content as the gist: a
+        truncated memory id tells a reader nothing about what was merged away.
+        """
         other_slots = placeholders(len(other_ids))
-        gist_value = other_ids[0][:200]
+        if contents is None:
+            gist_rows = conn.execute(
+                join_sql_parts(
+                    "SELECT id, content FROM memories WHERE id IN (",
+                    other_slots,
+                    ") AND tenant_id = ? AND user_id = ?",
+                ),
+                [*other_ids, config.tenant_id, config.user_id],
+            ).fetchall()
+            contents = {row["id"]: row["content"] or "" for row in gist_rows}
+        gists = {mid: (contents.get(mid) or "")[:200] for mid in other_ids}
         synthesized_from_values = [str([*list(existing_synth), mid]) for mid in other_ids]
 
         # Build the SET clause for the UPDATE
@@ -807,13 +862,13 @@ class MemoryMaintenanceJob:
         # Prepare parameters
         params = []
         for mid in other_ids:
-            params.extend([mid, gist_value])
+            params.extend([mid, gists.get(mid, "")])
         for i, mid in enumerate(other_ids):
             params.extend([mid, synthesized_from_values[i]])
+        # Placeholder order is the SQL order: the SET CASE arms first, then the
+        # WHERE id list, then the tenant/user scope.
+        params.extend(list(other_ids))
         params.extend([config.tenant_id, config.user_id])
-
-        # Add the WHERE clause parameters (the IDs)
-        params = list(other_ids) + params
 
         conn.execute(
             join_sql_parts(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from .block_registry import MemoryBlockSchema, get_registry, initialize_default_blocks
@@ -23,12 +24,10 @@ from .subconscious import (
     ContextBlockState,
     MemoryBlock,
     get_context_block_agent as _get_context_block_agent,
+    normalize_block_line,
 )
 
 DEFAULT_CONTEXT_BLOCKS = DEFAULT_MEMORY_BLOCKS
-
-# Token-set Jaccard similarity above which a preference rule is redundant.
-REDUNDANCY_JACCARD_THRESHOLD = 0.5
 ContextBlock = MemoryBlock
 
 __all__ = [
@@ -165,23 +164,42 @@ _LEAKED_BLOCK_RE = re.compile(
 )
 
 
+def _placeholder_for(label: str) -> str:
+    """The registry placeholder text for *label* ("" when unregistered)."""
+    schema = get_registry().get_schema(label) or initialize_default_blocks().get_schema(label)
+    return schema.content if schema else ""
+
+
+def _clear_generated_block(agent: Any, label: str) -> bool:
+    """Restore a block's placeholder once no live source remains for it.
+
+    Only blocks distillation owns are touched, so a hand-edited block is never
+    emptied when its source memories expire; the check and the write happen
+    under the agent lock so a concurrent manual edit is not overwritten.
+    """
+    return agent.restore_generated_block(label, _placeholder_for(label))
+
+
 def _distill_preferences(conn: Any, agent: Any, user_id: str, tenant_id: str) -> bool:
+    now_iso = datetime.now(UTC).isoformat()
     pref_rows = conn.execute(
         """
         SELECT content FROM memories
         WHERE user_id = ? AND tenant_id = ?
           AND (category = 'preference' OR scope = 'trait')
           AND (is_ghost = 0 OR is_ghost IS NULL)
+          AND expired_at IS NULL
+          AND (expires_at IS NULL OR expires_at >= ?)
         ORDER BY importance DESC, updated_at DESC
         LIMIT 10
         """,
-        (user_id, tenant_id),
+        (user_id, tenant_id, now_iso),
     ).fetchall()
     if not pref_rows:
-        return False
+        return _clear_generated_block(agent, "user_preferences")
 
     unique_rules: list[str] = []
-    seen_token_sets: list[set[str]] = []
+    seen_rules: set[str] = set()
 
     for r in pref_rows:
         content = (r["content"] or "").strip()
@@ -201,42 +219,47 @@ def _distill_preferences(conn: Any, agent: Any, user_id: str, tenant_id: str) ->
         ).strip(" -")
         if not clean:
             continue
-        words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
-        is_redundant = any(
-            len(words & s) / max(1, len(words | s)) > REDUNDANCY_JACCARD_THRESHOLD for s in seen_token_sets
-        )
-        if not is_redundant:
-            seen_token_sets.append(words)
-            unique_rules.append(f"- {clean}")
+        # Suppress formatting-only repeats; a rule that differs by a number,
+        # scope word, or negation is a distinct instruction.
+        key = normalize_block_line(clean)
+        if key in seen_rules:
+            continue
+        seen_rules.add(key)
+        unique_rules.append(f"- {clean}")
 
     if not unique_rules:
         return False
 
     current_pref = agent.get_block("user_preferences") or ""
     new_pref = "\n".join(unique_rules[:8])
-    if current_pref.strip() != new_pref.strip() or "pnpm" in new_pref.lower():
-        agent.update_block("user_preferences", new_pref)
+    if current_pref.strip() != new_pref.strip():
+        # Only content this pass wrote is marked generated; an unchanged block
+        # keeps its ownership, so a manual edit is never cleared later.
+        agent.update_block("user_preferences", new_pref, auto_generated=True)
         return True
     return False
 
 
 def _distill_project_context(conn: Any, agent: Any, user_id: str, tenant_id: str) -> bool:
+    now_iso = datetime.now(UTC).isoformat()
     arc_rows = conn.execute(
         """
         SELECT content FROM memories
         WHERE user_id = ? AND tenant_id = ?
           AND (scope = 'arc' OR category IN ('decision', 'fact'))
           AND (is_ghost = 0 OR is_ghost IS NULL)
+          AND expired_at IS NULL
+          AND (expires_at IS NULL OR expires_at >= ?)
         ORDER BY importance DESC, updated_at DESC
         LIMIT 12
         """,
-        (user_id, tenant_id),
+        (user_id, tenant_id, now_iso),
     ).fetchall()
     if not arc_rows:
-        return False
+        return _clear_generated_block(agent, PROJECT_CONTEXT)
 
     unique_arc: list[str] = []
-    seen_arc_tokens: list[set[str]] = []
+    seen_arc: set[str] = set()
 
     for r in arc_rows:
         content = (r["content"] or "").strip()
@@ -254,28 +277,19 @@ def _distill_project_context(conn: Any, agent: Any, user_id: str, tenant_id: str
         if not clean:
             continue
 
-        words = set(re.findall(r"\b\w{3,}\b", clean.lower()))
-        is_redundant = any(
-            len(words & s) / max(1, len(words | s)) > REDUNDANCY_JACCARD_THRESHOLD for s in seen_arc_tokens
-        )
-        if not is_redundant:
-            seen_arc_tokens.append(words)
-            unique_arc.append(f"- {clean}")
+        key = normalize_block_line(clean)
+        if key in seen_arc:
+            continue
+        seen_arc.add(key)
+        unique_arc.append(f"- {clean}")
 
     if not unique_arc:
         return False
 
-    current_proj = agent.get_block("project_context") or ""
     new_proj = "\n".join(unique_arc[:6])
-    if (
-        not current_proj.strip()
-        or current_proj.strip() == "Default project context."
-        or current_proj.strip() != new_proj.strip()
-        or "postgres" in new_proj.lower()
-    ):
-        agent.update_block("project_context", new_proj)
-        return True
-    return False
+    # The agent decides atomically: fill an empty/placeholder block, refresh
+    # its own generated output, and never overwrite a hand-edited block.
+    return agent.refresh_project_context(new_proj, _placeholder_for(PROJECT_CONTEXT))
 
 
 def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dict[str, Any]:
@@ -302,4 +316,3 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
         logger.debug("auto_distill_context_blocks exception (non-fatal): %s", e)
 
     return {"ok": True, "distilled_blocks": updated_blocks}
-

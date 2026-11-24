@@ -115,7 +115,22 @@ def test_hook_storable_facts_detection():
     assert not foresight_hook._has_storable_facts(["Thanks, looks good!"])
 
 
-def test_hook_gated_recall_below_threshold():
+def _run_prompt_hook(capsys, inject_resp):
+    """Drive the real hook prompt branch with a patched inject response."""
+    with (
+        patch.object(foresight_hook, "GATED_RECALL_ENABLED", True),
+        patch.object(foresight_hook, "GATED_RECALL_THRESHOLD", 0.015),
+        patch.object(foresight_hook, "_cache_append"),
+        patch.object(foresight_hook, "_post", return_value=(200, json.dumps(inject_resp).encode("utf-8"))),
+    ):
+        foresight_hook.main(
+            ["prompt"],
+            json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "what did we decide?"}),
+        )
+    return capsys.readouterr().out
+
+
+def test_hook_gated_recall_below_threshold(capsys):
     inject_resp = {
         "formatted": "Full memory injection content that should be suppressed.",
         "top_score": 0.010,
@@ -123,43 +138,15 @@ def test_hook_gated_recall_below_threshold():
         "memories": [{"memory_id": "m1", "combined_score": 0.010}],
     }
 
-    with (
-        patch.object(foresight_hook, "GATED_RECALL_ENABLED", True),
-        patch.object(foresight_hook, "GATED_RECALL_THRESHOLD", 0.015),
-        patch.object(foresight_hook, "_post", return_value=(200, json.dumps(inject_resp).encode("utf-8"))),
-    ):
-        data = inject_resp
-        top_score = float(data.get("top_score") or 0.0)
-        static_and_safety = str(data.get("static_and_safety") or "").strip()
+    out = _run_prompt_hook(capsys, inject_resp)
 
-        decision = "injected"
-        if foresight_hook.GATED_RECALL_ENABLED and top_score < foresight_hook.GATED_RECALL_THRESHOLD:
-            decision = "gated"
-
-        assert decision == "gated"
-        parts = []
-        if static_and_safety:
-            parts.append(static_and_safety)
-        parts.append(foresight_hook.REMINDER_LINE)
-        gated_block = "\n\n".join(parts)
-        out = (
-            "\n".join(
-                (
-                    "[FORESIGHT CONTINUITY CONTEXT]",
-                    gated_block,
-                    "[/FORESIGHT CONTINUITY CONTEXT]",
-                )
-            )
-            + "\n"
-        )
-
-        assert "[FORESIGHT CONTINUITY CONTEXT]" in out
-        assert "Dark mode only" in out
-        assert foresight_hook.REMINDER_LINE in out
-        assert "Full memory injection content that should be suppressed" not in out
+    assert "[FORESIGHT CONTINUITY CONTEXT]" in out
+    assert "Dark mode only" in out
+    assert foresight_hook.REMINDER_LINE in out
+    assert "Full memory injection content that should be suppressed" not in out
 
 
-def test_hook_injected_recall_above_threshold():
+def test_hook_injected_recall_above_threshold(capsys):
     inject_resp = {
         "formatted": "Important past context: DB is postgres 17.",
         "top_score": 0.035,
@@ -167,13 +154,153 @@ def test_hook_injected_recall_above_threshold():
         "memories": [{"memory_id": "m1", "combined_score": 0.035}],
     }
 
+    out = _run_prompt_hook(capsys, inject_resp)
+
+    assert "Important past context: DB is postgres 17." in out
+    assert foresight_hook.REMINDER_LINE not in out
+
+
+def test_hook_postcompact_applies_score_gate(capsys):
+    """A low-score hit must not re-enter the prompt through PostCompact."""
+    inject_resp = {
+        "formatted": "LOW SCORE CONTENT",
+        "top_score": 0.010,
+        "static_and_safety": "[static]\n- keep safety lane",
+        "memories": [{"memory_id": "m1", "combined_score": 0.010}],
+    }
     with (
         patch.object(foresight_hook, "GATED_RECALL_ENABLED", True),
         patch.object(foresight_hook, "GATED_RECALL_THRESHOLD", 0.015),
+        patch.object(foresight_hook, "_cache_append"),
+        patch.object(foresight_hook, "_cache_recent", return_value=[]),
+        patch.object(foresight_hook, "_post", return_value=(200, json.dumps(inject_resp).encode("utf-8"))),
     ):
-        top_score = float(inject_resp.get("top_score") or 0.0)
-        decision = "injected"
-        if foresight_hook.GATED_RECALL_ENABLED and top_score < foresight_hook.GATED_RECALL_THRESHOLD:
-            decision = "gated"
+        foresight_hook.main(
+            ["postcompact"],
+            json.dumps({"hook_event_name": "PostCompact", "summary": "we discussed the migration"}),
+        )
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "LOW SCORE CONTENT" not in ctx
+    assert "keep safety lane" in ctx
+    assert foresight_hook.REMINDER_LINE in ctx
 
-        assert decision == "injected"
+
+def test_hook_stop_with_message_dicts_emits_nudge(capsys, tmp_path):
+    """Cache-mode Stop replaces ``tail`` with message dicts; the nudge must not crash."""
+    payload = {
+        "hook_event_name": "Stop",
+        "messages": [{"role": "assistant", "content": "We decided to use Redis for session caching."}],
+    }
+    with (
+        patch.object(foresight_hook, "MODE", "cache"),
+        patch.object(foresight_hook, "CACHE_DIR", str(tmp_path)),
+        patch.object(foresight_hook, "_cache_append"),
+        patch.object(foresight_hook, "_transcript_tail", return_value=[]),
+    ):
+        foresight_hook.main(["stop"], json.dumps(payload))
+    out = capsys.readouterr().out
+    assert json.loads(out)["systemMessage"] == foresight_hook.WRITE_BACK_NUDGE
+
+
+def test_write_back_nudge_emitted_once_per_content(monkeypatch, tmp_path):
+    """The same transcript tail must not re-emit the nudge on every Stop."""
+    monkeypatch.setattr(foresight_hook, "CACHE_DIR", str(tmp_path))
+    texts = ["we decided to use uv for python"]
+
+    assert not foresight_hook._nudge_already_emitted("s1", texts)
+    foresight_hook._mark_nudge_emitted("s1", texts)
+
+    assert foresight_hook._nudge_already_emitted("s1", texts)
+    assert not foresight_hook._nudge_already_emitted("s1", [*texts, "and fixed the bug"])
+
+
+def test_hook_scrubs_base64_api_key_tail():
+    """An unquoted base64 value must be scrubbed whole, not cut at '/', '+' or '='."""
+    raw = "api_" + "key=" + "A" * 21 + "==/" + "qrstuv" + "+wx"
+
+    scrubbed = foresight_hook._scrub_secrets(raw)
+
+    assert "qrstuv" not in scrubbed
+    assert "[REDACTED-SECRET]" in scrubbed
+
+
+def test_hook_scrubs_large_private_key():
+    """A PEM body past the old 4,000-char cap must not reach the transcript."""
+    # Assembled at runtime: the file never holds a complete key literal for a
+    # secret-scanning job to flag.
+    body = "MIIE" + "A" * 6000
+    header = "-----BEGIN " + "RSA PRIVATE KEY" + "-----"
+    footer = "-----END " + "RSA PRIVATE KEY" + "-----"
+    raw = f"{header}\n{body}\n{footer}"
+
+    scrubbed = foresight_hook._scrub_secrets(f"key: {raw} end")
+
+    assert body not in scrubbed
+    assert "[REDACTED-SECRET]" in scrubbed
+
+
+def test_hook_scrubs_compound_and_quoted_credentials():
+    """Compound keys and quoted values must not survive the scrubber."""
+    # Assembled from fragments so the file holds no assignment-shaped literal
+    # for a secret-scanning job to flag.
+    secret = "abcdef" + "1234567890" + "abcdef"
+    pw_value = "pw" + "-" + "notarealvalue"
+    samples = (
+        "DB_" + "PASSWORD" + '="' + pw_value + '"',
+        '{"api_' + 'key": "' + secret + '"}',
+        "FORESIGHT_API_" + "KEY='" + secret + "'",
+    )
+    for raw in samples:
+        scrubbed = foresight_hook._scrub_secrets(raw)
+        assert secret not in scrubbed
+        assert pw_value not in scrubbed
+        assert "[REDACTED-SECRET]" in scrubbed
+
+
+def test_hook_scrubs_messages_before_transport():
+    """Direct-mode transport must carry redacted text, never a raw credential."""
+    raw_token = "gh" + "p_" + "1234567890abcdef1234567890abcdef1234"
+    payload = {
+        "hook_event_name": "Stop",
+        "messages": [{"role": "assistant", "content": f"token {raw_token}"}],
+    }
+    posted = []
+
+    def _fake_post(url, body, timeout):
+        _ = timeout
+        posted.append((url, body))
+        return 200, b"{}"
+
+    with (
+        patch.object(foresight_hook, "MODE", "direct"),
+        patch.object(foresight_hook, "_post", side_effect=_fake_post),
+    ):
+        foresight_hook.main(["stop"], json.dumps(payload))
+
+    transcript_calls = [body for url, body in posted if url.endswith("/session/transcript")]
+    assert transcript_calls, "stop hook should post the transcript"
+    assert raw_token not in json.dumps(transcript_calls)
+
+
+def test_storable_fact_lines_across_separate_messages():
+    """A heading in message 1 and body in message 2 must capture the body in storable lines."""
+    messages = [
+        "Architectural Decision:",
+        "We are adopting PostgreSQL 17 for primary persistence.",
+    ]
+    lines = foresight_hook._storable_fact_lines(messages)
+    assert "Architectural Decision:" in lines
+    assert "We are adopting PostgreSQL 17 for primary persistence." in lines
+
+
+def test_hook_scrubs_footerless_pem_short_final_line():
+    """A footerless PEM with a short final base64 line must be scrubbed completely."""
+    header = "-----BEGIN " + "RSA PRIVATE KEY" + "-----"
+    body_line1 = "A" * 64
+    body_line2 = "ABCD"
+    raw = f"config:\n{header}\n{body_line1}\n{body_line2}\ntrailing"
+    scrubbed = foresight_hook._scrub_secrets(raw)
+    assert body_line1 not in scrubbed
+    assert body_line2 not in scrubbed
+    assert "trailing" in scrubbed
+    assert "[REDACTED-SECRET]" in scrubbed

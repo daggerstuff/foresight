@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -48,7 +49,8 @@ def _memories_table(conn: sqlite3.Connection) -> None:
             expired_at TEXT,
             expired_by TEXT,
             content TEXT,
-            project TEXT
+            project TEXT,
+            is_sensitive INTEGER NOT NULL DEFAULT 0
         )"""
     )
 
@@ -89,11 +91,28 @@ def _insert_memory(conn: sqlite3.Connection, mid: str, **fields: object) -> None
         "INSERT INTO memories (id, user_id, tenant_id, category, tags, source_tool, importance, "
         "current_strength, updated_at, created_at, is_ghost, expired_at, expired_by, content, project) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (mid, *[row[k] for k in (
-            "user_id", "tenant_id", "category", "tags", "source_tool", "importance",
-            "current_strength", "updated_at", "created_at", "is_ghost", "expired_at",
-            "expired_by", "content", "project",
-        )]),
+        (
+            mid,
+            *[
+                row[k]
+                for k in (
+                    "user_id",
+                    "tenant_id",
+                    "category",
+                    "tags",
+                    "source_tool",
+                    "importance",
+                    "current_strength",
+                    "updated_at",
+                    "created_at",
+                    "is_ghost",
+                    "expired_at",
+                    "expired_by",
+                    "content",
+                    "project",
+                )
+            ],
+        ),
     )
 
 
@@ -186,6 +205,32 @@ def test_resolve_source_tool_unknown_fallback():
     assert resolve_source_tool() == UNKNOWN_TOOL
 
 
+def test_cursor_never_moves_backward(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORESIGHT_HOME", str(tmp_path))
+    client_attribution.update_cursor("k", "2026-11-24T12:00:00+00:00")
+
+    client_attribution.update_cursor("k", "2026-11-24T11:00:00+00:00")
+
+    assert client_attribution.read_cursor("k") == "2026-11-24T12:00:00+00:00"
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores a read-only directory mode",
+)
+def test_cursor_lock_is_best_effort_on_readonly_home(tmp_path, monkeypatch):
+    home = tmp_path / "readonly"
+    home.mkdir()
+    home.chmod(0o500)
+    monkeypatch.setenv("FORESIGHT_HOME", str(home))
+    try:
+        client_attribution.update_cursor("k", "2026-11-24T12:00:00+00:00")
+
+        assert client_attribution.read_cursor("k") is None
+    finally:
+        home.chmod(0o700)
+
+
 # ---------------------------------------------------------------------------
 # Retention policy evaluation
 # ---------------------------------------------------------------------------
@@ -276,6 +321,11 @@ def test_presets_exist_and_validate():
         preset_policy("bogus")
 
 
+def test_policy_top_level_unknown_keys_rejected():
+    with pytest.raises(retention_policy.PolicyError, match="policy has unknown keys"):
+        RetentionConfig.from_dict({"rule": [{"name": "r", "expire_after": "1h"}]})
+
+
 # ---------------------------------------------------------------------------
 # Expire / restore round trip + purge gating (sqlite)
 # ---------------------------------------------------------------------------
@@ -321,10 +371,7 @@ def test_apply_expiry_policies_first_match_and_purge_gate(sqlite_conn):
     result = apply_expiry_policies(sqlite_conn, "t1")
     assert result == {"expired": 1, "purged": 0}
 
-    rows = {
-        r["id"]: r
-        for r in sqlite_conn.execute("SELECT id, expired_at, expired_by FROM memories").fetchall()
-    }
+    rows = {r["id"]: r for r in sqlite_conn.execute("SELECT id, expired_at, expired_by FROM memories").fetchall()}
     assert rows["old-fact"]["expired_at"] is None  # pinned
     assert rows["old-note"]["expired_by"] == "retention:note"
     assert rows["ghost"]["expired_at"] is None  # ghosts untouched
@@ -364,7 +411,7 @@ def _catchup_conn(tmp_path):
         """CREATE TABLE memories (
             id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT, content TEXT,
             category TEXT, source_tool TEXT, created_at TEXT, project TEXT,
-            is_ghost INTEGER DEFAULT 0, expired_at TEXT
+            is_ghost INTEGER DEFAULT 0, expired_at TEXT, expires_at TEXT
         )"""
     )
     conn.commit()
@@ -385,8 +432,9 @@ def test_get_catch_up_cursor_semantics(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "get_current_account_id", lambda: "t1")
 
     t0 = datetime.now(UTC)
+    cols = "id, user_id, tenant_id, content, category, source_tool, created_at, project, is_ghost, expired_at"
     conn.execute(
-        "INSERT INTO memories VALUES ('old','u1','t1','old mem','fact','cursor',?,'default',0,NULL)",
+        f"INSERT INTO memories ({cols}) VALUES ('old','u1','t1','old mem','fact','cursor',?,'default',0,NULL)",
         ((t0 - timedelta(hours=1)).isoformat(),),
     )
     conn.commit()
@@ -397,7 +445,8 @@ def test_get_catch_up_cursor_semantics(monkeypatch, tmp_path):
 
     # store a new memory after cursor
     conn.execute(
-        "INSERT INTO memories VALUES ('new','u1','t1','fresh mem','decision','claude-code',?,'default',0,NULL)",
+        f"INSERT INTO memories ({cols}) "
+        "VALUES ('new','u1','t1','fresh mem','decision','claude-code',?,'default',0,NULL)",
         (datetime.now(UTC).isoformat(),),
     )
     conn.commit()
@@ -436,9 +485,7 @@ def test_sync_sentinel_replacement_preserves_outside(tmp_path):
     agents = tmp_path / "AGENTS.md"
     agents.write_text("# Agents\n\nno sentinels here\n")
 
-    report = instruction_sync.run_sync(
-        tmp_path, "u1", "t1", memories=[_mem("m1", content="prefers terse code")]
-    )
+    report = instruction_sync.run_sync(tmp_path, "u1", "t1", memories=[_mem("m1", content="prefers terse code")])
 
     text = claude.read_text()
     assert "before" in text
@@ -446,9 +493,7 @@ def test_sync_sentinel_replacement_preserves_outside(tmp_path):
     assert "# Title" in text
     assert "- [OLD] stale" not in text
     expected_block = (
-        "<!-- FORESIGHT-DYNAMIC-MEMORIES -->\n"
-        "- [PREFERENCE] prefers terse code\n"
-        "<!-- /FORESIGHT-DYNAMIC-MEMORIES -->"
+        "<!-- FORESIGHT-DYNAMIC-MEMORIES -->\n- [PREFERENCE] prefers terse code\n<!-- /FORESIGHT-DYNAMIC-MEMORIES -->"
     )
     assert expected_block in text
 
@@ -458,6 +503,51 @@ def test_sync_sentinel_replacement_preserves_outside(tmp_path):
 
     updated = {f["file"]: f["status"] for f in report["files"]}
     assert updated.get("CLAUDE.md") == "updated"
+
+
+def test_fetch_instruction_memories_excludes_expired_rows():
+    db_path = tempfile.mkstemp(suffix=".db")[1]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE memories (id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT, content TEXT, "
+        "category TEXT, importance REAL, updated_at TEXT, created_at TEXT, is_ghost INTEGER, "
+        "expired_at TEXT, expires_at TEXT, is_sensitive INTEGER, agent_id TEXT, project TEXT)"
+    )
+    now = datetime.now(UTC)
+    past = (now - timedelta(hours=1)).isoformat()
+    live = (now + timedelta(days=1)).isoformat()
+    for mid, expires_at in (("live", live), ("stale", past)):
+        conn.execute(
+            "INSERT INTO memories (id, user_id, tenant_id, content, category, importance, updated_at, "
+            "created_at, is_ghost, expired_at, expires_at, is_sensitive, agent_id, project) "
+            "VALUES (?, 'u1', 't1', ?, 'preference', 0.9, ?, ?, 0, NULL, ?, 0, 'default', 'default')",
+            (mid, f"pref {mid}", now.isoformat(), now.isoformat(), expires_at),
+        )
+    conn.commit()
+
+    rows = instruction_sync.fetch_instruction_memories("u1", "t1", conn=conn)
+
+    conn.close()
+    os.unlink(db_path)
+    assert [r["id"] for r in rows] == ["live"]
+
+
+def test_sync_refuses_symlink_outside_project(tmp_path):
+    outside = tmp_path / "outside-claude.md"
+    original = (
+        "before\n<!-- FORESIGHT-DYNAMIC-MEMORIES -->\n- [OLD] stale\n<!-- /FORESIGHT-DYNAMIC-MEMORIES -->\nafter\n"
+    )
+    outside.write_text(original)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "CLAUDE.md").symlink_to(outside)
+
+    report = instruction_sync.run_sync(project, "u1", "t1", memories=[_mem("m1", content="prefers terse code")])
+
+    skipped = {s["file"]: s for s in report["skipped"]}
+    assert skipped["CLAUDE.md"]["reason"].startswith("unsafe-path")
+    assert outside.read_text() == original
 
 
 def test_sync_no_files_reports_empty(tmp_path):

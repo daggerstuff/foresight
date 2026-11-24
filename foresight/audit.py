@@ -56,7 +56,8 @@ NARRATIVE_FAILED = "narrative_failed"
 NARRATIVE_CACHE_HIT = "narrative_cache_hit"
 LLM_CALL_SUCCEEDED = "llm_call_succeeded"
 LLM_CALL_FAILED = "llm_call_failed"
-SECRET_DEFENSE = "secret_defense"
+AUDIT_EVENT_DEFENSE = "defense_audit_event"
+SECRET_DEFENSE = AUDIT_EVENT_DEFENSE
 
 _SCHEMA_STATEMENTS = [
     """
@@ -115,9 +116,11 @@ class AuditLog:
     :meth:`close` explicitly.
     """
 
-    def __init__(self, db_path: str) -> None:
-        if not db_path or not isinstance(db_path, str):
-            raise ValueError("db_path is required and must be a non-empty string")
+    def __init__(self, db_path: str | None = None) -> None:
+        # ``None`` means "the active pool" (Postgres in production); an empty
+        # string is still rejected so a typo cannot silently pick a default.
+        if db_path is not None and (not db_path or not isinstance(db_path, str)):
+            raise ValueError("db_path must be a non-empty string when provided")
         self._db_path = db_path
         self._conn: Any | None = None
         self._lock = threading.Lock()
@@ -265,7 +268,12 @@ class _AuditLogSingleton:
 
 
 def get_audit_log(db_path: str | None = None) -> AuditLog:
-    """Get or create the default AuditLog singleton."""
+    """Get or create the default AuditLog singleton.
+
+    With no path and no ``FORESIGHT_DB_PATH`` the log binds to the active
+    pool (Postgres in production), so events land in the same store as the
+    memories they audit.
+    """
     if _AuditLogSingleton.instance is None:
         _AuditLogSingleton.instance = AuditLog(db_path or DB_PATH)
     return _AuditLogSingleton.instance

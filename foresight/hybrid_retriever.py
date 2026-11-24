@@ -1172,6 +1172,20 @@ class HybridRetriever:
 
         return entry
 
+    def invalidate_caches(self, user_id: str | None = None, tenant_id: str | None = None) -> None:
+        """Drop cached results after a write that changes what recall may return.
+
+        The result cache is keyed only by request shape, so expiry, restore,
+        and policy expiry can leave a cached answer serving a now-expired
+        memory (or hiding a restored one). The TF-IDF cache is refreshed by
+        its visibility-aware doc count; the explicit clear here just avoids
+        waiting for that check.
+        """
+        with self._result_cache_lock:
+            self._result_cache.clear()
+        if user_id and tenant_id:
+            self.invalidate_tfidf_cache(user_id, tenant_id)
+
     def invalidate_tfidf_cache(self, user_id: str, tenant_id: str) -> None:
         """Explicitly invalidate the TF-IDF cache for a user/tenant scope.
 
@@ -1666,7 +1680,7 @@ class HybridRetriever:
         return self._tfidf_cosine_search(query, user_id, tenant_id, limit * 3, options=options)
 
     def _run_vector_search(
-        self, query: str, user_id: str, tenant_id: str, limit: int, _options: HybridSearchOptions | None = None
+        self, query: str, user_id: str, tenant_id: str, limit: int, options: HybridSearchOptions | None = None
     ) -> dict[str, int]:
         """Run embedding cosine search and return {memory_id: rank}.
 
@@ -1674,7 +1688,13 @@ class HybridRetriever:
         store is unavailable or nothing has been indexed yet, so hybrid
         search still works on the lexical/graph/temporal signals alone.
         """
-        return self._vector_search(query, user_id, tenant_id, limit * 3)
+        return self._vector_search(
+            query,
+            user_id,
+            tenant_id,
+            limit * 3,
+            include_expired=bool(options and options.include_expired),
+        )
 
     def _vector_search(
         self,
@@ -1682,8 +1702,16 @@ class HybridRetriever:
         user_id: str,
         tenant_id: str,
         limit: int,
+        *,
+        include_expired: bool = False,
     ) -> dict[str, int]:
-        """Embedding cosine similarity search over `memory_embeddings`."""
+        """Embedding cosine similarity search over `memory_embeddings`.
+
+        Expired memories are excluded in the vector query itself unless
+        ``include_expired`` is set; post-filtering them after the vector
+        window is fixed lets expired hits starve live matches ranked below
+        the cutoff.
+        """
         if not query or not query.strip():
             return {}
         store = self._get_vector_store()
@@ -1693,7 +1721,12 @@ class HybridRetriever:
             result = store.search(
                 query,
                 user_id,
-                options=SemanticSearchOptions(tenant_id=tenant_id, limit=limit, min_score=0.0),
+                options=SemanticSearchOptions(
+                    tenant_id=tenant_id,
+                    limit=limit,
+                    min_score=0.0,
+                    include_expired=include_expired,
+                ),
             )
         except Exception as exc:
             logger.debug("vector signal unavailable: %s", exc)

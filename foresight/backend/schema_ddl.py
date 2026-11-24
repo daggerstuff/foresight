@@ -722,6 +722,26 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_memory_policies_scope ON memory_policies(tenant_id, user_id)",
         "CREATE INDEX IF NOT EXISTS idx_memories_expired ON memories(tenant_id, user_id, expired_at)",
     ],
+    27: [
+        # Cached reflections keep the synthesis mode that produced them, so a
+        # mental-model cache hit reports the same degraded status (and reason)
+        # as the answer it replays instead of claiming a clean LLM synthesis.
+        "ALTER TABLE mental_models ADD COLUMN degraded INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE mental_models ADD COLUMN synthesized_by TEXT",
+    ],
+    28: [
+        # Context blocks track whether their content is machine-generated, so
+        # distillation can refresh its own output without overwriting a
+        # hand-edited block.
+        "ALTER TABLE context_blocks ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0",
+    ],
+    29: [
+        # Models written before the provenance column existed have unknown
+        # provenance; mark them stale so they are recomputed instead of
+        # reported as clean. Kept out of migration 27 because databases that
+        # already recorded 27 would never re-run it.
+        "UPDATE mental_models SET stale = 1 WHERE synthesized_by IS NULL",
+    ],
 }
 
 

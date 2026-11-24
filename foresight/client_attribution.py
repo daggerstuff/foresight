@@ -21,16 +21,37 @@ Also owns the small on-disk stores used by the catch-up flow:
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import json
 import logging
 import os
+import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.middleware import Middleware as _Middleware
+
+
+def _optional_module(name: str) -> Any:
+    """Import a platform module, or None when this platform lacks it."""
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+
+fcntl = _optional_module("fcntl")
+msvcrt = _optional_module("msvcrt")
+_msvcrt_locking = getattr(msvcrt, "locking", None)
+_MSVCRT_LOCK = getattr(msvcrt, "LK_LOCK", 2)
+_MSVCRT_UNLOCK = getattr(msvcrt, "LK_UNLCK", 0)
 
 logger = logging.getLogger("foresight.client_attribution")
 
@@ -45,8 +66,9 @@ _ENV_TOOL_MARKERS: tuple[tuple[str, str], ...] = (
     ("CURSOR_", "cursor"),
     ("CODEX_CLI", "codex"),
     ("CODEX_", "codex"),
+    # Only the explicit CLI marker: a bare GEMINI_ prefix also matches
+    # GEMINI_API_KEY, which is a credential, not evidence of the calling tool.
     ("GEMINI_CLI", "gemini-cli"),
-    ("GEMINI_", "gemini-cli"),
     ("COPILOT_", "github-copilot"),
     ("AUGMENT_", "augment"),
     ("WINDSURF_", "windsurf"),
@@ -143,6 +165,65 @@ def resolve_source_tool(explicit: str | None = None) -> str:
 _cursors_lock = threading.Lock()
 
 
+def _open_lock_file() -> Any | None:
+    """Open the sibling lock file, or None when the home is not writable."""
+    try:
+        lock_path = _cursors_path().with_suffix(".json.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        return open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        logger.debug("cursor lock unavailable; using the thread lock only", exc_info=True)
+        return None
+
+
+def _lock_handle(handle: Any) -> bool:
+    """Take an exclusive OS lock on *handle*; False when unsupported."""
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return True
+    if _msvcrt_locking is not None:
+        handle.seek(0)
+        _msvcrt_locking(handle.fileno(), _MSVCRT_LOCK, 1)
+        return True
+    return False
+
+
+def _unlock_handle(handle: Any, locked: bool) -> None:
+    if not locked:
+        return
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    elif _msvcrt_locking is not None:
+        handle.seek(0)
+        _msvcrt_locking(handle.fileno(), _MSVCRT_UNLOCK, 1)
+
+
+@contextmanager
+def _cursors_guard() -> Iterator[None]:
+    """Serialize cursor read-modify-write across threads and processes.
+
+    The threading lock covers this process; an exclusive OS lock on a sibling
+    lock file covers every other server sharing ``FORESIGHT_HOME``. Lock setup
+    is best-effort: a read-only home must not make catch-up fail outright.
+    """
+    with _cursors_lock:
+        handle = _open_lock_file()
+        if handle is None:
+            yield
+            return
+        with handle:
+            locked = False
+            try:
+                locked = _lock_handle(handle)
+            except OSError:
+                logger.debug("cursor OS lock failed; using the thread lock only", exc_info=True)
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    _unlock_handle(handle, locked)
+
+
 def _cursors_path() -> Path:
     return foresight_home() / "cursors.json"
 
@@ -163,17 +244,57 @@ def save_cursors(cursors: dict[str, str]) -> None:
     try:
         path = _cursors_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(cursors, indent=2, sort_keys=True))
-        tmp.replace(path)
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(cursors, indent=2, sort_keys=True))
+            os.replace(tmp_name, path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
     except Exception:
         logger.debug("failed to persist catch-up cursors", exc_info=True)
 
 
+def read_cursor(key: str) -> str | None:
+    """Return one cursor value under the cross-process lock."""
+    with _cursors_guard():
+        return load_cursors().get(key)
+
+
+def _is_newer(candidate: str, current: str | None) -> bool:
+    """True when *candidate* is later than *current*.
+
+    A cursor is ``<timestamp>#<id>``, so only the timestamp half is parsed (it
+    may carry a different UTC offset); the id half breaks ties. Values that do
+    not parse fall back to a lexical comparison.
+    """
+    if current is None:
+        return True
+    candidate_time, _, candidate_id = candidate.partition("#")
+    current_time, _, current_id = current.partition("#")
+    try:
+        candidate_dt = datetime.fromisoformat(candidate_time)
+        current_dt = datetime.fromisoformat(current_time)
+        if candidate_dt != current_dt:
+            return candidate_dt > current_dt
+        return candidate_id > current_id
+    except (TypeError, ValueError):
+        return candidate > current
+
+
 def update_cursor(key: str, timestamp: str) -> None:
-    """Advance a single cursor under the module lock."""
-    with _cursors_lock:
+    """Advance a single cursor under the cross-process lock.
+
+    Cursors only move forward: an overlapping catch-up that queried an older
+    window cannot rewind a checkpoint another call already advanced, which
+    would make later catch-ups replay the same memories.
+    """
+    with _cursors_guard():
         cursors = load_cursors()
+        if not _is_newer(timestamp, cursors.get(key)):
+            return
         cursors[key] = timestamp
         save_cursors(cursors)
 

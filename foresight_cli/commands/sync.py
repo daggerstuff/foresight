@@ -36,6 +36,11 @@ class SyncParams(BaseModel):
         description="Project directory to scan for CLAUDE.md / AGENTS.md / GEMINI.md",
     )
     limit: int = Field(default=10, description="Maximum memories to sync (1-50)")
+    project: str | None = Field(
+        default=None,
+        description="Project lane filter (default: the project directory name)",
+    )
+    agent_id: str | None = Field(default=None, description="Agent lane filter")
     user_id: str | None = Field(default=None, description="User ID override")
 
 
@@ -46,7 +51,18 @@ def sync(params: SyncParams) -> None:
     uid = cfg.get_user_id(params.user_id)
     tenant_id = get_current_account_id()
 
-    report = run_sync(Path(params.project_dir), uid, tenant_id, limit=params.limit)
+    project_dir = Path(params.project_dir)
+    # Scope to this project's lane by default so another project's memories
+    # never land in files that are usually committed.
+    project = params.project or project_dir.resolve().name or "default"
+    report = run_sync(
+        project_dir,
+        uid,
+        tenant_id,
+        limit=params.limit,
+        project=project,
+        agent_id=params.agent_id,
+    )
 
     if out.get_settings().mode == "json":
         out.print_json(report)
@@ -71,6 +87,13 @@ def _sync_parser(parser: argparse.ArgumentParser) -> None:
         help="Project directory to scan for agent instruction files (default: .)",
     )
     parser.add_argument("--limit", "-l", type=int, default=10, help="Maximum memories to sync (default: 10)")
+    parser.add_argument(
+        "--project",
+        "-p",
+        default=None,
+        help="Project lane filter (default: the project directory name)",
+    )
+    parser.add_argument("--agent-id", default=None, help="Agent lane filter")
     parser.add_argument("--user-id", "-u", default=None, help="User ID override")
 
 

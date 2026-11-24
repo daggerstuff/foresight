@@ -56,7 +56,7 @@ from .backend.schema_ddl import (
 from .block_registry import InjectionPoint, initialize_default_blocks
 from .capabilities import get_capabilities_report
 from .capture import CaptureOptions, ReprocessOptions, get_capture_pipeline
-from .client_attribution import AttributionMiddleware, load_cursors, resolve_source_tool, save_cursors
+from .client_attribution import AttributionMiddleware, read_cursor, resolve_source_tool, update_cursor
 from .clustering import ClusterResult, cluster_memories
 from .config import (
     BANK_ID,
@@ -2410,11 +2410,10 @@ _HIGH_SIMILARITY_SCORE = 0.5
 _TFIDF_SUPPORT_SCORE = 0.4
 _RRF_SUPPORT_SCORE = 0.02
 _CANDIDATE_PREVIEW_LEN = 80
+_CANDIDATE_SEARCH_QUERY_LEN = 500
 
 
-def _suggest_relation_type(
-    new_content: str, cand_content: str, score: float, cand_result: Any = None
-) -> str:
+def _suggest_relation_type(new_content: str, cand_content: str, score: float, cand_result: Any = None) -> str:
     """Heuristic determination of candidate relationship type without LLM call."""
     new_lower = new_content.lower()
     cand_lower = cand_content.lower()
@@ -2473,11 +2472,17 @@ def _find_link_candidates(
         options = HybridSearchOptions(
             tenant_id=request.tenant_id,
             limit=limit + 3,
-            fast_path_enabled=True,
+            fast_path_enabled=False,
             agent_id=getattr(request.opts, "agent_id", None),
             project=getattr(request.opts, "project", None),
         )
-        search_result = get_hybrid_retriever().search(request.content, request.uid, options=options)
+        search_text = (
+            request.content[:_CANDIDATE_SEARCH_QUERY_LEN]
+            if len(request.content) > _CANDIDATE_SEARCH_QUERY_LEN
+            else request.content
+        )
+        retriever = get_hybrid_retriever()
+        search_result = retriever.search(search_text, request.uid, options=options)
         for r in search_result.results:
             if r.memory_id == memory_id:
                 continue
@@ -2486,16 +2491,16 @@ def _find_link_candidates(
                 continue
             rel_type = _suggest_relation_type(request.content, r.content, score, cand_result=r)
             preview = (
-                (r.content[:_CANDIDATE_PREVIEW_LEN] + "...")
-                if len(r.content) > _CANDIDATE_PREVIEW_LEN
-                else r.content
+                (r.content[:_CANDIDATE_PREVIEW_LEN] + "...") if len(r.content) > _CANDIDATE_PREVIEW_LEN else r.content
             )
-            candidates.append({
-                "memory_id": r.memory_id,
-                "score": round(score, 4),
-                "suggested_relation": rel_type,
-                "preview": preview,
-            })
+            candidates.append(
+                {
+                    "memory_id": r.memory_id,
+                    "score": round(score, 4),
+                    "suggested_relation": rel_type,
+                    "preview": preview,
+                }
+            )
             if len(candidates) >= limit:
                 break
     except Exception as exc:
@@ -2503,19 +2508,17 @@ def _find_link_candidates(
     return candidates
 
 
-def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
-    """Helper to handle memory storage."""
-    opts = options.options or MemoryOptions()
-    response_format = getattr(options, "response_format", None) or getattr(opts, "response_format", "text")
+def _resolve_response_format(options: MemoryAction, opts: MemoryOptions) -> str:
+    """Resolve JSON vs text output format preferring explicit caller overrides."""
+    fmt = getattr(opts, "response_format", None) or "text"
+    opt_fmt = getattr(options, "response_format", None)
+    if opt_fmt and opt_fmt != "text":
+        return str(opt_fmt)
+    return str(fmt)
 
-    def _format_error(msg: str) -> str:
-        return json.dumps({"error": msg}) if response_format == "json" else msg
 
-    if not options.content or not options.content.strip():
-        return _format_error("Error: Content is required for 'store' action")
-    content = options.content.strip()
-
-    # FOR-46 / PIX-440: Secret-aware write defense
+def _evaluate_store_secrets(content: str, tenant_id: str, uid: str, opts: MemoryOptions) -> tuple[str, str | None]:
+    """Run secret-aware write defense and record any audit event."""
     sec_verdict = evaluate_secrets(content, tenant_id=tenant_id, lane=opts.agent_id)
     if sec_verdict.action_taken != "clean":
         record_secret_defense_event(
@@ -2524,9 +2527,28 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             "store",
             secret_defense_metadata(sec_verdict, lane=opts.agent_id),
         )
-    content = sec_verdict.content
     if sec_verdict.flagged and opts.is_sensitive is None:
         opts.is_sensitive = True
+    abort = (
+        "Error: Memory store blocked by secret defense policy (credentials detected)." if sec_verdict.blocked else None
+    )
+    return sec_verdict.content, abort
+
+
+def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Helper to handle memory storage."""
+    opts = options.options or MemoryOptions()
+    response_format = _resolve_response_format(options, opts)
+
+    def _format_error(msg: str) -> str:
+        return json.dumps({"error": msg}) if response_format == "json" else msg
+
+    if not options.content or not options.content.strip():
+        return _format_error("Error: Content is required for 'store' action")
+    raw_content = options.content.strip()
+
+    # FOR-46 / PIX-440: Secret-aware write defense
+    content, sec_abort = _evaluate_store_secrets(raw_content, tenant_id, uid, opts)
     if opts.source_tool is None:
         opts.source_tool = resolve_source_tool()
 
@@ -2542,9 +2564,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         importance=getattr(opts, "importance", 0.5),
         tags=getattr(opts, "tags", None),
     )
-    abort_message = _emit_pre_store_hooks(hook_ctx, options, opts)
-    if sec_verdict.blocked:
-        abort_message = "Error: Memory store blocked by secret defense policy (credentials detected)."
+    abort_message = _emit_pre_store_hooks(hook_ctx, options, opts) or sec_abort
     if abort_message:
         return _format_error(abort_message)
 
@@ -2578,7 +2598,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         _link_related_memory(request, memory.id)
     event_content = "[REDACTED - sensitive]" if is_sensitive_bit else content
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory.id, content=event_content, actor=uid))
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
 
     hook_ctx.memory_id = memory.id
@@ -2592,19 +2612,20 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     )
 
     if response_format == "json":
-        return json.dumps({
-            "status": "stored",
-            "memory_id": memory.id,
-            "gate": gate_result.decision,
-            "reason": gate_result.reason,
-            "candidates": candidates,
-        })
+        return json.dumps(
+            {
+                "status": "stored",
+                "memory_id": memory.id,
+                "gate": gate_result.decision,
+                "reason": gate_result.reason,
+                "candidates": candidates,
+            }
+        )
 
     msg = f"Stored memory {memory.id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
     if candidates:
         cand_summary = ", ".join(
-            f"{c['memory_id']} ({c['suggested_relation']}, score={c['score']})"
-            for c in candidates
+            f"{c['memory_id']} ({c['suggested_relation']}, score={c['score']})" for c in candidates
         )
         msg += f". Candidates: [{cand_summary}]"
     return msg
@@ -2648,8 +2669,10 @@ def _collect_update_columns(
             tenant_id=tenant_id,
             user_id=uid,
         )
-        updates_list.extend(["content = ?", "version = ?"])
-        values.extend([stored_content, (row["version"] or 1) + 1])
+        # Refresh the hash with the text: a stale hash makes later captures of
+        # the redacted wording look like duplicates of content that is gone.
+        updates_list.extend(["content = ?", "content_hash = ?", "version = ?"])
+        values.extend([stored_content, _content_hash(updates.content.strip()), (row["version"] or 1) + 1])
         updates_list.extend(["is_sensitive = ?", "sensitivity_reason = ?"])
         values.extend([1 if is_sensitive_bit else 0, sensitivity_reason])
     if updates.category:
@@ -2682,28 +2705,66 @@ def _collect_update_columns(
     return updates_list, values
 
 
-def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> str:
-    """Helper to handle memory updates."""
+def _validate_memory_update_params(options: MemoryAction) -> tuple[str, MemoryUpdateOptions] | str:
+    """Validate common parameters for update action; returns (memory_id, updates) or error string."""
     if not options.memory_id or not options.updates:
         return "Error: memory_id and updates required for 'update' action"
-
     expires_at = options.updates.expires_at
     if expires_at not in (None, "") and _normalize_expires_at(expires_at) is None:
         return (
             f"Error: expires_at {expires_at!r} is not an ISO-8601 timestamp or epoch seconds. "
             'Pass "" to clear an expiration.'
         )
+    return options.memory_id, options.updates
+
+
+def _evaluate_update_secrets(
+    updates: MemoryUpdateOptions,
+    tenant_id: str,
+    uid: str,
+    options: MemoryAction,
+) -> str | None:
+    """Run secret defense on updated content; returns error message if blocked."""
+    if not updates.content:
+        return None
+    lane = updates.scope or (options.options.agent_id if options.options else None)
+    sec_verdict = evaluate_secrets(updates.content.strip(), tenant_id=tenant_id, lane=lane)
+    if sec_verdict.action_taken != "clean":
+        record_secret_defense_event(
+            tenant_id,
+            uid,
+            "update",
+            secret_defense_metadata(sec_verdict, lane=lane),
+        )
+    if sec_verdict.blocked:
+        return "Error: Memory update blocked by secret defense policy (credentials detected)."
+    updates.content = sec_verdict.content
+    if sec_verdict.flagged and updates.is_sensitive is None:
+        updates.is_sensitive = True
+    return None
+
+
+def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> str:
+    """Helper to handle memory updates."""
+    validated = _validate_memory_update_params(options)
+    if isinstance(validated, str):
+        return validated
+    memory_id, updates = validated
+
+    sec_err = _evaluate_update_secrets(updates, tenant_id, uid, options)
+    if sec_err:
+        return sec_err
 
     # ── PRE_UPDATE hook ────────────────────────────────────────────────
     hook_ctx = MemoryHookContext(
         action="update",
-        memory_id=options.memory_id,
+        memory_id=memory_id,
         user_id=uid,
         tenant_id=tenant_id,
-        content=options.updates.content,
-        category=options.updates.category,
-        scope=options.updates.scope,
-        retention=options.updates.retention,
+        content=updates.content,
+        category=updates.category,
+        scope=updates.scope,
+        retention=updates.retention,
     )
     abort_message = _emit_pre_update_hooks(hook_ctx)
     if abort_message:
@@ -2711,18 +2772,18 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
     ).fetchone()
     if not row:
         conn.close()
-        return f"Memory {options.memory_id} not found."
-    updates_list, values = _collect_update_columns(row, options.memory_id, options.updates, tenant_id, uid)
+        return f"Memory {memory_id} not found."
+    updates_list, values = _collect_update_columns(row, memory_id, updates, tenant_id, uid)
     if not updates_list:
         conn.close()
         return "No updates provided."
     updates_list.append("updated_at = ?")
     values.append(datetime.now(UTC).isoformat())
-    values.extend([options.memory_id, uid, tenant_id])
+    values.extend([memory_id, uid, tenant_id])
     update_sql = join_sql_parts(
         "UPDATE memories SET ",
         ", ".join(updates_list),
@@ -2741,26 +2802,26 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     new_evt = "[REDACTED - sensitive]" if was_sensitive else (effective_content or "")
     get_event_bus_with_stream().publish(
         memory_updated(
-            memory_id=options.memory_id,
+            memory_id=memory_id,
             old_content=old_evt,
             new_content=new_evt,
             actor=uid,
         )
     )
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
 
     # ── POST_UPDATE hook ───────────────────────────────────────────────
     hook_ctx.old_content = row["content"]
     hook_ctx.content = effective_content or row["content"]
     get_memory_hook_registry().emit_post(MemoryHookType.POST_UPDATE, hook_ctx)
     # Create memory relationship if specified
-    if options.updates.relation_type and options.updates.related_memory_id:
+    if updates.relation_type and updates.related_memory_id:
         store = get_memory_relationship_store()
         try:
             store.link_memories(
-                source_memory_id=options.memory_id,
-                target_memory_id=options.updates.related_memory_id,
-                relationship_type=options.updates.relation_type,
+                source_memory_id=memory_id,
+                target_memory_id=updates.related_memory_id,
+                relationship_type=updates.relation_type,
                 user_id=uid,
                 options=LinkMemoriesOptions(tenant_id=tenant_id),
             )
@@ -2911,7 +2972,7 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     get_event_bus_with_stream().publish(memory_deleted(memory_id=memory_id, actor=uid))
     conn.commit()
     conn.close()
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     try:
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
@@ -2974,6 +3035,14 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
+def _invalidate_recall_caches(user_id: str, tenant_id: str) -> None:
+    """Drop cached retrieval results after a visibility change (expire/restore)."""
+    try:
+        get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
+    except Exception as exc:
+        logger.debug("retrieval cache invalidation failed: %s", exc)
+
+
 def _handle_memory_expire(uid: str, tenant_id: str, memory_id: str | None) -> str:
     """Mark a memory expired (reversible middle state, excluded from default retrieval)."""
     if not memory_id:
@@ -2989,6 +3058,7 @@ def _handle_memory_expire(uid: str, tenant_id: str, memory_id: str | None) -> st
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    _invalidate_recall_caches(uid, tenant_id)
     return f"Expired memory {memory_id}. It is excluded from default retrieval; restore to bring it back."
 
 
@@ -3007,6 +3077,7 @@ def _handle_memory_restore(uid: str, tenant_id: str, memory_id: str | None) -> s
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    _invalidate_recall_caches(uid, tenant_id)
     return f"Restored memory {memory_id}."
 
 
@@ -3307,8 +3378,10 @@ def _semantic_search_payload(
             query=options.query,
             user_id=uid,
             options=SemanticSearchOptions(
+                tenant_id=tenant_id,
                 limit=options.limit,
                 min_score=options.min_score,
+                include_expired=options.include_expired,
             ),
         )
     except _SemanticSearchError as exc:
@@ -3806,7 +3879,9 @@ def get_catch_up(
     returns an empty result.
 
     Args:
-        project: Project lane to catch up on (default: shared ``"default"`` lane).
+        project: Project lane to catch up on. A named lane also returns rows
+            from the shared ``"default"`` lane and rows with no project, matching
+            retrieval semantics; the default is the shared lane alone.
         tool: Calling-tool name for the cursor key. Defaults to the resolved
             source tool (FORESIGHT_CLIENT / clientInfo / env markers).
         limit: Maximum memories to return (capped at 20).
@@ -3820,27 +3895,62 @@ def get_catch_up(
     tenant_id = get_current_account_id()
     resolved_tool = tool or resolve_source_tool()
     project_lane = project or "default"
-    cursor_key = f"{uid}:{resolved_tool}:{project_lane}"
+    # The cursor is per tenant as well: the same user/tool/project in another
+    # tenant is a different lane and must not skip that tenant's memories.
+    cursor_key = f"{tenant_id}:{uid}:{resolved_tool}:{project_lane}"
     cap = max(1, min(int(limit), 20))
 
-    cursors = load_cursors()
-    cursor = cursors.get(cursor_key)
+    cursor = read_cursor(cursor_key)
     now_iso = datetime.now(UTC).isoformat()
     if cursor is None:
-        cursors[cursor_key] = now_iso
-        save_cursors(cursors)
+        update_cursor(cursor_key, f"{now_iso}#")
         record_activity("catch_up", n=0, tool=resolved_tool)
         return "Catch-up initialized; no prior cursor existed. Next call returns new memories."
 
+    last_ts, _, last_id = cursor.partition("#")
     conn = get_db_connection()
     try:
-        rows = conn.execute(
-            "SELECT id, content, category, source_tool, created_at FROM memories "
-            "WHERE user_id = ? AND tenant_id = ? AND project = ? AND is_ghost = 0 "
-            "AND expired_at IS NULL AND created_at > ? "
-            "ORDER BY created_at ASC LIMIT ?",
-            (uid, tenant_id, project_lane, cursor, cap),
-        ).fetchall()
+        try:
+            if last_id:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL AND (expires_at IS NULL OR expires_at > ?) "
+                    "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, now_iso, last_ts, last_ts, last_id, cap),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL AND (expires_at IS NULL OR expires_at > ?) "
+                    "AND created_at > ? "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, now_iso, last_ts, cap),
+                ).fetchall()
+        except Exception:
+            if last_id:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL "
+                    "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, last_ts, last_ts, last_id, cap),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, content, category, source_tool, created_at FROM memories "
+                    "WHERE user_id = ? AND tenant_id = ? "
+                    "AND (project = ? OR project IS NULL OR project = 'default') AND is_ghost = 0 "
+                    "AND expired_at IS NULL AND created_at > ? "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (uid, tenant_id, project_lane, last_ts, cap),
+                ).fetchall()
     finally:
         conn.close()
 
@@ -3848,9 +3958,8 @@ def get_catch_up(
         record_activity("catch_up", n=0, tool=resolved_tool)
         return "No new memories since last catch-up."
 
-    latest = max(str(r["created_at"]) for r in rows)
-    cursors[cursor_key] = latest
-    save_cursors(cursors)
+    last_row = rows[-1]
+    update_cursor(cursor_key, f"{last_row['created_at']}#{last_row['id']}")
 
     lines = []
     for r in rows:
@@ -3924,10 +4033,12 @@ def reflect(
                 "cached": True,
                 "cached_at": model["created_at"],
                 "mental_model_id": model["id"],
-                "synthesized_by": "mental_model",
+                "synthesized_by": model.get("synthesized_by") or "mental_model",
                 "latency_ms": 0.0,
-                "degraded": False,
+                "degraded": bool(model.get("degraded")),
             }
+            if model.get("degraded"):
+                payload["degraded_reason"] = "cached extractive reflect answer (LLM synthesis was unavailable)"
             get_telemetry_store().record_reflect(cached=True, answer_chars=len(model["answer"]), latency_ms=0.0)
             return json.dumps(payload, indent=2, ensure_ascii=False)
         # Citations no longer resolve — drop the stale model and recompute.
@@ -4475,6 +4586,20 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                 if not clean_line:
                     continue
 
+                # FOR-46: block content reaches this insert without passing
+                # through the store handler, so run the same write defense.
+                verdict = evaluate_secrets(clean_line, tenant_id=get_current_account_id())
+                if verdict.action_taken != "clean":
+                    record_secret_defense_event(
+                        get_current_account_id(),
+                        uid,
+                        category,
+                        secret_defense_metadata(verdict),
+                    )
+                if verdict.blocked:
+                    continue
+                clean_line = verdict.content
+
                 content = f"[{block_name}] {clean_line}"
                 tenant_id = get_current_account_id()
                 content_h = _content_hash(content)
@@ -4512,7 +4637,7 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                         tenant_id,
                         now,
                         now,
-                        1 if is_sensitive_bit else 0,
+                        1 if (is_sensitive_bit or verdict.flagged) else 0,
                         sensitivity_reason,
                         resolve_source_tool(),
                     ),
@@ -6088,7 +6213,9 @@ def inject_context(
         payload: dict[str, Any] = {
             "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
             "memories": [m.to_dict() for m in memories],
-            "top_score": round(top_score, 4),
+            # Unrounded: the hook's score gate compares this against a
+            # threshold, and rounding can lift a just-below result above it.
+            "top_score": float(top_score),
             "static_and_safety": static_safety_text,
             "context_blocks": blocks_by_point,
             "patterns": _active_observations(uid, tenant_id, agent_id=agent_id, project=project),
@@ -6299,9 +6426,7 @@ def _format_static_and_safety_lanes(
         )
     safety = block_agent.state.get_block("safety") or block_agent.state.get_block("safety_notes")
     if safety and not safety.is_empty():
-        lane_items[Lane.SAFETY].append(
-            LaneItem(id="safety", content=safety.content, score=1.0, lane=Lane.SAFETY)
-        )
+        lane_items[Lane.SAFETY].append(LaneItem(id="safety", content=safety.content, score=1.0, lane=Lane.SAFETY))
     return format_static_and_safety(lane_items)
 
 
@@ -8092,14 +8217,9 @@ def manage_entities(action: EntityAction, user_id: str | None = None) -> str:
             return "Content is required for entity extraction"
         extractor = get_entity_extractor()
         result = _run_async(extractor.extract(action.content))
-        return json.dumps(
-            {
-                "user_id": uid,
-                "entities": [e.to_dict() for e in result.entities],
-                "relationships": [r.to_dict() for r in result.relationships],
-            },
-            indent=2,
-        )
+        # to_dict carries the degradation fields (degraded / degraded_reason),
+        # so a salvaged LLM response is reported instead of looking complete.
+        return json.dumps({"user_id": uid, **result.to_dict()}, indent=2)
 
     if action.action == "link":
         if not action.memory_id or not action.entity_ids:
@@ -8734,7 +8854,7 @@ def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=False, status="approved")
 
@@ -8765,7 +8885,7 @@ def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: s
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     return _tool_response(
         ok=True, action="decline", memory_id=memory_id, already_applied=False, status="declined", reason=reason
@@ -8795,7 +8915,7 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
     return _tool_response(ok=True, action="undo", memory_id=memory_id, status="unreviewed")
 
@@ -10175,7 +10295,6 @@ async def ui_api_telemetry_gating(request: Any) -> Any:
     except Exception as e:
         logger.warning("Telemetry gating recording failed: %s", e)
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-
 
 
 @mcp.custom_route("/ui/api/capture", methods=["POST"])

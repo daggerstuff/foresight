@@ -31,6 +31,7 @@ from .commands import (
     eval as eval_cmd,
     graph,
     memory,
+    retention,
     rrf,
     security,
     sync,
@@ -85,6 +86,7 @@ _GROUPS = (
     ("documents", "Manage source documents and chunks.", documents),
     ("graph", "Graph, entity, and clustering operations.", graph),
     ("decay", "Decay, strength, recovery, and relevance.", decay),
+    ("retention", "Inspect and set declarative retention policies.", retention),
 )
 
 _ALIASES = (

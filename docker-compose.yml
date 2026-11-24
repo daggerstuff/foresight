@@ -7,3 +7,6 @@ services:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
+      - FORESIGHT_DB_URL=${FORESIGHT_DB_URL:-}
+      - FORESIGHT_REDIS_URL=${FORESIGHT_REDIS_URL:-}
+      - REDIS_URL=${REDIS_URL:-}

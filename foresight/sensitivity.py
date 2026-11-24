@@ -87,24 +87,30 @@ _SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
     "aws_secret_key": re.compile(r"(?i)\baws_secret_access_key\s*=\s*[A-Za-z0-9/+=]{40}\b"),
     "slack_token": re.compile(r"\bxox[baprs]-[0-9a-zA-Z-]{10,}\b"),
     "jwt_token": re.compile(r"\beyJ[A-Za-z0-9-_=]+\.eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]+\b"),
-    "bearer_token": re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"),
-    "private_key": re.compile(
-        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
-        r"[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
-    ),
+    "bearer_token": re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b", re.IGNORECASE),
     "connection_string": re.compile(
         r"\b(?:postgres|postgresql|mysql|mongodb|redis|amqp|mssql):\/\/[^\s:@]+:[^\s:@]+@[^\s\/]+"
     ),
+    # The optional quote after the field name catches JSON/YAML forms such as
+    # {"password": "..."} without losing plain `password=...` assignments.
+    # The lookbehind (not \b) lets compound keys such as DB_PASSWORD= match:
+    # ``_`` is a word character, so \b would refuse to start there.
+    # Quoted values accept backslash escapes: stopping at the first escaped
+    # quote would redact only the head and leave the tail of the secret.
     "assignment_secret": re.compile(
-        r"(?i)\b(?:api_key|apikey|client_secret|auth_token)\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.]{16,})[\"']?"
+        r"(?i)(?<![A-Za-z0-9])(?:api_key|apikey|client_secret|auth_token)[\"']?\s*[:=]\s*"
+        r"(?:\"((?:\\[\s\S]|[^\"\\]){8,})\"|'((?:\\[\s\S]|[^'\\]){8,})'|([A-Za-z0-9_\-./+=]{16,}))"
     ),
     "assignment_password": re.compile(
-        r"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*[\"']?([^\s\"']{8,})[\"']?"
+        r"(?i)(?<![A-Za-z0-9])(?:password|passwd|pwd)[\"']?\s*[:=]\s*"
+        r"(?:\"((?:\\[\s\S]|[^\"\\]){8,})\"|'((?:\\[\s\S]|[^'\\]){8,})'|([^\s\"']{8,}))"
     ),
 }
 
 _TENANT_DEFENSE_POLICIES: dict[str, SecretDefenseMode] = {}
-_LANE_DEFENSE_POLICIES: dict[str, SecretDefenseMode] = {}
+# Lane overrides are scoped to their tenant: one tenant's lane policy must not
+# reach another tenant that happens to use the same lane name.
+_LANE_DEFENSE_POLICIES: dict[tuple[str, str], SecretDefenseMode] = {}
 
 
 def set_secret_defense_policy(
@@ -117,7 +123,7 @@ def set_secret_defense_policy(
     if mode not in ("flag", "redact", "block"):
         raise ValueError(f"Invalid secret defense mode: {mode}. Allowed: flag, redact, block")
     if lane:
-        _LANE_DEFENSE_POLICIES[lane] = mode
+        _LANE_DEFENSE_POLICIES[(tenant_id or "default", lane)] = mode
     elif tenant_id:
         _TENANT_DEFENSE_POLICIES[tenant_id] = mode
     else:
@@ -129,14 +135,20 @@ def get_secret_defense_policy(
     lane: str | None = None,
 ) -> SecretDefenseMode:
     """Resolve the active secret defense policy for a tenant/lane."""
-    if lane and lane in _LANE_DEFENSE_POLICIES:
-        return _LANE_DEFENSE_POLICIES[lane]
     tid = tenant_id or "default"
+    if lane:
+        lane_mode = _LANE_DEFENSE_POLICIES.get((tid, lane))
+        if lane_mode is not None:
+            return lane_mode
     if tid in _TENANT_DEFENSE_POLICIES:
         return _TENANT_DEFENSE_POLICIES[tid]
     env_mode = os.environ.get("FORESIGHT_SECRET_DEFENSE_MODE", "").strip().lower()
-    if env_mode in ("flag", "redact", "block"):
-        return env_mode  # type: ignore[return-value]
+    if env_mode == "flag":
+        return "flag"
+    if env_mode == "redact":
+        return "redact"
+    if env_mode == "block":
+        return "block"
     return DEFAULT_SECRET_DEFENSE_MODE
 
 
@@ -146,10 +158,91 @@ def reset_secret_defense_policies() -> None:
     _LANE_DEFENSE_POLICIES.clear()
 
 
+_PEM_BEGIN_RE = re.compile(r"-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----")
+_PEM_END_RE = re.compile(r"-----END ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----")
+# One line of base64 key material: a header quoted in prose is not followed by
+# any, so only the marker itself is replaced there. The final body line can be
+# shorter (e.g. 4+ base64 chars).
+_PEM_BODY_LINE_RE = re.compile(r"^[A-Za-z0-9+/=]{16,}$")
+_PEM_FINAL_LINE_RE = re.compile(r"^[A-Za-z0-9+/=]{4,}$")
+
+
+def _matching_pem_end(text: str, start: int, pem_type: str) -> re.Match[str] | None:
+    """The first END marker of the *same* key type after *start*.
+
+    Pairing a quoted ``ENCRYPTED PRIVATE KEY`` header with a later RSA footer
+    would redact every note in between.
+    """
+    for end in _PEM_END_RE.finditer(text, start):
+        if end.group(1) == pem_type:
+            return end
+    return None
+
+
+def _pem_body_end(text: str, start: int) -> int:
+    """End offset of the base64 body that follows an unterminated header."""
+    pos = start
+    if text.startswith("\r\n", pos):
+        pos += 2
+    elif text.startswith("\n", pos):
+        pos += 1
+    end = pos
+    seen_body = False
+    while pos < len(text):
+        newline = text.find("\n", pos)
+        line = text[pos:] if newline == -1 else text[pos:newline]
+        stripped = line.strip()
+        if _PEM_BODY_LINE_RE.match(stripped):
+            seen_body = True
+        elif seen_body and _PEM_FINAL_LINE_RE.match(stripped):
+            return len(text) if newline == -1 else newline + 1
+        else:
+            return end
+        pos = len(text) if newline == -1 else newline + 1
+        end = pos
+    return end
+
+
+def redact_pem_blocks(text: str, replacement: str = "[REDACTED-SECRET:private_key]") -> tuple[str, bool]:
+    """Redact every PEM private-key block with a linear scan.
+
+    A bounded regex body let any key larger than the bound through untouched,
+    so a long key was stored as if it were clean. Scanning with ``search`` from
+    a monotonically advancing offset keeps the cost linear while recognising
+    the whole block, however long it is. A header with no END is redacted only
+    as far as its base64 body: a quoted marker in prose loses nothing else.
+    """
+    if "PRIVATE KEY" not in text:
+        return text, False
+    pieces: list[str] = []
+    found = False
+    pos = 0
+    while True:
+        begin = _PEM_BEGIN_RE.search(text, pos)
+        if begin is None:
+            pieces.append(text[pos:])
+            return "".join(pieces), found
+        found = True
+        end = _matching_pem_end(text, begin.end(), begin.group(1))
+        pieces.append(text[pos : begin.start()])
+        pieces.append(replacement)
+        if end is not None:
+            pos = end.end()
+            continue
+        body_start = begin.end()
+        body_end = _pem_body_end(text, body_start)
+        if body_end <= body_start + 2:
+            pos = body_start
+            continue
+        pos = body_end
+
+
 def _redact_secrets(text: str) -> tuple[str, list[str]]:
     """Scan and redact known secrets, returning the sanitized string and detected types."""
     detected: list[str] = []
-    redacted = text
+    redacted, pem_found = redact_pem_blocks(text)
+    if pem_found:
+        detected.append("private_key")
     for stype, pattern in _SECRET_PATTERNS.items():
         if pattern.search(redacted):
             detected.append(stype)
@@ -157,9 +250,12 @@ def _redact_secrets(text: str) -> tuple[str, list[str]]:
 
                 def _make_repl(secret_type: str):
                     def _repl(m: re.Match[str]) -> str:
-                        val = m.group(1)
-                        full = m.group(0)
-                        return full.replace(val, f"[REDACTED-SECRET:{secret_type}]")
+                        # Alternation patterns expose the value in whichever
+                        # group matched (quoted vs unquoted branch).
+                        val = next((g for g in m.groups() if g), None)
+                        if not val:
+                            return m.group(0)
+                        return m.group(0).replace(val, f"[REDACTED-SECRET:{secret_type}]")
 
                     return _repl
 

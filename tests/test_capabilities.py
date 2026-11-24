@@ -20,7 +20,9 @@ from foresight.server import (
 )
 from foresight_cli.commands.system import _doctor_check_capabilities, _DoctorReport
 
-MIN_EXPECTED_CHECKS = 5
+# Embedder, reranker, LLM, encryption. Redis has its own check in
+# _doctor_check_redis, so the capability block must not report it twice.
+MIN_EXPECTED_CHECKS = 4
 
 
 def test_get_capabilities_report_structure() -> None:
