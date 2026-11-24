@@ -1,0 +1,22 @@
+tests/test_capabilities.py
+  s_cd89cd3ba8f5d0::t_f8d60464e03b57 13-21
+  s_cd89cd3ba8f5d0::t_43a24e40fe8d4f 1-12,22-110
+foresight_cli/commands/system.py
+  s_cd89cd3ba8f5d0::t_e7a5a8954e8da7 18,528-567,601,604-616
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7a1dd7f437eb8d366cb3eff435e12a7ae53dcf03",
+  "prompts": {},
+  "sessions": {
+    "s_cd89cd3ba8f5d0": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "deciduous-cilantro",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
