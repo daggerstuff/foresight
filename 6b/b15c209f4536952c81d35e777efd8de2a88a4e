@@ -1,0 +1,16 @@
+.gitguardian.yaml
+  h_07d84030f79d30 37
+tests/test_secret_defense.py
+  h_07d84030f79d30 95-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6bb15c209f4536952c81d35e777efd8de2a88a4e",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
