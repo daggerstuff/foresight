@@ -126,6 +126,22 @@ def test_rules_retrieved_by_condition_and_exception():
     assert "Prefer uv over pip for Python dependencies" in docs_statements
 
 
+def test_rule_matching_respects_word_boundaries():
+    rule = RuleEntry(statement="Run the CI suite before pushing", strength=RuleStrength.MUST, applies_when="ci")
+    assert rule.matches("we made a decision about the release") is False
+    assert rule.matches("run ci now") is True
+
+    guarded = RuleEntry(
+        statement="Squash before merge",
+        strength=RuleStrength.SHOULD,
+        applies_when="merge",
+        exception="docs",
+    )
+    assert guarded.matches("the merger is complete") is False
+    assert guarded.matches("merge the branch") is True
+    assert guarded.matches("merge the docs") is False
+
+
 def test_rules_lane_never_truncated_under_tightest_budget():
     rule_items = [
         LaneItem(

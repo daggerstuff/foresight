@@ -71,12 +71,15 @@ def _clause_matches(clause: str, context_lower: str, term_set: set[str]) -> bool
     norm = clause.strip().lower()
     if not norm:
         return False
-    if norm in context_lower:
+    # Word-bounded: a plain substring test lets "ci" match "decision" and
+    # "merge" match "merger", which both triggers and suppresses rules wrongly.
+    if re.search(rf"(?<![a-z0-9_]){re.escape(norm)}(?![a-z0-9_])", context_lower):
         return True
     tokens = _TOKEN_RE.findall(norm)
     if not tokens:
         return False
-    return all((tok in term_set or tok in context_lower) for tok in tokens)
+    # term_set already carries the context's own word tokens (see matches()).
+    return all(tok in term_set for tok in tokens)
 
 
 @dataclass(frozen=True)

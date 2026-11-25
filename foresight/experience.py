@@ -259,7 +259,7 @@ def build_episode(
                VALUES (?, ?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (id) DO UPDATE SET
                    summary = excluded.summary,
-                   is_sensitive = excluded.is_sensitive,
+                   is_sensitive = CASE WHEN episodes.is_sensitive = 1 OR excluded.is_sensitive = 1 THEN 1 ELSE 0 END,
                    raw_event_first_id = excluded.raw_event_first_id,
                    raw_event_last_id = excluded.raw_event_last_id,
                    raw_event_first_pos = excluded.raw_event_first_pos,
@@ -560,12 +560,33 @@ def distill_experiences(
     signature-keyed lessons. Both land as procedural observations whose
     evidence is the episode ids, and as procedural memories (failures carry
     ``error_signature``) so the keyword signal surfaces them later.
+
+    ``limit`` is the fetch batch size, not a ceiling: every eligible episode is
+    distilled. A single ``ORDER BY created_at ASC LIMIT`` re-read the oldest
+    batch forever once a user crossed it, so newer episodes never distilled.
     """
+    batch_size = max(1, int(limit))
     sql = (
         "SELECT * FROM episodes WHERE tenant_id = ? AND user_id = ? AND score_source IS NOT NULL "
-        "AND is_sensitive = 0 AND outcome != 'unknown' ORDER BY created_at ASC LIMIT ?"
+        "AND is_sensitive = 0 AND outcome != 'unknown' "
+        "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+        "ORDER BY created_at ASC, id ASC LIMIT ?"
     )
-    episodes = [_episode_row(r) for r in _fetch_all(sql, (tenant_id, user_id, max(1, int(limit))))]
+    episodes: list[dict[str, Any]] = []
+    cursor_created, cursor_id = "", ""
+    while True:
+        batch = [
+            _episode_row(r)
+            for r in _fetch_all(
+                sql,
+                (tenant_id, user_id, cursor_created, cursor_created, cursor_id, batch_size),
+            )
+        ]
+        episodes.extend(batch)
+        if len(batch) < batch_size:
+            break
+        cursor_created = str(batch[-1]["created_at"] or "")
+        cursor_id = batch[-1]["id"]
 
     failures: dict[str, list[dict[str, Any]]] = {}
     successes: dict[str, list[dict[str, Any]]] = {}

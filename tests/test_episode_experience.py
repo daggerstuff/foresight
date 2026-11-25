@@ -11,6 +11,7 @@ from foresight.experience import (
     auto_score_episode,
     build_episode,
     distill_experiences,
+    get_episode,
     normalize_error_signature,
     record_outcome,
 )
@@ -22,6 +23,8 @@ from foresight.tenant_context import reset_tenant_context, set_current_account_i
 
 TENANT = "_test_experience_"
 USER = "_test_experience_user_"
+# Three scored episodes fetched with limit=2 must all be scanned (pages of 2 then 1).
+EXPECTED_PAGED_EPISODES = 3
 
 
 @pytest.fixture(autouse=True)
@@ -289,6 +292,42 @@ def test_keyword_search_surfaces_failure_signature():
     )
     variant_found = {hit.memory_id for hit in variant_result.results}
     assert variant_found & expected_ids, "normalized error_signature index did not match across volatile tokens"
+
+
+def test_rebuilding_an_episode_never_clears_sensitivity():
+    session_id = _session_id()
+    sensitive = [
+        {"role": "user", "content": "patient diagnosis: prescription dosage adjustment needed"},
+        {"role": "assistant", "content": "noted the medication and dosage for the patient"},
+    ]
+    episode = _episode_for(session_id, sensitive)
+    assert episode["is_sensitive"] == 1
+
+    # An incremental batch with benign messages must not clear the flag.
+    rebuilt = _episode_for(session_id, [{"role": "user", "content": "continue the session"}])
+    assert rebuilt["is_sensitive"] == 1
+    stored = get_episode(session_id=session_id, user_id=USER, tenant_id=TENANT)
+    assert stored is not None
+    assert stored["is_sensitive"] is True
+
+
+def test_distiller_pages_past_the_first_batch():
+    for _ in range(EXPECTED_PAGED_EPISODES):
+        session_id = _session_id()
+        _episode_for(session_id, _failure_transcript())
+        record_outcome(
+            USER,
+            TENANT,
+            EpisodeVerdict(
+                outcome="failure",
+                score_source="ci_result",
+                detail="ConnectionRefusedError: connection refused",
+                session_id=session_id,
+            ),
+        )
+
+    result = distill_experiences(user_id=USER, tenant_id=TENANT, limit=2)
+    assert result["episodes_scanned"] == EXPECTED_PAGED_EPISODES
 
 
 def test_record_outcome_tool_roundtrip():
