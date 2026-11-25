@@ -1,0 +1,40 @@
+CHANGELOG.md
+  h_07d84030f79d30 43-49
+foresight/block_registry.py
+  h_07d84030f79d30 165
+foresight/context_blocks.py
+  h_07d84030f79d30 13,29,48-51,364-369,402-413,433-435,537-549,604-605
+foresight/error_signatures.py
+  h_07d84030f79d30 11
+foresight/eval_harness.py
+  h_07d84030f79d30 791-795,798-799
+foresight/experience.py
+  h_07d84030f79d30 40,242-245,328-336,398-399,401,403
+foresight/injection_budget.py
+  h_07d84030f79d30 7-12,15-17,325-327
+foresight/observations.py
+  h_07d84030f79d30 136-138,195-198,211-213,236-237
+foresight/rest_api.py
+  h_07d84030f79d30 1384-1398,1407-1409
+foresight/server.py
+  h_07d84030f79d30 79,933,936-938,6544-6547
+foresight/skill_crystallization.py
+  h_07d84030f79d30 1184-1186,1190
+skills/foresight/SKILL.md
+  h_07d84030f79d30 532
+tests/test_episode_experience.py
+  h_07d84030f79d30 101-104
+tests/test_rules_lane.py
+  h_07d84030f79d30 61,63-68,70-72,74-81,179-180,263,280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d61bf4dbcf487aef419469f55e1c954f0580184b",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
