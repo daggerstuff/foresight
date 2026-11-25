@@ -1,0 +1,28 @@
+CHANGELOG.md
+  h_07d84030f79d30 9-16
+foresight/__init__.py
+  h_07d84030f79d30 31-32,54,58,66,68,71,521-523,557,569,609,620,648
+foresight/block_registry.py
+  h_07d84030f79d30 9-10,14-15,55-187,562-575
+foresight/context_blocks.py
+  h_07d84030f79d30 10,13,17-26,28-29,34,51,58-60,62,66,74,77,81,342-599
+foresight/injection_budget.py
+  h_07d84030f79d30 42,52,60-62,74,318-323,420,422-423,426
+foresight/server.py
+  h_07d84030f79d30 85,6355,6363,6512,6584-6615,6627-6663,6673,6693-6697
+foresight/subconscious.py
+  h_07d84030f79d30 23-24,85,184
+tests/test_rules_lane.py
+  h_07d84030f79d30 1-300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "04013a7601bf71a4a324aed79cbb0833ab2a4b9b",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
