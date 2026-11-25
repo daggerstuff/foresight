@@ -5,9 +5,11 @@ import uuid
 
 import pytest
 
+from foresight.auth import Role, User, reset_caller_identity, set_caller_identity
 from foresight.capture import CaptureOptions, get_capture_pipeline
 from foresight.experience import (
     EpisodeVerdict,
+    _procedure_steps,
     auto_score_episode,
     build_episode,
     distill_experiences,
@@ -17,7 +19,8 @@ from foresight.experience import (
 )
 from foresight.hybrid_retriever import HybridSearchOptions, get_hybrid_retriever
 from foresight.observations import list_observations
-from foresight.reflect import UserScope, _fetch_all
+from foresight.reflect import UserScope, _execute, _fetch_all
+from foresight.sensitivity import reset_secret_defense_policies, set_secret_defense_policy
 from foresight.server import RecordEpisodeOutcomeParams, record_episode_outcome
 from foresight.tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
 
@@ -287,15 +290,86 @@ def test_keyword_search_surfaces_failure_signature():
     assert expected_ids, "expected distilled failure memory to exist"
     assert found & expected_ids, "keyword retrieval did not surface the distilled failure memory"
 
-    # Volatile tokens (host/port/line) differ from the stored failure, yet the
-    # normalized error_signature index still surfaces the prior failure lesson.
-    variant_result = retriever.search(
+    # Volatile tokens (host/port/line) differ from the stored failure. Strip the
+    # content so no word of the later query appears in the row: only the
+    # normalized error_signature index can still surface the prior lesson.
+    for row in rows:
+        _execute(
+            "UPDATE memories SET error_signature = ?, content = ? WHERE id = ?",
+            (
+                "connectionrefusederror: connection refused on <host>:<num>",
+                "unrelated note about release choreography",
+                row["id"],
+            ),
+        )
+    ranked = retriever._keyword_search(
         "File /tmp/run99/app.py line 412 ConnectionRefusedError: connection refused on 10.20.30.40:9999",
         USER,
+        TENANT,
+        10,
         HybridSearchOptions(tenant_id=TENANT, limit=10),
     )
-    variant_found = {hit.memory_id for hit in variant_result.results}
-    assert variant_found & expected_ids, "normalized error_signature index did not match across volatile tokens"
+
+    assert expected_ids & set(ranked), "normalized error_signature index did not match across volatile tokens"
+
+
+def test_recall_matches_a_signature_stored_without_detail():
+    """A lesson recorded from a detail-less exception still matches its class.
+
+    ``normalize_error_signature`` keeps ``ConnectionRefusedError:`` alone when
+    the transcript carries no detail, so the stored signature is the bare class
+    name. A later, detailed failure of the same class has to surface it.
+    """
+    _distill_failing_episode("recall-bare-class")
+    distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    rows = _fetch_all(
+        "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? AND memory_type = 'procedural' "
+        "AND error_signature LIKE ?",
+        (TENANT, USER, "connectionrefusederror%"),
+    )
+    assert rows, "expected a distilled failure memory"
+    # Store the detail-less shape the extractor produces, and strip every other
+    # matching signal: the signature index is then the only path to this row.
+    for row in rows:
+        _execute(
+            "UPDATE memories SET error_signature = ?, content = ?, tags = '[]', metrics = '{}' WHERE id = ?",
+            ("connectionrefusederror", "unrelated note about release choreography", row["id"]),
+        )
+    expected = {str(row["id"]) for row in rows}
+    retriever = get_hybrid_retriever()
+    # The full search would also surface the row through the recency signal, so
+    # the signature arm is measured on its own.
+    ranked = retriever._keyword_search(
+        "ConnectionRefusedError: connection refused on db.internal:5432",
+        USER,
+        TENANT,
+        10,
+        HybridSearchOptions(tenant_id=TENANT, limit=10),
+    )
+
+    assert expected & set(ranked), (
+        "a signature stored as the bare error class did not match a detailed failure of that class"
+    )
+
+
+def test_new_evidence_on_a_known_lesson_is_reported_as_a_write():
+    """A lesson whose evidence changed is a write; an unchanged one is not."""
+    _distill_failing_episode("lesson-edit-a")
+
+    first = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert first["procedural_memories_written"] == 1
+
+    # Same episodes, same lesson: nothing to rewrite.
+    repeat = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert repeat["procedural_memories_written"] == 0
+
+    # A second failure in the same signature group changes the occurrence count
+    # in the lesson, so this run does rewrite the row.
+    _distill_failing_episode("lesson-edit-b")
+
+    updated = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert updated["procedural_memories_written"] == 1
 
 
 def test_rebuilding_an_episode_never_clears_sensitivity():
@@ -334,6 +408,68 @@ def test_distiller_pages_past_the_first_batch():
     assert result["episodes_scanned"] == EXPECTED_PAGED_EPISODES
 
 
+def test_recipe_steps_drop_text_the_secret_policy_only_flagged(monkeypatch):
+    """`flag` mode returns the original text, so a flagged step must not survive."""
+    events = [
+        {"role": "user", "content": "rotate the deploy credentials"},
+        {"role": "assistant", "content": "exported AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE into the job"},
+        {"role": "assistant", "content": "ran the smoke checks against staging"},
+    ]
+    monkeypatch.setattr("foresight.experience._raw_events_for_session", lambda *_a, **_k: events)
+
+    set_secret_defense_policy("flag", tenant_id=TENANT)
+    try:
+        steps = _procedure_steps(TENANT, USER, "sess-flagged-step")
+    finally:
+        reset_secret_defense_policies()
+
+    assert steps == ["ran the smoke checks against staging"]
+
+
+def test_distiller_invalidates_the_retriever_once_per_run(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class _Recorder:
+        def invalidate_caches(self, user_id: str, tenant_id: str) -> None:
+            calls.append((user_id, tenant_id))
+
+    monkeypatch.setattr("foresight.experience.get_hybrid_retriever", _Recorder)
+
+    _distill_failing_episode("invalidate-a")
+    _distill_failing_episode("invalidate-b")
+    session_id = _session_id()
+    _episode_for(session_id, _success_transcript("invalidate-c"))
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
+    )
+
+    result = distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    # Several groups are distilled per run; the cache is invalidated once at the
+    # end instead of once per written memory.
+    assert result["procedural_memories_written"] > 1
+    assert calls == [(USER, TENANT)]
+
+    # A run that only retires a stale group must still flush, once.
+    calls.clear()
+    for session in _fetch_all(
+        "SELECT session_id FROM episodes WHERE tenant_id = ? AND user_id = ? AND outcome = 'failure'",
+        (TENANT, USER),
+    ):
+        record_outcome(
+            USER,
+            TENANT,
+            EpisodeVerdict(outcome="success", score_source="ci_result", session_id=str(session["session_id"])),
+        )
+
+    retired_run = distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    assert retired_run["groups_retired"] >= 1
+    assert calls == [(USER, TENANT)]
+
+
 def test_record_outcome_tool_roundtrip():
     session_id = _session_id()
     _episode_for(session_id, _success_transcript("tool-roundtrip"))
@@ -349,3 +485,131 @@ def test_record_outcome_tool_roundtrip():
     assert payload["ok"] is True
     assert payload["episode"]["outcome"] == "failure"
     assert payload["episode"]["score_source"] == "ci_result"
+
+
+def _bind_caller(role: Role = Role.USER) -> object:
+    return set_caller_identity(
+        User(
+            user_id="caller-user",
+            username="caller",
+            email="caller@test.local",
+            role=role,
+            api_key="caller-key",
+        )
+    )
+
+
+def test_record_outcome_rejects_another_users_episode():
+    token = _bind_caller()
+    try:
+        raw = record_episode_outcome(
+            RecordEpisodeOutcomeParams(
+                session_id="exp-does-not-exist",
+                outcome="failure",
+                score_source="ci_result",
+                detail="ConnectionRefusedError: connection refused",
+                user_id="somebody-else",
+            )
+        )
+    finally:
+        reset_caller_identity(token)
+    payload = json.loads(raw)
+    assert payload["ok"] is False
+    # The denial happens before the episode lookup, so a missing session never
+    # masks the authorization failure.
+    assert "requires an admin API key" in payload["error"]["message"]
+
+
+def test_record_outcome_without_a_bound_caller_keeps_the_user_override():
+    raw = record_episode_outcome(
+        RecordEpisodeOutcomeParams(
+            session_id="exp-does-not-exist",
+            outcome="failure",
+            score_source="ci_result",
+            detail="ConnectionRefusedError: connection refused",
+            user_id="legacy-other-user",
+        )
+    )
+    payload = json.loads(raw)
+    # No principal is bound (CLI, single-user servers, in-process jobs), so the
+    # explicit user override is honoured exactly as before the authorization fix.
+    assert payload["ok"] is True
+    assert payload["episode"]["user_id"] == "legacy-other-user"
+
+
+def test_a_failure_the_user_only_described_does_not_score_the_run_mixed():
+    """The request quotes the old error; the run itself ended green."""
+    session_id = _session_id()
+    messages = [
+        {
+            "role": "user",
+            "content": "the deploy failed with ConnectionRefusedError on db.internal:5432, fix it",
+        },
+        {"role": "assistant", "content": "raised the pool size and re-ran the deploy"},
+        {"role": "tool", "content": "52 passed in 3.1s\nexit code 0"},
+    ]
+    episode = _episode_for(session_id, messages)
+
+    scored = auto_score_episode(episode["id"], user_id=USER, tenant_id=TENANT, messages=messages)
+
+    assert scored is not None
+    assert scored["outcome"] == "success"
+
+
+def test_flagged_transcripts_never_reach_the_llm_rubric(monkeypatch):
+    """`flag` mode hands back the original text, so it may not reach a provider."""
+    monkeypatch.setenv("FORESIGHT_EPISODE_SCORING", "llm")
+    calls: list[tuple] = []
+
+    def _record_call(*args, **_kwargs):
+        calls.append(args)
+        return 1.0, "should not run"
+
+    monkeypatch.setattr("foresight.experience._llm_rubric", _record_call)
+    messages = [
+        {"role": "assistant", "content": "wrote AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE into the job env"},
+        {"role": "tool", "content": "52 passed in 3.1s\nexit code 0"},
+    ]
+
+    set_secret_defense_policy("flag", tenant_id=TENANT)
+    try:
+        session_id = _session_id()
+        episode = _episode_for(session_id, messages)
+        scored = auto_score_episode(episode["id"], user_id=USER, tenant_id=TENANT, messages=messages)
+    finally:
+        reset_secret_defense_policies()
+
+    assert calls == []
+    assert scored is not None
+    assert scored["score_source"] == "fallback"
+
+
+def test_error_signature_is_derived_from_the_redacted_transcript(monkeypatch):
+    """A credential in the failure text must not become the searchable signature."""
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    seen: list[str] = []
+
+    def _record(text):
+        seen.append(text or "")
+        return "clienterror: recorded"
+
+    monkeypatch.setattr("foresight.experience.normalize_error_signature", _record)
+    messages = [
+        {
+            "role": "tool",
+            "content": (f"deploy failed: botocore.exceptions.ClientError: InvalidClientTokenId {secret}\nexit code 1"),
+        },
+    ]
+
+    set_secret_defense_policy("flag", tenant_id=TENANT)
+    try:
+        session_id = _session_id()
+        episode = _episode_for(session_id, messages)
+        scored = auto_score_episode(episode["id"], user_id=USER, tenant_id=TENANT, messages=messages)
+    finally:
+        reset_secret_defense_policies()
+
+    assert scored is not None
+    assert seen, "the scorer must derive a signature"
+    assert secret not in seen[0]
+    assert "InvalidClientTokenId" in seen[0]

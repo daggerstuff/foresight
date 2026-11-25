@@ -338,40 +338,73 @@ def _upsert_observation(
         row = _fetch_one("SELECT * FROM observations WHERE id = ?", (obs_id,))
         return _observation_row(row) if row else {"id": obs_id, **candidate}
 
-    # Refine: union evidence, bump version, advance last_refined_at.
-    merged_ids = list(dict.fromkeys(existing["supporting_memory_ids"] + candidate["supporting_memory_ids"]))
-    merged_episodes = list(dict.fromkeys(existing.get("supporting_episode_ids", []) + supporting_episode_ids))
-    new_version = existing["version"] + 1
-    new_confidence = max(existing["confidence"], float(candidate["confidence"]))
     memory_type = candidate.get("memory_type") or "semantic"
-    prior_memory_type = existing.get("memory_type") or "semantic"
-    new_memory_type = memory_type if memory_type != "semantic" or prior_memory_type == "semantic" else prior_memory_type
-    _execute(
-        """UPDATE observations SET observation_text = ?, category = ?, confidence = ?,
-           supporting_memory_ids = ?, supporting_episode_ids = ?, memory_type = ?,
-           evidence_count = ?, status = 'refined',
-           last_refined_at = ?, version = ?
-           WHERE id = ? AND tenant_id = ? AND user_id = ?""",
-        (
-            candidate["observation_text"],
-            candidate.get("category") or existing.get("category"),
-            new_confidence,
-            json.dumps(merged_ids),
-            json.dumps(merged_episodes),
-            new_memory_type,
-            len(merged_ids) + len(merged_episodes),
-            now,
-            new_version,
-            existing["id"],
-            tenant_id,
-            user_id,
-        ),
-    )
-    row = _fetch_one(
-        "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ?",
-        (existing["id"], tenant_id, user_id),
-    )
-    return _observation_row(row) if row else existing
+    current = existing
+    for _attempt in range(5):
+        prior_memory_type = current.get("memory_type") or "semantic"
+        new_memory_type = (
+            memory_type if memory_type != "semantic" or prior_memory_type == "semantic" else prior_memory_type
+        )
+        merged_ids = list(dict.fromkeys(current["supporting_memory_ids"] + candidate["supporting_memory_ids"]))
+        if candidate.get("replace_episode_evidence"):
+            merged_episodes = supporting_episode_ids
+        else:
+            merged_episodes = list(dict.fromkeys(current.get("supporting_episode_ids", []) + supporting_episode_ids))
+        new_category = candidate.get("category") or current.get("category")
+        if (
+            candidate["observation_text"] == current.get("observation_text")
+            and new_category == current.get("category")
+            and merged_ids == current["supporting_memory_ids"]
+            and merged_episodes == current.get("supporting_episode_ids", [])
+            and new_memory_type == prior_memory_type
+        ):
+            return current
+
+        new_confidence = max(current["confidence"], float(candidate["confidence"]))
+        now = _now_iso()
+        conn = _connect()
+        try:
+            cursor = conn.execute(
+                """UPDATE observations SET observation_text = ?, category = ?, confidence = ?,
+                   supporting_memory_ids = ?, supporting_episode_ids = ?, memory_type = ?,
+                   evidence_count = ?, status = 'refined',
+                   last_refined_at = ?, version = ?
+                   WHERE id = ? AND tenant_id = ? AND user_id = ? AND version = ? AND status <> 'archived'""",
+                (
+                    candidate["observation_text"],
+                    new_category,
+                    new_confidence,
+                    json.dumps(merged_ids),
+                    json.dumps(merged_episodes),
+                    new_memory_type,
+                    len(merged_ids) + len(merged_episodes),
+                    now,
+                    int(current["version"]) + 1,
+                    current["id"],
+                    tenant_id,
+                    user_id,
+                    int(current["version"]),
+                ),
+            )
+            written = cursor.rowcount == 1
+            if written:
+                conn.commit()
+        finally:
+            conn.close()
+
+        row = _fetch_one(
+            "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            (current["id"], tenant_id, user_id),
+        )
+        fresh = _observation_row(row) if row else None
+        if fresh is None or fresh.get("status") == "archived":
+            return fresh or current
+        if written:
+            return fresh
+        # Another writer refined the same observation first: merge onto its
+        # evidence instead of overwriting the ids it just added.
+        current = fresh
+    return current
 
 
 def curate_observations(
@@ -515,6 +548,10 @@ class EpisodeObservationSpec:
     confidence: float
     episode_ids: list[str]
     memory_type: str = "procedural"
+    # Distilled recipes and lessons are rebuilt from the current episode
+    # verdicts, so their evidence is replaced rather than unioned; a corrected
+    # verdict must drop the episode from the group it left.
+    replace_episode_evidence: bool = False
 
 
 def upsert_episode_observation(
@@ -537,5 +574,6 @@ def upsert_episode_observation(
         "supporting_memory_ids": [],
         "supporting_episode_ids": list(dict.fromkeys(spec.episode_ids)),
         "memory_type": spec.memory_type,
+        "replace_episode_evidence": spec.replace_episode_evidence,
     }
     return _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id)

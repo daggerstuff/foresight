@@ -36,7 +36,7 @@ from typing import Any
 from .error_signatures import normalize_error_signature
 from .hybrid_retriever import get_hybrid_retriever
 from .llm_client import default_llm_call
-from .observations import EpisodeObservationSpec, upsert_episode_observation
+from .observations import EpisodeObservationSpec, archive_observation, upsert_episode_observation
 from .reflect import _connect, _fetch_all, _fetch_one
 from .sensitivity import evaluate_secrets, resolve_is_sensitive
 
@@ -51,6 +51,11 @@ _MAX_EVIDENCE_IDS = 50
 _SUCCESS_SCORE = 0.6
 _FAILURE_SCORE = 0.4
 _MIN_SUMMARY_LEN = 8
+
+# Secret verdicts whose content is safe to store or send: `redact` already
+# replaced the credential, and `clean` found none. `flag` hands back the
+# original text and `block` empties it, so neither may be persisted as-is.
+_SECRET_SAFE_ACTIONS = ("clean", "redacted")
 
 
 _FAILURE_PATTERNS = [
@@ -211,6 +216,80 @@ def _messages_to_text(messages: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
+_RESULT_ROLES = ("assistant", "tool", "tool_use", "function")
+
+
+def _result_transcript(events: list[dict[str, Any]]) -> str:
+    """Keep only the messages that report what the run did.
+
+    Falls back to the whole transcript when the session recorded no agent-side
+    output, so a caller-supplied conversation still scores.
+    """
+    result_lines = [
+        f"{e['role']}: {e['content']}" for e in events if e["role"].lower() in _RESULT_ROLES and e["content"].strip()
+    ]
+    if result_lines:
+        return "\n".join(result_lines)
+    return "\n".join(f"{e['role']}: {e['content']}" for e in events if e["content"].strip())
+
+
+def _retire_stale_groups(
+    active_keys: set[str],
+    *,
+    user_id: str,
+    tenant_id: str,
+    result: dict[str, Any],
+) -> None:
+    """Withdraw a distilled group that no longer has qualifying episodes.
+
+    A corrected verdict can move the last episode out of a failure or success
+    group, leaving an observation and a lesson that still claim evidence they
+    no longer have. Both are retired, and a group that comes back is revived by
+    the next upsert rather than being written a second time.
+    """
+    stale_keys: set[str] = set()
+    stale_memory_ids: list[str] = []
+    for row in _fetch_all(
+        """SELECT id, metrics FROM memories
+           WHERE tenant_id = ? AND user_id = ? AND memory_type IN ('procedural', 'episodic')""",
+        (tenant_id, user_id),
+    ):
+        try:
+            metrics = json.loads(row.get("metrics") or "{}")
+        except (TypeError, ValueError):
+            continue
+        key = str(metrics.get("exp_key") or "")
+        if not key.startswith(("failure:", "success:")) or key in active_keys:
+            continue
+        stale_keys.add(key)
+        stale_memory_ids.append(str(row["id"]))
+
+    if not stale_keys:
+        return
+
+    conn = _connect()
+    try:
+        for memory_id in stale_memory_ids:
+            conn.execute(
+                "UPDATE memories SET is_ghost = 1, importance = 0.0, updated_at = ? "
+                "WHERE id = ? AND tenant_id = ? AND user_id = ? AND is_ghost = 0",
+                (_now_iso(), memory_id, tenant_id, user_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    result["groups_retired"] = len(stale_memory_ids)
+
+    for row in _fetch_all(
+        """SELECT id, pattern_key FROM observations
+           WHERE tenant_id = ? AND user_id = ? AND status IN ('active', 'refined')""",
+        (tenant_id, user_id),
+    ):
+        if str(row.get("pattern_key") or "") not in stale_keys:
+            continue
+        archive_observation(str(row["id"]), user_id=user_id, tenant_id=tenant_id)
+
+
 def _raw_events_for_session(tenant_id: str, user_id: str, session_id: str) -> list[dict[str, Any]]:
     return _fetch_all(
         """SELECT id, role, content, position FROM raw_events
@@ -243,11 +322,21 @@ def build_episode(
     # The capture pipeline redacts raw events, but episode summaries are built
     # from the caller's messages; apply the same secret policy before storing.
     summary_verdict = evaluate_secrets(_task_summary(messages), tenant_id=tenant_id)
-    summary = "" if summary_verdict.blocked else summary_verdict.content
+    summary = summary_verdict.content if summary_verdict.action_taken in _SECRET_SAFE_ACTIONS else ""
     # Scan the whole transcript: truncating let sensitive content later in a
-    # long session slip past the flag.
+    # long session slip past the flag. A credential counts as sensitivity for
+    # the same reason, so a secret-bearing session is never distilled.
     sensitivity_text = "\n".join(str(m.get("content") or "") for m in messages)
-    is_sensitive = 1 if (sensitivity_text and resolve_is_sensitive(None, sensitivity_text)[0]) else 0
+    secret_verdict = evaluate_secrets(sensitivity_text, tenant_id=tenant_id)
+    is_sensitive = (
+        1
+        if (
+            secret_verdict.flagged
+            or summary_verdict.flagged
+            or (sensitivity_text and resolve_is_sensitive(None, sensitivity_text)[0])
+        )
+        else 0
+    )
 
     first = raw_events[0] if raw_events else None
     last = raw_events[-1] if raw_events else None
@@ -329,20 +418,26 @@ def record_outcome(user_id: str, tenant_id: str, verdict: EpisodeVerdict) -> dic
     score = _clamp_score(score)
 
     # Outcome details are free text from CI or a user; redact before they
-    # become searchable episode data or a signature.
+    # become searchable episode data or a signature. A `flag` verdict keeps the
+    # original text, so only a clean or redacted detail may be stored.
     detail_verdict = evaluate_secrets(verdict.detail or "", tenant_id=tenant_id)
-    if detail_verdict.blocked:
+    if detail_verdict.action_taken not in _SECRET_SAFE_ACTIONS:
         detail_text = None
         signature = None
+        detail_is_sensitive = True
     else:
         detail_text = detail_verdict.content[:_MAX_DETAIL_CHARS] or None
         signature = normalize_error_signature(detail_text) if detail_text else None
+        detail_is_sensitive = bool(detail_text) and (
+            detail_verdict.flagged or resolve_is_sensitive(None, verdict.detail or "")[0]
+        )
 
     conn = _connect()
     try:
         conn.execute(
             """UPDATE episodes SET outcome = ?, outcome_score = ?, score_source = ?, score_detail = ?,
-                   error_signature = COALESCE(?, error_signature), resolved = ?, updated_at = ?
+                   error_signature = COALESCE(?, error_signature), resolved = ?,
+                   is_sensitive = CASE WHEN ? THEN 1 ELSE is_sensitive END, updated_at = ?
                WHERE id = ? AND tenant_id = ? AND user_id = ?""",
             (
                 outcome,
@@ -351,6 +446,7 @@ def record_outcome(user_id: str, tenant_id: str, verdict: EpisodeVerdict) -> dic
                 detail_text,
                 signature,
                 {"success": 1, "failure": 0}.get(outcome, int(bool(episode.get("resolved")))),
+                bool(detail_is_sensitive),
                 _now_iso(),
                 episode["id"],
                 tenant_id,
@@ -387,19 +483,32 @@ def auto_score_episode(
         return episode
 
     if messages is not None:
-        transcript = _messages_to_text(messages)
+        events = [{"role": str(m.get("role") or "unknown"), "content": str(m.get("content") or "")} for m in messages]
     else:
-        rows = _fetch_all(
-            """SELECT role, content FROM raw_events
-               WHERE tenant_id = ? AND user_id = ? AND session_id = ? AND tombstone = 0
-               ORDER BY position ASC, captured_at ASC""",
-            (tenant_id, user_id, episode["session_id"]),
-        )
-        transcript = "\n".join(f"{r.get('role') or 'unknown'}: {r.get('content') or ''}" for r in rows)
+        events = [
+            {"role": str(r.get("role") or "unknown"), "content": str(r.get("content") or "")}
+            for r in _fetch_all(
+                """SELECT role, content FROM raw_events
+                   WHERE tenant_id = ? AND user_id = ? AND session_id = ? AND tombstone = 0
+                   ORDER BY position ASC, captured_at ASC""",
+                (tenant_id, user_id, episode["session_id"]),
+            )
+        ]
+    transcript = "\n".join(f"{e['role']}: {e['content']}" for e in events)
+    # `flag` mode hands back the original text, so an unsafe transcript must not
+    # reach a provider or a stored column. The redacted form is what the
+    # signature is derived from, so a credential never becomes searchable.
+    transcript_verdict = evaluate_secrets(transcript, tenant_id=tenant_id)
+    redacted_transcript = evaluate_secrets(transcript, mode="redact", tenant_id=tenant_id).content
+    safe_transcript = redacted_transcript if transcript_verdict.action_taken in _SECRET_SAFE_ACTIONS else ""
+    # The deterministic scan reads result-bearing output only: the request and
+    # any history it quotes describe the task, so their problem words say
+    # nothing about how this session ended.
+    assessment_text = evaluate_secrets(_result_transcript(events), mode="redact", tenant_id=tenant_id).content
 
     mode = _llm_scoring_enabled()
     # Never send a sensitive or secret-bearing transcript to a provider.
-    scoring_text = "" if episode["is_sensitive"] else evaluate_secrets(transcript, tenant_id=tenant_id).content
+    scoring_text = "" if episode["is_sensitive"] else safe_transcript
     detail: str
     if mode in ("llm", "auto") and scoring_text:
         try:
@@ -409,7 +518,7 @@ def auto_score_episode(
             detail = f"llm_rubric: {rationale}"[:_MAX_DETAIL_CHARS]
         except Exception as exc:
             logger.info("LLM rubric unavailable, using deterministic fallback: %s", exc)
-            assessment = _deterministic_assessment(transcript)
+            assessment = _deterministic_assessment(assessment_text)
             score, outcome = assessment["score"], assessment["outcome"]
             source = "fallback"
             detail = (
@@ -417,7 +526,7 @@ def auto_score_episode(
                 f"failure_signals={assessment['failures']} success_signals={assessment['successes']}"
             )[:_MAX_DETAIL_CHARS]
     else:
-        assessment = _deterministic_assessment(transcript)
+        assessment = _deterministic_assessment(assessment_text)
         score, outcome = assessment["score"], assessment["outcome"]
         source = "fallback"
         detail = (
@@ -425,13 +534,14 @@ def auto_score_episode(
             f"failure_signals={assessment['failures']} success_signals={assessment['successes']}"
         )[:_MAX_DETAIL_CHARS]
 
-    signature = normalize_error_signature(transcript)
+    signature = normalize_error_signature(redacted_transcript)
 
     conn = _connect()
     try:
         conn.execute(
             """UPDATE episodes SET outcome = ?, outcome_score = ?, score_source = ?, score_detail = ?,
-                   error_signature = COALESCE(?, error_signature), resolved = ?, updated_at = ?
+                   error_signature = COALESCE(?, error_signature), resolved = ?,
+                   is_sensitive = CASE WHEN ? THEN 1 ELSE is_sensitive END, updated_at = ?
                WHERE id = ? AND tenant_id = ? AND user_id = ?
                  AND (score_source IS NULL OR score_source NOT IN ('user_feedback', 'ci_result'))""",
             (
@@ -441,6 +551,7 @@ def auto_score_episode(
                 detail,
                 signature,
                 {"success": 1, "failure": 0}.get(outcome, int(bool(episode.get("resolved")))),
+                bool(transcript_verdict.flagged),
                 _now_iso(),
                 episode["id"],
                 tenant_id,
@@ -471,17 +582,49 @@ class ProceduralMemorySpec:
     importance: float = 0.7
 
 
+_ProceduralSnapshot = dict[str, tuple[str | None, str | None, str | None]]
+
+
+@dataclass
+class _DistillState:
+    """Bookkeeping one distillation run threads through its group writers."""
+
+    result: dict[str, Any]
+    snapshot: _ProceduralSnapshot | None
+    same_task_failures: dict[str, list[str]]
+
+
+def _procedural_snapshot(*, user_id: str, tenant_id: str) -> _ProceduralSnapshot:
+    """Read every live procedural row once, keyed by memory id.
+
+    Distillation revisits each of the user's groups on every capture, and an
+    unchanged group needs no connection at all. Reading the stored shape up
+    front turns that case into a dict lookup instead of one round trip per
+    group.
+    """
+    rows = _fetch_all(
+        "SELECT id, content_hash, metrics, error_signature FROM memories "
+        "WHERE tenant_id = ? AND user_id = ? AND memory_type = 'procedural' AND is_ghost = 0",
+        (tenant_id, user_id),
+    )
+    return {str(row["id"]): (row["content_hash"], row["metrics"], row["error_signature"]) for row in rows}
+
+
 def _upsert_procedural_memory(
     spec: ProceduralMemorySpec,
     *,
     user_id: str,
     tenant_id: str,
+    snapshot: _ProceduralSnapshot | None = None,
 ) -> tuple[str, bool]:
     """Insert or refresh the retrieval-facing procedural memory for ``key``.
 
-    Returns (memory_id, created). The row carries ``memory_type='procedural'``
+    Returns (memory_id, changed). The row carries ``memory_type='procedural'``
     and, for failures, ``error_signature`` — that is the token the keyword
     signal matches on when a matching error later appears in a session.
+    ``snapshot`` is the pre-read procedural state from ``_procedural_snapshot``;
+    when it already holds this row's exact shape the write is skipped without
+    opening a connection.
     """
     memory_id = _experience_memory_id(tenant_id, user_id, spec.key)
     now = _now_iso()
@@ -494,16 +637,30 @@ def _upsert_procedural_memory(
         }
     )
 
+    if snapshot is not None and snapshot.get(memory_id) == (content_hash, metrics, spec.error_signature):
+        return memory_id, False
+
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT id FROM memories WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            "SELECT content_hash, metrics, error_signature, is_ghost FROM memories "
+            "WHERE id = ? AND tenant_id = ? AND user_id = ?",
             (memory_id, tenant_id, user_id),
         ).fetchone()
+        if (
+            row is not None
+            and not int(row["is_ghost"] or 0)
+            and (
+                row["content_hash"] == content_hash
+                and row["metrics"] == metrics
+                and row["error_signature"] == spec.error_signature
+            )
+        ):
+            return memory_id, False
         if row is not None:
             conn.execute(
                 """UPDATE memories SET content = ?, content_hash = ?, importance = ?,
-                       metrics = ?, error_signature = ?, updated_at = ?
+                       metrics = ?, error_signature = ?, is_ghost = 0, updated_at = ?
                    WHERE id = ? AND tenant_id = ? AND user_id = ?""",
                 (
                     spec.content,
@@ -517,7 +674,6 @@ def _upsert_procedural_memory(
                     user_id,
                 ),
             )
-            created = False
         else:
             conn.execute(
                 """INSERT INTO memories
@@ -542,13 +698,46 @@ def _upsert_procedural_memory(
                     spec.error_signature,
                 ),
             )
-            created = True
         conn.commit()
-        # A query cached before distillation must not hide the new memory.
-        get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
-        return memory_id, created
+        return memory_id, True
     finally:
         conn.close()
+
+
+def _procedure_steps(
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    *,
+    limit: int = 5,
+) -> list[str]:
+    """Derive the ordered steps an episode actually executed.
+
+    Only agent-side output is read: the user's opening request describes the
+    task, and replaying it as a step is how a recipe ended up saying "reuse the
+    original request". Each step is passed through the secret policy first.
+    """
+    if not session_id:
+        return []
+    steps: list[str] = []
+    for event in _raw_events_for_session(tenant_id, user_id, session_id):
+        if (event.get("role") or "").lower() not in ("assistant", "tool", "tool_use", "function"):
+            continue
+        text = re.sub(r"\s+", " ", str(event.get("content") or "")).strip()
+        if len(text) < _MIN_SUMMARY_LEN:
+            continue
+        verdict = evaluate_secrets(text, tenant_id=tenant_id)
+        # `flag` mode hands back the original text, so a recipe step may only be
+        # stored from a clean or already-redacted verdict.
+        if verdict.action_taken not in _SECRET_SAFE_ACTIONS:
+            continue
+        text = verdict.content.strip()[:_MAX_DETAIL_CHARS]
+        if len(text) < _MIN_SUMMARY_LEN or (steps and steps[-1] == text):
+            continue
+        steps.append(text)
+        if len(steps) >= limit:
+            break
+    return steps
 
 
 def _episode_side(episode: dict[str, Any]) -> str | None:
@@ -626,6 +815,8 @@ def distill_experiences(
         "successes_distilled": 0,
         "observations_upserted": 0,
         "procedural_memories_written": 0,
+        "recipes_with_steps": 0,
+        "groups_retired": 0,
     }
     skipped = _fetch_one(
         "SELECT COUNT(*) AS n FROM episodes "
@@ -634,18 +825,43 @@ def distill_experiences(
     )
     result["skipped_sensitive"] = int((skipped or {}).get("n") or 0)
 
-    _distill_failure_group(failures, user_id=user_id, tenant_id=tenant_id, result=result)
-    _distill_success_group(successes, user_id=user_id, tenant_id=tenant_id, result=result)
+    state = _DistillState(
+        result=result,
+        snapshot=_procedural_snapshot(user_id=user_id, tenant_id=tenant_id),
+        same_task_failures={},
+    )
+    _distill_failure_group(failures, state=state, user_id=user_id, tenant_id=tenant_id)
+    _distill_success_group(successes, state=state, user_id=user_id, tenant_id=tenant_id)
+    _retire_stale_groups(
+        {f"failure:{sig}" for sig in failures} | {f"success:{slug}" for slug in successes},
+        user_id=user_id,
+        tenant_id=tenant_id,
+        result=result,
+    )
+    if result["procedural_memories_written"] or result["groups_retired"]:
+        # One invalidation per distillation run, scoped to this user and tenant:
+        # the eviction only touches entries keyed by this scope, and a batch of
+        # upserts costs one pass over the cache instead of one per group.
+        get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
     return result
 
 
 def _distill_failure_group(
     failures: dict[str, list[dict[str, Any]]],
     *,
+    state: _DistillState,
     user_id: str,
     tenant_id: str,
-    result: dict[str, Any],
 ) -> None:
+    """Write one lesson per failure group.
+
+    Records, for signature-keyed groups, the episode ids grouped by the task
+    they were doing: the same task can also succeed, and that recipe has to see
+    these failures before it can be offered back as a recipe.
+    """
+    result = state.result
+    snapshot = state.snapshot
+    same_task_failures: dict[str, list[str]] = {}
     for sig, group in failures.items():
         ids = [ep["id"] for ep in group]
         sample = next((ep for ep in reversed(group) if ep.get("summary")), group[-1])
@@ -666,6 +882,7 @@ def _distill_failure_group(
                 category="procedural",
                 confidence=confidence,
                 episode_ids=ids,
+                replace_episode_evidence=True,
             ),
             user_id=user_id,
             tenant_id=tenant_id,
@@ -676,7 +893,7 @@ def _distill_failure_group(
             f"This approach failed {n} time(s). When `{label}` appears, stop and check the failing "
             f"step instead of retrying the same fix. Evidence: {n} prior episode(s)."
         )
-        _upsert_procedural_memory(
+        _, changed = _upsert_procedural_memory(
             ProceduralMemorySpec(
                 key=f"failure:{sig}",
                 content=content,
@@ -686,46 +903,79 @@ def _distill_failure_group(
             ),
             user_id=user_id,
             tenant_id=tenant_id,
+            snapshot=snapshot,
         )
         result["failures_distilled"] += 1
         result["observations_upserted"] += 1
-        result["procedural_memories_written"] += 1
+        if changed:
+            result["procedural_memories_written"] += 1
+        if is_signature:
+            slug = _slug(sample_summary)
+            same_task_failures.setdefault(slug, []).extend(ids)
+    state.same_task_failures = same_task_failures
 
 
 def _distill_success_group(
     successes: dict[str, list[dict[str, Any]]],
     *,
+    state: _DistillState,
     user_id: str,
     tenant_id: str,
-    result: dict[str, Any],
 ) -> None:
+    result = state.result
+    snapshot = state.snapshot
+    same_task_failures = state.same_task_failures
     for slug, group in successes.items():
         ids = [ep["id"] for ep in group]
         summary = group[-1].get("summary") or slug
         n = len(group)
         avg_score = sum((ep.get("outcome_score") or 0.5) for ep in group) / n
         confidence = min(0.95, 0.5 + 0.1 * n)
-        text = (
-            f'[procedural] Reusable recipe - "{summary}": succeeded {n} time(s) '
-            f"(avg score {avg_score:.2f}). When this task recurs, reuse the approach that worked."
+        steps = _procedure_steps(tenant_id, user_id, str(group[-1].get("session_id") or ""))
+        contradicted = [eid for eid in same_task_failures.get(slug, []) if eid not in ids]
+        step_block = " Steps: " + " ".join(f"{i}) {s}" for i, s in enumerate(steps, 1)) if steps else ""
+        failure_note = (
+            f" The same task also failed {len(contradicted)} time(s) with an unresolved error; "
+            "check those before reusing this approach."
+            if contradicted
+            else ""
         )
+        # A success is still evidence about how this task ended, so it stays a
+        # procedural observation; only the claim that it is a reusable recipe
+        # waits for steps the transcript actually recorded.
+        if steps:
+            text = (
+                f'[procedural] Reusable recipe - "{summary}": succeeded {n} time(s) '
+                f"(avg score {avg_score:.2f}).{step_block}{failure_note}"
+            )
+            content = (
+                f"[procedural recipe] Task: {summary}\n"
+                f"This approach succeeded {n} time(s) with average score {avg_score:.2f}."
+                f"{step_block}{failure_note}"
+            )
+        else:
+            text = (
+                f'[procedural] Task - "{summary}": succeeded {n} time(s) (avg score {avg_score:.2f}). '
+                f"The transcript recorded no repeatable step, so no procedure is claimed.{failure_note}"
+            )
+            content = (
+                f"[procedural] Task: {summary}\n"
+                f"Succeeded {n} time(s) with average score {avg_score:.2f}; the transcript recorded "
+                f"no repeatable step, so no procedure is claimed.{failure_note}"
+            )
         upsert_episode_observation(
             EpisodeObservationSpec(
                 pattern_key=f"success:{slug}",
                 observation_text=text,
                 category="procedural",
                 confidence=confidence,
-                episode_ids=ids,
+                episode_ids=list(dict.fromkeys([*ids, *contradicted])),
+                replace_episode_evidence=True,
             ),
             user_id=user_id,
             tenant_id=tenant_id,
         )
-        content = (
-            f"[procedural recipe] Task: {summary}\n"
-            f"This approach succeeded {n} time(s) with average score {avg_score:.2f}. "
-            f"Reuse it when the task recurs instead of improvising from scratch."
-        )
-        _upsert_procedural_memory(
+        _, changed = _upsert_procedural_memory(
             ProceduralMemorySpec(
                 key=f"success:{slug}",
                 content=content,
@@ -734,10 +984,14 @@ def _distill_success_group(
             ),
             user_id=user_id,
             tenant_id=tenant_id,
+            snapshot=snapshot,
         )
         result["successes_distilled"] += 1
         result["observations_upserted"] += 1
-        result["procedural_memories_written"] += 1
+        if changed:
+            result["procedural_memories_written"] += 1
+        if steps:
+            result["recipes_with_steps"] += 1
 
 
 def capture_session_outcome(

@@ -32,7 +32,12 @@ from foresight.injection_budget import (
     format_budgeted_payload,
     format_static_and_safety,
 )
-from foresight.observations import EpisodeObservationSpec, list_observations, upsert_episode_observation
+from foresight.observations import (
+    EpisodeObservationSpec,
+    _upsert_observation,
+    list_observations,
+    upsert_episode_observation,
+)
 from foresight.reflect import UserScope
 from foresight.server import (
     InjectContextParams,
@@ -148,6 +153,44 @@ def test_rule_matching_respects_word_boundaries():
     assert guarded.matches("the merger is complete") is False
     assert guarded.matches("merge the branch") is True
     assert guarded.matches("merge the docs") is False
+
+
+def test_rule_matching_keeps_single_character_qualifiers():
+    conditioned = RuleEntry(
+        statement="Pin the interpreter to the 3.x line",
+        strength=RuleStrength.MUST,
+        applies_when="python 3",
+    )
+    assert conditioned.matches("deploy python 3 app") is True
+    assert conditioned.matches("deploy python 2 app") is False
+
+    guarded = RuleEntry(
+        statement="Run the legacy migration",
+        strength=RuleStrength.MUST,
+        applies_when="deploy",
+        exception="python 3",
+    )
+    assert guarded.matches("deploy python 3 app") is False
+    assert guarded.matches("deploy python 2 app") is True
+
+
+def test_experience_strength_is_inferred_per_clause():
+    mixed = {
+        "id": "obs_mixed_strength",
+        "observation_text": "Never skip the smoke tests; consider running the full suite too.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    compiled = compile_experience_to_rule(mixed, requested_strength=RuleStrength.MUST_NOT)
+    assert compiled.strength == RuleStrength.MUST_NOT
+
+    recommendation_only = {
+        "id": "obs_recommendation_only",
+        "observation_text": "Consider running the full suite too.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(recommendation_only).strength == RuleStrength.SHOULD
 
 
 def test_rules_lane_never_truncated_under_tightest_budget():
@@ -336,6 +379,129 @@ def test_graduate_reviewed_experience_and_inject_under_tight_budget():
     assert payload_exc["rules"] == []
 
 
+def test_graduation_requires_the_approved_skill_to_cover_the_current_observation_version():
+    """Refining an observation must invalidate the review its skill relied on."""
+    for idx in range(3):
+        sid = f"rule-version-ep-{idx}"
+        build_episode(
+            sid,
+            user_id=USER_ID,
+            tenant_id=TENANT,
+            messages=[
+                {"role": "user", "content": "rotating deploy keys nightly"},
+                {"role": "assistant", "content": "running the key rotation script"},
+                {"role": "tool", "content": "10 passed in 1.2s\nexit code 0"},
+            ],
+        )
+        record_outcome(
+            USER_ID,
+            TENANT,
+            EpisodeVerdict(outcome="success", score_source="ci_result", session_id=sid),
+        )
+
+    distill_experiences(user_id=USER_ID, tenant_id=TENANT)
+    observations = list_observations(UserScope(user_id=USER_ID, tenant_id=TENANT), limit=20)
+    obs = next(o for o in observations if str(o["pattern_key"]).startswith("success:rotating-deploy-keys"))
+    assert obs["version"] == 1
+
+    cryst = crystallize_skills(UserScope(user_id=USER_ID, tenant_id=TENANT))
+    manage_inferred(ManageInferredParams(action="approve", memory_id=cryst["skills"][0]["memory_id"], user_id=USER_ID))
+
+    # The approval covers version 1's wording only. Refining the observation
+    # produces text no reviewer has seen, so the old approval must not carry
+    # over to it.
+    refined = upsert_episode_observation(
+        EpisodeObservationSpec(
+            pattern_key=obs["pattern_key"],
+            observation_text=(
+                '[procedural] Task - "rotating deploy keys nightly": succeeded 4 time(s), '
+                "now rotated hourly by the scheduled job."
+            ),
+            category="procedural",
+            confidence=0.9,
+            episode_ids=[],
+        ),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    assert refined["version"] == obs["version"] + 1
+
+    with pytest.raises(ValueError, match="re-review is required"):
+        graduate_experience_to_rule(obs["id"], user_id=USER_ID, tenant_id=TENANT)
+
+    # Re-staging reopens the review, so approving the new text restores the path.
+    restaged = crystallize_skills(UserScope(user_id=USER_ID, tenant_id=TENANT))
+    assert restaged["updated_count"] == 1
+    manage_inferred(
+        ManageInferredParams(action="approve", memory_id=restaged["skills"][0]["memory_id"], user_id=USER_ID)
+    )
+    graduated = graduate_experience_to_rule(obs["id"], user_id=USER_ID, tenant_id=TENANT)
+    assert graduated.source == f"observation:{obs['id']}"
+
+
 def test_package_root_exports_every_public_name():
     missing = [name for name in foresight.__all__ if not hasattr(foresight, name)]
     assert missing == []
+
+
+def test_rule_entry_from_dict_rejects_a_non_string_qualifier():
+    # Stringifying False produced "", which loads a conditional rule as an
+    # unconditional one: the guard has to reject it instead.
+    with pytest.raises(ValueError, match=r"applies_when must be a string"):
+        RuleEntry.from_dict({"statement": "Deploy only from CI", "strength": "must", "applies_when": False})
+
+    with pytest.raises(ValueError, match=r"exception must be a string"):
+        RuleEntry.from_dict({"statement": "Deploy only from CI", "strength": "must", "exception": ["x"]})
+
+    rule = RuleEntry.from_dict({"statement": "Deploy only from CI", "strength": "must", "applies_when": None})
+    assert rule.applies_when == ""
+    assert rule.source == "manual"
+
+
+def test_single_character_clause_token_must_be_present():
+    rule = RuleEntry(statement="Pin the interpreter", applies_when="python 3")
+
+    assert rule.matches("python 3.11 toolchain") is True
+    assert rule.matches("python 2.7 toolchain") is False
+
+
+def test_graduation_stays_inside_the_observations_lane() -> None:
+    laned = _upsert_observation(
+        {
+            "pattern_key": "procedural:laned-graduation",
+            "observation_text": "Re-run the migration twice before graduating the rule.",
+            "category": "procedural",
+            "confidence": 0.9,
+            "supporting_memory_ids": [],
+            "supporting_episode_ids": ["ep_laned"],
+            "memory_type": "procedural",
+        },
+        user_id=USER_ID,
+        tenant_id=TENANT,
+        agent_id="agent-a",
+        project="proj-a",
+    )
+
+    # A caller with no lane reads the shared lane only, so another lane's
+    # private observation is invisible to it.
+    with pytest.raises(LookupError, match="not found"):
+        graduate_experience_to_rule(laned["id"], user_id=USER_ID, tenant_id=TENANT)
+
+    # Naming another lane does not reach it either: the lookup predicate is
+    # that lane plus the shared lane.
+    with pytest.raises(LookupError, match="not found"):
+        graduate_experience_to_rule(
+            laned["id"],
+            user_id=USER_ID,
+            tenant_id=TENANT,
+            options=RuleGraduateOptions(agent_id="agent-b", project="proj-b"),
+        )
+
+    # The owning lane does reach it, and stops at the review gate.
+    with pytest.raises(ValueError, match="must be reviewed"):
+        graduate_experience_to_rule(
+            laned["id"],
+            user_id=USER_ID,
+            tenant_id=TENANT,
+            options=RuleGraduateOptions(agent_id="agent-a", project="proj-a"),
+        )

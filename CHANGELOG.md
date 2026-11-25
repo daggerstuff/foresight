@@ -16,8 +16,8 @@ All notable changes to Foresight MCP are documented here.
   never upgrading `should` to `must`).
 - **Skill crystallization (`foresight.skill_crystallization`, FOR-55):**
   Procedural observations crossing the proof threshold (`N` successful episodes
-  with zero unresolved contradicting failures, excluding `is_sensitive` rows)
-  are rendered as `SKILL.md` artifacts, HMAC-SHA256 signed with the
+  with zero unresolved contradicting failures; any `is_sensitive` evidence
+  blocks graduation) are rendered as `SKILL.md` artifacts, HMAC-SHA256 signed with the
   `profile_export.py` key, versioned in `memory_versions`, and staged in the
   `manage_inferred` review queue.
 - **Observe-first staging & gated loading:** `manage_curation_runs` surfaces

@@ -25,7 +25,12 @@ from .context_cache import get_context_cache
 from .encryption import decrypt_if_encrypted, encrypt_if_enabled
 from .hybrid_retriever import get_hybrid_retriever
 from .observations import _ns_clause, list_observations, register_archive_listener
-from .profile_export import SKILL_SCHEMA_VERSION, sign_skill_document, verify_skill_document
+from .profile_export import (
+    SKILL_SCHEMA_VERSION,
+    sign_skill_document,
+    skill_signing_configured,
+    verify_skill_document,
+)
 from .reflect import UserScope, _connect
 from .sql_helpers import join_sql_parts, placeholders
 
@@ -59,6 +64,8 @@ class SkillProofEvaluation:
     has_sensitive: bool
     evidence_ids: list[str]
     reason: str
+    failure_ids: list[str] | None = None
+    threshold: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +78,8 @@ class SkillProofEvaluation:
             "has_sensitive": self.has_sensitive,
             "evidence_ids": list(self.evidence_ids),
             "reason": self.reason,
+            "failure_ids": list(self.failure_ids or []),
+            "threshold": self.threshold,
         }
 
 
@@ -226,9 +235,10 @@ def _active_contradictions(conn: Any, ids: list[str], *, user_id: str, tenant_id
             "AND r.relationship_type IN ('contradicts', 'updates') "
             "AND r.target_memory_id IN (",
             slots,
-            ") AND src.is_ghost = 0 AND src.is_latest = 1 AND src.expired_at IS NULL",
+            ") AND src.is_ghost = 0 AND src.is_latest = 1 AND src.expired_at IS NULL "
+            "AND (src.expires_at IS NULL OR src.expires_at = '' OR src.expires_at > ?)",
         ),
-        (tenant_id, user_id, *ids),
+        (tenant_id, user_id, *ids, _now_iso()),
     ).fetchall()
     contradicted: set[str] = set()
     updated: set[str] = set()
@@ -241,6 +251,23 @@ def _active_contradictions(conn: Any, ids: list[str], *, user_id: str, tenant_id
     return contradicted, updated
 
 
+def relationship_source_is_live(memory_id: str, *, user_id: str, tenant_id: str) -> bool:
+    """True when ``memory_id`` still stands as the source of a contradiction."""
+    if not memory_id:
+        return False
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM memories WHERE tenant_id = ? AND user_id = ? AND id = ? "
+            "AND is_ghost = 0 AND is_latest = 1 AND expired_at IS NULL "
+            "AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)",
+            (tenant_id, user_id, memory_id, _now_iso()),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
 @dataclass
 class _EvidenceTally:
     success_count: int = 0
@@ -248,10 +275,13 @@ class _EvidenceTally:
     unresolved_failure_count: int = 0
     superseded_ids: list[str] | None = None
     has_sensitive: bool = False
+    failure_ids: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.superseded_ids is None:
             self.superseded_ids = []
+        if self.failure_ids is None:
+            self.failure_ids = []
 
 
 def _record_outcome_tally(tally: _EvidenceTally, kind: str | None, resolved: bool) -> None:
@@ -306,8 +336,13 @@ def _tally_evidence(
             tally.has_sensitive = True
         elif eid in contradicted_ids:
             _record_outcome_tally(tally, "failure", False)
+            if tally.failure_ids is not None:
+                tally.failure_ids.append(eid)
         else:
-            _record_outcome_tally(tally, *_memory_outcome_kind(mem))
+            kind, resolved = _memory_outcome_kind(mem)
+            _record_outcome_tally(tally, kind, resolved)
+            if kind == "failure" and tally.failure_ids is not None:
+                tally.failure_ids.append(eid)
     return tally
 
 
@@ -366,6 +401,7 @@ def evaluate_observation_proof(
             has_sensitive=False,
             evidence_ids=evidence_ids,
             reason=f"observation status is {obs.get('status')!r}",
+            threshold=threshold,
         )
 
     episodes = _fetch_episodes_by_ids(conn, evidence_ids, user_id=user_id, tenant_id=tenant_id)
@@ -390,8 +426,10 @@ def evaluate_observation_proof(
         unresolved_failure_count=tally.unresolved_failure_count,
         superseded_ids=tally.superseded_ids or [],
         has_sensitive=tally.has_sensitive,
+        failure_ids=list(tally.failure_ids or []),
         evidence_ids=evidence_ids,
         reason=reason,
+        threshold=threshold,
     )
 
 
@@ -408,17 +446,33 @@ def _existing_skill_by_observation(
     conn: Any,
     observation_id: str,
     pattern_key: str,
-    *,
-    user_id: str,
-    tenant_id: str,
+    scope: UserScope,
 ) -> dict[str, Any] | None:
+    """Find the skill this observation already produced in its own destination lane.
+
+    The lookup is restricted to the caller's lane plus the shared ``default``
+    lane, and the match itself requires the exact destination namespace, so a
+    skill staged for one project (or in the shared lane) is never reused as the
+    target of another project's crystallization.
+    """
+    frag, ns_params = _ns_clause(scope.agent_id, scope.project)
+    dest_agent = scope.agent_id or "default"
+    dest_project = scope.project or "default"
     rows = conn.execute(
-        "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND category = ? "
-        "AND is_ghost = 0 ORDER BY updated_at DESC, created_at DESC LIMIT 100",
-        (tenant_id, user_id, SKILL_CATEGORY),
+        join_sql_parts(
+            "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND category = ? ",
+            "AND is_ghost = 0",
+            frag,
+            " ORDER BY updated_at DESC, created_at DESC",
+        ),
+        (scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params),
     ).fetchall()
     for row in rows:
         rd = dict(row)
+        if str(rd.get("agent_id") or "default") != dest_agent:
+            continue
+        if str(rd.get("project") or "default") != dest_project:
+            continue
         metrics = _parse_json_value(rd.get("metrics"), {})
         if metrics.get("observation_id") == observation_id or (
             pattern_key and metrics.get("pattern_key") == pattern_key
@@ -452,19 +506,13 @@ def select_skill_candidates(
             if not proof.eligible:
                 continue
             skill_name = _derive_skill_name(obs)
-            existing = _existing_skill_by_observation(
-                conn,
-                obs["id"],
-                obs.get("pattern_key", ""),
-                user_id=scope.user_id,
-                tenant_id=scope.tenant_id,
-            )
+            existing = _existing_skill_by_observation(conn, obs["id"], obs.get("pattern_key", ""), scope)
             existing_meta = _parse_json_value(existing.get("metrics"), {}) if existing else {}
-            existing_obs_ver = int(existing_meta.get("observation_version") or 0) if existing else 0
+            existing_text = str(existing_meta.get("observation_text") or "") if existing else ""
             existing_evidence = sorted(str(x) for x in (existing_meta.get("evidence_ids") or [])) if existing else []
             needs_update = existing is None or (
                 existing.get("review_status") == SKILL_REVIEW_RETIRED
-                or existing_obs_ver != int(obs.get("version") or 1)
+                or (bool(existing_text) and existing_text != str(obs.get("observation_text") or ""))
                 or existing_evidence != sorted(proof.evidence_ids)
             )
             candidates.append(
@@ -477,7 +525,10 @@ def select_skill_candidates(
                     "skill_name": skill_name,
                     "success_count": proof.success_count,
                     "failure_count": proof.failure_count,
+                    "unresolved_failure_count": proof.unresolved_failure_count,
+                    "proof_threshold": proof.threshold,
                     "evidence_ids": proof.evidence_ids,
+                    "failure_ids": list(proof.failure_ids or []),
                     "already_staged": existing is not None,
                     "existing_skill_id": existing["id"] if existing else None,
                     "existing_review_status": existing.get("review_status") if existing else None,
@@ -580,6 +631,7 @@ def render_skill_markdown(
     evidence_ids = sorted(str(eid) for eid in (candidate.get("evidence_ids") or []))
     confidence = round(float(candidate.get("confidence") or 0.5), 4)
     failure_count = int(candidate.get("failure_count") or 0)
+    unresolved_failure_count = int(candidate.get("unresolved_failure_count") or 0)
     observation_id = str(candidate.get("observation_id") or "")
     pattern_key = str(candidate.get("pattern_key") or "")
 
@@ -617,7 +669,8 @@ def render_skill_markdown(
             "## Provenance & Evidence",
             "",
             f"- Observation: `{observation_id}` (pattern `{pattern_key}`)",
-            f"- Verified successes: {success_count} (unresolved failures: {failure_count})",
+            f"- Verified successes: {success_count} (failures: {failure_count}, "
+            f"unresolved: {unresolved_failure_count})",
             f"- Evidence IDs: {', '.join(evidence_ids) if evidence_ids else 'none'}",
         ]
     )
@@ -640,7 +693,7 @@ def render_skill_markdown(
             "instructions": instructions,
         }
     )
-    signature = sign_skill_document(signing_doc)
+    signature = sign_skill_document(signing_doc) if skill_signing_configured() else None
 
     frontmatter_lines = [
         "---",
@@ -685,11 +738,13 @@ def render_skill_markdown(
         "memory_id": memory_id,
         "observation_id": observation_id,
         "observation_version": int(candidate.get("observation_version") or 1),
+        "observation_text": str(candidate.get("observation_text") or ""),
         "pattern_key": pattern_key,
         "evidence_ids": evidence_ids,
         "success_count": success_count,
         "failure_count": failure_count,
         "confidence": confidence,
+        "proof_threshold": int(candidate.get("proof_threshold") or 1),
         "retired": bool(retired),
         "retired_reason": retired_reason,
         "signature_alg": "HMAC-SHA256",
@@ -873,9 +928,10 @@ def crystallize_skills(
                 unchanged.append(existing_id)
                 continue
 
+            failed_ids = {str(x) for x in (cand.get("failure_ids") or [])}
             steps = _collect_procedure_steps(
                 conn,
-                cand["evidence_ids"],
+                [eid for eid in cand["evidence_ids"] if eid not in failed_ids],
                 user_id=scope.user_id,
                 tenant_id=scope.tenant_id,
             )
@@ -971,7 +1027,8 @@ def crystallize_skills(
                         version = ?, is_latest = 1, is_ghost = 0, inferred = 1,
                         review_status = NULL, review_reason = NULL, content_hash = ?,
                         valid_until = NULL
-                    WHERE id = ? AND tenant_id = ? AND user_id = ?""",
+                    WHERE id = ? AND tenant_id = ? AND user_id = ?
+                        AND COALESCE(agent_id, 'default') = ? AND COALESCE(project, 'default') = ?""",
                     (
                         stored_content,
                         now,
@@ -983,6 +1040,8 @@ def crystallize_skills(
                         memory_id,
                         scope.tenant_id,
                         scope.user_id,
+                        scope.agent_id or "default",
+                        scope.project or "default",
                     ),
                 )
                 version_id = _record_skill_version(
@@ -1086,7 +1145,7 @@ def list_skills(
     scope: UserScope,
     *,
     status: str = "approved",
-    limit: int = 50,
+    limit: int | None = 50,
     verify_signatures: bool = True,
     reconcile: bool = True,
 ) -> list[dict[str, Any]]:
@@ -1111,21 +1170,22 @@ def list_skills(
                 "AND inferred = 0 AND review_status = 'approved' AND is_ghost = 0 AND is_latest = 1 ",
                 "AND expired_at IS NULL ",
                 frag,
-                " ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+                " ORDER BY updated_at DESC, created_at DESC",
             )
-            params: list[Any] = [scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params, max(1, int(limit))]
+            params: list[Any] = [scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params]
         else:
             sql = join_sql_parts(
                 "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND category = ? ",
                 frag,
-                " ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+                " ORDER BY updated_at DESC, created_at DESC",
             )
-            params = [scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params, max(1, int(limit)) * 4]
+            params = [scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params]
         rows = conn.execute(sql, tuple(params)).fetchall()
     finally:
         conn.close()
 
     now_iso = _now_iso()
+    cap = None if limit is None else max(1, int(limit))
     records: list[dict[str, Any]] = []
     for row in rows:
         rd = dict(row)
@@ -1138,7 +1198,7 @@ def list_skills(
         elif status != "all" and rec["status"] != status:
             continue
         records.append(rec)
-        if len(records) >= max(1, int(limit)):
+        if cap is not None and len(records) >= cap:
             break
     return records
 
@@ -1148,7 +1208,25 @@ def load_skill(skill_name_or_id: str, scope: UserScope) -> dict[str, Any] | None
     target = skill_name_or_id.strip()
     if not target:
         return None
-    for skill in list_skills(scope, status="approved", limit=100, verify_signatures=True):
+    frag, ns_params = _ns_clause(scope.agent_id, scope.project)
+    conn = _connect()
+    try:
+        row = conn.execute(
+            join_sql_parts(
+                "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND category = ? AND id = ? ",
+                "AND is_ghost = 0 AND is_latest = 1 ",
+                frag,
+            ),
+            (scope.tenant_id, scope.user_id, SKILL_CATEGORY, target, *ns_params),
+        ).fetchone()
+        if row is not None:
+            rec = _skill_record(dict(row), verify_signatures=True)
+            if rec["status"] == "approved" and rec["signature_valid"]:
+                return rec
+    finally:
+        conn.close()
+
+    for skill in list_skills(scope, status="approved", limit=None, verify_signatures=True):
         if skill["memory_id"] == target or skill["skill_name"] == target:
             return skill
     return None
@@ -1179,7 +1257,7 @@ def export_skills_to_dir(
     """Export rendered SKILL.md packages into a ``skills/``-compatible directory layout."""
     base_dir = Path(output_dir)
     status = "all" if include_unapproved else "approved"
-    skills = list_skills(scope, status=status, limit=200, verify_signatures=True)
+    skills = list_skills(scope, status=status, limit=None, verify_signatures=True)
     if skill_name:
         target = skill_name.strip()
         skills = [s for s in skills if s["skill_name"] == target or s["memory_id"] == target]
@@ -1189,6 +1267,7 @@ def export_skills_to_dir(
     allowed_statuses = {"approved", "pending"} if include_unapproved else {"approved"}
     exported: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    taken_slugs: dict[str, str] = {}
     for skill in skills:
         if skill["status"] not in allowed_statuses:
             skipped.append({"memory_id": skill["memory_id"], "reason": f"status={skill['status']}"})
@@ -1197,6 +1276,9 @@ def export_skills_to_dir(
             skipped.append({"memory_id": skill["memory_id"], "reason": "invalid_signature"})
             continue
         slug = _skill_slug(skill["skill_name"])
+        if slug in taken_slugs and taken_slugs[slug] != skill["memory_id"]:
+            slug = f"{slug}-{skill['memory_id']}"
+        taken_slugs.setdefault(slug, skill["memory_id"])
         dest_dir = base_dir / slug
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_file = dest_dir / "SKILL.md"
@@ -1259,6 +1341,7 @@ def _retire_skill_row(
         "evidence_ids": evidence_ids,
         "success_count": int(meta.get("success_count") or 0),
         "failure_count": int(meta.get("failure_count") or 0),
+        "proof_threshold": int(meta.get("proof_threshold") or 1),
         "confidence": float(meta.get("confidence") or 0.5),
     }
     retired_md, signature, new_meta = render_skill_markdown(
@@ -1470,14 +1553,16 @@ def retire_stale_skills(scope: UserScope) -> list[dict[str, Any]]:
                 "status": obs_row.get("status") if obs_row else "active",
                 "supporting_memory_ids": evidence_ids,
             }
+            threshold = int(meta.get("proof_threshold") or 1)
             proof = evaluate_observation_proof(
                 conn,
                 synthetic_obs,
                 user_id=scope.user_id,
                 tenant_id=scope.tenant_id,
-                min_successes=1,
+                min_successes=threshold,
             )
-            if proof.superseded_ids or proof.unresolved_failure_count > 0 or proof.has_sensitive:
+            proof_lost = not proof.eligible
+            if proof.superseded_ids or proof.unresolved_failure_count > 0 or proof.has_sensitive or proof_lost:
                 reason_bits: list[str] = []
                 if proof.superseded_ids:
                     reason_bits.append(f"superseded evidence: {', '.join(proof.superseded_ids[:5])}")
@@ -1485,6 +1570,11 @@ def retire_stale_skills(scope: UserScope) -> list[dict[str, Any]]:
                     reason_bits.append(f"{proof.unresolved_failure_count} unresolved contradicting failure(s)")
                 if proof.has_sensitive:
                     reason_bits.append("sensitive evidence detected")
+                if proof_lost and not reason_bits:
+                    reason_bits.append(
+                        f"insufficient remaining successful evidence "
+                        f"({proof.success_count}/{threshold} successful episodes)"
+                    )
                 retired.append(
                     _retire_skill_row(
                         conn,

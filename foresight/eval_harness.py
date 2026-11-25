@@ -31,7 +31,7 @@ import re
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -685,6 +685,16 @@ class EvalHarness:
         self._conn: Any | None = None
         self._monkeypatches: list[tuple[Any, str, Any]] = []  # (module, attr, original_value)
         self._patches_applied: bool = False
+        # Separate from _patches_applied: a setup that raised halfway leaves
+        # patches applied (and tenant context set) with the flag still False,
+        # so cleanup has to key off "setup was attempted", not "setup finished".
+        self._setup_started: bool = False
+        # Expected memory ids that only exist after seeding (S12/S13).
+        # They live on the harness, not on the module-global SCENARIOS
+        # list, so a second harness or a caller iterating SCENARIOS never
+        # sees another database's ids.
+        self.generated_expectations: dict[str, set[str]] = {}
+        self.seeded_episode_ids: dict[str, str] = {}
 
     @property
     def db_path(self) -> str:
@@ -712,6 +722,8 @@ class EvalHarness:
         """
         if self._patches_applied:
             return
+
+        self._setup_started = True
 
         # Park the process-wide Postgres backend (if any) so deep call sites
         # that prefer get_db_connection() fall back to the patched temp DB.
@@ -789,11 +801,12 @@ class EvalHarness:
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
         backup = getattr(self, "_backend_backup", None)
-        if not self._patches_applied and backup is None:
-            # Never applied (or already restored): leave the process-wide
+        if not self._setup_started:
+            # Never attempted (or already restored): leave the process-wide
             # backend untouched instead of clearing it.
             return
         self._patches_applied = False
+        self._setup_started = False
 
         if backup is not None:
             set_backend(backup)
@@ -1069,8 +1082,8 @@ class EvalHarness:
         recall) and a prior failed episode whose error signature must surface
         for a matching query. The distiller runs against the same temp DB, so
         the seeded episodes flow through the production code path. Expected
-        memory ids are patched into the scenarios because the distilled ids
-        derive from tenant/user scope.
+        memory ids are resolved from the episodes seeded here and kept on the
+        harness because the distilled ids derive from tenant/user scope.
         """
         captured_iso = (now + timedelta(hours=-6)).isoformat()
         seeds = [
@@ -1123,31 +1136,61 @@ class EvalHarness:
 
         distill_experiences(user_id=self.user_id, tenant_id=self.tenant_id)
 
-        def _first_id(sql: str, extra: tuple = ()) -> str | None:
-            row = conn.execute(sql, (self.tenant_id, self.user_id, *extra)).fetchone()
-            if row is None:
-                return None
-            return dict(row).get("id")
+        def _memory_for_episode(episode_id: str) -> str | None:
+            """Find the procedural memory distilled from ``episode_id``.
 
-        failure_id = _first_id(
-            "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? AND memory_type = 'procedural' "
-            "AND error_signature IS NOT NULL LIMIT 1"
-        )
-        success_id = _first_id(
-            "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? AND memory_type = 'procedural' "
-            "AND error_signature IS NULL AND metrics LIKE ? LIMIT 1",
-            ("%success:%",),
-        )
+            Matching on the episode id recorded in ``metrics`` keeps the
+            expectation tied to what this harness seeded; a pre-existing
+            procedural row for the same tenant and user cannot satisfy it.
+            """
+            rows = conn.execute(
+                "SELECT id, metrics FROM memories WHERE tenant_id = ? AND user_id = ? "
+                "AND memory_type = 'procedural' AND (is_ghost = 0 OR is_ghost IS NULL)",
+                (self.tenant_id, self.user_id),
+            ).fetchall()
+            for row in rows:
+                try:
+                    metrics = json.loads(row["metrics"] or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if episode_id in (metrics.get("episode_ids") or []):
+                    return str(row["id"])
+            return None
 
-        for scenario in SCENARIOS:
-            if scenario.id == "S12_experience_repeat_task" and success_id:
-                scenario.expected_memory_ids = {success_id}
-            elif scenario.id == "S13_experience_failure_signature" and failure_id:
-                scenario.expected_memory_ids = {failure_id}
+        self.seeded_episode_ids = dict(episode_ids)
+        resolved: dict[str, str] = {}
+        for outcome, scenario_id in (
+            ("success", "S12_experience_repeat_task"),
+            ("failure", "S13_experience_failure_signature"),
+        ):
+            episode_id = episode_ids.get(outcome)
+            if not episode_id:
+                raise RuntimeError(f"eval setup error: the seeded {outcome} episode was not recorded")
+            memory_id = _memory_for_episode(episode_id)
+            if memory_id is None:
+                raise RuntimeError(
+                    f"eval setup error: no procedural memory was distilled from the seeded "
+                    f"{outcome} episode {episode_id}"
+                )
+            resolved[scenario_id] = memory_id
+        self.generated_expectations = {scenario_id: {memory_id} for scenario_id, memory_id in resolved.items()}
 
     # ------------------------------------------------------------------
     # Scenario execution
     # ------------------------------------------------------------------
+
+    def _resolve_expectations(self, scenario: EvalScenario) -> EvalScenario:
+        """Return the scenario with expectations resolved for this run.
+
+        Scenarios whose memories are produced by seeding (S12/S13) carry a
+        placeholder id; the seeded run replaces it with the memory distilled
+        from *its own* episodes, on a copy so the shared SCENARIOS list and
+        concurrent harnesses are untouched.
+        """
+        generated = self.generated_expectations.get(scenario.id)
+        if not generated:
+            return scenario
+        return replace(scenario, expected_memory_ids=set(generated))
 
     def run_scenario(
         self,
@@ -1158,8 +1201,9 @@ class EvalHarness:
 
         Measures payload size, latency, memory retrieval quality, and PII safety.
         """
+        resolved = self._resolve_expectations(scenario)
         try:
-            return self._do_run_scenario(scenario, budget_chars)
+            return self._do_run_scenario(resolved, budget_chars)
         except Exception as exc:
             logger.exception("Scenario %s failed with exception", scenario.id)
             return ScenarioResult(

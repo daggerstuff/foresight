@@ -15,7 +15,7 @@ def _tool_result_is_error(result) -> bool:
     read ``CallToolResult.is_error`` and otherwise see a denial as a
     successful call whose text happens to contain the denial message.
     """
-    return bool(result.is_error)
+    return bool(getattr(result, "is_error", False))
 
 
 @pytest.fixture
@@ -156,3 +156,76 @@ async def test_auth_middleware_requires_api_key_when_missing(monkeypatch):
     assert _tool_result_is_error(result) is True
     assert "missing api_key" in result.content[0].text
     call_next.assert_not_awaited()
+
+
+def _make_resource_context(api_key: str = ""):
+    return SimpleNamespace(
+        message=SimpleNamespace(
+            uri="foresight://skills",
+            meta=SimpleNamespace(model_extra={"api_key": api_key}),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_auth_middleware_requires_api_key_for_resource_reads(monkeypatch):
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="skills")
+
+    result = await AuthMiddleware().on_read_resource(_make_resource_context(), call_next)
+
+    text = result if isinstance(result, str) else "".join(chunk.text for chunk in result.content)
+    assert "missing api_key" in text
+    assert _tool_result_is_error(result) is True
+    call_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auth_middleware_binds_caller_identity_for_tool_calls(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = manager.create_user(
+        username="bound-caller",
+        email="bound-caller@example.com",
+        password="SecretPass123!",
+    )
+
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    seen: list[str | None] = []
+
+    async def call_next(_context):
+        seen.append(auth_module.get_caller_user_id())
+        return "ok"
+
+    result = await AuthMiddleware().on_call_tool(_make_context(user.api_key, "tenant-a"), call_next)
+
+    assert result == "ok"
+    assert seen == [user.user_id]
+    assert auth_module.get_caller_user_id() is None
+
+
+@pytest.mark.asyncio
+async def test_auth_middleware_binds_caller_identity_for_resource_reads(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = manager.create_user(
+        username="bound-reader",
+        email="bound-reader@example.com",
+        password="SecretPass123!",
+    )
+
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    seen: list[str | None] = []
+
+    async def call_next(_context):
+        seen.append(auth_module.get_caller_user_id())
+        return "skills"
+
+    result = await AuthMiddleware().on_read_resource(_make_resource_context(user.api_key), call_next)
+
+    assert result == "skills"
+    assert seen == [user.user_id]
+    assert auth_module.get_caller_user_id() is None

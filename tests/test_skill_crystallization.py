@@ -13,8 +13,14 @@ import pytest
 from starlette.testclient import TestClient
 
 from foresight.experience import EpisodeVerdict, build_episode, distill_experiences, record_outcome
+from foresight.memory_relationships import LinkMemoriesOptions, get_memory_relationship_store
 from foresight.observations import archive_observation, curate_observations, list_observations
-from foresight.profile_export import verify_skill_document
+from foresight.profile_export import (
+    SkillSignatureUnavailableError,
+    sign_document,
+    sign_skill_document,
+    verify_skill_document,
+)
 from foresight.reflect import UserScope
 from foresight.server import (
     USER_ID,
@@ -42,6 +48,7 @@ from foresight.skill_crystallization import (
     list_skills,
     load_skill,
     parse_skill_markdown,
+    retire_stale_skills,
     select_skill_candidates,
     verify_skill_markdown,
 )
@@ -145,6 +152,28 @@ def test_resolved_failure_does_not_block_and_sensitive_is_excluded():
     _store_procedural("Secret rotation step 3", procedure="secret-proc", is_sensitive=True)
     curate_observations(_scope())
     assert all(c["skill_name"] != "secret-proc" for c in select_skill_candidates(_scope()))
+
+
+def test_resolved_failure_stays_out_of_the_procedure_and_counts_separately(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "resolved-failure-key")
+    _seed_three_successes("safe-rollback")
+    _store_procedural(
+        "Rollback failed once on a transient lock (now resolved)",
+        procedure="safe-rollback",
+        outcome="failure",
+        resolved=True,
+    )
+    curate_observations(_scope())
+    result = crystallize_skills(_scope())
+    assert result["staged_count"] == 1
+
+    exported = export_skills_to_dir(_scope(), tmp_path, include_unapproved=True)
+    assert exported["exported_count"] == 1
+    content = (tmp_path / "safe-rollback" / "SKILL.md").read_text(encoding="utf-8")
+
+    procedure = content.split("## Procedure")[1].split("## Provenance")[0]
+    assert "transient lock" not in procedure
+    assert "failures: 1, unresolved: 0" in content
 
 
 def test_episodes_table_integration_when_present(tmp_path: Path, monkeypatch):
@@ -442,6 +471,107 @@ def test_archive_observation_auto_retires_skill():
     assert len(list_skills(_scope(), status="retired")) == 1
 
 
+def test_expired_contradiction_source_does_not_retire_skill():
+    ids = _seed_three_successes("expiring-contradiction")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+    manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID))
+
+    contra_id = _store_procedural(
+        "Do NOT use the old migration order; it corrupts indexes",
+        procedure="other",
+        outcome="failure",
+    )
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE memories SET expires_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", contra_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    link_memories(
+        LinkMemoriesParams(
+            source_memory_id=contra_id,
+            target_memory_id=ids[0],
+            relationship_type="contradicts",
+            user_id=USER_ID,
+        )
+    )
+
+    assert retire_stale_skills(_scope()) == []
+    assert list_skills(_scope(), status="retired") == []
+    assert load_skill("expiring-contradiction", _scope()) is not None
+
+
+def test_crystallization_in_a_project_lane_never_reuses_the_shared_lane_skill():
+    lane = UserScope(user_id=USER_ID, tenant_id=TENANT, agent_id="default", project="proj-b")
+
+    _seed_three_successes("lane-scoped-proc")
+    curate_observations(_scope())
+    first = crystallize_skills(_scope())["skills"][0]
+    manage_inferred(ManageInferredParams(action="approve", memory_id=first["memory_id"], user_id=USER_ID))
+    assert load_skill("lane-scoped-proc", _scope()) is not None
+
+    staged = crystallize_skills(lane)["skills"]
+    assert staged, "a project lane must not reuse the shared-lane skill"
+    second = staged[0]
+    assert second["memory_id"] != first["memory_id"]
+
+    conn = get_db_connection()
+    try:
+        rows = {
+            row["id"]: dict(row)
+            for row in conn.execute(
+                "SELECT id, agent_id, project, review_status FROM memories WHERE id IN (?, ?)",
+                (first["memory_id"], second["memory_id"]),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert rows[first["memory_id"]]["project"] in (None, "default")
+    assert rows[first["memory_id"]]["review_status"] == "approved"
+    assert rows[second["memory_id"]]["project"] == "proj-b"
+    assert load_skill("lane-scoped-proc", _scope()) is not None
+    assert load_skill("lane-scoped-proc", lane) is not None
+
+
+def test_expired_contradiction_source_is_ignored_by_the_retirement_sweep():
+    ids = _seed_three_successes("sweep-expired-contradiction")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+    manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID))
+
+    contra_id = _store_procedural(
+        "Do NOT use the old migration order; it corrupts indexes",
+        procedure="other",
+        outcome="failure",
+    )
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE memories SET expires_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", contra_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    get_memory_relationship_store().link_memories(
+        source_memory_id=contra_id,
+        target_memory_id=ids[0],
+        relationship_type="contradicts",
+        user_id=USER_ID,
+        options=LinkMemoriesOptions(tenant_id=TENANT),
+    )
+
+    assert retire_stale_skills(_scope()) == []
+    assert load_skill("sweep-expired-contradiction", _scope()) is not None
+
+
 def test_cli_skills_list_approve_export_and_verify(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "cli-test-key")
     _seed_three_successes("cli-workflow")
@@ -507,6 +637,33 @@ def test_write_time_supersede_retires_skill(monkeypatch):
     assert len(list_skills(_scope(), status="retired")) == 1
 
 
+def test_reconciliation_retires_when_live_evidence_falls_below_the_staging_threshold():
+    ids = _seed_three_successes("threshold-recheck")
+    curate_observations(_scope())
+    staged = crystallize_skills(_scope(), min_successes=2)
+    assert staged["staged_count"] == 1
+    skill_id = staged["skills"][0]["memory_id"]
+    manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID))
+    assert load_skill("threshold-recheck", _scope()) is not None
+
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE memories SET metrics = ?, tags = ? WHERE id IN (?, ?)",
+        (
+            json.dumps({"procedure_key": "threshold-recheck", "outcome": "mixed"}),
+            json.dumps(["procedural", "procedure:threshold-recheck", "outcome:mixed"]),
+            ids[0],
+            ids[1],
+        ),
+    )
+    conn.commit()
+
+    retired = retire_stale_skills(_scope())
+    assert [item["memory_id"] for item in retired] == [skill_id]
+    assert load_skill("threshold-recheck", _scope()) is None
+    assert len(list_skills(_scope(), status="retired")) == 1
+
+
 def test_rest_api_skills_endpoints(monkeypatch):
     monkeypatch.setenv("FORESIGHT_ALLOW_UNAUTHENTICATED", "1")
     _seed_three_successes("rest-skill")
@@ -563,3 +720,18 @@ def test_distilled_experience_episodes_crystallize_into_skill():
     loaded = load_skill(res["skills"][0]["skill_name"], _scope())
     assert loaded is not None
     assert loaded["signature_valid"] is True
+
+
+def test_skill_signatures_fail_closed_without_a_configured_secret(monkeypatch):
+    """A public development key must never authenticate a skill package."""
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    document = {"skill_name": "unsigned", "content": "Step 1: do the thing"}
+
+    # sign_document falls back to the public development key, so this is the
+    # signature an untrusted file can carry.
+    forged = sign_document(document)
+    assert verify_skill_document(document, forged) is False
+
+    with pytest.raises(SkillSignatureUnavailableError):
+        sign_skill_document(document)

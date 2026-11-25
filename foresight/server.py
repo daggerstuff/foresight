@@ -41,7 +41,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 from . import connection_pool, oauth_store, reflect as reflect_mod
 from .activity_log import record_activity
 from .audit import record_secret_defense_event, secret_defense_metadata
-from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
+from .auth import AuthMiddleware, Role, _should_require_api_key, get_auth_manager, get_caller_role
 from .auth_oauth import ForesightOAuthProvider, OAuthEndpointOptions
 from .backend import RedisCompanion, create_backend
 from .backend.backend_migrations import (
@@ -161,7 +161,11 @@ from .memory_types import (
     RetentionPolicy,
 )
 from .narrative_cache import NarrativeCache
-from .observations import curate_observations as _curate, list_observations
+from .observations import (
+    _ns_clause as _obs_ns_clause,
+    curate_observations as _curate,
+    list_observations,
+)
 from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
 from .profile_export import export_profile as _export
 from .profile_synthesizer import (
@@ -195,6 +199,7 @@ from .skill_crystallization import (
     crystallize_skills as _crystallize_skills,
     is_skill_memory_loadable as _is_skill_memory_loadable,
     list_skills as _list_skills,
+    relationship_source_is_live as _relationship_source_is_live,
     retire_skills_for_superseded_evidence as _retire_skills_for_superseded_evidence,
     retire_stale_skills as _retire_stale_skills,
     select_skill_candidates,
@@ -600,6 +605,8 @@ class InferredAction(BaseModel):
     memory_id: str | None = Field(default=None, description="Memory ID for approve/decline/undo")
     reason: str | None = Field(default=None, description="Reason recorded when declining")
     limit: int | None = Field(default=None, description="Max items for list (1-50, default 50)")
+    agent_id: str | None = Field(default=None, description="Agent namespace lane for the review queue")
+    project: str | None = Field(default=None, description="Project namespace lane for the review queue")
 
 
 class VersionAction(BaseModel):
@@ -1015,6 +1022,8 @@ class ManageInferredParams(BaseModel):
         default=None, description="Action and parameters (list, approve, decline, undo)"
     )
     user_id: str | None = Field(default=None, description="Optional user ID override")
+    agent_id: str | None = Field(default=None, description="Agent namespace lane for the review queue")
+    project: str | None = Field(default=None, description="Project namespace lane for the review queue")
     action: Literal["list", "approve", "decline", "undo"] | None = Field(
         default=None, description="Action to perform (fallback when options is not provided)"
     )
@@ -4923,6 +4932,25 @@ def record_episode_outcome(
     surface this episode when a similar error appears again.
     """
     uid = params.user_id or USER_ID
+    # An authenticated caller may only score the configured owner. Naming a
+    # different user is a write into that user's episode history, so it needs
+    # an admin key; without an authenticated caller (CLI, single-user servers,
+    # in-process jobs) there is no principal to check and the legacy behaviour
+    # stands.
+    caller_role = get_caller_role()
+    if params.user_id and params.user_id != USER_ID and caller_role is not None and caller_role is not Role.ADMIN:
+        return json.dumps(
+            {
+                "ok": False,
+                "action": "record_episode_outcome",
+                "error": {
+                    "message": (
+                        "Recording an outcome for another user requires an admin API key; "
+                        "omit user_id to score the configured owner's episodes."
+                    )
+                },
+            }
+        )
     tenant_id = get_current_account_id()
     try:
         episode = record_outcome(
@@ -8952,7 +8980,9 @@ def link_memories(
         )
     except MemoryRelationshipError as exc:
         return f"Error: {exc}"
-    if relationship_type in ("updates", "contradicts"):
+    if relationship_type in ("updates", "contradicts") and _relationship_source_is_live(
+        source_memory_id, user_id=uid, tenant_id=get_current_account_id()
+    ):
         try:
             _retire_skills_for_superseded_evidence(
                 [target_memory_id],
@@ -9044,11 +9074,19 @@ def traverse_memory_graph(
 INFERRED_LIST_MAX_LIMIT = 50
 
 
-def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
+def _handle_inferred_list(
+    uid: str,
+    tenant_id: str,
+    limit: int | None,
+    *,
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> str:
     """List inferred memories and staged/retired skills pending review, supporting-parent count first."""
     capped = max(1, min(limit if limit is not None else INFERRED_LIST_MAX_LIMIT, INFERRED_LIST_MAX_LIMIT))
+    ns_frag, ns_params = _obs_ns_clause(agent_id, project, prefix="m.")
     try:
-        _retire_stale_skills(UserScope(user_id=uid, tenant_id=tenant_id))
+        _retire_stale_skills(UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project))
     except Exception:
         logger.debug("stale skill reconciliation failed during inferred list", exc_info=True)
     conn = get_db_connection()
@@ -9064,10 +9102,13 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
             WHERE m.user_id = ? AND m.tenant_id = ? AND m.inferred = 1 AND m.is_ghost = 0
               AND m.expired_at IS NULL
               AND (m.review_status IS NULL OR m.review_status != 'declined')
+            """
+            + ns_frag
+            + """
             ORDER BY parent_count DESC, m.created_at DESC
             LIMIT ?
             """,
-            (uid, tenant_id, capped),
+            (uid, tenant_id, *ns_params, capped),
         ).fetchall()
     finally:
         conn.close()
@@ -9105,14 +9146,17 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
     return _tool_response(ok=True, action="list", items=items, count=len(items), limit=capped)
 
 
-def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
+def _handle_inferred_approve(
+    uid: str, tenant_id: str, memory_id: str, *, agent_id: str | None = None, project: str | None = None
+) -> str:
     """Promote an inferred memory or staged skill to approved status."""
     now = datetime.now(UTC).isoformat()
+    ns_frag, ns_params = _obs_ns_clause(agent_id, project)
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT inferred, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (memory_id, uid, tenant_id),
+            "SELECT inferred, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            (memory_id, uid, tenant_id, *ns_params),
         ).fetchone()
         if row is None:
             return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
@@ -9131,8 +9175,8 @@ def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
             return _tool_error("approve", f"memory {memory_id} is not inferred.", memory_id=memory_id)
         conn.execute(
             "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (now, memory_id, uid, tenant_id),
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            (now, memory_id, uid, tenant_id, *ns_params),
         )
         conn.commit()
     finally:
@@ -9143,14 +9187,16 @@ def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
     return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=False, status="approved")
 
 
-def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: str | None) -> str:
+def _handle_inferred_decline(scope: UserScope, memory_id: str, reason: str | None) -> str:
     """Soft-forget a rejected inferred memory (recoverable via undo)."""
     now = datetime.now(UTC).isoformat()
+    ns_frag, ns_params = _obs_ns_clause(scope.agent_id, scope.project)
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT inferred, is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (memory_id, uid, tenant_id),
+            "SELECT inferred, is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"
+            + ns_frag,
+            (memory_id, scope.user_id, scope.tenant_id, *ns_params),
         ).fetchone()
         if row is None:
             return _tool_error("decline", f"memory {memory_id} not found.", memory_id=memory_id)
@@ -9162,28 +9208,31 @@ def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: s
             return _tool_error("decline", f"memory {memory_id} is not inferred.", memory_id=memory_id)
         conn.execute(
             "UPDATE memories SET is_ghost = 1, review_status = 'declined', review_reason = ?, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (reason, now, memory_id, uid, tenant_id),
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            (reason, now, memory_id, scope.user_id, scope.tenant_id, *ns_params),
         )
         conn.commit()
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
-    get_context_cache().invalidate_user(uid)
+    get_hybrid_retriever().invalidate_caches(scope.user_id, scope.tenant_id)
+    get_context_cache().invalidate_user(scope.user_id)
     return _tool_response(
         ok=True, action="decline", memory_id=memory_id, already_applied=False, status="declined", reason=reason
     )
 
 
-def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
+def _handle_inferred_undo(
+    uid: str, tenant_id: str, memory_id: str, *, agent_id: str | None = None, project: str | None = None
+) -> str:
     """Reverse approve/decline and return the memory to the review queue."""
     now = datetime.now(UTC).isoformat()
+    ns_frag, ns_params = _obs_ns_clause(agent_id, project)
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (memory_id, uid, tenant_id),
+            "SELECT is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            (memory_id, uid, tenant_id, *ns_params),
         ).fetchone()
         if row is None:
             return _tool_error("undo", f"memory {memory_id} not found.", memory_id=memory_id)
@@ -9199,8 +9248,8 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
         conn.execute(
             "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, "
             "review_reason = NULL, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (now, memory_id, uid, tenant_id),
+            "WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            (now, memory_id, uid, tenant_id, *ns_params),
         )
         conn.commit()
     finally:
@@ -9234,8 +9283,9 @@ def manage_inferred(
     ``{"params": {"action": "approve", "memory_id": "..."}}``.
 
     Args:
-        params: ``ManageInferredParams`` — action, memory_id, reason, and
-            limit. Each field's description is advertised in the tool schema.
+        params: ``ManageInferredParams`` — action, memory_id, reason,
+            limit, and the agent_id/project lane. Each field's description
+            is advertised in the tool schema.
 
     Returns:
         JSON envelope with ``ok``, ``action``, and action-specific payload.
@@ -9252,18 +9302,24 @@ def manage_inferred(
             return _tool_error("manage_inferred", "either 'options' or 'action' must be provided.")
         options = InferredAction(action=action, memory_id=memory_id, reason=reason, limit=limit)
 
+    agent_id = params.agent_id or options.agent_id
+    project = params.project or options.project
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
     if options.action == "list":
-        return _handle_inferred_list(uid, tenant_id, options.limit)
+        return _handle_inferred_list(uid, tenant_id, options.limit, agent_id=agent_id, project=project)
     if not options.memory_id:
         return _tool_error(options.action, "'memory_id' is required for this action.")
     if options.action == "approve":
-        return _handle_inferred_approve(uid, tenant_id, options.memory_id)
+        return _handle_inferred_approve(uid, tenant_id, options.memory_id, agent_id=agent_id, project=project)
     if options.action == "decline":
-        return _handle_inferred_decline(uid, tenant_id, options.memory_id, options.reason)
-    return _handle_inferred_undo(uid, tenant_id, options.memory_id)
+        return _handle_inferred_decline(
+            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            options.memory_id,
+            options.reason,
+        )
+    return _handle_inferred_undo(uid, tenant_id, options.memory_id, agent_id=agent_id, project=project)
 
 
 # =============================================================================

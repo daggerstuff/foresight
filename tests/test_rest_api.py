@@ -35,6 +35,13 @@ def _bearer(token: str, user: str = USER, tenant: str = TENANT) -> dict[str, str
     return {"Authorization": f"Bearer {token}", "X-User-Id": user, "X-Tenant-Id": tenant}
 
 
+def _own_headers(api_key: str, tenant: str = TENANT) -> dict[str, str]:
+    """Headers naming the api key's own user, for routes that refuse acting as another user."""
+    owner = get_auth_manager().authenticate_api_key(api_key)
+    assert owner is not None
+    return _headers(api_key, user=owner.user_id, tenant=tenant)
+
+
 def _memory_id_from_store(result: str) -> str:
     match = re.search(r"Stored memory (\S+)\.", result)
     assert match, result
@@ -180,6 +187,46 @@ class TestIdentityAndScoping:
         theirs = client.get("/memories?q=alice", headers=_headers(api_key, user="bob"))
         assert theirs.status_code == HTTPStatus.OK
         assert theirs.json()["result"] == "No memories found."
+
+
+class TestReviewDataPrivilege:
+    def test_user_key_cannot_list_pending_skills(self, client: TestClient, api_key: str) -> None:
+        resp = client.get("/skills", params={"status": "pending"}, headers=_own_headers(api_key))
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+        assert resp.json()["error"]["message"] == "Admin role required to access review data"
+
+    def test_admin_key_can_list_pending_skills(self, client: TestClient) -> None:
+        admin = get_auth_manager().create_user(
+            "review_admin", "review-admin@test.local", "password-123", role=Role.ADMIN
+        )
+        resp = client.get("/skills", params={"status": "pending"}, headers=_headers(admin.api_key))
+        assert resp.status_code == HTTPStatus.OK
+
+    def test_approved_listing_serves_user_keys(self, client: TestClient, api_key: str) -> None:
+        resp = client.get("/skills", headers=_own_headers(api_key))
+        assert resp.status_code == HTTPStatus.OK
+
+    def test_user_key_cannot_crystallize_into_the_review_queue(self, client: TestClient, api_key: str) -> None:
+        resp = client.post("/skills/crystallize", json={}, headers=_own_headers(api_key))
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+        assert resp.json()["error"]["message"] == "Admin role required to access review data"
+
+
+class TestSkillIdentity:
+    def test_user_key_cannot_list_another_users_skills(self, client: TestClient, api_key: str) -> None:
+        resp = client.get("/skills", headers=_headers(api_key, user="bob"))
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+        assert resp.json()["error"]["message"] == "Admin role required to read another user's skills"
+
+    def test_user_key_cannot_read_another_users_skill(self, client: TestClient, api_key: str) -> None:
+        resp = client.get("/skills/deploy-checklist", headers=_headers(api_key, user="bob"))
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+        assert resp.json()["error"]["message"] == "Admin role required to read another user's skills"
+
+    def test_admin_key_can_read_another_users_skills(self, client: TestClient) -> None:
+        admin = get_auth_manager().create_user("skill_admin", "skill-admin@test.local", "password-123", role=Role.ADMIN)
+        resp = client.get("/skills", headers=_headers(admin.api_key, user="bob"))
+        assert resp.status_code == HTTPStatus.OK
 
 
 class TestMemoryLifecycle:

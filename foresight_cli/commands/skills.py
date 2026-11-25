@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from foresight.profile_export import skill_signing_configured
 from foresight.reflect import UserScope
 from foresight.server import (
     InferredAction,
@@ -77,6 +78,8 @@ class SkillsVerifyParams(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     target: str = Field(description="Path to a SKILL.md file, or skill name / memory ID")
+    agent_id: str | None = Field(default=None, description="Agent namespace lane")
+    project: str | None = Field(default=None, description="Project namespace lane")
     user_id: str | None = Field(default=None, description="User ID override")
 
 
@@ -86,6 +89,8 @@ class SkillsApproveParams(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     memory_id: str = Field(description="Staged skill memory ID")
+    agent_id: str | None = Field(default=None, description="Agent namespace lane")
+    project: str | None = Field(default=None, description="Project namespace lane")
     user_id: str | None = Field(default=None, description="User ID override")
 
 
@@ -96,6 +101,8 @@ class SkillsDeclineParams(BaseModel):
 
     memory_id: str = Field(description="Staged or retired skill memory ID")
     reason: str | None = Field(default=None, description="Reason recorded when declining")
+    agent_id: str | None = Field(default=None, description="Agent namespace lane")
+    project: str | None = Field(default=None, description="Project namespace lane")
     user_id: str | None = Field(default=None, description="User ID override")
 
 
@@ -145,7 +152,7 @@ def list_cmd(params: SkillsListParams) -> None:
         rows = [
             [
                 s["skill_name"],
-                s["memory_id"][:14],
+                s["memory_id"],
                 s["status"],
                 f"v{s['version']}",
                 str(s["success_count"]),
@@ -208,7 +215,7 @@ def verify_cmd(params: SkillsVerifyParams) -> None:
             "signature_valid": ok,
         }
     else:
-        scope = _init_scope(params.user_id)
+        scope = _init_scope(params.user_id, agent_id=params.agent_id, project=params.project)
         skill = load_skill(params.target, scope)
         if skill is None:
             out.error(f"Approved skill '{params.target}' not found or failed signature verification.")
@@ -223,6 +230,12 @@ def verify_cmd(params: SkillsVerifyParams) -> None:
     def _human() -> None:
         if payload["signature_valid"]:
             out.done(f"Signature VALID for {payload.get('skill_name') or payload['source']}")
+        elif not skill_signing_configured():
+            out.error(
+                f"Signature INVALID for {payload.get('skill_name') or payload['source']}: "
+                "no FORESIGHT_PROFILE_SIGNING_KEY or FORESIGHT_ENCRYPTION_KEY is configured, "
+                "so skill signatures cannot be authenticated."
+            )
         else:
             out.error(f"Signature INVALID for {payload.get('skill_name') or payload['source']}")
 
@@ -233,11 +246,13 @@ def verify_cmd(params: SkillsVerifyParams) -> None:
 
 def approve_cmd(params: SkillsApproveParams) -> None:
     """Approve a staged skill in the review queue so agents can load it."""
-    scope = _init_scope(params.user_id)
+    scope = _init_scope(params.user_id, agent_id=params.agent_id, project=params.project)
     raw = manage_inferred(
         ManageInferredParams(
             options=InferredAction(action="approve", memory_id=params.memory_id),
             user_id=scope.user_id,
+            agent_id=scope.agent_id,
+            project=scope.project,
         )
     )
     payload = json.loads(raw)
@@ -249,11 +264,13 @@ def approve_cmd(params: SkillsApproveParams) -> None:
 
 def decline_cmd(params: SkillsDeclineParams) -> None:
     """Decline a staged or retired skill in the review queue."""
-    scope = _init_scope(params.user_id)
+    scope = _init_scope(params.user_id, agent_id=params.agent_id, project=params.project)
     raw = manage_inferred(
         ManageInferredParams(
             options=InferredAction(action="decline", memory_id=params.memory_id, reason=params.reason),
             user_id=scope.user_id,
+            agent_id=scope.agent_id,
+            project=scope.project,
         )
     )
     payload = json.loads(raw)
@@ -305,17 +322,23 @@ def _crystallize_parser(parser: argparse.ArgumentParser) -> None:
 
 def _verify_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("target", help="Path to a SKILL.md file, or skill name / memory ID")
+    parser.add_argument("--agent-id", default=None, help="Optional agent namespace lane")
+    parser.add_argument("--project", default=None, help="Optional project namespace lane")
     parser.add_argument("--user-id", "-u", default=None, help="User ID override")
 
 
 def _approve_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("memory_id", help="Staged skill memory ID")
+    parser.add_argument("--agent-id", default=None, help="Optional agent namespace lane")
+    parser.add_argument("--project", default=None, help="Optional project namespace lane")
     parser.add_argument("--user-id", "-u", default=None, help="User ID override")
 
 
 def _decline_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("memory_id", help="Staged or retired skill memory ID")
     parser.add_argument("--reason", "-r", default=None, help="Reason recorded when declining")
+    parser.add_argument("--agent-id", default=None, help="Optional agent namespace lane")
+    parser.add_argument("--project", default=None, help="Optional project namespace lane")
     parser.add_argument("--user-id", "-u", default=None, help="User ID override")
 
 

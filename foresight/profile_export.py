@@ -27,20 +27,39 @@ SKILL_SCHEMA_VERSION = 1
 _SIGNING_CONTEXT = b"foresight-profile-export-v1"
 
 
-def _signing_key() -> bytes:
-    """Derive the profile signing key.
+class SkillSignatureUnavailableError(RuntimeError):
+    """Raised when no configured secret can authenticate a skill signature."""
 
-    Prefers ``FORESIGHT_PROFILE_SIGNING_KEY``; falls back to a key
-    derived from ``FORESIGHT_ENCRYPTION_KEY`` (domain-separated). When
-    neither is configured the signature is still produced but is not
-    secret — it proves document integrity/format, not authenticity.
-    """
+
+def _configured_signing_key() -> bytes | None:
+    """Return the key derived from a configured secret, or ``None``."""
     explicit = os.environ.get("FORESIGHT_PROFILE_SIGNING_KEY")
     if explicit:
         return hashlib.sha256(_SIGNING_CONTEXT + explicit.encode()).digest()
     enc = os.environ.get("FORESIGHT_ENCRYPTION_KEY")
     if enc:
         return hashlib.sha256(_SIGNING_CONTEXT + enc.encode()).digest()
+    return None
+
+
+def skill_signing_configured() -> bool:
+    """True when a configured secret can authenticate skill signatures."""
+    return _configured_signing_key() is not None
+
+
+def _signing_key() -> bytes:
+    """Derive the profile signing key.
+
+    Prefers ``FORESIGHT_PROFILE_SIGNING_KEY``; falls back to a key
+    derived from ``FORESIGHT_ENCRYPTION_KEY`` (domain-separated). When
+    neither is configured the exported document is still signed with a
+    public development key — that proves integrity/format, not
+    authenticity. Skill signatures never accept it: they require a
+    configured secret and fail closed otherwise.
+    """
+    key = _configured_signing_key()
+    if key is not None:
+        return key
     return hashlib.sha256(_SIGNING_CONTEXT + b"unsigned-dev-key").digest()
 
 
@@ -60,13 +79,27 @@ def verify_document(document: dict[str, Any], signature: str) -> bool:
 
 
 def sign_skill_document(skill_document: dict[str, Any]) -> str:
-    """Return the hex HMAC-SHA256 signature for a crystallized skill package."""
-    return sign_document(skill_document)
+    """Return the hex HMAC-SHA256 signature for a crystallized skill package.
+
+    Raises:
+        SkillSignatureUnavailableError: when no signing secret is configured, so an
+            untrusted artifact can never carry a verifying signature.
+    """
+    key = _configured_signing_key()
+    if key is None:
+        raise SkillSignatureUnavailableError(
+            "skill signing requires FORESIGHT_PROFILE_SIGNING_KEY or FORESIGHT_ENCRYPTION_KEY"
+        )
+    return hmac.new(key, _canonical(skill_document), hashlib.sha256).hexdigest()
 
 
 def verify_skill_document(skill_document: dict[str, Any], signature: str) -> bool:
-    """Verify a crystallized skill signature using the profile export HMAC key."""
-    return verify_document(skill_document, signature)
+    """Verify a crystallized skill signature; fails closed without a configured secret."""
+    key = _configured_signing_key()
+    if key is None:
+        return False
+    expected = hmac.new(key, _canonical(skill_document), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, str(signature))
 
 
 def build_profile_document(

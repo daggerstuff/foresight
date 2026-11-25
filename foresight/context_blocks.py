@@ -358,6 +358,7 @@ _PROCEDURAL_RULE_CATEGORIES = frozenset({"procedural", "procedure", "workflow", 
 _MUST_NOT_RE = re.compile(r"\b(?:must\s+not|must_not|never)\b", re.IGNORECASE)
 _MUST_RE = re.compile(r"\bmust\b", re.IGNORECASE)
 _SHOULD_RE = re.compile(r"\b(?:should|prefer|recommended|consider)\b", re.IGNORECASE)
+_STRENGTH_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:,|;|\||\bor\b)\s*", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -454,18 +455,38 @@ def retrieve_matching_rules(
     return [rule for rule in rules if rule.matches(context_text, terms=terms)]
 
 
-def _infer_experience_strength(observation: dict[str, Any]) -> RuleStrength:
-    explicit = observation.get("strength")
-    if explicit is not None:
-        return RuleStrength(str(explicit).strip().lower())
-    text = str(observation.get("observation_text") or "").strip()
-    # "should never" is a weak recommendation, not a prohibition: the should
-    # check must run before the must_not one, which matches bare "never".
+def _clause_strength(text: str) -> RuleStrength | None:
+    """Strength carried by one clause, or None when it states none.
+
+    "should never" is a weak recommendation, not a prohibition: the should
+    check must run before the must_not one, which matches bare "never".
+    """
     if _SHOULD_RE.search(text):
         return RuleStrength.SHOULD
     if _MUST_NOT_RE.search(text):
         return RuleStrength.MUST_NOT
     if _MUST_RE.search(text):
+        return RuleStrength.MUST
+    return None
+
+
+def _infer_experience_strength(observation: dict[str, Any]) -> RuleStrength:
+    explicit = observation.get("strength")
+    if explicit is not None:
+        return RuleStrength(str(explicit).strip().lower())
+    text = str(observation.get("observation_text") or "").strip()
+    # Strength is inferred per clause: a recommendation in one clause
+    # ("consider running the full suite too") must not downgrade an independent
+    # prohibition in another ("Never skip the smoke tests"). The strongest
+    # clause wins, and a text that states nothing keeps the 'should' default.
+    strengths = {
+        strength
+        for strength in (_clause_strength(clause) for clause in _STRENGTH_CLAUSE_SPLIT_RE.split(text))
+        if strength is not None
+    }
+    if RuleStrength.MUST_NOT in strengths:
+        return RuleStrength.MUST_NOT
+    if RuleStrength.MUST in strengths:
         return RuleStrength.MUST
     return RuleStrength.SHOULD
 
@@ -553,7 +574,14 @@ def _experience_has_sensitive_evidence(
     return False
 
 
-def _experience_has_approved_skill(conn: Any, observation_id: str, *, user_id: str, tenant_id: str) -> bool:
+def _approved_skill_versions(conn: Any, observation_id: str, *, user_id: str, tenant_id: str) -> set[int]:
+    """The observation versions an approved skill has reviewed.
+
+    A skill is staged against one version of the observation text and approved
+    for exactly that wording, so refining the observation must invalidate the
+    approval instead of silently widening it to text no reviewer saw.
+    """
+    versions: set[int] = set()
     rows = conn.execute(
         "SELECT metrics FROM memories WHERE tenant_id = ? AND user_id = ? "
         "AND category = 'skill' AND review_status = 'approved' AND is_ghost = 0",
@@ -563,10 +591,11 @@ def _experience_has_approved_skill(conn: Any, observation_id: str, *, user_id: s
         try:
             meta = json.loads(dict(row).get("metrics") or "{}")
         except (TypeError, ValueError):
-            meta = {}
-        if meta.get("observation_id") == observation_id:
-            return True
-    return False
+            continue
+        if str(meta.get("observation_id") or "") != observation_id:
+            continue
+        versions.add(int(meta.get("observation_version") or 1))
+    return versions
 
 
 def graduate_experience_to_rule(
@@ -581,8 +610,11 @@ def graduate_experience_to_rule(
     conn = get_db_connection()
     try:
         # Scope the lookup to the caller's lane plus the shared lane, so one
-        # lane's private observation cannot be graduated through another.
-        ns_frag, ns_params = _ns_clause(opts.agent_id, opts.project)
+        # lane's private observation cannot be graduated through another. An
+        # omitted lane means the shared lane, never "any lane": passing None
+        # to _ns_clause drops the predicate entirely and would match a private
+        # observation from some other lane.
+        ns_frag, ns_params = _ns_clause(opts.agent_id or "default", opts.project or "default")
         row = conn.execute(
             join_sql_parts(
                 "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ? ",
@@ -610,8 +642,16 @@ def graduate_experience_to_rule(
         if _experience_has_sensitive_evidence(conn, obs, user_id=user_id, tenant_id=tenant_id):
             raise ValueError(f"Observation {observation_id!r} carries sensitive evidence and cannot become a rule")
 
-        if not _experience_has_approved_skill(conn, observation_id, user_id=user_id, tenant_id=tenant_id):
+        approved_versions = _approved_skill_versions(conn, observation_id, user_id=user_id, tenant_id=tenant_id)
+        if not approved_versions:
             raise ValueError(f"Observation {observation_id!r} must be reviewed by an approved skill before graduating")
+        current_version = int(obs.get("version") or 1)
+        if current_version not in approved_versions:
+            reviewed = ", ".join(str(v) for v in sorted(approved_versions))
+            raise ValueError(
+                f"Observation {observation_id!r} is version {current_version} but its approved skill reviewed "
+                f"version {reviewed}; re-review is required before graduating"
+            )
     finally:
         conn.close()
 
@@ -625,6 +665,8 @@ def graduate_experience_to_rule(
         rule,
         user_id=user_id,
         tenant_id=tenant_id,
-        agent_id=opts.agent_id,
-        project=opts.project,
+        # The rule lands in the lane the observation itself lives in, so a
+        # graduation never widens a private observation's reach.
+        agent_id=str(obs.get("agent_id") or "") or opts.agent_id,
+        project=str(obs.get("project") or "") or opts.project,
     )

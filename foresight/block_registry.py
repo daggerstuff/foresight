@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, cast
 
 # =============================================================================
 # Enums
@@ -64,7 +64,9 @@ RULES_BLOCK_LABEL = "rules"
 RULES_PLACEHOLDER = "(No rules configured yet. Populated from explicit rules or graduated procedural experiences.)"
 _ALWAYS_APPLIES = frozenset({"", "*", "always", "any"})
 _CLAUSE_SPLIT_RE = re.compile(r"\s*(?:,|;|\||\bor\b)\s*", re.IGNORECASE)
-_TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
+# One-character tokens are kept: dropping them let "python 3" match a
+# Python 2 context, because only the remaining token had to be present.
+_TOKEN_RE = re.compile(r"[a-z0-9_]+")
 
 
 def _clause_matches(clause: str, context_lower: str, term_set: set[str]) -> bool:
@@ -159,9 +161,15 @@ class RuleEntry:
         return cls(
             statement=data["statement"],
             strength=RuleStrength(str(data["strength"]).strip().lower()),
-            applies_when=str(data.get("applies_when") or ""),
-            exception=str(data.get("exception") or ""),
-            source=str(data.get("source") or "manual"),
+            # Raw qualifiers go to __post_init__, which alone decides what a
+            # valid one is: stringifying here turned False into "" and let a
+            # rule that was meant to be conditional load as unconditional, and
+            # turned lists/dicts into matching text. None remains permitted and
+            # is normalised to "" there, so the cast is what that validation
+            # guarantees for every accepted value.
+            applies_when=cast(str, data.get("applies_when")),
+            exception=cast(str, data.get("exception")),
+            source=cast(str, data.get("source")),
         )
 
 

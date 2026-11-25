@@ -3,6 +3,7 @@ Authentication System for Foresight MCP
 Provides API key-based authentication with secure password hashing.
 """
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -640,8 +641,65 @@ def initialize_default_users() -> None:
 # FastMCP authentication middleware
 
 
+# ---------------------------------------------------------------------------
+# Caller identity
+# ---------------------------------------------------------------------------
+#
+# A tool body cannot see the request message, so the middleware binds who the
+# request was authenticated as before the tool runs and resets it afterwards.
+# Tool bodies that make authorization decisions read it instead of trusting a
+# caller-supplied ``user_id``.
+
+_CALLER_USER: contextvars.ContextVar[User | None] = contextvars.ContextVar("foresight_caller_user", default=None)
+
+
+def set_caller_identity(user: User) -> contextvars.Token[User | None]:
+    """Bind the authenticated caller for the current request.
+
+    The middleware calls this on the way in and passes the returned token to
+    :func:`reset_caller_identity`. In-process callers that authenticated
+    themselves may bind it directly, and must reset the token.
+    """
+    return _CALLER_USER.set(user)
+
+
+def reset_caller_identity(token: contextvars.Token[User | None]) -> None:
+    """Restore the caller identity that was in effect before the bound request."""
+    _CALLER_USER.reset(token)
+
+
+def get_caller_user() -> User | None:
+    """Return the authenticated caller, or ``None`` when auth is not enforced."""
+    return _CALLER_USER.get()
+
+
+def get_caller_user_id() -> str | None:
+    """Return the authenticated caller's user id, or ``None``."""
+    user = _CALLER_USER.get()
+    return user.user_id if user is not None else None
+
+
+def get_caller_role() -> Role | None:
+    """Return the authenticated caller's role, or ``None``."""
+    user = _CALLER_USER.get()
+    return user.role if user is not None else None
+
+
+class _AuthFailureError(Exception):
+    """Raised inside the middleware when a request cannot be authenticated."""
+
+    def __init__(self, result: ToolResult) -> None:
+        super().__init__("request authentication failed")
+        self.result = result
+
+
 class AuthMiddleware(_Middleware):
-    """FastMCP middleware that authenticates API calls via API key."""
+    """FastMCP middleware that authenticates API calls via API key.
+
+    Tool calls and resource reads both authenticate: a resource read has no
+    tool arguments, so it resolves the default tenant from the message and the
+    key's grant is validated against that, exactly as for a tool call.
+    """
 
     @staticmethod
     def _error_result(message: str) -> ToolResult:
@@ -650,24 +708,49 @@ class AuthMiddleware(_Middleware):
             is_error=True,
         )
 
+    @staticmethod
+    def _message_api_key(message: object) -> str | None:
+        """Extract the API key from request metadata, if any."""
+        if not message:
+            return None
+        meta = getattr(message, "meta", None)
+        if meta and hasattr(meta, "model_extra") and meta.model_extra:
+            api_key = meta.model_extra.get("api_key")
+            if isinstance(api_key, str) and api_key:
+                return api_key
+        return None
+
+    def _authenticate_message(self, message: object) -> User:
+        """Return the authenticated caller for ``message`` or raise _AuthFailureError."""
+        api_key = self._message_api_key(message)
+        if not api_key:
+            raise _AuthFailureError(self._error_result("Authentication required: missing api_key"))
+        user = get_auth_manager().authenticate_api_key(api_key)
+        if not user:
+            raise _AuthFailureError(self._error_result("Invalid API key"))
+        tenant_id = resolve_tenant_id_from_message(message)
+        if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
+            raise _AuthFailureError(self._error_result(f"Tenant access denied for tenant '{tenant_id}'"))
+        return user
+
+    async def _authenticated_call(self, context, call_next):
+        """Authenticate the request, bind the caller, and hand off."""
+        try:
+            user = self._authenticate_message(getattr(context, "message", None))
+        except _AuthFailureError as failure:
+            return failure.result
+        token = set_caller_identity(user)
+        try:
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)
+
     async def on_call_tool(self, context, call_next):
         if not _should_require_api_key():
             return await call_next(context)
+        return await self._authenticated_call(context, call_next)
 
-        # Extract API key from request metadata
-        api_key = None
-        message = getattr(context, "message", None)
-        if message:
-            meta = getattr(message, "meta", None)
-            if meta and hasattr(meta, "model_extra") and meta.model_extra:
-                api_key = meta.model_extra.get("api_key")
-        if not api_key:
-            return self._error_result("Authentication required: missing api_key")
-        user = get_auth_manager().authenticate_api_key(api_key)
-        if not user:
-            return self._error_result("Invalid API key")
-        tenant_id = resolve_tenant_id_from_message(message)
-        if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
-            return self._error_result(f"Tenant access denied for tenant '{tenant_id}'")
-        # Proceed to next middleware
-        return await call_next(context)
+    async def on_read_resource(self, context, call_next):
+        if not _should_require_api_key():
+            return await call_next(context)
+        return await self._authenticated_call(context, call_next)

@@ -46,7 +46,11 @@ from . import config as config_module
 from .backend.base import DatabaseBackend
 from .connection_pool import get_pool
 from .encryption import decrypt_if_encrypted
-from .error_signatures import normalize_error_signature
+from .error_signatures import (
+    error_class_signature,
+    error_signature_like_prefix,
+    normalize_error_signature,
+)
 from .query_rewrite import (
     llm_rewrite_enabled,
     merge_variant_rankings,
@@ -1099,9 +1103,11 @@ class HybridRetriever:
 
         # FOR-64: Match normalized error signatures against indexed procedural
         # failure memories so matching error classes surface even when paths,
-        # IPs, or line numbers differ from the original failure.
+        # hosts, IPs, or line numbers differ from the original failure. The
+        # class prefix keeps the lookup working when the retained detail differs.
         err_sig = normalize_error_signature(query)
         if err_sig:
+            err_class = error_class_signature(err_sig) or err_sig
             try:
                 sig_rows = self._fetch_rows(
                     join_sql_parts(
@@ -1110,7 +1116,7 @@ class HybridRetriever:
                     FROM memories
                     WHERE user_id = ? AND tenant_id = ?
                       AND is_ghost = 0
-                      AND error_signature = ?
+                      AND (error_signature = ? OR error_signature = ? OR error_signature LIKE ? ESCAPE '!')
                     """,
                         ns_frag,
                         expiry_frag,
@@ -1119,7 +1125,15 @@ class HybridRetriever:
                     LIMIT ?
                     """,
                     ),
-                    [user_id, tenant_id, err_sig, *ns_params, limit],
+                    [
+                        user_id,
+                        tenant_id,
+                        err_sig,
+                        err_class,
+                        error_signature_like_prefix(err_class),
+                        *ns_params,
+                        limit,
+                    ],
                 )
                 for row in sig_rows:
                     mid = row["id"]
@@ -1205,14 +1219,22 @@ class HybridRetriever:
     def invalidate_caches(self, user_id: str | None = None, tenant_id: str | None = None) -> None:
         """Drop cached results after a write that changes what recall may return.
 
-        The result cache is keyed only by request shape, so expiry, restore,
-        and policy expiry can leave a cached answer serving a now-expired
-        memory (or hiding a restored one). The TF-IDF cache is refreshed by
-        its visibility-aware doc count; the explicit clear here just avoids
-        waiting for that check.
+        The result cache key starts with the normalized query, the user and the
+        tenant, so a write for one scope evicts only that scope's answers:
+        distilling one user's session must not throw away another user's (or
+        another tenant's) cached recall. An unscoped call - a sweep that touched
+        rows belonging to several scopes - still clears everything, which is
+        what expiry, restore and policy expiry rely on. The TF-IDF cache is
+        refreshed by its visibility-aware doc count; the explicit call here just
+        avoids waiting for that check.
         """
         with self._result_cache_lock:
-            self._result_cache.clear()
+            if user_id and tenant_id:
+                stale = [key for key in self._result_cache if key[1:3] == (user_id, tenant_id)]
+                for key in stale:
+                    del self._result_cache[key]
+            else:
+                self._result_cache.clear()
         if user_id and tenant_id:
             self.invalidate_tfidf_cache(user_id, tenant_id)
 

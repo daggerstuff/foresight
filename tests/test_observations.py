@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from foresight import observations as observations_module
 from foresight.observations import list_observations
 from foresight.reflect import UserScope
 from foresight.server import (
@@ -137,3 +138,59 @@ def test_budgeted_injection_keeps_patterns_in_blocks_lane():
 
     output = inject_context(InjectContextParams(conversation_text="budget pattern", user_id=USER_ID, max_chars=4000))
     assert "pattern:" in output
+
+
+def _refine_candidate(pattern_key: str, memory_ids: list[str], text: str) -> dict:
+    return {
+        "pattern_key": pattern_key,
+        "observation_text": text,
+        "category": "procedural",
+        "confidence": 0.6,
+        "supporting_memory_ids": memory_ids,
+        "supporting_episode_ids": [],
+        "memory_type": "procedural",
+    }
+
+
+def test_refinement_never_resurrects_archived_observation(monkeypatch):
+    stamp = datetime.now(UTC).isoformat()
+    first = _store(f"archive guard step one ({stamp})", category="procedural")
+    second = _store(f"archive guard step two ({stamp})", category="procedural")
+    created = observations_module._upsert_observation(
+        _refine_candidate("procedural:archive-guard", [first], "Run the migration smoke check."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    assert observations_module.archive_observation(created["id"], user_id=USER_ID, tenant_id=TENANT) is True
+
+    monkeypatch.setattr(observations_module, "_find_observation", lambda *_args, **_kwargs: dict(created))
+    merged = observations_module._upsert_observation(
+        _refine_candidate("procedural:archive-guard", [first, second], "Run the migration smoke check twice."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    assert merged["id"] == created["id"]
+    assert merged["status"] == "archived"
+    archived = {o["id"]: o for o in list_observations(UserScope(USER_ID, TENANT), status="archived")}
+    assert archived[created["id"]]["supporting_memory_ids"] == [first]
+    assert archived[created["id"]]["version"] == created["version"]
+
+
+def test_repeated_refinement_keeps_version_when_nothing_changed():
+    stamp = datetime.now(UTC).isoformat()
+    first = _store(f"unchanged cluster step one ({stamp})", category="procedural")
+    candidate = _refine_candidate("procedural:unchanged-cluster", [first], "Run the nightly smoke check.")
+    created = observations_module._upsert_observation(candidate, user_id=USER_ID, tenant_id=TENANT)
+
+    repeat = observations_module._upsert_observation(candidate, user_id=USER_ID, tenant_id=TENANT)
+    assert repeat["version"] == created["version"]
+    assert repeat["last_refined_at"] == created["last_refined_at"]
+
+    changed = observations_module._upsert_observation(
+        _refine_candidate("procedural:unchanged-cluster", [first], "Run the nightly smoke check twice."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    assert changed["version"] == created["version"] + 1
+    assert changed["observation_text"] == "Run the nightly smoke check twice."
