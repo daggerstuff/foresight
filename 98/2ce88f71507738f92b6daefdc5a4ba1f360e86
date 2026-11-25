@@ -1,0 +1,20 @@
+foresight/block_registry.py
+  h_07d84030f79d30 74-76,81-82
+foresight/experience.py
+  h_07d84030f79d30 262,563-566,568,571-573,575-589
+tests/test_episode_experience.py
+  h_07d84030f79d30 14,26-27,297-332
+tests/test_rules_lane.py
+  h_07d84030f79d30 129-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "982ce88f71507738f92b6daefdc5a4ba1f360e86",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
