@@ -107,6 +107,7 @@ from .event_bus import (
     memory_updated,
     sync_progress,
 )
+from .experience import EpisodeVerdict, capture_session_outcome, distill_experiences, record_outcome
 from .ghost_cleanup import run_ghost_cleanup
 from .git_info import find_git_root
 from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
@@ -914,6 +915,31 @@ class ProcessSessionTranscriptParams(BaseModel):
     instructions: str | None = Field(
         default=None, description="Optional advisory guidance for extraction, recorded on verbatim memories"
     )
+
+
+class RecordEpisodeOutcomeParams(BaseModel):
+    """Arguments for :func:`record_episode_outcome`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    outcome: Literal["success", "failure", "mixed", "unknown"] = Field(
+        description="Session outcome as judged by the caller (user, or test/CI automation)"
+    )
+    session_id: str | None = Field(default=None, description="Session whose episode to score")
+    episode_id: str | None = Field(default=None, description="Episode ID to score (alternative to session_id)")
+    score: float | None = Field(default=None, ge=0.0, le=1.0, description="Optional 0-1 score; defaults from outcome")
+    score_source: Literal["user_feedback", "ci_result", "llm_rubric", "fallback"] = Field(
+        default="user_feedback",
+        description=(
+            "Where the score came from: explicit user feedback, CI/test result ingestion, "
+            "LLM rubric, or the deterministic fallback"
+        ),
+    )
+    detail: str | None = Field(
+        default=None,
+        description="Free-text rationale; error text here is normalized into the failure signature",
+    )
+    user_id: str | None = Field(default=None, description="Optional user ID override")
 
 
 class CaptureInFlightMemoryParams(BaseModel):
@@ -4858,7 +4884,63 @@ def process_session_transcript(
     # Hands-off auto cleanup and distillation of context blocks
     _distill_context_blocks(uid, tenant_id)
 
+    # FOR-60: build/score the episode for this session and distil experiences.
+    # Never allowed to break transcript processing.
+    try:
+        capture_session_outcome(
+            session_id,
+            user_id=uid,
+            tenant_id=tenant_id,
+            messages=messages,
+        )
+    except Exception:
+        logger.exception("Episode capture failed for session %s", session_id)
+
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
+
+
+@mcp.tool(output_schema=None)
+def record_episode_outcome(
+    params: Annotated[
+        RecordEpisodeOutcomeParams,
+        Field(description='Every argument for record_episode_outcome, sent as {"params": {...}}.'),
+    ],
+) -> str:
+    """Record the outcome of a finished session as an episode score.
+
+    Use this when a human judges how a session went (source ``user_feedback``)
+    or when CI/test automation reports the result (source ``ci_result``).
+    The episode is created if the session was never seen. Explicit outcomes
+    are never overridden by automatic scoring. Failure details are
+    normalized into an error signature so the failure-signature recall can
+    surface this episode when a similar error appears again.
+    """
+    uid = params.user_id or USER_ID
+    tenant_id = get_current_account_id()
+    try:
+        episode = record_outcome(
+            uid,
+            tenant_id,
+            EpisodeVerdict(
+                outcome=params.outcome,
+                score=params.score,
+                score_source=params.score_source,
+                detail=params.detail,
+                episode_id=params.episode_id,
+                session_id=params.session_id,
+            ),
+        )
+    except LookupError as exc:
+        return json.dumps({"ok": False, "action": "record_episode_outcome", "error": {"message": str(exc)}})
+    except ValueError as exc:
+        return json.dumps({"ok": False, "action": "record_episode_outcome", "error": {"message": str(exc)}})
+
+    try:
+        distill_experiences(user_id=uid, tenant_id=tenant_id)
+    except Exception:
+        logger.exception("post-outcome distillation failed")
+
+    return json.dumps({"ok": True, "action": "record_episode_outcome", "episode": episode}, default=str)
 
 
 @mcp.tool(output_schema=None)

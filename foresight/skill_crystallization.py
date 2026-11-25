@@ -337,12 +337,21 @@ def evaluate_observation_proof(
 ) -> SkillProofEvaluation:
     """Evaluate whether a procedural observation meets the crystallization threshold."""
     threshold = min_success_threshold(min_successes)
-    raw_ids = [str(eid) for eid in (obs.get("supporting_memory_ids") or []) if eid]
+    raw_ids = [
+        str(eid)
+        for eid in ([*(obs.get("supporting_memory_ids") or []), *(obs.get("supporting_episode_ids") or [])])
+        if eid
+    ]
     evidence_ids = list(dict.fromkeys(raw_ids))
 
     category = str(obs.get("category") or "").strip().lower()
+    memory_type = str(obs.get("memory_type") or "").strip().lower()
     pattern_key = str(obs.get("pattern_key") or "").strip().lower()
-    is_procedural = category in _PROCEDURAL_CATEGORIES or pattern_key.startswith("procedural:")
+    is_procedural = (
+        category in _PROCEDURAL_CATEGORIES
+        or memory_type == "procedural"
+        or pattern_key.startswith("procedural:")
+    )
 
     if obs.get("status") not in ("active", "refined"):
         return SkillProofEvaluation(

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
+from foresight.experience import EpisodeVerdict, build_episode, distill_experiences, record_outcome
 from foresight.observations import archive_observation, curate_observations, list_observations
 from foresight.profile_export import verify_skill_document
 from foresight.reflect import UserScope
@@ -537,4 +538,36 @@ def test_rest_api_skills_endpoints(monkeypatch):
         loaded = client.get("/skills/rest-skill", headers=headers)
         assert loaded.status_code == HTTPStatus.OK
         assert loaded.json()["skill"]["memory_id"] == skill_id
+
+
+def test_distilled_experience_episodes_crystallize_into_skill():
+    for idx in range(3):
+        sid = f"ep-cryst-{idx}"
+        build_episode(
+            sid,
+            user_id=USER_ID,
+            tenant_id=TENANT,
+            messages=[
+                {"role": "user", "content": "run database migration verification checklist"},
+                {"role": "assistant", "content": "running migration check"},
+                {"role": "tool", "content": "12 passed in 1.1s\nexit code 0"},
+            ],
+        )
+        record_outcome(
+            USER_ID,
+            TENANT,
+            EpisodeVerdict(outcome="success", score_source="ci_result", session_id=sid),
+        )
+
+    distilled = distill_experiences(user_id=USER_ID, tenant_id=TENANT)
+    assert distilled["successes_distilled"] >= 1
+
+    res = crystallize_skills(_scope())
+    assert res["staged_count"] == 1
+    skill_id = res["skills"][0]["memory_id"]
+    manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID))
+    loaded = load_skill(res["skills"][0]["skill_name"], _scope())
+    assert loaded is not None
+    assert loaded["signature_valid"] is True
+
 
