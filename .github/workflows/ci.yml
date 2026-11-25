@@ -51,6 +51,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # A hang here used to hold the concurrency group for hours: the suite is
+    # ~15 minutes locally, so anything past this is stuck, not slow.
+    timeout-minutes: 40
     strategy:
       matrix:
         python-version: ['3.12', '3.14']
@@ -126,7 +129,7 @@ jobs:
         env:
           FORESIGHT_DB_URL: postgresql://postgres@localhost:5432/postgres?sslmode=disable
         run: |
-          uv run pytest tests/ --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
+          uv run pytest tests/ -v --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 
       - name: Retrieval quality regression gate
         run: |

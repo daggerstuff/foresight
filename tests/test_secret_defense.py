@@ -24,14 +24,18 @@ from foresight.sensitivity import (
     set_secret_defense_policy,
 )
 from foresight.server import ManageMemoriesParams, MemoryUpdateOptions, get_db_connection, manage_memories
-from foresight.tenant_context import set_current_account_id
+from foresight.tenant_context import get_current_account_id, set_current_account_id
 
 
 @pytest.fixture(autouse=True)
 def _clean_policies():
+    # Several tests here set the ambient tenant; leaving it set made later
+    # modules write under one tenant and read under another.
+    previous_tenant = get_current_account_id()
     reset_secret_defense_policies()
     yield
     reset_secret_defense_policies()
+    set_current_account_id(previous_tenant)
 
 
 def test_default_mode_is_redact():

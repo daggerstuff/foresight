@@ -200,7 +200,9 @@ def test_search_excludes_expired_unless_requested():
 
     with _patched_db(db) as store:
         for mid in ("live", "revoked", "scheduled"):
-            store.index_memory(memory_id=mid, text="hello world", user_id="u1")
+            # Explicit tenant: the searches below ask for "default", so the write
+            # must not inherit an ambient tenant left by another module.
+            store.index_memory(memory_id=mid, text="hello world", user_id="u1", tenant_id="default")
         default = store.search(
             "hello world",
             "u1",
