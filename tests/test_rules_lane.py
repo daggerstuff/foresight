@@ -222,6 +222,15 @@ def test_compile_experience_never_upgrades_should_to_must():
     }
     assert compile_experience_to_rule(recipe_obs, requested_strength="must").strength == RuleStrength.SHOULD
 
+    # "should never" is a weak recommendation, not a prohibition.
+    should_never = {
+        "id": "obs_should_never",
+        "observation_text": "You should never force-push to main.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(should_never).strength == RuleStrength.SHOULD
+
     # Explicit 'must' can stay 'must' or downgrade to 'should'.
     must_obs = {
         "id": "obs_must_1",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-_SIGNATURE_SCAN_CHARS = 8000
 _SIGNATURE_MAX = 160
 
 _PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:/[\w.\-]+){2,}|\b[\w.\-]+/[\w./\-]{4,}")
@@ -15,6 +14,7 @@ _WS_RE = re.compile(r"\s+")
 _EXCEPTION_RE = re.compile(
     r"([A-Za-z_][\w.]{0,80}?(?:Error|Exception|ExceptionGroup|Fault|Panic|Timeout|Refused|Denied|Failure))"
     r"\b\s*[:\-]?\s*([^\n]{0,160})",
+    re.IGNORECASE,
 )
 _TEST_FAILURE_RE = re.compile(r"\bFAILED\b[:\s]+([^\n]{0,140})", re.IGNORECASE)
 _EXIT_CODE_RE = re.compile(r"exit(?:ed)?(?: with)?(?: code| status)[:=\s]+([1-9]\d*)\b", re.IGNORECASE)
@@ -39,7 +39,9 @@ def normalize_error_signature(text: str | None) -> str | None:
     """
     if not text:
         return None
-    tail = text[-_SIGNATURE_SCAN_CHARS:]
+    # Scan the whole text: a long session can carry its only failure early,
+    # and a tail window would then record no signature at all.
+    tail = text
 
     match = _EXCEPTION_RE.search(tail)
     if match:

@@ -4899,6 +4899,10 @@ def process_session_transcript(
     except Exception:
         logger.exception("Episode capture failed for session %s", session_id)
 
+    # This call stores memories and distils context, so a query injected
+    # before it must not be served from the injection cache.
+    get_context_cache().invalidate_user(uid)
+
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
 
 
@@ -6598,7 +6602,9 @@ def _matching_rule_entries(view: InjectionView) -> list[Any]:
             ),
         )
     except Exception:
-        logger.debug("rule lookup failed (non-fatal)", exc_info=True)
+        # Warn rather than swallow: a lookup failure silently drops must /
+        # must_not constraints from the prompt.
+        logger.warning("rule lookup failed; no rules injected this turn", exc_info=True)
         return []
 
 

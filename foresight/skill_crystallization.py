@@ -133,6 +133,9 @@ def _episode_outcome_kind(row: dict[str, Any]) -> tuple[str | None, bool]:
         return "success", True
     if outcome in _FAILURE_OUTCOMES:
         return "failure", resolved
+    if outcome in {"mixed", "unknown"}:
+        # record_outcome defaults these to 0.5, which is not evidence of success.
+        return None, resolved
 
     score = row.get("outcome_score")
     if score is not None:

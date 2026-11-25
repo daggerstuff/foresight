@@ -39,7 +39,8 @@ All notable changes to Foresight MCP are documented here.
   session end in `process_session_transcript` and scored automatically;
   explicit outcomes recorded via `record_episode_outcome` always win.
   Failed sessions carry a normalized `error_signature` (paths, ids, and
-  numbers stripped) so the same failure class maps to one signature.
+  volatile numbers stripped) so the same failure class maps to one signature;
+  an exit code is kept as its own `exit-code-N` signature.
   Scored episodes that resolve to a success or a failure are distilled into
   procedural observations whose evidence is the producing episodes (new
   `observations.supporting_episode_ids` and `memory_type` columns) and into

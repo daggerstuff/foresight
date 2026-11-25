@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .error_signatures import normalize_error_signature
+from .hybrid_retriever import get_hybrid_retriever
 from .llm_client import default_llm_call
 from .observations import EpisodeObservationSpec, upsert_episode_observation
 from .reflect import _connect, _fetch_all, _fetch_one
@@ -243,7 +244,9 @@ def build_episode(
     # from the caller's messages; apply the same secret policy before storing.
     summary_verdict = evaluate_secrets(_task_summary(messages), tenant_id=tenant_id)
     summary = "" if summary_verdict.blocked else summary_verdict.content
-    sensitivity_text = "\n".join(str(m.get("content") or "") for m in messages)[:20000]
+    # Scan the whole transcript: truncating let sensitive content later in a
+    # long session slip past the flag.
+    sensitivity_text = "\n".join(str(m.get("content") or "") for m in messages)
     is_sensitive = 1 if (sensitivity_text and resolve_is_sensitive(None, sensitivity_text)[0]) else 0
 
     first = raw_events[0] if raw_events else None
@@ -347,7 +350,7 @@ def record_outcome(user_id: str, tenant_id: str, verdict: EpisodeVerdict) -> dic
                 verdict.score_source,
                 detail_text,
                 signature,
-                1 if outcome == "success" else int(bool(episode.get("resolved"))),
+                {"success": 1, "failure": 0}.get(outcome, int(bool(episode.get("resolved")))),
                 _now_iso(),
                 episode["id"],
                 tenant_id,
@@ -429,14 +432,15 @@ def auto_score_episode(
         conn.execute(
             """UPDATE episodes SET outcome = ?, outcome_score = ?, score_source = ?, score_detail = ?,
                    error_signature = COALESCE(?, error_signature), resolved = ?, updated_at = ?
-               WHERE id = ? AND tenant_id = ? AND user_id = ?""",
+               WHERE id = ? AND tenant_id = ? AND user_id = ?
+                 AND (score_source IS NULL OR score_source NOT IN ('user_feedback', 'ci_result'))""",
             (
                 outcome,
                 _clamp_score(score),
                 source,
                 detail,
                 signature,
-                1 if outcome == "success" else int(bool(episode.get("resolved"))),
+                {"success": 1, "failure": 0}.get(outcome, int(bool(episode.get("resolved")))),
                 _now_iso(),
                 episode["id"],
                 tenant_id,
@@ -540,6 +544,8 @@ def _upsert_procedural_memory(
             )
             created = True
         conn.commit()
+        # A query cached before distillation must not hide the new memory.
+        get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
         return memory_id, created
     finally:
         conn.close()

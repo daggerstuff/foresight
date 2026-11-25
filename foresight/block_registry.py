@@ -95,6 +95,12 @@ class RuleEntry:
     def __post_init__(self) -> None:
         if not isinstance(self.statement, str) or not self.statement.strip():
             raise ValueError("RuleEntry.statement must be a non-empty string")
+        # Reject non-string qualifiers instead of stringifying them into
+        # misleading values ("None", "123").
+        for name in ("applies_when", "exception", "source"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"RuleEntry.{name} must be a string")
         object.__setattr__(self, "statement", self.statement.strip())
         object.__setattr__(self, "strength", RuleStrength(str(self.strength).strip().lower()))
         object.__setattr__(self, "applies_when", str(self.applies_when or "").strip())

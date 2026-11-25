@@ -27,6 +27,7 @@ from .block_registry import (
 )
 from .connection_pool import get_db_connection
 from .context_cache import get_context_cache
+from .observations import _ns_clause
 from .sensitivity import resolve_is_sensitive
 from .sql_helpers import join_sql_parts, placeholders
 from .subconscious import (
@@ -458,10 +459,12 @@ def _infer_experience_strength(observation: dict[str, Any]) -> RuleStrength:
     if explicit is not None:
         return RuleStrength(str(explicit).strip().lower())
     text = str(observation.get("observation_text") or "").strip()
-    if _MUST_NOT_RE.search(text):
-        return RuleStrength.MUST_NOT
+    # "should never" is a weak recommendation, not a prohibition: the should
+    # check must run before the must_not one, which matches bare "never".
     if _SHOULD_RE.search(text):
         return RuleStrength.SHOULD
+    if _MUST_NOT_RE.search(text):
+        return RuleStrength.MUST_NOT
     if _MUST_RE.search(text):
         return RuleStrength.MUST
     return RuleStrength.SHOULD
@@ -577,9 +580,15 @@ def graduate_experience_to_rule(
     opts = options or RuleGraduateOptions()
     conn = get_db_connection()
     try:
+        # Scope the lookup to the caller's lane plus the shared lane, so one
+        # lane's private observation cannot be graduated through another.
+        ns_frag, ns_params = _ns_clause(opts.agent_id, opts.project)
         row = conn.execute(
-            "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ?",
-            (observation_id, tenant_id, user_id),
+            join_sql_parts(
+                "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ? ",
+                ns_frag,
+            ),
+            (observation_id, tenant_id, user_id, *ns_params),
         ).fetchone()
         if row is None:
             raise LookupError(f"Observation {observation_id!r} not found")

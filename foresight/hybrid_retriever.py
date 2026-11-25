@@ -1109,6 +1109,7 @@ class HybridRetriever:
                     SELECT id
                     FROM memories
                     WHERE user_id = ? AND tenant_id = ?
+                      AND is_ghost = 0
                       AND error_signature = ?
                     """,
                         ns_frag,
