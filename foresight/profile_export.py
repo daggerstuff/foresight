@@ -23,6 +23,7 @@ from .reflect import UserScope, list_mental_models
 logger = logging.getLogger("foresight_profile_export")
 
 PROFILE_VERSION = 1
+SKILL_SCHEMA_VERSION = 1
 _SIGNING_CONTEXT = b"foresight-profile-export-v1"
 
 
@@ -56,6 +57,16 @@ def verify_document(document: dict[str, Any], signature: str) -> bool:
     """Verify a signature against a document (constant-time)."""
     expected = sign_document(document)
     return hmac.compare_digest(expected, str(signature))
+
+
+def sign_skill_document(skill_document: dict[str, Any]) -> str:
+    """Return the hex HMAC-SHA256 signature for a crystallized skill package."""
+    return sign_document(skill_document)
+
+
+def verify_skill_document(skill_document: dict[str, Any], signature: str) -> bool:
+    """Verify a crystallized skill signature using the profile export HMAC key."""
+    return verify_document(skill_document, signature)
 
 
 def build_profile_document(

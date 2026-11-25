@@ -23,6 +23,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,6 +37,14 @@ logger = logging.getLogger("foresight_observations")
 MIN_CLUSTER_SIZE = 2
 MAX_INJECTION_OBSERVATIONS = 3
 _RECENCY_HALF_LIFE_DAYS = 30.0
+_MAX_SUMMARY_CHARS = 200
+_ARCHIVE_LISTENERS: list[Callable[[str, str, str], Any]] = []
+
+
+def register_archive_listener(listener: Callable[[str, str, str], Any]) -> None:
+    """Register a callback invoked as ``listener(observation_id, user_id, tenant_id)`` on archive."""
+    if listener not in _ARCHIVE_LISTENERS:
+        _ARCHIVE_LISTENERS.append(listener)
 
 
 def _execute(sql: str, params: tuple | list = ()) -> None:
@@ -96,6 +105,81 @@ def _slug(text: str, length: int = 48) -> str:
     return slug[:length] or "pattern"
 
 
+_PROCEDURAL_CATEGORIES = frozenset({"procedural", "procedure", "workflow", "recipe"})
+
+
+def _parse_json_obj(raw: Any, default: Any) -> Any:
+    if isinstance(raw, type(default)):
+        return raw
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, type(default)) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _procedural_key(row: dict[str, Any]) -> str | None:
+    """Derive a stable procedural pattern key for a procedural memory row."""
+    if bool(row.get("is_sensitive")):
+        return None
+    cat = (row.get("category") or "").strip().lower()
+    mtype = (row.get("memory_type") or "").strip().lower()
+    if mtype != "procedural" and cat not in _PROCEDURAL_CATEGORIES:
+        return None
+
+    metrics = _parse_json_obj(row.get("metrics"), {})
+    for key in ("procedure_key", "skill_name", "procedure"):
+        val = metrics.get(key)
+        if isinstance(val, str) and val.strip():
+            return f"procedural:{_slug(val)}"
+
+    tags = _parse_json_obj(row.get("tags"), [])
+    for tag in tags:
+        if not isinstance(tag, str):
+            continue
+        low = tag.strip().lower()
+        for prefix in ("procedure:", "skill:", "workflow:"):
+            if low.startswith(prefix) and len(low) > len(prefix):
+                return f"procedural:{_slug(low[len(prefix) :])}"
+
+    if cat and cat not in _PROCEDURAL_CATEGORIES and cat not in ("fact", "general"):
+        return f"procedural:{_slug(cat)}"
+
+    content = (row.get("content") or "").strip()
+    head = content.splitlines()[0][:64] if content else "procedure"
+    return f"procedural:{_slug(head)}"
+
+
+def _detect_procedural_candidates(rows: list[dict]) -> list[dict[str, Any]]:
+    """Cluster procedural memories/episodes into procedural observation candidates."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        pkey = _procedural_key(row)
+        if pkey is None:
+            continue
+        groups.setdefault(pkey, []).append(row)
+
+    candidates: list[dict[str, Any]] = []
+    for pkey, members in groups.items():
+        ids = [m["id"] for m in members]
+        if len(ids) < MIN_CLUSTER_SIZE:
+            continue
+        first_text = str(members[0].get("content") or "").strip()
+        summary = first_text[:_MAX_SUMMARY_CHARS] + ("..." if len(first_text) > _MAX_SUMMARY_CHARS else "")
+        candidates.append(
+            {
+                "pattern_key": pkey,
+                "observation_text": f"Procedural pattern ({pkey.split(':', 1)[-1]}): {summary}",
+                "category": "procedural",
+                "confidence": min(0.95, 0.5 + 0.08 * len(ids)),
+                "supporting_memory_ids": ids,
+            }
+        )
+    return candidates
+
+
 def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     """Detect recurring patterns via the enhanced synthesizer.
 
@@ -110,9 +194,16 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     synth = EnhancedMemorySynthesizer()
     candidates: list[dict[str, Any]] = []
 
+    # Procedural pattern clusters (never distill is_sensitive rows).
+    procedural_candidates = _detect_procedural_candidates(rows)
+    candidates.extend(procedural_candidates)
+    procedural_ids = {mid for c in procedural_candidates for mid in c["supporting_memory_ids"]}
+
     # Recurring category clusters — the base "keeps happening" signal.
     by_category: dict[str, list[dict]] = {}
     for row in rows:
+        if row["id"] in procedural_ids and (row.get("category") or "general") in _PROCEDURAL_CATEGORIES:
+            continue
         cat = row.get("category") or "general"
         by_category.setdefault(cat, []).append(row)
     for cat, members in by_category.items():
@@ -278,7 +369,8 @@ def curate_observations(
     tenant_id = scope.tenant_id
     t0 = time.perf_counter()
     sql = (
-        "SELECT id, content, category, scope, retention, created_at, tags "
+        "SELECT id, content, category, scope, retention, created_at, tags, "
+        "memory_type, metrics, is_sensitive, is_latest "
         "FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 AND is_latest = 1"
     )
     params: list[Any] = [user_id, tenant_id]
@@ -381,6 +473,13 @@ def archive_observation(observation_id: str, *, user_id: str, tenant_id: str) ->
             (observation_id, tenant_id, user_id),
         )
         conn.commit()
-        return bool(cur.rowcount)
+        archived = bool(cur.rowcount)
     finally:
         conn.close()
+    if archived:
+        for listener in _ARCHIVE_LISTENERS:
+            try:
+                listener(observation_id, user_id, tenant_id)
+            except Exception:
+                logger.debug("archive listener failed (non-fatal)", exc_info=True)
+    return archived

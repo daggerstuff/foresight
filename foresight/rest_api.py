@@ -33,6 +33,11 @@ from . import server
 from .auth import User, _should_require_api_key, get_auth_manager
 from .config import DEFAULT_ACCOUNT_ID, DEFAULT_USER_ID, raw_retention_enabled
 from .document_ingestion import DocumentIngestionError, DocumentIngestOptions, ingest_document_file
+from .skill_crystallization import (
+    crystallize_skills as _crystallize_skills,
+    list_skills as _list_skills,
+    load_skill as _load_skill,
+)
 from .tenant_context import (
     reset_tenant_context,
     set_current_account_id,
@@ -181,6 +186,17 @@ class CurateObservationsBody(BaseModel):
 
     category: str | None = Field(default=None, description="Optional category filter for the memory scan")
     limit: int = Field(default=200, ge=1, le=1000, description="Maximum memories to scan")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    project: str | None = Field(default=None, description="Optional project namespace lane")
+
+
+class CrystallizeSkillsBody(BaseModel):
+    """Body for ``POST /skills/crystallize``."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    min_successes: int | None = Field(default=None, ge=1, description="Minimum successful episodes threshold")
+    limit: int = Field(default=50, ge=1, le=200, description="Maximum observations to inspect")
     agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
     project: str | None = Field(default=None, description="Optional project namespace lane")
 
@@ -816,6 +832,105 @@ async def _handle_curate_observations(request: Request) -> Response:
     return _tool_json(result)
 
 
+async def _handle_list_skills(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    status = request.query_params.get("status", "approved")
+    if status not in ("approved", "pending", "retired", "declined", "all"):
+        return _error(400, "status must be one of: approved, pending, retired, declined, all")
+    limit_raw = request.query_params.get("limit")
+    limit = 50
+    if limit_raw is not None:
+        try:
+            limit = max(1, min(int(limit_raw), _MAX_LIST_LIMIT))
+        except ValueError:
+            return _error(400, "limit must be an integer")
+    agent_id = request.query_params.get("agent_id") or None
+    project = request.query_params.get("project") or None
+
+    uid = user_id or DEFAULT_USER_ID
+    set_current_user_id(uid)
+    set_current_account_id(tenant_id)
+    try:
+        skills = await run_in_threadpool(
+            _list_skills,
+            server.UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            status=status,
+            limit=limit,
+        )
+    finally:
+        reset_tenant_context()
+    return JSONResponse({"ok": True, "status": status, "count": len(skills), "skills": skills})
+
+
+async def _handle_get_skill(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    skill_name = request.path_params["skill_name"]
+    agent_id = request.query_params.get("agent_id") or None
+    project = request.query_params.get("project") or None
+    uid = user_id or DEFAULT_USER_ID
+    set_current_user_id(uid)
+    set_current_account_id(tenant_id)
+    try:
+        skill = await run_in_threadpool(
+            _load_skill,
+            skill_name,
+            server.UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+        )
+    finally:
+        reset_tenant_context()
+    if skill is None:
+        return _error(404, f"Approved skill {skill_name!r} not found")
+    return JSONResponse({"ok": True, "skill": skill})
+
+
+async def _handle_crystallize_skills(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    body, err = await _validated_body(request, CrystallizeSkillsBody)
+    if err:
+        return err
+
+    uid = user_id or DEFAULT_USER_ID
+    set_current_user_id(uid)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            _crystallize_skills,
+            server.UserScope(user_id=uid, tenant_id=tenant_id, agent_id=body.agent_id, project=body.project),
+            min_successes=body.min_successes,
+            limit=body.limit,
+        )
+    finally:
+        reset_tenant_context()
+    return JSONResponse({"ok": True, **result})
+
+
 async def _handle_inject(request: Request) -> Response:
     user, auth_err = _authenticate(request)
     if auth_err:
@@ -1109,6 +1224,7 @@ def _openapi_spec() -> dict[str, Any]:
         ReflectBody,
         MentalModelBody,
         CurateObservationsBody,
+        CrystallizeSkillsBody,
         TemporalQueryBody,
         ReprocessBody,
         CreateDocumentBody,
@@ -1261,6 +1377,31 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/skills": {
+                "get": {
+                    "summary": "List crystallized skills (defaults to approved, signature-verified skills)",
+                    "operationId": "listSkills",
+                    "responses": _ok(),
+                }
+            },
+            "/skills/{skill_name}": {
+                "get": {
+                    "summary": "Load one approved, signature-verified skill by name or ID",
+                    "operationId": "getSkill",
+                    "parameters": [
+                        {"name": "skill_name", "in": "path", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": _ok(),
+                }
+            },
+            "/skills/crystallize": {
+                "post": {
+                    "summary": "Evaluate procedural observations and stage qualifying SKILL.md artifacts",
+                    "operationId": "crystallizeSkills",
+                    "requestBody": _body("CrystallizeSkillsBody"),
+                    "responses": _ok(),
+                }
+            },
             "/inject": {
                 "post": {
                     "summary": "Inject context for a conversation",
@@ -1373,6 +1514,9 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/reflect", ["POST"], "rest_reflect", _handle_reflect),
     ("/mental-models", ["POST"], "rest_manage_mental_models", _handle_manage_mental_models),
     ("/observations/curate", ["POST"], "rest_curate_observations", _handle_curate_observations),
+    ("/skills", ["GET"], "rest_list_skills", _handle_list_skills),
+    ("/skills/crystallize", ["POST"], "rest_crystallize_skills", _handle_crystallize_skills),
+    ("/skills/{skill_name}", ["GET"], "rest_get_skill", _handle_get_skill),
     ("/inject", ["POST"], "rest_inject", _handle_inject),
     ("/session/transcript", ["POST"], "rest_session_transcript", _handle_session_transcript),
     ("/documents", ["POST"], "rest_create_document", _handle_create_document),

@@ -186,6 +186,16 @@ from .semantic_search import (
     get_semantic_search,
 )
 from .sensitivity import evaluate_secrets, resolve_is_sensitive
+from .skill_crystallization import (
+    SKILL_CATEGORY as _SKILL_CATEGORY,
+    SKILL_REVIEW_RETIRED as _SKILL_REVIEW_RETIRED,
+    crystallize_skills as _crystallize_skills,
+    is_skill_memory_loadable as _is_skill_memory_loadable,
+    list_skills as _list_skills,
+    retire_skills_for_superseded_evidence as _retire_skills_for_superseded_evidence,
+    retire_stale_skills as _retire_stale_skills,
+    select_skill_candidates,
+)
 from .sql_helpers import join_sql_parts, placeholders, quote_identifier
 from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sync_manager
 from .telemetry import get_telemetry_store
@@ -2383,6 +2393,15 @@ def _publish_supersede_effects(supersede_matches: list[Any], memory_id: str, uid
         )
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [m.superseded_memory_id for m in supersede_matches],
+            user_id=uid,
+            tenant_id=tenant_id,
+            reason="evidence_superseded",
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on supersede failed: %s", exc)
 
 
 def _link_related_memory(request: _StoreRequest, memory_id: str) -> None:
@@ -2828,6 +2847,10 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
     get_context_cache().invalidate_user(uid)
+    try:
+        _retire_stale_skills(UserScope(user_id=uid, tenant_id=tenant_id))
+    except Exception as exc:
+        logger.debug("skill retirement check on update failed: %s", exc)
     return f"Updated memory {options.memory_id}"
 
 
@@ -2978,6 +3001,12 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [memory_id], user_id=uid, tenant_id=tenant_id, reason="supporting memory deleted"
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on delete failed: %s", exc)
 
     # ── POST_DELETE hook ───────────────────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_DELETE, hook_ctx)
@@ -3032,6 +3061,12 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [memory_id], user_id=uid, tenant_id=tenant_id, reason="supporting memory archived"
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on archive failed: %s", exc)
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
@@ -3058,6 +3093,12 @@ def _handle_memory_expire(uid: str, tenant_id: str, memory_id: str | None) -> st
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [memory_id], user_id=uid, tenant_id=tenant_id, reason="supporting memory expired"
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on expire failed: %s", exc)
     _invalidate_recall_caches(uid, tenant_id)
     return f"Expired memory {memory_id}. It is excluded from default retrieval; restore to bring it back."
 
@@ -4189,15 +4230,24 @@ def curate_observations(
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
+    scope = UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project)
     try:
         result = _curate(
-            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            scope,
             category=category,
             limit=limit,
         )
     except Exception as exc:
         logger.exception("curate_observations failed")
         return _tool_error("observations", str(exc))
+
+    try:
+        retired_skills = _retire_stale_skills(scope)
+        candidates = select_skill_candidates(scope, limit=50)
+        result["skills_retired"] = len(retired_skills)
+        result["skill_candidates"] = candidates
+    except Exception:
+        logger.debug("skill candidate evaluation failed during observation curation", exc_info=True)
 
     return _tool_response(ok=True, action="curate", **result)
 
@@ -5630,6 +5680,27 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
 
         promotion_summary = _promote_in_place(ctx, source_rows, created_ids, cancel_event)
         clustering_summary = _run_post_curation_clustering(ctx)
+        skill_curation: dict[str, Any] = {
+            "skill_candidates": [],
+            "staged_skills": [],
+            "retired_skills": [],
+        }
+        if payload["tool_access"] != "disabled":
+            try:
+                skill_scope = UserScope(user_id=ctx.uid, tenant_id=ctx.tenant_id)
+                skill_bank = (
+                    payload["source_bank_id"]
+                    if payload["output_mode"] == "in_place"
+                    else payload["output_bank_id"]
+                )
+                crystallized = _crystallize_skills(skill_scope, bank_id=skill_bank)
+                skill_curation = {
+                    "skill_candidates": crystallized["candidates"],
+                    "staged_skills": crystallized["skills"],
+                    "retired_skills": crystallized["retired_skills"],
+                }
+            except Exception:
+                logger.debug("skill crystallization failed during curation run (non-fatal)", exc_info=True)
 
         summary = {
             "source_memory_count": len(source_rows),
@@ -5640,6 +5711,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "reflection": reflection,
             "transcript_processed": bool(payload.get("transcript_bundle")),
             "clustering": clustering_summary,
+            **skill_curation,
         }
         summary.update(promotion_summary)
         _raise_if_run_canceled(ctx.uid, ctx.tenant_id, run_id)
@@ -6144,9 +6216,9 @@ def inject_context(
         ),
     )
     latency_ms = (time.perf_counter() - t0) * 1000
-    memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
-        :max_memories
-    ]
+    memories: list[HybridResult] = [
+        r for r in _filter_loadable_memories(hybrid_result.results, uid, tenant_id) if r.combined_score >= min_relevance
+    ][:max_memories]
     # Track last injection for system status visibility (PIX-3955)
     _last_injection_stats.update(
         {
@@ -6219,6 +6291,19 @@ def inject_context(
             "static_and_safety": static_safety_text,
             "context_blocks": blocks_by_point,
             "patterns": _active_observations(uid, tenant_id, agent_id=agent_id, project=project),
+            "skills": [
+                {
+                    "memory_id": s["memory_id"],
+                    "skill_name": s["skill_name"],
+                    "version": s["version"],
+                    "description": s["description"],
+                }
+                for s in _list_skills(
+                    UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+                    status="approved",
+                    limit=10,
+                )
+            ],
         }
         if budgeted is not None:
             payload["budget"] = budgeted.to_dict()
@@ -6302,6 +6387,38 @@ def _auto_capture_in_flight(
 
 # Backwards compatibility alias
 _auto_capture_triggered = _auto_capture_in_flight
+
+
+def _filter_loadable_memories(
+    results: list[HybridResult],
+    uid: str,
+    tenant_id: str,
+) -> list[HybridResult]:
+    """Exclude staged/retired/tampered skill artifacts from agent injection results."""
+    skill_ids = [r.memory_id for r in results if getattr(r, "category", None) == _SKILL_CATEGORY]
+    if not skill_ids:
+        return results
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            join_sql_parts(
+                "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND id IN (",
+                placeholders(len(skill_ids)),
+                ")",
+            ),
+            (tenant_id, uid, *skill_ids),
+        ).fetchall()
+    finally:
+        conn.close()
+    row_map = {dict(r)["id"]: dict(r) for r in rows}
+    filtered: list[HybridResult] = []
+    for r in results:
+        if getattr(r, "category", None) == _SKILL_CATEGORY:
+            row = row_map.get(r.memory_id)
+            if row is None or not _is_skill_memory_loadable(row):
+                continue
+        filtered.append(r)
+    return filtered
 
 
 def _active_observations(
@@ -8705,6 +8822,16 @@ def link_memories(
         )
     except MemoryRelationshipError as exc:
         return f"Error: {exc}"
+    if relationship_type in ("updates", "contradicts"):
+        try:
+            _retire_skills_for_superseded_evidence(
+                [target_memory_id],
+                user_id=uid,
+                tenant_id=get_current_account_id(),
+                reason=f"memory {target_memory_id} {relationship_type} by {source_memory_id}",
+            )
+        except Exception as exc:
+            logger.debug("skill retirement on link_memories failed: %s", exc)
     return json.dumps(rel.to_dict(), indent=2)
 
 
@@ -8788,14 +8915,19 @@ INFERRED_LIST_MAX_LIMIT = 50
 
 
 def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
-    """List inferred memories pending review, supporting-parent count first."""
+    """List inferred memories and staged/retired skills pending review, supporting-parent count first."""
     capped = max(1, min(limit if limit is not None else INFERRED_LIST_MAX_LIMIT, INFERRED_LIST_MAX_LIMIT))
+    try:
+        _retire_stale_skills(UserScope(user_id=uid, tenant_id=tenant_id))
+    except Exception:
+        logger.debug("stale skill reconciliation failed during inferred list", exc_info=True)
     conn = get_db_connection()
     try:
         rows = conn.execute(
             """
             SELECT m.id, m.content, m.category, m.scope, m.retention, m.importance,
-                   m.created_at, m.updated_at, m.review_status,
+                   m.created_at, m.updated_at, m.review_status, m.review_reason,
+                   m.memory_type, m.metrics, m.is_latest,
                    (SELECT COUNT(*) FROM memory_relationships r
                     WHERE r.source_memory_id = m.id AND r.relationship_type = 'derives') AS parent_count
             FROM memories m
@@ -8810,8 +8942,9 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
     finally:
         conn.close()
 
-    items = [
-        {
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        item: dict[str, Any] = {
             "id": r["id"],
             "content": decrypt_if_encrypted(r["content"], tenant_id=tenant_id, user_id=uid),
             "category": r["category"],
@@ -8821,15 +8954,29 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
             "review_status": r["review_status"],
+            "review_reason": r["review_reason"],
             "parent_count": r["parent_count"],
         }
-        for r in rows
-    ]
+        if r["category"] == _SKILL_CATEGORY:
+            try:
+                skill_meta = json.loads(r["metrics"] or "{}")
+            except (TypeError, ValueError):
+                skill_meta = {}
+            item["skill"] = {
+                "skill_name": skill_meta.get("skill_name"),
+                "skill_version": skill_meta.get("skill_version"),
+                "observation_id": skill_meta.get("observation_id"),
+                "pattern_key": skill_meta.get("pattern_key"),
+                "success_count": skill_meta.get("success_count"),
+                "retired": r["review_status"] == _SKILL_REVIEW_RETIRED,
+                "signature_alg": skill_meta.get("signature_alg"),
+            }
+        items.append(item)
     return _tool_response(ok=True, action="list", items=items, count=len(items), limit=capped)
 
 
 def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
-    """Promote an inferred memory to a stated fact (clears the ranking penalty)."""
+    """Promote an inferred memory or staged skill to approved status."""
     now = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     try:
@@ -8839,6 +8986,13 @@ def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
         ).fetchone()
         if row is None:
             return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["review_status"] == _SKILL_REVIEW_RETIRED:
+            return _tool_error(
+                "approve",
+                f"skill {memory_id} is retired because its evidence was superseded and cannot be approved.",
+                memory_id=memory_id,
+                status="retired",
+            )
         if row["inferred"] != 1:
             if row["review_status"] == "approved":
                 return _tool_response(
@@ -8903,6 +9057,13 @@ def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
         ).fetchone()
         if row is None:
             return _tool_error("undo", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["review_status"] == _SKILL_REVIEW_RETIRED:
+            return _tool_error(
+                "undo",
+                f"skill {memory_id} is retired; re-crystallize from fresh evidence instead.",
+                memory_id=memory_id,
+                status="retired",
+            )
         if row["review_status"] is None and row["is_ghost"] != 1:
             return _tool_error("undo", f"memory {memory_id} has no review action to undo.", memory_id=memory_id)
         conn.execute(
@@ -9579,7 +9740,7 @@ Review these synthesized (inferred) memories and confirm or reject each one:
 - Ensure no durable or permanent facts are accidentally degraded or lost.
 - Verify that merged memories retain all essential entity tags and attributes.
 - Approve or cancel the curation run using `manage_curation_runs`.
-- Approve or decline each inferred memory using `manage_inferred`.
+- Approve or decline each inferred memory or staged/retired skill using `manage_inferred`.
 """
 
 
@@ -9626,6 +9787,33 @@ def resource_system_status() -> str:
 def resource_curation_runs() -> str:
     """Live resource stream of memory curation runs."""
     return manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="list")))
+
+
+@mcp.resource("foresight://skills")
+def resource_skills() -> str:
+    """Live resource stream of approved, signature-verified crystallized skills."""
+    uid = USER_ID
+    tenant_id = get_current_account_id()
+    skills = _list_skills(UserScope(user_id=uid, tenant_id=tenant_id), status="approved", limit=50)
+    return json.dumps(
+        {
+            "ok": True,
+            "count": len(skills),
+            "skills": [
+                {
+                    "memory_id": s["memory_id"],
+                    "skill_name": s["skill_name"],
+                    "description": s["description"],
+                    "version": s["version"],
+                    "signature": s["signature"],
+                    "signature_valid": s["signature_valid"],
+                    "content": s["content"],
+                }
+                for s in skills
+            ],
+        },
+        indent=2,
+    )
 
 
 # ============================================================================

@@ -2,6 +2,27 @@
 
 All notable changes to Foresight MCP are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Skill crystallization (`foresight.skill_crystallization`, FOR-55):**
+  Procedural observations crossing the proof threshold (`N` successful episodes
+  with zero unresolved contradicting failures, excluding `is_sensitive` rows)
+  are rendered as `SKILL.md` artifacts, HMAC-SHA256 signed with the
+  `profile_export.py` key, versioned in `memory_versions`, and staged in the
+  `manage_inferred` review queue.
+- **Observe-first staging & gated loading:** `manage_curation_runs` surfaces
+  `skill_candidates` and stages `SKILL.md` artifacts (`inferred=1`); only
+  human-approved, signature-verified skills are exposed to agents via
+  `inject_context`, `load_skill`, `foresight://skills`, and REST `/skills`.
+- **Evidence-driven retirement:** Skills auto-retire (and are flagged in
+  `manage_inferred`) when underlying observations or supporting memories are
+  superseded, contradicted, archived, deleted, or expired.
+- **CLI & REST support:** Added `foresight skills` (`crystallize`, `list`,
+  `approve`, `decline`, `export`, `verify`) writing `skills/<name>/SKILL.md`,
+  plus `/skills`, `/skills/{skill_name}`, and `/skills/crystallize` REST routes.
+
 ## [0.19.0] - 2026-07-15
 
 ### Added

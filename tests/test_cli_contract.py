@@ -21,8 +21,8 @@ from pydantic import BaseModel, Field
 import foresight_cli.cli as cli_module
 from foresight_cli.utils import config as cfg
 
-ANNOTATED_OPTION_TOTAL = 70
-ANNOTATED_COMMAND_TOTAL = 39
+ANNOTATED_OPTION_TOTAL = 75
+ANNOTATED_COMMAND_TOTAL = 42
 USAGE_ERROR_STATUS = 2
 
 

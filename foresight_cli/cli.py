@@ -34,6 +34,7 @@ from .commands import (
     retention,
     rrf,
     security,
+    skills,
     sync,
     system,
     users,
@@ -87,6 +88,7 @@ _GROUPS = (
     ("graph", "Graph, entity, and clustering operations.", graph),
     ("decay", "Decay, strength, recovery, and relevance.", decay),
     ("retention", "Inspect and set declarative retention policies.", retention),
+    ("skills", "Crystallize, list, verify, review, and export SKILL.md packages.", skills),
 )
 
 _ALIASES = (

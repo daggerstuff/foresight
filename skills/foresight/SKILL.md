@@ -226,6 +226,7 @@ workflows:
   (`guidance`, `project_context`, `user_preferences`).
 - `foresight://system-status` — Real-time database and memory health metrics.
 - `foresight://curation-runs` — Active and staged memory curation runs.
+- `foresight://skills` — Approved, HMAC-verified crystallized skills (`SKILL.md`).
 
 ### Interactive Webview Dashboard
 
@@ -519,6 +520,19 @@ multi-tenant key derivation via the `foresight security` CLI:
 foresight security status        # view active security mode and encryption state
 foresight security encrypt-all   # encrypt all stored memories
 foresight security rotate-key    # zero-loss key rotation
+```
+
+### Skill crystallization & export (CLI + `manage_inferred` review queue)
+
+Proven procedural observations can be crystallized into HMAC-signed `SKILL.md`
+packages staged in `manage_inferred`, and exported once approved:
+
+```bash
+foresight skills crystallize                  # stage qualifying procedural observations
+foresight skills list --status pending        # inspect staged/retired skills
+foresight skills approve <memory_id>          # approve for agent loading
+foresight skills export --output-dir skills   # export skills/<name>/SKILL.md
+foresight skills verify skills/<name>/SKILL.md
 ```
 
 ---
