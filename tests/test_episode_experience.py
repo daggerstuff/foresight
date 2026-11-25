@@ -158,9 +158,7 @@ def test_llm_rubric_path_and_fallback_degradation(monkeypatch):
     ep = _episode_for(session_id, _failure_transcript())
 
     monkeypatch.setenv("FORESIGHT_EPISODE_SCORING", "llm")
-    monkeypatch.setattr(
-        "foresight.experience._llm_rubric", lambda *_a, **_k: (0.1, "rubric: tests failed")
-    )
+    monkeypatch.setattr("foresight.experience._llm_rubric", lambda *_a, **_k: (0.1, "rubric: tests failed"))
     scored = auto_score_episode(ep["id"], user_id=USER, tenant_id=TENANT, messages=_failure_transcript())
     assert scored["score_source"] == "llm_rubric"
     assert scored["outcome"] == "failure"

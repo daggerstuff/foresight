@@ -135,10 +135,7 @@ def list_cmd(params: SkillsListParams) -> None:
         "ok": True,
         "status": params.status,
         "count": len(skills),
-        "skills": [
-            {k: v for k, v in s.items() if k != "content"}
-            for s in skills
-        ],
+        "skills": [{k: v for k, v in s.items() if k != "content"} for s in skills],
     }
 
     def _human() -> None:

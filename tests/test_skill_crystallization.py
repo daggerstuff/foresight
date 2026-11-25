@@ -290,9 +290,7 @@ def test_skill_hmac_signing_and_memory_versions(monkeypatch):
     assert verify_skill_document({"skill_name": "tampered"}, skill["signature"]) is False
 
     # Version 1 is recorded in memory_versions.
-    v1_text = manage_memory_versions(
-        ManageMemoryVersionsParams(action="list", memory_id=skill_id, user_id=USER_ID)
-    )
+    v1_text = manage_memory_versions(ManageMemoryVersionsParams(action="list", memory_id=skill_id, user_id=USER_ID))
     assert "v1:" in v1_text
 
     # Refine observation with a 4th success and re-crystallize -> version 2 in memory_versions.
@@ -302,9 +300,7 @@ def test_skill_hmac_signing_and_memory_versions(monkeypatch):
     assert res2["updated_count"] == 1
     assert res2["skills"][0]["version"] == VERSION_TWO
 
-    v2_text = manage_memory_versions(
-        ManageMemoryVersionsParams(action="list", memory_id=skill_id, user_id=USER_ID)
-    )
+    v2_text = manage_memory_versions(ManageMemoryVersionsParams(action="list", memory_id=skill_id, user_id=USER_ID))
     assert "v2:" in v2_text
     assert "v1:" in v2_text
 
@@ -470,9 +466,7 @@ def test_cli_skills_list_approve_export_and_verify(tmp_path: Path, capsys, monke
     assert listed["count"] == 1
     assert listed["skills"][0]["skill_name"] == "cli-workflow"
 
-    assert (
-        cli_module.main(["--json", "skills", "export", "--output-dir", str(out_dir), "--user-id", USER_ID]) == 0
-    )
+    assert cli_module.main(["--json", "skills", "export", "--output-dir", str(out_dir), "--user-id", USER_ID]) == 0
     exported = json.loads(capsys.readouterr().out)
     assert exported["exported_count"] == 1
 
@@ -569,5 +563,3 @@ def test_distilled_experience_episodes_crystallize_into_skill():
     loaded = load_skill(res["skills"][0]["skill_name"], _scope())
     assert loaded is not None
     assert loaded["signature_valid"] is True
-
-

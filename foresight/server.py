@@ -5772,9 +5772,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             try:
                 skill_scope = UserScope(user_id=ctx.uid, tenant_id=ctx.tenant_id)
                 skill_bank = (
-                    payload["source_bank_id"]
-                    if payload["output_mode"] == "in_place"
-                    else payload["output_bank_id"]
+                    payload["source_bank_id"] if payload["output_mode"] == "in_place" else payload["output_bank_id"]
                 )
                 crystallized = _crystallize_skills(skill_scope, bank_id=skill_bank)
                 skill_curation = {

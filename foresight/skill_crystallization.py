@@ -348,9 +348,7 @@ def evaluate_observation_proof(
     memory_type = str(obs.get("memory_type") or "").strip().lower()
     pattern_key = str(obs.get("pattern_key") or "").strip().lower()
     is_procedural = (
-        category in _PROCEDURAL_CATEGORIES
-        or memory_type == "procedural"
-        or pattern_key.startswith("procedural:")
+        category in _PROCEDURAL_CATEGORIES or memory_type == "procedural" or pattern_key.startswith("procedural:")
     )
 
     if obs.get("status") not in ("active", "refined"):
@@ -574,9 +572,7 @@ def render_skill_markdown(
     skill_name = _skill_slug(str(candidate.get("skill_name") or _derive_skill_name(candidate)))
     obs_text = str(candidate.get("observation_text") or skill_name).strip()
     success_count = int(candidate.get("success_count") or 0)
-    description = (
-        f"Crystallized procedural skill from {success_count} verified successes: {obs_text[:140]}"
-    )
+    description = f"Crystallized procedural skill from {success_count} verified successes: {obs_text[:140]}"
     evidence_ids = sorted(str(eid) for eid in (candidate.get("evidence_ids") or []))
     confidence = round(float(candidate.get("confidence") or 0.5), 4)
     failure_count = int(candidate.get("failure_count") or 0)
