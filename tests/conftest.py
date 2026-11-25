@@ -120,6 +120,21 @@ def _truncate_all_tables() -> None:
     # CASCADE ensures dependent rows in related tables are also removed.
     with backend.connection() as conn:
         with conn.cursor() as cur:
+            # A connection a test left open inside a transaction holds its
+            # locks, and TRUNCATE (ACCESS EXCLUSIVE) then waits forever: the CI
+            # suite sat here for 37 minutes with no output. Drop those sessions
+            # first, and bound the wait so a future leak fails in seconds with
+            # the blocking relation named instead of hanging.
+            cur.execute(
+                """
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                  AND state LIKE 'idle in transaction%'
+                """
+            )
+            cur.execute("SET LOCAL lock_timeout = '10s'")
             table_list = ", ".join(f'"{t}"' for t in tables)
             cur.execute(f"TRUNCATE {table_list} CASCADE")
         conn.commit()
