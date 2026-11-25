@@ -223,6 +223,14 @@ class TestSkillIdentity:
         assert resp.status_code == HTTPStatus.FORBIDDEN
         assert resp.json()["error"]["message"] == "Admin role required to read another user's skills"
 
+    def test_user_key_without_a_user_header_cannot_read_the_default_lane(
+        self, client: TestClient, api_key: str
+    ) -> None:
+        """An omitted X-User-Id resolves to the default owner, so it needs the same check."""
+        resp = client.get("/skills", headers={"X-API-Key": api_key, "X-Tenant-Id": TENANT})
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+        assert resp.json()["error"]["message"] == "Admin role required to read another user's skills"
+
     def test_admin_key_can_read_another_users_skills(self, client: TestClient) -> None:
         admin = get_auth_manager().create_user("skill_admin", "skill-admin@test.local", "password-123", role=Role.ADMIN)
         resp = client.get("/skills", headers=_headers(admin.api_key, user="bob"))

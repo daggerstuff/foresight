@@ -685,6 +685,21 @@ def get_caller_role() -> Role | None:
     return user.role if user is not None else None
 
 
+def auth_enforced() -> bool:
+    """Return True when the server requires an authenticated principal.
+
+    API-key mode is enforced unless an explicit local override disables it, and
+    OAuth mode always is: ``server`` installs ``ForesightOAuthProvider`` in place
+    of ``AuthMiddleware`` when ``FORESIGHT_OAUTH_BASE_URL`` is set, so the
+    API-key switch says nothing about it. Tool bodies use this to tell "no
+    caller because nobody authenticated" from "no caller because auth is off".
+    """
+    if os.environ.get("FORESIGHT_OAUTH_BASE_URL"):
+        return True
+    explicit = (os.environ.get("FORESIGHT_REQUIRE_API_KEY") or "").strip().lower()
+    return explicit not in {"", "0", "false", "no", "off"}
+
+
 class _AuthFailureError(Exception):
     """Raised inside the middleware when a request cannot be authenticated."""
 

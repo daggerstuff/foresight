@@ -41,7 +41,15 @@ from starlette.responses import HTMLResponse, JSONResponse
 from . import connection_pool, oauth_store, reflect as reflect_mod
 from .activity_log import record_activity
 from .audit import record_secret_defense_event, secret_defense_metadata
-from .auth import AuthMiddleware, Role, _should_require_api_key, get_auth_manager, get_caller_role
+from .auth import (
+    AuthMiddleware,
+    Role,
+    _should_require_api_key,
+    auth_enforced,
+    get_auth_manager,
+    get_caller_role,
+    get_caller_user_id,
+)
 from .auth_oauth import ForesightOAuthProvider, OAuthEndpointOptions
 from .backend import RedisCompanion, create_backend
 from .backend.backend_migrations import (
@@ -4932,13 +4940,30 @@ def record_episode_outcome(
     surface this episode when a similar error appears again.
     """
     uid = params.user_id or USER_ID
-    # An authenticated caller may only score the configured owner. Naming a
-    # different user is a write into that user's episode history, so it needs
-    # an admin key; without an authenticated caller (CLI, single-user servers,
-    # in-process jobs) there is no principal to check and the legacy behaviour
-    # stands.
+    # An authenticated caller may only score its own episodes or the configured
+    # owner's. Naming a third user is a write into that user's episode history,
+    # so it needs an admin key. Without a bound caller we cannot tell "nobody
+    # authenticated" from "auth is switched off": when auth is enforced (API
+    # keys or the OAuth provider) the request is refused rather than silently
+    # attributed to USER_ID, and when it is off the legacy single-user
+    # behaviour stands, which is what the CLI and in-process jobs rely on.
+    caller_user_id = get_caller_user_id()
     caller_role = get_caller_role()
-    if params.user_id and params.user_id != USER_ID and caller_role is not None and caller_role is not Role.ADMIN:
+    if caller_user_id is None and auth_enforced():
+        return json.dumps(
+            {
+                "ok": False,
+                "action": "record_episode_outcome",
+                "error": {"message": "Authentication required: no caller identity is bound for this request."},
+            }
+        )
+    allowed_ids = (USER_ID, caller_user_id)
+    if (
+        params.user_id
+        and caller_user_id is not None
+        and params.user_id not in allowed_ids
+        and caller_role is not Role.ADMIN
+    ):
         return json.dumps(
             {
                 "ok": False,

@@ -415,7 +415,10 @@ def _authorize_skill_read(user: User | None, user_id: str | None, tenant_id: str
     tenant_err = _authorize_tenant(user, tenant_id)
     if tenant_err:
         return tenant_err
-    if user is None or user.role is Role.ADMIN or not user_id or user_id == user.user_id:
+    # An omitted X-User-Id resolves to the default owner further down the
+    # handler, so the id that gets authorised has to be the effective one.
+    effective_user_id = user_id or DEFAULT_USER_ID
+    if user is None or user.role is Role.ADMIN or effective_user_id == user.user_id:
         return None
     return _error(403, "Admin role required to read another user's skills")
 

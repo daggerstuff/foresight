@@ -537,6 +537,24 @@ def test_record_outcome_without_a_bound_caller_keeps_the_user_override():
     assert payload["episode"]["user_id"] == "legacy-other-user"
 
 
+def test_recorded_outcome_is_refused_when_auth_is_enforced_without_a_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enforced auth with no bound principal must not fall back to the configured owner."""
+    monkeypatch.setenv("FORESIGHT_REQUIRE_API_KEY", "1")
+    raw = record_episode_outcome(
+        RecordEpisodeOutcomeParams(
+            session_id="exp-does-not-exist",
+            outcome="failure",
+            score_source="ci_result",
+            detail="ConnectionRefusedError: connection refused",
+        )
+    )
+    payload = json.loads(raw)
+    assert payload["ok"] is False
+    assert "no caller identity" in payload["error"]["message"]
+
+
 def test_a_failure_the_user_only_described_does_not_score_the_run_mixed():
     """The request quotes the old error; the run itself ended green."""
     session_id = _session_id()
