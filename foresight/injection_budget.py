@@ -39,6 +39,7 @@ logger = logging.getLogger("foresight_budget")
 class Lane(StrEnum):
     """Injection lanes in priority order."""
 
+    RULES = "rules"
     STATIC = "static"
     DYNAMIC = "dynamic"
     MEMORIES = "memories"
@@ -48,12 +49,16 @@ class Lane(StrEnum):
 
 # Priority order for lane allocation
 LANE_PRIORITY: list[Lane] = [
+    Lane.RULES,
     Lane.STATIC,
     Lane.DYNAMIC,
     Lane.MEMORIES,
     Lane.BLOCKS,
     Lane.SAFETY,
 ]
+
+# Lanes that are never truncated or omitted regardless of budget pressure.
+NEVER_TRUNCATED_LANES: frozenset[Lane] = frozenset({Lane.RULES, Lane.SAFETY})
 
 
 class TruncationLevel(StrEnum):
@@ -66,6 +71,7 @@ class TruncationLevel(StrEnum):
 
 # Default percentage allocation per lane (must sum to 1.0)
 DEFAULT_LANE_WEIGHTS: dict[Lane, float] = {
+    Lane.RULES: 0.0,
     Lane.STATIC: 0.10,
     Lane.DYNAMIC: 0.15,
     Lane.MEMORIES: 0.50,
@@ -309,10 +315,12 @@ def allocate_lane(
     get full content first. Lower-scoring items are progressively
     truncated or omitted as the budget is exhausted.
     """
-    if not budget.is_bounded:
-        # Unbounded: everything at FULL
-        rendered = [(item, _render_item(item, TruncationLevel.FULL, budget)) for item in items]
-        return LaneAllocation(lane=lane, budget_chars=-1, full_items=rendered)
+    if not budget.is_bounded or lane in NEVER_TRUNCATED_LANES:
+        # Unbounded or never-truncated lane (rules, safety): every item stays FULL
+        sorted_items = sorted(items, key=lambda i: i.score, reverse=True) if budget.is_bounded else items
+        rendered = [(item, _render_item(item, TruncationLevel.FULL, budget)) for item in sorted_items]
+        budget_chars = budget.lane_budget(lane) if budget.is_bounded else -1
+        return LaneAllocation(lane=lane, budget_chars=budget_chars, full_items=rendered)
 
     lane_budget = budget.lane_budget(lane)
     allocation = LaneAllocation(lane=lane, budget_chars=lane_budget)
@@ -409,13 +417,13 @@ def format_budgeted_payload(
 
 
 def format_static_and_safety(lane_items: dict[Lane, list[LaneItem]]) -> str:
-    """Format only static and safety lanes, ignoring retrieval and dynamic lanes.
+    """Format rules, static, and safety lanes, ignoring retrieval and dynamic lanes.
 
-    Ensures static profile preferences and clinical safety notes are preserved
-    even when memory retrieval is below the gating threshold.
+    Ensures matched rules, static profile preferences, and clinical safety notes
+    are preserved even when memory retrieval is below the gating threshold.
     """
     sections: list[str] = []
-    for lane in (Lane.STATIC, Lane.SAFETY):
+    for lane in (Lane.RULES, Lane.STATIC, Lane.SAFETY):
         items = lane_items.get(lane, [])
         if not items:
             continue

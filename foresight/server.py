@@ -82,6 +82,7 @@ from .context_blocks import (
     get_context_block_agent,
     get_context_snapshot,
     get_context_whisper,
+    retrieve_matching_rules,
 )
 from .context_cache import get_context_cache
 from .crisis_detection import get_crisis_service
@@ -6351,6 +6352,7 @@ def inject_context(
         terms=terms,
         agent_id=agent_id,
         project=project,
+        query_text=query_text,
     )
 
     budgeted = _format_injection_output_budgeted(view, budget) if budget is not None and budget.is_bounded else None
@@ -6358,38 +6360,7 @@ def inject_context(
     if not include_details:
         res_output = budgeted.formatted if budgeted is not None else _format_injection_output(view)
     else:
-        blocks_by_point = _format_context_blocks_by_injection_point(
-            uid, tenant_id, terms, agent_id=agent_id, project=project
-        )
-        legacy_formatted = _format_injection_output(view)
-        top_score = max((m.combined_score for m in memories), default=0.0)
-        static_safety_text = _format_static_and_safety_lanes(uid, tenant_id, agent_id=agent_id, project=project)
-        payload: dict[str, Any] = {
-            "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
-            "memories": [m.to_dict() for m in memories],
-            # Unrounded: the hook's score gate compares this against a
-            # threshold, and rounding can lift a just-below result above it.
-            "top_score": float(top_score),
-            "static_and_safety": static_safety_text,
-            "context_blocks": blocks_by_point,
-            "patterns": _active_observations(uid, tenant_id, agent_id=agent_id, project=project),
-            "skills": [
-                {
-                    "memory_id": s["memory_id"],
-                    "skill_name": s["skill_name"],
-                    "version": s["version"],
-                    "description": s["description"],
-                }
-                for s in _list_skills(
-                    UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
-                    status="approved",
-                    limit=10,
-                )
-            ],
-        }
-        if budgeted is not None:
-            payload["budget"] = budgeted.to_dict()
-        res_output = json.dumps(payload, indent=2)
+        res_output = json.dumps(_build_injection_details_payload(view, budgeted), indent=2)
 
     # Store in fast in-memory cache & record telemetry
     cache.set(cache_key, res_output, user_id=uid, ttl_seconds=60.0)
@@ -6538,6 +6509,7 @@ class InjectionView:
     terms: list[str]
     agent_id: str | None = None
     project: str | None = None
+    query_text: str = ""
 
 
 def _memory_context_lines(memories: list[HybridResult]) -> list[str]:
@@ -6609,15 +6581,38 @@ def _join_sections(sections: list[list[str]]) -> list[str]:
     return lines
 
 
-def _format_static_and_safety_lanes(
-    uid: str,
-    tenant_id: str,
-    agent_id: str | None = None,
-    project: str | None = None,
-) -> str:
-    """Format static and safety lanes for inclusion during gated recall."""
-    block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
-    lane_items: dict[Lane, list[LaneItem]] = {Lane.STATIC: [], Lane.SAFETY: []}
+def _matching_rule_entries(view: InjectionView) -> list[Any]:
+    try:
+        return retrieve_matching_rules(
+            view.query_text or " ".join(view.terms),
+            terms=view.terms,
+            scope=UserScope(
+                user_id=view.uid,
+                tenant_id=view.tenant_id,
+                agent_id=view.agent_id,
+                project=view.project,
+            ),
+        )
+    except Exception:
+        logger.debug("rule lookup failed (non-fatal)", exc_info=True)
+        return []
+
+
+def _rule_lines(view: InjectionView) -> list[str]:
+    rules = _matching_rule_entries(view)
+    if not rules:
+        return []
+    return ["[Rules]", *[f"- {r.format_line()}" for r in rules]]
+
+
+def _format_static_and_safety_lanes(view: InjectionView) -> str:
+    """Format rules, static, and safety lanes for inclusion during gated recall."""
+    block_agent = get_context_block_agent(view.uid, view.tenant_id, view.agent_id, view.project)
+    lane_items: dict[Lane, list[LaneItem]] = {Lane.RULES: [], Lane.STATIC: [], Lane.SAFETY: []}
+    for idx, rule in enumerate(_matching_rule_entries(view), start=1):
+        lane_items[Lane.RULES].append(
+            LaneItem(id=f"rule:{idx}", content=rule.format_line(), score=1.0, lane=Lane.RULES)
+        )
     user_prefs = block_agent.state.get_block(USER_PREFERENCES)
     if user_prefs and not user_prefs.is_empty():
         lane_items[Lane.STATIC].append(
@@ -6629,6 +6624,43 @@ def _format_static_and_safety_lanes(
     return format_static_and_safety(lane_items)
 
 
+def _build_injection_details_payload(view: InjectionView, budgeted: BudgetResult | None) -> dict[str, Any]:
+    """Assemble the structured JSON payload for ``inject_context(include_details=True)``."""
+    blocks_by_point = _format_context_blocks_by_injection_point(
+        view.uid, view.tenant_id, view.terms, agent_id=view.agent_id, project=view.project
+    )
+    legacy_formatted = _format_injection_output(view)
+    top_score = max((m.combined_score for m in view.memories), default=0.0)
+    matched_rules = _matching_rule_entries(view)
+    payload: dict[str, Any] = {
+        "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
+        "memories": [m.to_dict() for m in view.memories],
+        # Unrounded: the hook's score gate compares this against a
+        # threshold, and rounding can lift a just-below result above it.
+        "top_score": float(top_score),
+        "static_and_safety": _format_static_and_safety_lanes(view),
+        "rules": [r.to_dict() for r in matched_rules],
+        "context_blocks": blocks_by_point,
+        "patterns": _active_observations(view.uid, view.tenant_id, agent_id=view.agent_id, project=view.project),
+        "skills": [
+            {
+                "memory_id": s["memory_id"],
+                "skill_name": s["skill_name"],
+                "version": s["version"],
+                "description": s["description"],
+            }
+            for s in _list_skills(
+                UserScope(user_id=view.uid, tenant_id=view.tenant_id, agent_id=view.agent_id, project=view.project),
+                status="approved",
+                limit=10,
+            )
+        ],
+    }
+    if budgeted is not None:
+        payload["budget"] = budgeted.to_dict()
+    return payload
+
+
 def _format_injection_output(view: InjectionView) -> str:
     """Format memories and context block signals into a human-readable string.
 
@@ -6638,6 +6670,7 @@ def _format_injection_output(view: InjectionView) -> str:
     """
     lines = _join_sections(
         [
+            _rule_lines(view),
             _memory_context_lines(view.memories),
             _context_block_lines(view.uid, view.tenant_id, view.terms, view.agent_id, view.project),
             _observation_lines(view.uid, view.tenant_id, view.agent_id, view.project),
@@ -6656,6 +6689,11 @@ def _format_injection_output_budgeted(view: InjectionView, budget: InjectionBudg
     agent_id = view.agent_id
     project = view.project
     lane_items: dict[Lane, list[LaneItem]] = {lane: [] for lane in Lane}
+
+    for idx, rule in enumerate(_matching_rule_entries(view), start=1):
+        lane_items[Lane.RULES].append(
+            LaneItem(id=f"rule:{idx}", content=rule.format_line(), score=1.0, lane=Lane.RULES)
+        )
 
     block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
     user_prefs = block_agent.state.get_block(USER_PREFERENCES)

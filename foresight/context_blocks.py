@@ -7,17 +7,31 @@ blocks while reusing the existing compatibility-backed implementation.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from .block_registry import MemoryBlockSchema, get_registry, initialize_default_blocks
+from .block_registry import (
+    RULES_BLOCK_LABEL,
+    MemoryBlockSchema,
+    RuleEntry,
+    RuleStrength,
+    get_registry,
+    initialize_default_blocks,
+    parse_rules_block,
+    serialize_rules_block,
+)
 from .connection_pool import get_db_connection
+from .sensitivity import resolve_is_sensitive
+from .sql_helpers import join_sql_parts, placeholders
 from .subconscious import (
     DEFAULT_MEMORY_BLOCKS,
     PENDING_ITEMS,
     PROJECT_CONTEXT,
+    RULES,
     SESSION_PATTERNS,
     USER_PREFERENCES,
     ContextBlockAgent,
@@ -34,16 +48,22 @@ __all__ = [
     "DEFAULT_CONTEXT_BLOCKS",
     "PENDING_ITEMS",
     "PROJECT_CONTEXT",
+    "RULES",
     "SESSION_PATTERNS",
     "USER_PREFERENCES",
     "ContextBlock",
     "ContextBlockAgent",
     "ContextBlockState",
     "MemoryBlockSchema",
+    "RuleEntry",
+    "RuleGraduateOptions",
+    "RuleStrength",
     "add_context_guidance",
+    "add_rule",
     "add_subconscious_guidance",
     "clear_context_block",
     "clear_subconscious_block",
+    "compile_experience_to_rule",
     "get_context_block",
     "get_context_block_agent",
     "get_context_snapshot",
@@ -51,11 +71,14 @@ __all__ = [
     "get_subconscious_block",
     "get_subconscious_context",
     "get_subconscious_whisper",
+    "graduate_experience_to_rule",
     "list_context_block_schemas",
     "list_context_blocks",
+    "list_rules",
     "register_context_block_schema",
     "reset_context_block",
     "reset_subconscious_block",
+    "retrieve_matching_rules",
     "update_context_block",
     "update_subconscious_block",
 ]
@@ -316,3 +339,261 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
         logger.debug("auto_distill_context_blocks exception (non-fatal): %s", e)
 
     return {"ok": True, "distilled_blocks": updated_blocks}
+
+
+# =============================================================================
+# Rules block helpers & graduation from procedural experiences (FOR-32)
+# =============================================================================
+
+_PROCEDURAL_RULE_CATEGORIES = frozenset({"procedural", "procedure", "workflow", "recipe"})
+_MUST_NOT_RE = re.compile(r"\b(?:must\s+not|must_not|never)\b", re.IGNORECASE)
+_MUST_RE = re.compile(r"\bmust\b", re.IGNORECASE)
+_SHOULD_RE = re.compile(r"\b(?:should|prefer|recommended|consider)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class RuleGraduateOptions:
+    """Options controlling rule graduation from a procedural experience."""
+
+    reviewed: bool = False
+    requested_strength: RuleStrength | str | None = None
+    applies_when: str = ""
+    exception: str = ""
+    agent_id: str | None = None
+    project: str | None = None
+
+
+def list_rules(
+    user_id: str = "default",
+    tenant_id: str = "default",
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> list[RuleEntry]:
+    """Return all structured rules stored in the ``rules`` context block."""
+    agent = get_context_block_agent(user_id, tenant_id, agent_id=agent_id, project=project)
+    raw = agent.get_block(RULES_BLOCK_LABEL) or ""
+    try:
+        return parse_rules_block(raw)
+    except (TypeError, ValueError):
+        return []
+
+
+def add_rule(
+    entry: RuleEntry,
+    *,
+    user_id: str = "default",
+    tenant_id: str = "default",
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> RuleEntry:
+    """Validate and persist a structured rule in the ``rules`` context block."""
+    agent = get_context_block_agent(user_id, tenant_id, agent_id=agent_id, project=project)
+    existing = list_rules(user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project)
+    key = (
+        normalize_block_line(entry.statement),
+        entry.strength.value,
+        entry.applies_when.strip().lower(),
+        entry.exception.strip().lower(),
+    )
+    for prior in existing:
+        prior_key = (
+            normalize_block_line(prior.statement),
+            prior.strength.value,
+            prior.applies_when.strip().lower(),
+            prior.exception.strip().lower(),
+        )
+        if prior_key == key:
+            return prior
+    updated = [*existing, entry]
+    agent.update_block(RULES_BLOCK_LABEL, serialize_rules_block(updated))
+    return entry
+
+
+def retrieve_matching_rules(
+    context_text: str,
+    *,
+    terms: list[str] | None = None,
+    user_id: str = "default",
+    tenant_id: str = "default",
+    scope: Any = None,
+) -> list[RuleEntry]:
+    """Return rules whose ``applies_when`` matches and ``exception`` does not."""
+    uid = getattr(scope, "user_id", None) or user_id
+    tid = getattr(scope, "tenant_id", None) or tenant_id
+    aid = getattr(scope, "agent_id", None)
+    proj = getattr(scope, "project", None)
+    rules = list_rules(user_id=uid, tenant_id=tid, agent_id=aid, project=proj)
+    return [rule for rule in rules if rule.matches(context_text, terms=terms)]
+
+
+def _infer_experience_strength(observation: dict[str, Any]) -> RuleStrength:
+    explicit = observation.get("strength")
+    if explicit is not None:
+        return RuleStrength(str(explicit).strip().lower())
+    text = str(observation.get("observation_text") or "").strip()
+    if _MUST_NOT_RE.search(text):
+        return RuleStrength.MUST_NOT
+    if _SHOULD_RE.search(text):
+        return RuleStrength.SHOULD
+    if _MUST_RE.search(text):
+        return RuleStrength.MUST
+    return RuleStrength.SHOULD
+
+
+def compile_experience_to_rule(
+    observation: dict[str, Any],
+    *,
+    requested_strength: RuleStrength | str | None = None,
+    applies_when: str = "",
+    exception: str = "",
+) -> RuleEntry:
+    """Compile a procedural observation into a ``RuleEntry``.
+
+    Preserves strength: a ``should`` experience never upgrades to ``must`` or
+    ``must_not`` even if ``requested_strength`` asks for a stronger level.
+    """
+    source_strength = _infer_experience_strength(observation)
+    if requested_strength is None:
+        final_strength = source_strength
+    else:
+        desired = RuleStrength(str(requested_strength).strip().lower())
+        if source_strength == RuleStrength.SHOULD:
+            # Never upgrade 'should' to 'must' / 'must_not'.
+            final_strength = RuleStrength.SHOULD
+        elif desired == RuleStrength.SHOULD:
+            final_strength = RuleStrength.SHOULD
+        else:
+            final_strength = source_strength
+
+    statement = str(observation.get("observation_text") or "").strip()
+    if not statement:
+        raise ValueError("Procedural observation has no text to compile into a rule")
+
+    obs_id = str(observation.get("id") or "").strip()
+    source = f"observation:{obs_id}" if obs_id else "experience"
+    return RuleEntry(
+        statement=statement,
+        strength=final_strength,
+        applies_when=applies_when or str(observation.get("applies_when") or ""),
+        exception=exception or str(observation.get("exception") or ""),
+        source=source,
+    )
+
+
+def _experience_has_sensitive_evidence(
+    conn: Any,
+    observation: dict[str, Any],
+    *,
+    user_id: str,
+    tenant_id: str,
+) -> bool:
+    text = str(observation.get("observation_text") or "")
+    if text and resolve_is_sensitive(None, text)[0]:
+        return True
+
+    mem_ids = json.loads(observation.get("supporting_memory_ids") or "[]")
+    if mem_ids:
+        slots = placeholders(len(mem_ids))
+        rows = conn.execute(
+            join_sql_parts(
+                "SELECT is_sensitive FROM memories WHERE tenant_id = ? AND user_id = ? AND id IN (",
+                slots,
+                ")",
+            ),
+            (tenant_id, user_id, *mem_ids),
+        ).fetchall()
+        if any(bool(dict(r).get("is_sensitive")) for r in rows):
+            return True
+
+    ep_ids = json.loads(observation.get("supporting_episode_ids") or "[]")
+    if ep_ids:
+        try:
+            slots = placeholders(len(ep_ids))
+            rows = conn.execute(
+                join_sql_parts(
+                    "SELECT is_sensitive FROM episodes WHERE tenant_id = ? AND user_id = ? AND id IN (",
+                    slots,
+                    ")",
+                ),
+                (tenant_id, user_id, *ep_ids),
+            ).fetchall()
+            if any(bool(dict(r).get("is_sensitive")) for r in rows):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _experience_has_approved_skill(conn: Any, observation_id: str, *, user_id: str, tenant_id: str) -> bool:
+    rows = conn.execute(
+        "SELECT metrics FROM memories WHERE tenant_id = ? AND user_id = ? "
+        "AND category = 'skill' AND review_status = 'approved' AND is_ghost = 0",
+        (tenant_id, user_id),
+    ).fetchall()
+    for row in rows:
+        try:
+            meta = json.loads(dict(row).get("metrics") or "{}")
+        except (TypeError, ValueError):
+            meta = {}
+        if meta.get("observation_id") == observation_id:
+            return True
+    return False
+
+
+def graduate_experience_to_rule(
+    observation_id: str,
+    *,
+    user_id: str = "default",
+    tenant_id: str = "default",
+    options: RuleGraduateOptions | None = None,
+) -> RuleEntry:
+    """Graduate a reviewed, non-sensitive procedural observation into the ``rules`` block."""
+    opts = options or RuleGraduateOptions()
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            (observation_id, tenant_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"Observation {observation_id!r} not found")
+        obs = dict(row)
+
+        if obs.get("status") == "archived":
+            raise ValueError(f"Observation {observation_id!r} is archived and cannot graduate to a rule")
+
+        category = str(obs.get("category") or "").strip().lower()
+        memory_type = str(obs.get("memory_type") or "").strip().lower()
+        pattern_key = str(obs.get("pattern_key") or "").strip().lower()
+        if (
+            memory_type != "procedural"
+            and category not in _PROCEDURAL_RULE_CATEGORIES
+            and not pattern_key.startswith("procedural:")
+        ):
+            raise ValueError(f"Observation {observation_id!r} is not procedural")
+
+        if _experience_has_sensitive_evidence(conn, obs, user_id=user_id, tenant_id=tenant_id):
+            raise ValueError(f"Observation {observation_id!r} carries sensitive evidence and cannot become a rule")
+
+        if not opts.reviewed and not _experience_has_approved_skill(
+            conn, observation_id, user_id=user_id, tenant_id=tenant_id
+        ):
+            raise ValueError(
+                f"Observation {observation_id!r} must be reviewed (or backed by an approved skill) before graduating"
+            )
+    finally:
+        conn.close()
+
+    rule = compile_experience_to_rule(
+        obs,
+        requested_strength=opts.requested_strength,
+        applies_when=opts.applies_when,
+        exception=opts.exception,
+    )
+    return add_rule(
+        rule,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        agent_id=opts.agent_id,
+        project=opts.project,
+    )

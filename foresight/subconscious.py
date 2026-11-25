@@ -20,6 +20,8 @@ from typing import Any
 
 from .block_registry import (
     DEFAULT_BLOCK_SCHEMAS,
+    RULES_BLOCK_LABEL,
+    RULES_PLACEHOLDER,
     MemoryBlockSchema as RegisteredMemoryBlockSchema,
     get_registry,
     initialize_default_blocks,
@@ -80,6 +82,7 @@ SESSION_PATTERNS = "session_patterns"
 USER_PREFERENCES = "user_preferences"
 SELF_IMPROVEMENT = "self_improvement"
 TOOL_GUIDELINES = "tool_guidelines"
+RULES = RULES_BLOCK_LABEL
 
 DEFAULT_MEMORY_BLOCKS = {
     CORE_DIRECTIVES: """ROLE: Foresight Curator — background continuity and curation layer for Foresight.
@@ -178,6 +181,7 @@ Finding information:
 2. Deep search for specific topics
 3. Full content for deep dives on specific topics
 """,
+    RULES: RULES_PLACEHOLDER,
 }
 
 

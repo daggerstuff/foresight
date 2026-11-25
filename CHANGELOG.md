@@ -6,6 +6,14 @@ All notable changes to Foresight MCP are documented here.
 
 ### Added
 
+- **Rules as a never-truncated lane (`foresight.block_registry`, `foresight.context_blocks`, `foresight.injection_budget`, FOR-32):**
+  Added a registered `rules` context block schema (`statement`, `strength`
+  `must | must_not | should`, `applies_when`, `exception`, `source`), condition-
+  and exception-aware retrieval (`retrieve_matching_rules`), a never-truncated
+  `Lane.RULES` in `injection_budget.py` (alongside `Lane.SAFETY`, preserved even
+  under zero/minimal character budgets and gated recall), and strength-preserving
+  graduation from reviewed procedural experiences (`graduate_experience_to_rule`,
+  never upgrading `should` to `must`).
 - **Skill crystallization (`foresight.skill_crystallization`, FOR-55):**
   Procedural observations crossing the proof threshold (`N` successful episodes
   with zero unresolved contradicting failures, excluding `is_sensitive` rows)
