@@ -50,6 +50,7 @@ from .context_blocks import (
     ContextBlock as ContextBlock,
     ContextBlockAgent as ContextBlockAgent,
     ContextBlockState as ContextBlockState,
+    RuleGraduateOptions as RuleGraduateOptions,
     add_context_guidance as add_context_guidance,
     add_rule as add_rule,
     add_subconscious_guidance as add_subconscious_guidance,

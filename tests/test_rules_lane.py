@@ -298,3 +298,10 @@ def test_graduate_reviewed_experience_and_inject_under_tight_budget():
     )
     payload_exc = json.loads(raw_exc)
     assert payload_exc["rules"] == []
+
+
+def test_package_root_exports_every_public_name():
+    import foresight
+
+    missing = [name for name in foresight.__all__ if not hasattr(foresight, name)]
+    assert missing == []
