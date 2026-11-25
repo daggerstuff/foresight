@@ -1181,10 +1181,13 @@ def export_skills_to_dir(
         target = skill_name.strip()
         skills = [s for s in skills if s["skill_name"] == target or s["memory_id"] == target]
 
+    # include_unapproved widens the set to staged skills only; retired
+    # artifacts are never exported.
+    allowed_statuses = {"approved", "pending"} if include_unapproved else {"approved"}
     exported: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for skill in skills:
-        if not include_unapproved and skill["status"] != "approved":
+        if skill["status"] not in allowed_statuses:
             skipped.append({"memory_id": skill["memory_id"], "reason": f"status={skill['status']}"})
             continue
         if not skill["signature_valid"]:

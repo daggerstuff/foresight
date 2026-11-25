@@ -37,7 +37,7 @@ from .error_signatures import normalize_error_signature
 from .llm_client import default_llm_call
 from .observations import EpisodeObservationSpec, upsert_episode_observation
 from .reflect import _connect, _fetch_all, _fetch_one
-from .sensitivity import resolve_is_sensitive
+from .sensitivity import evaluate_secrets, resolve_is_sensitive
 
 logger = logging.getLogger("foresight_experience")
 
@@ -239,7 +239,10 @@ def build_episode(
     if messages is None:
         messages = [{"role": row.get("role") or "unknown", "content": row.get("content") or ""} for row in raw_events]
 
-    summary = _task_summary(messages)
+    # The capture pipeline redacts raw events, but episode summaries are built
+    # from the caller's messages; apply the same secret policy before storing.
+    summary_verdict = evaluate_secrets(_task_summary(messages), tenant_id=tenant_id)
+    summary = "" if summary_verdict.blocked else summary_verdict.content
     sensitivity_text = "\n".join(str(m.get("content") or "") for m in messages)[:20000]
     is_sensitive = 1 if (sensitivity_text and resolve_is_sensitive(None, sensitivity_text)[0]) else 0
 
@@ -322,8 +325,15 @@ def record_outcome(user_id: str, tenant_id: str, verdict: EpisodeVerdict) -> dic
         score = {"success": 1.0, "failure": 0.0, "mixed": 0.5, "unknown": 0.5}[outcome]
     score = _clamp_score(score)
 
-    signature = normalize_error_signature(verdict.detail) if verdict.detail else None
-    detail_text = (verdict.detail or "")[:_MAX_DETAIL_CHARS] or None
+    # Outcome details are free text from CI or a user; redact before they
+    # become searchable episode data or a signature.
+    detail_verdict = evaluate_secrets(verdict.detail or "", tenant_id=tenant_id)
+    if detail_verdict.blocked:
+        detail_text = None
+        signature = None
+    else:
+        detail_text = detail_verdict.content[:_MAX_DETAIL_CHARS] or None
+        signature = normalize_error_signature(detail_text) if detail_text else None
 
     conn = _connect()
     try:
@@ -385,10 +395,12 @@ def auto_score_episode(
         transcript = "\n".join(f"{r.get('role') or 'unknown'}: {r.get('content') or ''}" for r in rows)
 
     mode = _llm_scoring_enabled()
+    # Never send a sensitive or secret-bearing transcript to a provider.
+    scoring_text = "" if episode["is_sensitive"] else evaluate_secrets(transcript, tenant_id=tenant_id).content
     detail: str
-    if mode in ("llm", "auto") and transcript:
+    if mode in ("llm", "auto") and scoring_text:
         try:
-            score, rationale = _llm_rubric(transcript, tenant_id, user_id)
+            score, rationale = _llm_rubric(scoring_text, tenant_id, user_id)
             source = "llm_rubric"
             outcome = _score_to_outcome(score)
             detail = f"llm_rubric: {rationale}"[:_MAX_DETAIL_CHARS]

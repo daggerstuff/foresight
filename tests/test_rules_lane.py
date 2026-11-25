@@ -58,19 +58,27 @@ def _tenant_ctx():
 
 
 def test_rules_block_schema_registered_and_validated():
+    previous = BlockRegistry._instance
     BlockRegistry._instance = None
-    registry = initialize_default_blocks()
-    schema = registry.get_schema(RULES_BLOCK_LABEL)
-    assert schema is not None
-    assert schema.metadata["fields"] == ["statement", "strength", "applies_when", "exception", "source"]
-    assert schema.metadata["strengths"] == ["must", "must_not", "should"]
+    try:
+        registry = initialize_default_blocks()
+        schema = registry.get_schema(RULES_BLOCK_LABEL)
+        assert schema is not None
+        assert schema.metadata["fields"] == ["statement", "strength", "applies_when", "exception", "source"]
+        assert schema.metadata["strengths"] == ["must", "must_not", "should"]
 
-    agent = get_context_block_agent(USER_ID, TENANT)
-    with pytest.raises(ValueError, match="Invalid content for block 'rules'"):
-        agent.update_block(RULES_BLOCK_LABEL, json.dumps([{"statement": "Bad", "strength": "forbidden"}]))
+        agent = get_context_block_agent(USER_ID, TENANT)
+        with pytest.raises(ValueError, match="Invalid content for block 'rules'"):
+            agent.update_block(RULES_BLOCK_LABEL, json.dumps([{"statement": "Bad", "strength": "forbidden"}]))
 
-    with pytest.raises(ValueError, match="Invalid content for block 'rules'"):
-        agent.update_block(RULES_BLOCK_LABEL, json.dumps([{"statement": "", "strength": "must"}]))
+        with pytest.raises(ValueError, match="Invalid content for block 'rules'"):
+            agent.update_block(RULES_BLOCK_LABEL, json.dumps([{"statement": "", "strength": "must"}]))
+
+        # Only the exact placeholder counts as empty; a lookalike prefix is malformed.
+        with pytest.raises(ValueError, match="Invalid content for block 'rules'"):
+            agent.update_block(RULES_BLOCK_LABEL, "(No such rules) not json")
+    finally:
+        BlockRegistry._instance = previous
 
 
 def test_rules_retrieved_by_condition_and_exception():
@@ -168,6 +176,8 @@ def test_rules_lane_never_truncated_under_tightest_budget():
     tight_budget = InjectionBudget(max_chars=0)
     alloc = allocate_lane(rule_items, Lane.RULES, tight_budget)
     assert len(alloc.full_items) == EXPECTED_TIGHT_RULE_COUNT
+    # -1 is the unbounded sentinel: rules ignore the global cap entirely.
+    assert alloc.budget_chars == -1
     assert alloc.summary_items == []
     assert alloc.stub_items == []
     assert alloc.omitted_count == 0
@@ -250,7 +260,7 @@ def test_graduate_reviewed_experience_and_inject_under_tight_budget():
     with pytest.raises(ValueError, match="must be reviewed"):
         graduate_experience_to_rule(obs["id"], user_id=USER_ID, tenant_id=TENANT)
 
-    # Sensitive procedural observations cannot graduate even if reviewed=True.
+    # Sensitive procedural observations cannot graduate even with a review record.
     sensitive_obs = upsert_episode_observation(
         EpisodeObservationSpec(
             pattern_key="success:sensitive-check",
@@ -267,7 +277,7 @@ def test_graduate_reviewed_experience_and_inject_under_tight_budget():
             sensitive_obs["id"],
             user_id=USER_ID,
             tenant_id=TENANT,
-            options=RuleGraduateOptions(reviewed=True),
+            options=RuleGraduateOptions(),
         )
 
     # Approving the crystallized skill marks the experience reviewed.

@@ -162,7 +162,7 @@ class RuleEntry:
 def parse_rules_block(content: str) -> list[RuleEntry]:
     """Parse serialized ``rules`` block content into validated ``RuleEntry`` objects."""
     text = (content or "").strip()
-    if not text or text.startswith("(No"):
+    if not text or text == RULES_PLACEHOLDER:
         return []
     parsed = json.loads(text)
     if isinstance(parsed, dict):

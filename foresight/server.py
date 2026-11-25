@@ -76,6 +76,7 @@ from .connection_pool import (
 from .context_blocks import (
     PENDING_ITEMS,
     PROJECT_CONTEXT,
+    RULES_BLOCK_LABEL,
     SESSION_PATTERNS,
     USER_PREFERENCES,
     auto_distill_context_blocks,
@@ -929,11 +930,12 @@ class RecordEpisodeOutcomeParams(BaseModel):
     session_id: str | None = Field(default=None, description="Session whose episode to score")
     episode_id: str | None = Field(default=None, description="Episode ID to score (alternative to session_id)")
     score: float | None = Field(default=None, ge=0.0, le=1.0, description="Optional 0-1 score; defaults from outcome")
-    score_source: Literal["user_feedback", "ci_result", "llm_rubric", "fallback"] = Field(
+    score_source: Literal["user_feedback", "ci_result"] = Field(
         default="user_feedback",
         description=(
-            "Where the score came from: explicit user feedback, CI/test result ingestion, "
-            "LLM rubric, or the deterministic fallback"
+            "Explicit source only: user feedback or CI/test result ingestion. "
+            "Automatic sources (llm_rubric, fallback) are replaceable and are never "
+            "recorded through this tool."
         ),
     )
     detail: str | None = Field(
@@ -6539,6 +6541,10 @@ def _context_block_lines(
         for block in all_blocks:
             label = block.get("label", "")
             content = (block.get("content") or "").strip()
+            # Rules render through their own condition-matched lane; the raw
+            # block here would inject rules whose exception applies.
+            if label == RULES_BLOCK_LABEL:
+                continue
             if content:
                 snippet = content[:CONTEXT_BLOCK_SNIPPET_CHARS] + (
                     "..." if len(content) > CONTEXT_BLOCK_SNIPPET_CHARS else ""

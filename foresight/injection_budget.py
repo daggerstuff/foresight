@@ -4,14 +4,17 @@ Implements PIX-3949: bounded payload output for inject_context and
 get_relevant_memories with lane-based character budget allocation.
 
 Lanes (in priority order):
-1. static   - user profile / preferences (highest priority, rarely changes)
-2. dynamic  - project context / pending items (session-specific)
-3. memories - top-ranked retrieval results (most content, first to truncate)
-4. blocks   - context block signals (supplementary)
-5. safety   - clinical gating / safety notes (always preserved if present)
+1. rules    - matched must / must_not / should constraints (never truncated)
+2. static   - user profile / preferences (rarely changes)
+3. dynamic  - project context / pending items (session-specific)
+4. memories - top-ranked retrieval results (most content, first to truncate)
+5. blocks   - context block signals (supplementary)
+6. safety   - clinical gating / safety notes (never truncated)
 
 Budget allocation strategy:
-- Each lane receives a percentage of the total character budget.
+- The rules and safety lanes are never truncated or omitted (see
+  NEVER_TRUNCATED_LANES); every other lane receives a percentage of the
+  total character budget.
 - Within a lane, items are ordered by score/importance (highest first).
 - When a lane exhausts its budget:
   1. Remaining items get truncated to summaries (first sentence only).
@@ -319,8 +322,9 @@ def allocate_lane(
         # Unbounded or never-truncated lane (rules, safety): every item stays FULL
         sorted_items = sorted(items, key=lambda i: i.score, reverse=True) if budget.is_bounded else items
         rendered = [(item, _render_item(item, TruncationLevel.FULL, budget)) for item in sorted_items]
-        budget_chars = budget.lane_budget(lane) if budget.is_bounded else -1
-        return LaneAllocation(lane=lane, budget_chars=budget_chars, full_items=rendered)
+        # -1 is the unbounded sentinel: these lanes ignore the global cap, so
+        # reporting their weighted share would misstate the budget in details.
+        return LaneAllocation(lane=lane, budget_chars=-1, full_items=rendered)
 
     lane_budget = budget.lane_budget(lane)
     allocation = LaneAllocation(lane=lane, budget_chars=lane_budget)

@@ -8,7 +8,7 @@ _SIGNATURE_SCAN_CHARS = 8000
 _SIGNATURE_MAX = 160
 
 _PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:/[\w.\-]+){2,}|\b[\w.\-]+/[\w./\-]{4,}")
-_HEX_RE = re.compile(r"\b[0-9a-f]{8,}\b", re.IGNORECASE)
+_HEX_RE = re.compile(r"\b(?:0x)?[0-9a-f]{8,}\b", re.IGNORECASE)
 _UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
 _NUM_RE = re.compile(r"\d+")
 _WS_RE = re.compile(r"\s+")

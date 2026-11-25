@@ -98,6 +98,10 @@ def test_normalize_error_signature():
     assert "connectionrefusederror" in sig
     assert "10" not in sig
     assert normalize_error_signature("everything is fine") is None
+    # A 0x-prefixed id and a bare id are the same volatile token.
+    assert normalize_error_signature("RuntimeError: bad handle 0xdeadbeef") == normalize_error_signature(
+        "RuntimeError: bad handle deadbeef"
+    )
 
 
 def test_fallback_scoring_marks_failure_and_success():

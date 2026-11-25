@@ -133,7 +133,9 @@ def _procedural_key(row: dict[str, Any]) -> str | None:
         return None
 
     metrics = _parse_json_obj(row.get("metrics"), {})
-    for key in ("procedure_key", "skill_name", "procedure"):
+    # exp_key is what experience distillation writes; without it every
+    # lesson collapses into one shared "procedural:lesson" cluster.
+    for key in ("exp_key", "procedure_key", "skill_name", "procedure"):
         val = metrics.get(key)
         if isinstance(val, str) and val.strip():
             return f"procedural:{_slug(val)}"
@@ -190,9 +192,10 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     confidence, supporting_memory_ids.
     """
 
-    objects = _memory_objects(rows)
-    if not objects:
-        return []
+    # The synthesizer embeds memory content in its insights, so sensitive rows
+    # must never reach it. Category clusters only carry a count and a category
+    # name, and procedural clusters already skip sensitive rows.
+    objects = _memory_objects([row for row in rows if not bool(row.get("is_sensitive"))])
 
     synth = EnhancedMemorySynthesizer()
     candidates: list[dict[str, Any]] = []
@@ -205,7 +208,9 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     # Recurring category clusters — the base "keeps happening" signal.
     by_category: dict[str, list[dict]] = {}
     for row in rows:
-        if row["id"] in procedural_ids and (row.get("category") or "general") in _PROCEDURAL_CATEGORIES:
+        # Already carried by a procedural candidate (memory_type='procedural'
+        # rows are often category='lesson'), so a second cluster would duplicate.
+        if row["id"] in procedural_ids:
             continue
         cat = row.get("category") or "general"
         by_category.setdefault(cat, []).append(row)
@@ -228,6 +233,8 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
 
     # Synthesizer-driven detection: contradictions and temporal trends,
     # promoted to evidence-linked observations via generated insights.
+    if not objects:
+        return candidates
     try:
         contradictions = synth._detect_contradictions(objects)
         trends = synth._analyze_temporal_trends(objects)

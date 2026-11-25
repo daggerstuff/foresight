@@ -529,7 +529,7 @@ packages staged in `manage_inferred`, and exported once approved:
 
 ```bash
 foresight skills crystallize                  # stage qualifying procedural observations
-foresight skills list --status pending        # inspect staged/retired skills
+foresight skills list --status pending        # inspect staged skills
 foresight skills approve <memory_id>          # approve for agent loading
 foresight skills export --output-dir skills   # export skills/<name>/SKILL.md
 foresight skills verify skills/<name>/SKILL.md

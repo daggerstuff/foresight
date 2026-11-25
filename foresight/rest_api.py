@@ -1381,6 +1381,21 @@ def _openapi_spec() -> dict[str, Any]:
                 "get": {
                     "summary": "List crystallized skills (defaults to approved, signature-verified skills)",
                     "operationId": "listSkills",
+                    "parameters": [
+                        {
+                            "name": "status",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "string",
+                                "enum": ["approved", "pending", "retired", "declined", "all"],
+                                "default": "approved",
+                            },
+                        },
+                        {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer"}},
+                        {"name": "agent_id", "in": "query", "required": False, "schema": {"type": "string"}},
+                        {"name": "project", "in": "query", "required": False, "schema": {"type": "string"}},
+                    ],
                     "responses": _ok(),
                 }
             },
@@ -1389,7 +1404,9 @@ def _openapi_spec() -> dict[str, Any]:
                     "summary": "Load one approved, signature-verified skill by name or ID",
                     "operationId": "getSkill",
                     "parameters": [
-                        {"name": "skill_name", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {"name": "skill_name", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "agent_id", "in": "query", "required": False, "schema": {"type": "string"}},
+                        {"name": "project", "in": "query", "required": False, "schema": {"type": "string"}},
                     ],
                     "responses": _ok(),
                 }

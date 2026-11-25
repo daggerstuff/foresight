@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -25,6 +26,7 @@ from .block_registry import (
     serialize_rules_block,
 )
 from .connection_pool import get_db_connection
+from .context_cache import get_context_cache
 from .sensitivity import resolve_is_sensitive
 from .sql_helpers import join_sql_parts, placeholders
 from .subconscious import (
@@ -42,6 +44,10 @@ from .subconscious import (
 )
 
 logger = logging.getLogger("foresight_context_blocks")
+
+# Serializes the read-modify-write of the rules block: two concurrent add_rule
+# calls otherwise read the same list and the later write drops the earlier rule.
+_RULES_LOCK = threading.Lock()
 
 DEFAULT_CONTEXT_BLOCKS = DEFAULT_MEMORY_BLOCKS
 ContextBlock = MemoryBlock
@@ -355,9 +361,13 @@ _SHOULD_RE = re.compile(r"\b(?:should|prefer|recommended|consider)\b", re.IGNORE
 
 @dataclass(frozen=True)
 class RuleGraduateOptions:
-    """Options controlling rule graduation from a procedural experience."""
+    """Options controlling rule graduation from a procedural experience.
 
-    reviewed: bool = False
+    There is deliberately no caller-supplied ``reviewed`` flag: review must be
+    evidenced by a persisted, approved skill record, so any caller cannot
+    promote an unreviewed instruction into the rules lane.
+    """
+
     requested_strength: RuleStrength | str | None = None
     applies_when: str = ""
     exception: str = ""
@@ -389,6 +399,18 @@ def add_rule(
     project: str | None = None,
 ) -> RuleEntry:
     """Validate and persist a structured rule in the ``rules`` context block."""
+    with _RULES_LOCK:
+        return _add_rule_locked(entry, user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project)
+
+
+def _add_rule_locked(
+    entry: RuleEntry,
+    *,
+    user_id: str,
+    tenant_id: str,
+    agent_id: str | None,
+    project: str | None,
+) -> RuleEntry:
     agent = get_context_block_agent(user_id, tenant_id, agent_id=agent_id, project=project)
     existing = list_rules(user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project)
     key = (
@@ -408,6 +430,9 @@ def add_rule(
             return prior
     updated = [*existing, entry]
     agent.update_block(RULES_BLOCK_LABEL, serialize_rules_block(updated))
+    # A repeated inject_context for the same query must not serve the pre-rule
+    # payload from the 60s injection cache.
+    get_context_cache().invalidate_user(user_id)
     return entry
 
 
@@ -509,22 +534,19 @@ def _experience_has_sensitive_evidence(
 
     ep_ids = json.loads(observation.get("supporting_episode_ids") or "[]")
     if ep_ids:
-        try:
-            slots = placeholders(len(ep_ids))
-            rows = conn.execute(
-                join_sql_parts(
-                    "SELECT is_sensitive FROM episodes WHERE tenant_id = ? AND user_id = ? AND id IN (",
-                    slots,
-                    ")",
-                ),
-                (tenant_id, user_id, *ep_ids),
-            ).fetchall()
-            if any(bool(dict(r).get("is_sensitive")) for r in rows):
-                return True
-        except Exception:
-            # Older schemas may predate the episodes table; the text-level
-            # detector above still ran, so treat a missing table as no evidence.
-            logger.debug("episode sensitivity lookup failed (non-fatal)", exc_info=True)
+        # Fail closed: a lookup error must abort graduation, never look like
+        # "no sensitive evidence".
+        slots = placeholders(len(ep_ids))
+        rows = conn.execute(
+            join_sql_parts(
+                "SELECT is_sensitive FROM episodes WHERE tenant_id = ? AND user_id = ? AND id IN (",
+                slots,
+                ")",
+            ),
+            (tenant_id, user_id, *ep_ids),
+        ).fetchall()
+        if any(bool(dict(r).get("is_sensitive")) for r in rows):
+            return True
     return False
 
 
@@ -579,12 +601,8 @@ def graduate_experience_to_rule(
         if _experience_has_sensitive_evidence(conn, obs, user_id=user_id, tenant_id=tenant_id):
             raise ValueError(f"Observation {observation_id!r} carries sensitive evidence and cannot become a rule")
 
-        if not opts.reviewed and not _experience_has_approved_skill(
-            conn, observation_id, user_id=user_id, tenant_id=tenant_id
-        ):
-            raise ValueError(
-                f"Observation {observation_id!r} must be reviewed (or backed by an approved skill) before graduating"
-            )
+        if not _experience_has_approved_skill(conn, observation_id, user_id=user_id, tenant_id=tenant_id):
+            raise ValueError(f"Observation {observation_id!r} must be reviewed by an approved skill before graduating")
     finally:
         conn.close()
 

@@ -788,9 +788,15 @@ class EvalHarness:
 
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
+        backup = getattr(self, "_backend_backup", None)
+        if not self._patches_applied and backup is None:
+            # Never applied (or already restored): leave the process-wide
+            # backend untouched instead of clearing it.
+            return
         self._patches_applied = False
 
-        set_backend(getattr(self, "_backend_backup", None))
+        if backup is not None:
+            set_backend(backup)
         self._backend_backup = None
 
         hr_module.reset_hybrid_retriever()

@@ -40,12 +40,13 @@ All notable changes to Foresight MCP are documented here.
   explicit outcomes recorded via `record_episode_outcome` always win.
   Failed sessions carry a normalized `error_signature` (paths, ids, and
   numbers stripped) so the same failure class maps to one signature.
-  Scored episodes are distilled into procedural observations whose evidence
-  is the producing episodes (new `observations.supporting_episode_ids` and
-  `memory_type` columns) and into procedural memories (`memory_type =
-  'procedural'`) so the keyword retrieval signal surfaces prior failures and
-  reusable recipes for similar queries. `is_sensitive` episodes are never
-  distilled. Set `FORESIGHT_EPISODE_SCORING=llm|auto` to enable the LLM
+  Scored episodes that resolve to a success or a failure are distilled into
+  procedural observations whose evidence is the producing episodes (new
+  `observations.supporting_episode_ids` and `memory_type` columns) and into
+  procedural memories (`memory_type = 'procedural'`) so the keyword retrieval
+  signal surfaces prior failures and reusable recipes for similar queries.
+  `mixed` and `unknown` episodes produce no observations, and `is_sensitive`
+  episodes are never distilled. Set `FORESIGHT_EPISODE_SCORING=llm|auto` to enable the LLM
   rubric; the default `fallback` path needs no LLM and is reported as
   `degraded` in `score_detail`. The episodes table descends from the legacy
   out-of-band `episodes` shape: migration 30 adds the missing columns
