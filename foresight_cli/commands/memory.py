@@ -209,7 +209,7 @@ def list_memories(params: MemoryListParams) -> None:
         SearchMemoriesParams(options=SearchOptions(query_type="list", limit=params.limit, offset=params.offset))
     )
 
-    _stdout_console.print(result)
+    _stdout_console().print(result)
 
 
 def query(params: MemoryQueryParams) -> None:

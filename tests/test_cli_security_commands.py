@@ -97,7 +97,11 @@ def test_encrypt_all_reports_success_after_the_commit() -> None:
         patch.object(security_commands, "get_db_connection", return_value=conn),
         patch.object(security_commands, "get_encryption_engine", return_value=engine),
         patch.object(security_commands.cfg, "get_user_id", return_value="test-user"),
-        patch.object(out, "_stderr_console", Console(file=stderr, force_terminal=False, color_system=None)),
+        patch.object(
+            out,
+            "_stderr_console",
+            lambda: Console(file=stderr, force_terminal=False, color_system=None),
+        ),
     ):
         out.configure(mode="human", color=False, pipe_safe=False, verbose=False)
         security_commands.encrypt_all(security_commands.SecurityEncryptAllParams(user_id="test-user"))
@@ -121,7 +125,11 @@ def test_rotate_key_reports_success_and_failures_after_the_rotation() -> None:
         patch.object(security_commands, "get_db_connection", return_value=conn),
         patch.object(security_commands, "get_encryption_engine", return_value=engine),
         patch.object(security_commands.cfg, "get_user_id", return_value="test-user"),
-        patch.object(out, "_stderr_console", Console(file=stderr, force_terminal=False, color_system=None)),
+        patch.object(
+            out,
+            "_stderr_console",
+            lambda: Console(file=stderr, force_terminal=False, color_system=None),
+        ),
     ):
         out.configure(mode="human", color=False, pipe_safe=False, verbose=False)
         security_commands.rotate_key(

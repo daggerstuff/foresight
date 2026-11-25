@@ -9092,7 +9092,8 @@ def _handle_inferred_list(
     conn = get_db_connection()
     try:
         rows = conn.execute(
-            """
+            join_sql_parts(
+                """
             SELECT m.id, m.content, m.category, m.scope, m.retention, m.importance,
                    m.created_at, m.updated_at, m.review_status, m.review_reason,
                    m.memory_type, m.metrics, m.is_latest,
@@ -9102,12 +9103,13 @@ def _handle_inferred_list(
             WHERE m.user_id = ? AND m.tenant_id = ? AND m.inferred = 1 AND m.is_ghost = 0
               AND m.expired_at IS NULL
               AND (m.review_status IS NULL OR m.review_status != 'declined')
-            """
-            + ns_frag
-            + """
+            """,
+                ns_frag,
+                """
             ORDER BY parent_count DESC, m.created_at DESC
             LIMIT ?
-            """,
+                """,
+            ),
             (uid, tenant_id, *ns_params, capped),
         ).fetchall()
     finally:
@@ -9155,7 +9157,10 @@ def _handle_inferred_approve(
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT inferred, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            join_sql_parts(
+                "SELECT inferred, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
             (memory_id, uid, tenant_id, *ns_params),
         ).fetchone()
         if row is None:
@@ -9174,8 +9179,11 @@ def _handle_inferred_approve(
                 )
             return _tool_error("approve", f"memory {memory_id} is not inferred.", memory_id=memory_id)
         conn.execute(
-            "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            join_sql_parts(
+                "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
+                "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
             (now, memory_id, uid, tenant_id, *ns_params),
         )
         conn.commit()
@@ -9194,8 +9202,10 @@ def _handle_inferred_decline(scope: UserScope, memory_id: str, reason: str | Non
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT inferred, is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"
-            + ns_frag,
+            join_sql_parts(
+                "SELECT inferred, is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
             (memory_id, scope.user_id, scope.tenant_id, *ns_params),
         ).fetchone()
         if row is None:
@@ -9207,8 +9217,11 @@ def _handle_inferred_decline(scope: UserScope, memory_id: str, reason: str | Non
         if row["inferred"] != 1:
             return _tool_error("decline", f"memory {memory_id} is not inferred.", memory_id=memory_id)
         conn.execute(
-            "UPDATE memories SET is_ghost = 1, review_status = 'declined', review_reason = ?, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            join_sql_parts(
+                "UPDATE memories SET is_ghost = 1, review_status = 'declined', review_reason = ?, updated_at = ? "
+                "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
             (reason, now, memory_id, scope.user_id, scope.tenant_id, *ns_params),
         )
         conn.commit()
@@ -9231,7 +9244,10 @@ def _handle_inferred_undo(
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            join_sql_parts(
+                "SELECT is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
             (memory_id, uid, tenant_id, *ns_params),
         ).fetchone()
         if row is None:
@@ -9246,9 +9262,12 @@ def _handle_inferred_undo(
         if row["review_status"] is None and row["is_ghost"] != 1:
             return _tool_error("undo", f"memory {memory_id} has no review action to undo.", memory_id=memory_id)
         conn.execute(
-            "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, "
-            "review_reason = NULL, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?" + ns_frag,
+            join_sql_parts(
+                "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, "
+                "review_reason = NULL, updated_at = ? "
+                "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
             (now, memory_id, uid, tenant_id, *ns_params),
         )
         conn.commit()

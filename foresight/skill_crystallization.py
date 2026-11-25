@@ -607,8 +607,13 @@ def render_skill_markdown(
     candidate: dict[str, Any],
     spec: SkillRenderSpec | None = None,
     **legacy_kwargs: Any,
-) -> tuple[str, str, dict[str, Any]]:
-    """Render a skill candidate into a signed SKILL.md document and metadata dict."""
+) -> tuple[str, str | None, dict[str, Any]]:
+    """Render a skill candidate into a signed SKILL.md document and metadata dict.
+
+    The signature is ``None`` when no signing key is configured, so the
+    caller can still stage the document (verification then reports it as
+    unsigned rather than the render failing outright).
+    """
     if spec is None:
         spec = SkillRenderSpec(
             scope=legacy_kwargs["scope"],
