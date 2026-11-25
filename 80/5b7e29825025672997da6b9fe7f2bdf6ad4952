@@ -1,0 +1,22 @@
+foresight/eval_harness.py
+  s_0d7652a2b5b97f::t_f702ff95a5e71b 716-720,740,793-794
+  s_0d7652a2b5b97f::t_f330c982685da1 46-47,384-385,481-496,795,1022-1026,1059-1141
+tests/test_eval_harness.py
+  s_0d7652a2b5b97f::t_e7cf8b23fe5362 16,99-100,135-136,159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "805b7e29825025672997da6b9fe7f2bdf6ad4952",
+  "prompts": {},
+  "sessions": {
+    "s_0d7652a2b5b97f": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "wonderful-tugboat",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
