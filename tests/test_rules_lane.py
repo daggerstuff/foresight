@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+import foresight
 from foresight.block_registry import (
     RULES_BLOCK_LABEL,
     BlockRegistry,
@@ -301,7 +302,5 @@ def test_graduate_reviewed_experience_and_inject_under_tight_budget():
 
 
 def test_package_root_exports_every_public_name():
-    import foresight
-
     missing = [name for name in foresight.__all__ if not hasattr(foresight, name)]
     assert missing == []
