@@ -1,0 +1,18 @@
+.github/workflows/ci.yml
+  h_07d84030f79d30 54-56,132
+tests/test_secret_defense.py
+  h_07d84030f79d30 27,32-34,38
+tests/test_semantic_search.py
+  h_07d84030f79d30 203-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "74a36db90450a603028236e4eadad62c8dfc369b",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
