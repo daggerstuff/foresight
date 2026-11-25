@@ -1,0 +1,16 @@
+.github/workflows/ci.yml
+  h_07d84030f79d30 131-134
+foresight/semantic_search.py
+  h_07d84030f79d30 53,198-207,226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eeeb555f58e097bfd89617923ddddbdb455a9d71",
+  "prompts": {},
+  "humans": {
+    "h_07d84030f79d30": {
+      "author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
