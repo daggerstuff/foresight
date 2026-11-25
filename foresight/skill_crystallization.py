@@ -261,7 +261,8 @@ def _record_outcome_tally(tally: _EvidenceTally, kind: str | None, resolved: boo
 
 
 def _is_inactive_memory(mem: dict[str, Any], eid: str, updated_ids: set[str], now_iso: str) -> bool:
-    is_latest = int(mem.get("is_latest") if mem.get("is_latest") is not None else 1)
+    raw_is_latest = mem.get("is_latest")
+    is_latest = 1 if raw_is_latest is None else int(raw_is_latest)
     return (
         bool(mem.get("is_ghost"))
         or mem.get("expired_at") is not None

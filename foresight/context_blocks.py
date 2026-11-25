@@ -41,6 +41,8 @@ from .subconscious import (
     normalize_block_line,
 )
 
+logger = logging.getLogger("foresight_context_blocks")
+
 DEFAULT_CONTEXT_BLOCKS = DEFAULT_MEMORY_BLOCKS
 ContextBlock = MemoryBlock
 
@@ -520,7 +522,9 @@ def _experience_has_sensitive_evidence(
             if any(bool(dict(r).get("is_sensitive")) for r in rows):
                 return True
         except Exception:
-            pass
+            # Older schemas may predate the episodes table; the text-level
+            # detector above still ran, so treat a missing table as no evidence.
+            logger.debug("episode sensitivity lookup failed (non-fatal)", exc_info=True)
     return False
 
 

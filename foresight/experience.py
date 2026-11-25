@@ -294,7 +294,8 @@ def build_episode(
         conn.close()
 
     episode = get_episode(episode_id, user_id=user_id, tenant_id=tenant_id)
-    assert episode is not None
+    if episode is None:
+        raise RuntimeError(f"episode {episode_id!r} missing after upsert")
     return episode
 
 
@@ -347,7 +348,8 @@ def record_outcome(user_id: str, tenant_id: str, verdict: EpisodeVerdict) -> dic
     finally:
         conn.close()
     updated = get_episode(episode["id"], user_id=user_id, tenant_id=tenant_id)
-    assert updated is not None
+    if updated is None:
+        raise RuntimeError(f"episode {episode['id']!r} missing after outcome update")
     return updated
 
 
