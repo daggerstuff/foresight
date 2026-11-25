@@ -50,6 +50,7 @@ import math
 import os
 import re
 import struct
+import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -194,6 +195,16 @@ def _fastembed_available() -> bool:
     return importlib.util.find_spec("fastembed") is not None
 
 
+def _running_under_pytest() -> bool:
+    """True in a pytest process, even outside a running test.
+
+    ``PYTEST_CURRENT_TEST`` is only set while a test function executes, so a
+    singleton built during collection or a fixture would miss it and pick the
+    real model — a weights download that hangs an offline CI runner.
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) or "pytest" in sys.modules
+
+
 def resolve_provider(requested: str | None = None) -> str:
     """Resolve a requested provider name to a concrete, available provider.
 
@@ -212,7 +223,7 @@ def resolve_provider(requested: str | None = None) -> str:
     """
     name = (requested or "").strip().lower() or _env("FORESIGHT_EMBEDDING_PROVIDER") or AUTO_PROVIDER
     if name == AUTO_PROVIDER:
-        if os.environ.get("PYTEST_CURRENT_TEST"):
+        if _running_under_pytest():
             return DEFAULT_PROVIDER
         return FASTEMBED_PROVIDER if _fastembed_available() else DEFAULT_PROVIDER
     if name not in VALID_PROVIDERS:

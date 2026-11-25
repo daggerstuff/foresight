@@ -128,6 +128,10 @@ jobs:
       - name: Run unit tests
         env:
           FORESIGHT_DB_URL: postgresql://postgres@localhost:5432/postgres?sslmode=disable
+          # Belt and braces with resolve_provider()'s pytest detection: never
+          # fetch model weights from a CI runner. A blocked download hung the
+          # suite for 78 minutes with no output.
+          FORESIGHT_EMBEDDING_PROVIDER: local-hash
         run: |
           uv run pytest tests/ -v --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 
