@@ -23,6 +23,7 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -61,6 +62,8 @@ def _observation_row(row: dict) -> dict[str, Any]:
         "category": row.get("category"),
         "confidence": float(row.get("confidence") or 0.5),
         "supporting_memory_ids": json.loads(row.get("supporting_memory_ids") or "[]"),
+        "supporting_episode_ids": json.loads(row.get("supporting_episode_ids") or "[]"),
+        "memory_type": row.get("memory_type") or "semantic",
         "evidence_count": int(row.get("evidence_count") or 0),
         "status": row.get("status", "active"),
         "first_seen_at": row["first_seen_at"],
@@ -204,15 +207,18 @@ def _upsert_observation(
         candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project
     )
 
+    supporting_episode_ids = list(dict.fromkeys(candidate.get("supporting_episode_ids") or []))
+    memory_type = candidate.get("memory_type") or "semantic"
+
     if existing is None:
         obs_id = uuid.uuid4().hex[:16]
         supporting = list(dict.fromkeys(candidate["supporting_memory_ids"]))
         _execute(
             """INSERT INTO observations
             (id, tenant_id, user_id, agent_id, project, pattern_key, observation_text, category,
-             confidence, supporting_memory_ids, evidence_count, status,
+             confidence, supporting_memory_ids, supporting_episode_ids, memory_type, evidence_count, status,
              first_seen_at, last_refined_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)""",
             (
                 obs_id,
                 tenant_id,
@@ -224,7 +230,9 @@ def _upsert_observation(
                 candidate.get("category"),
                 candidate["confidence"],
                 json.dumps(supporting),
-                len(supporting),
+                json.dumps(supporting_episode_ids),
+                memory_type,
+                len(supporting) + len(supporting_episode_ids),
                 now,
                 now,
             ),
@@ -234,11 +242,16 @@ def _upsert_observation(
 
     # Refine: union evidence, bump version, advance last_refined_at.
     merged_ids = list(dict.fromkeys(existing["supporting_memory_ids"] + candidate["supporting_memory_ids"]))
+    merged_episodes = list(dict.fromkeys(existing.get("supporting_episode_ids", []) + supporting_episode_ids))
     new_version = existing["version"] + 1
     new_confidence = max(existing["confidence"], float(candidate["confidence"]))
+    memory_type = candidate.get("memory_type") or "semantic"
+    prior_memory_type = existing.get("memory_type") or "semantic"
+    new_memory_type = memory_type if memory_type != "semantic" or prior_memory_type == "semantic" else prior_memory_type
     _execute(
         """UPDATE observations SET observation_text = ?, category = ?, confidence = ?,
-           supporting_memory_ids = ?, evidence_count = ?, status = 'refined',
+           supporting_memory_ids = ?, supporting_episode_ids = ?, memory_type = ?,
+           evidence_count = ?, status = 'refined',
            last_refined_at = ?, version = ?
            WHERE id = ? AND tenant_id = ? AND user_id = ?""",
         (
@@ -246,7 +259,9 @@ def _upsert_observation(
             candidate.get("category") or existing.get("category"),
             new_confidence,
             json.dumps(merged_ids),
-            len(merged_ids),
+            json.dumps(merged_episodes),
+            new_memory_type,
+            len(merged_ids) + len(merged_episodes),
             now,
             new_version,
             existing["id"],
@@ -384,3 +399,37 @@ def archive_observation(observation_id: str, *, user_id: str, tenant_id: str) ->
         return bool(cur.rowcount)
     finally:
         conn.close()
+
+
+@dataclass(frozen=True)
+class EpisodeObservationSpec:
+    pattern_key: str
+    observation_text: str
+    category: str
+    confidence: float
+    episode_ids: list[str]
+    memory_type: str = "procedural"
+
+
+def upsert_episode_observation(
+    spec: EpisodeObservationSpec,
+    *,
+    user_id: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Upsert a procedural observation whose evidence is episode IDs.
+
+    Used by the experience-memory distiller: success recipes and failure
+    signatures become observations whose ``supporting_episode_ids`` point at
+    the episodes that produced them. Evidence is unioned on refine.
+    """
+    candidate = {
+        "pattern_key": spec.pattern_key,
+        "observation_text": spec.observation_text,
+        "category": spec.category,
+        "confidence": spec.confidence,
+        "supporting_memory_ids": [],
+        "supporting_episode_ids": list(dict.fromkeys(spec.episode_ids)),
+        "memory_type": spec.memory_type,
+    }
+    return _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id)

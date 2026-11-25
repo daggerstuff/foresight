@@ -362,6 +362,7 @@ async def test_mcp_exposes_only_core_tools(monkeypatch):
         "manage_mental_models",
         "process_session_transcript",
         "query_memories_temporal",
+        "record_episode_outcome",
         "reflect",
         "reprocess_raw_events",
         "search_memories",

@@ -2,6 +2,33 @@
 
 All notable changes to Foresight MCP are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Experience memory from task outcomes (FOR-60 / PIX-5039).** A finished
+  session is now an `episodes` row linked to its raw events, with an outcome
+  (`success` / `failure` / `mixed` / `unknown`), an `outcome_score`, and the
+  `score_source` that produced it (`user_feedback` for the new
+  `record_episode_outcome` tool, `ci_result` for CI/test ingestion,
+  `llm_rubric`, or the deterministic `fallback`). Episodes are built at
+  session end in `process_session_transcript` and scored automatically;
+  explicit outcomes recorded via `record_episode_outcome` always win.
+  Failed sessions carry a normalized `error_signature` (paths, ids, and
+  numbers stripped) so the same failure class maps to one signature.
+  Scored episodes are distilled into procedural observations whose evidence
+  is the producing episodes (new `observations.supporting_episode_ids` and
+  `memory_type` columns) and into procedural memories (`memory_type =
+  'procedural'`) so the keyword retrieval signal surfaces prior failures and
+  reusable recipes for similar queries. `is_sensitive` episodes are never
+  distilled. Set `FORESIGHT_EPISODE_SCORING=llm|auto` to enable the LLM
+  rubric; the default `fallback` path needs no LLM and is reported as
+  `degraded` in `score_detail`. The episodes table descends from the legacy
+  out-of-band `episodes` shape: migration 30 adds the missing columns
+  idempotently instead of recreating it. New eval scenarios
+  `S12_experience_repeat_task` and `S13_experience_failure_signature` gate
+  the recall of distilled experiences.
+
 ## [0.19.0] - 2026-07-15
 
 ### Added

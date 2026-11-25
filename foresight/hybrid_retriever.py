@@ -46,6 +46,7 @@ from . import config as config_module
 from .backend.base import DatabaseBackend
 from .connection_pool import get_pool
 from .encryption import decrypt_if_encrypted
+from .error_signatures import normalize_error_signature
 from .query_rewrite import (
     llm_rewrite_enabled,
     merge_variant_rankings,
@@ -1087,17 +1088,45 @@ class HybridRetriever:
         )
 
         # Score by term frequency
-        scored = []
+        scored_map: dict[str, float] = {}
         for row in rows:
             mid = row["id"]
             content = row["content"]
             content_lower = content.lower()
             tf = sum(content_lower.count(t) for t in terms)
             doc_len = max(len(content_lower.split()), 1)
-            score = tf / doc_len
-            scored.append((mid, score))
+            scored_map[mid] = tf / doc_len
 
-        scored.sort(key=lambda x: x[1], reverse=True)
+        # FOR-64: Match normalized error signatures against indexed procedural
+        # failure memories so matching error classes surface even when paths,
+        # IPs, or line numbers differ from the original failure.
+        err_sig = normalize_error_signature(query)
+        if err_sig:
+            try:
+                sig_rows = self._fetch_rows(
+                    join_sql_parts(
+                        """
+                    SELECT id
+                    FROM memories
+                    WHERE user_id = ? AND tenant_id = ?
+                      AND error_signature = ?
+                    """,
+                        ns_frag,
+                        expiry_frag,
+                        """
+                    ORDER BY importance DESC, created_at DESC
+                    LIMIT ?
+                    """,
+                    ),
+                    [user_id, tenant_id, err_sig, *ns_params, limit],
+                )
+                for row in sig_rows:
+                    mid = row["id"]
+                    scored_map[mid] = max(scored_map.get(mid, 0.0), 1.0) + 1.0
+            except Exception as exc:
+                logger.debug("error_signature lookup skipped: %s", exc)
+
+        scored = sorted(scored_map.items(), key=lambda x: x[1], reverse=True)
         return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
 
     def _build_tfidf_cache(

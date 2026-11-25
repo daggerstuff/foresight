@@ -101,6 +101,7 @@ Foresight exposes a comprehensive FastMCP tool suite for AI agents:
 | `query_memories_temporal`    | Time-window, trend, decay, and point-in-time (bitemporal) queries    | `window="week"\|"month"`, `as_of`, `category`     |
 | `capture_in_flight_memory`   | Immediate mid-session storage of decisions, fixes, and preferences   | `content`, `category`, `importance`             |
 | `process_session_transcript` | End-of-session auto-distillation and decision extraction             | `session_id`, `messages`                          |
+| `record_episode_outcome`    | Score a finished session (user feedback or CI/test result)          | `outcome`, `session_id`, `score`, `score_source`  |
 | `reprocess_raw_events`       | Rebuild derived memories from the append-only raw layer (idempotent) | `window_start`, `window_end`                      |
 | `get_system_status`          | Health telemetry, cache statistics, and memory counts                | `include_trends=True`                             |
 | `export_profile`             | Signed portable profile export (profile + mental models + observations) | `format="json"\|"markdown"`, `agent_id`, `project` |

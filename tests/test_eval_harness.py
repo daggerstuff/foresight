@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import foresight.eval_harness as eval_harness_module
 from foresight.eval_harness import (
+    EXPERIENCE_SEED_MEMORIES,
     FIXTURE_MEMORIES,
     PII_MATCH_PREVIEW_CHARS,
     SCENARIOS,
@@ -95,7 +96,8 @@ class TestFixtures:
     def test_all_scenario_expected_ids_exist(self):
         fixture_ids = {mem["id"] for mem in FIXTURE_MEMORIES}
         for scenario in SCENARIOS:
-            missing = scenario.expected_memory_ids - fixture_ids
+            seeded_ids = fixture_ids | {"__experience_success__", "__experience_failure__"}
+            missing = scenario.expected_memory_ids - seeded_ids
             assert not missing, f"Scenario {scenario.id} expects unknown IDs: {missing}"
 
 
@@ -130,7 +132,8 @@ class TestHarnessSeeding:
             assert count > 0, "No fixtures were seeded"
             conn = harness._get_connection()
             row = conn.execute("SELECT COUNT(*) as cnt FROM memories").fetchone()
-            assert row["cnt"] == len(FIXTURE_MEMORIES), f"Expected {len(FIXTURE_MEMORIES)} memories, got {row['cnt']}"
+            expected = len(FIXTURE_MEMORIES) + EXPERIENCE_SEED_MEMORIES
+            assert row["cnt"] == expected, f"Expected {expected} memories, got {row['cnt']}"
         finally:
             harness.close()
 
@@ -153,7 +156,7 @@ class TestHarnessSeeding:
             harness.seed_fixtures()
             conn = harness._get_connection()
             row = conn.execute("SELECT COUNT(*) as cnt FROM memories").fetchone()
-            assert row["cnt"] == len(FIXTURE_MEMORIES)
+            assert row["cnt"] == len(FIXTURE_MEMORIES) + EXPERIENCE_SEED_MEMORIES
         finally:
             harness.close()
 

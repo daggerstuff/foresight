@@ -43,7 +43,8 @@ from . import (
     subconscious,
 )
 from .backend.schema_ddl import MIGRATIONS as _SCHEMA_MIGRATIONS
-from .connection_pool import get_pool, reset_pool
+from .connection_pool import get_backend, get_pool, reset_pool, set_backend
+from .experience import EpisodeVerdict, build_episode, distill_experiences, record_outcome
 from .hybrid_retriever import reset_hybrid_retriever
 from .memory_relationships import reset_memory_relationship_store
 from .server import (
@@ -380,6 +381,8 @@ class EvalScenario:
     expected_provenance_count: int | None = None  # Optional raw-event provenance linkage count
 
 
+EXPERIENCE_SEED_MEMORIES = 2
+
 SCENARIOS: list[EvalScenario] = [
     EvalScenario(
         id="S1_preference",
@@ -474,6 +477,22 @@ SCENARIOS: list[EvalScenario] = [
         min_expected=1,
         as_of_offset_hours=0,
         expected_provenance_count=1,
+    ),
+    EvalScenario(
+        id="S12_experience_repeat_task",
+        description="Repeat task recalls the distilled procedural recipe from a prior episode",
+        query="How do I deploy the billing service to staging again?",
+        expected_memory_ids={"__experience_success__"},
+        expectation="distilled success-recipe memory is retrieved",
+        min_expected=1,
+    ),
+    EvalScenario(
+        id="S13_experience_failure_signature",
+        description="Matching error signature surfaces the prior failure lesson",
+        query="ConnectionRefusedError: connection refused on db.internal deploying the billing service, seen before?",
+        expected_memory_ids={"__experience_failure__"},
+        expectation="distilled failure-signature memory is retrieved",
+        min_expected=1,
     ),
 ]
 
@@ -694,6 +713,11 @@ class EvalHarness:
         if self._patches_applied:
             return
 
+        # Park the process-wide Postgres backend (if any) so deep call sites
+        # that prefer get_db_connection() fall back to the patched temp DB.
+        self._backend_backup = get_backend()
+        set_backend(None)
+
         # Reset singletons
         reset_pool()
         reset_hybrid_retriever()
@@ -713,6 +737,7 @@ class EvalHarness:
         # path is used end-to-end.
         for mod_name in (
             "foresight.semantic_search",
+            "foresight.reflect",
             "foresight.subconscious",
             "foresight.memory_maintenance",
             "foresight.memory_relationships",
@@ -764,6 +789,9 @@ class EvalHarness:
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
         self._patches_applied = False
+
+        set_backend(getattr(self, "_backend_backup", None))
+        self._backend_backup = None
 
         hr_module.reset_hybrid_retriever()
 
@@ -991,6 +1019,11 @@ class EvalHarness:
             ),
         )
 
+        # S12/S13: seed two finished episodes (one failure, one success) with
+        # their raw events, then run the real distiller so the procedural
+        # memories carry the same provenance they would in production.
+        self._seed_experience_state(conn, now)
+
         # S11: link a raw observation to the dark-mode preference memory.
         captured_at = now + timedelta(hours=-48)
         captured_iso = captured_at.isoformat()
@@ -1022,6 +1055,89 @@ class EvalHarness:
         )
 
         conn.commit()
+
+    def _seed_experience_state(self, conn: Any, now: datetime) -> None:
+        """Seed two episodes and distil them into procedural memories.
+
+        S12/S13 exercise the outcome loop: a prior successful episode (recipe
+        recall) and a prior failed episode whose error signature must surface
+        for a matching query. The distiller runs against the same temp DB, so
+        the seeded episodes flow through the production code path. Expected
+        memory ids are patched into the scenarios because the distilled ids
+        derive from tenant/user scope.
+        """
+        captured_iso = (now + timedelta(hours=-6)).isoformat()
+        seeds = [
+            (
+                "eval_experience_fail",
+                [
+                    ("user", "deploy the billing service to staging"),
+                    ("assistant", "deploying now"),
+                    (
+                        "tool",
+                        "Traceback (most recent call last):\n"
+                        '  File "deploy.py", line 88, in <module>\n'
+                        "ConnectionRefusedError: connection refused on db.internal:5432",
+                    ),
+                ],
+                "failure",
+                "FAILED deploy staging - ConnectionRefusedError: connection refused on db.internal:5432",
+            ),
+            (
+                "eval_experience_ok",
+                [
+                    ("user", "deploy the billing service to staging"),
+                    ("assistant", "running tests and build"),
+                    ("tool", "52 passed in 3.1s\nexit code 0"),
+                ],
+                "success",
+                None,
+            ),
+        ]
+        episode_ids: dict[str, str] = {}
+        for session_id, rows, outcome, detail in seeds:
+            for pos, (role, content) in enumerate(rows):
+                raw_key = f"experience|{self.tenant_id}|{self.user_id}|{session_id}|{pos}"
+                raw_id = hashlib.sha256(raw_key.encode()).hexdigest()[:16]
+                conn.execute(
+                    "INSERT OR IGNORE INTO raw_events "
+                    "(id, tenant_id, user_id, session_id, role, content, position, captured_at,"
+                    " source, metadata, tombstone) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'eval', '{}', 0)",
+                    (raw_id, self.tenant_id, self.user_id, session_id, role, content, pos, captured_iso),
+                )
+            conn.commit()
+            episode = build_episode(session_id, user_id=self.user_id, tenant_id=self.tenant_id)
+            episode_ids[outcome] = episode["id"]
+            record_outcome(
+                self.user_id,
+                self.tenant_id,
+                EpisodeVerdict(outcome=outcome, score_source="ci_result", detail=detail, session_id=session_id),
+            )
+
+        distill_experiences(user_id=self.user_id, tenant_id=self.tenant_id)
+
+        def _first_id(sql: str, extra: tuple = ()) -> str | None:
+            row = conn.execute(sql, (self.tenant_id, self.user_id, *extra)).fetchone()
+            if row is None:
+                return None
+            return dict(row).get("id")
+
+        failure_id = _first_id(
+            "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? AND memory_type = 'procedural' "
+            "AND error_signature IS NOT NULL LIMIT 1"
+        )
+        success_id = _first_id(
+            "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? AND memory_type = 'procedural' "
+            "AND error_signature IS NULL AND metrics LIKE ? LIMIT 1",
+            ("%success:%",),
+        )
+
+        for scenario in SCENARIOS:
+            if scenario.id == "S12_experience_repeat_task" and success_id:
+                scenario.expected_memory_ids = {success_id}
+            elif scenario.id == "S13_experience_failure_signature" and failure_id:
+                scenario.expected_memory_ids = {failure_id}
 
     # ------------------------------------------------------------------
     # Scenario execution
