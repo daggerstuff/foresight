@@ -1,0 +1,45 @@
+tests/test_skill_crystallization.py
+  s_7d4811cf1b0ba7::t_54b041c9c19655 8-538
+  s_7d4811cf1b0ba7::t_30366080a0798b 1-7,539-540
+foresight/observations.py
+  s_7d4811cf1b0ba7::t_0a7a6a1cb582e6 170-182,197-201,205-206,372-373,476,479-484
+  s_7d4811cf1b0ba7::t_682c90733e69de 167-169
+  s_7d4811cf1b0ba7::t_861d0f3cb2d6e8 485
+foresight/skill_crystallization.py
+  s_7d4811cf1b0ba7::t_a664f46f0aba9f 938-989,992-993,995
+  s_7d4811cf1b0ba7::t_ea817b9dc97914 49,74,358,369,513-632,795,856,1200
+  s_7d4811cf1b0ba7::t_54b041c9c19655 272,384,633,667,821,1029,1038,1158,1229,1234,1259,1271,1293,1296-1505
+  s_7d4811cf1b0ba7::t_e91cb011f5e516 1-48,50-73,75-271,273-357,359-368,370-383,385-512,634-666,668-794,796-820,822-855,857-937,990-991,994,996-1028,1030-1037,1039-1157,1159-1199,1201-1228,1230-1233,1235-1258,1260-1270,1272-1292,1294-1295,1506-1529
+foresight/__init__.py
+  s_7d4811cf1b0ba7::t_b0265e2973146b 354-362
+  s_7d4811cf1b0ba7::t_1977e2bee67423 561,566,607-608,633,640,651
+foresight/rest_api.py
+  s_7d4811cf1b0ba7::t_e3f86db009d28b 893
+  s_0d7652a2b5b97f::t_bddf4a26d8a32e 36-40,193-203,835-892,894-933,1227,1380-1404,1517-1519
+foresight_cli/commands/skills.py
+  s_7d4811cf1b0ba7::t_e3cfcd80f9b90f 1-332
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b058695774aa113de9a722fc403d55eb81cb8a21",
+  "prompts": {},
+  "sessions": {
+    "s_0d7652a2b5b97f": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "wonderful-tugboat",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    },
+    "s_7d4811cf1b0ba7": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "fa4a58ec-9e06-45bf-9ce6-8aa28e8d919e",
+        "model": "custom:9Router-cf-deepseek-v4.1-flash-1017"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
