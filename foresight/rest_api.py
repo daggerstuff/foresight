@@ -14,7 +14,8 @@ Auth mirrors the MCP stack:
 - Identity headers ``X-User-Id`` / ``X-Tenant-Id`` are resolved with the same
   allowlist sanitization as ``TenantMiddleware``, set as contextvars for the
   request, and validated against the authenticated user's ``tenant_access``
-  list (403 on mismatch).
+  list (403 on mismatch). Skill reads are stricter: a key may only name its
+  own user, because a skill body is executable instruction material.
 """
 
 from __future__ import annotations
@@ -30,9 +31,14 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from . import server
-from .auth import User, _should_require_api_key, get_auth_manager
+from .auth import Role, User, _should_require_api_key, get_auth_manager
 from .config import DEFAULT_ACCOUNT_ID, DEFAULT_USER_ID, raw_retention_enabled
 from .document_ingestion import DocumentIngestionError, DocumentIngestOptions, ingest_document_file
+from .skill_crystallization import (
+    crystallize_skills as _crystallize_skills,
+    list_skills as _list_skills,
+    load_skill as _load_skill,
+)
 from .tenant_context import (
     reset_tenant_context,
     set_current_account_id,
@@ -181,6 +187,17 @@ class CurateObservationsBody(BaseModel):
 
     category: str | None = Field(default=None, description="Optional category filter for the memory scan")
     limit: int = Field(default=200, ge=1, le=1000, description="Maximum memories to scan")
+    agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
+    project: str | None = Field(default=None, description="Optional project namespace lane")
+
+
+class CrystallizeSkillsBody(BaseModel):
+    """Body for ``POST /skills/crystallize``."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    min_successes: int | None = Field(default=None, ge=1, description="Minimum successful episodes threshold")
+    limit: int = Field(default=50, ge=1, le=200, description="Maximum observations to inspect")
     agent_id: str | None = Field(default=None, description="Optional agent namespace lane")
     project: str | None = Field(default=None, description="Optional project namespace lane")
 
@@ -365,6 +382,45 @@ def _authorize_tenant(user: User | None, tenant_id: str) -> JSONResponse | None:
     if user is not None and not get_auth_manager().validate_user_tenant_access(user, tenant_id):
         return _error(403, f"Tenant access denied for tenant '{tenant_id}'")
     return None
+
+
+# Skill review statuses expose material a normal read never returns: staged
+# skill bodies, retired or declined drafts, and their provenance.
+_REVIEW_ONLY_STATUSES = frozenset({"pending", "retired", "declined", "all"})
+
+
+def _require_review_privilege(user: User | None) -> JSONResponse | None:
+    """Reject review-queue access from a non-admin principal.
+
+    An API key grants a tenant and ``X-User-Id`` selects a user inside it, so
+    the tenant check cannot separate a user's review queue from ordinary read
+    traffic. Review data therefore needs a stronger principal than a plain
+    user key. Local unauthenticated mode has no principals to separate and
+    stays open, which is what the CLI and single-user deployments use.
+    """
+    if user is None or user.role is Role.ADMIN:
+        return None
+    return _error(403, "Admin role required to access review data")
+
+
+def _authorize_skill_read(user: User | None, user_id: str | None, tenant_id: str) -> JSONResponse | None:
+    """Check the tenant, then that a user key only reads its own skills.
+
+    Skill bodies are instructions the caller's agent executes, so a
+    caller-selected ``X-User-Id`` is a prompt-injection surface rather than
+    just a namespace. Memory reads stay tenant-scoped by contract; skills need
+    the caller's own id, an admin principal, or the unauthenticated
+    single-user mode.
+    """
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+    # An omitted X-User-Id resolves to the default owner further down the
+    # handler, so the id that gets authorised has to be the effective one.
+    effective_user_id = user_id or DEFAULT_USER_ID
+    if user is None or user.role is Role.ADMIN or effective_user_id == user.user_id:
+        return None
+    return _error(403, "Admin role required to read another user's skills")
 
 
 async def _parse_json_body(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
@@ -816,6 +872,126 @@ async def _handle_curate_observations(request: Request) -> Response:
     return _tool_json(result)
 
 
+def _parse_skill_list_query(request: Request) -> tuple[str, int] | Response:
+    """Return the validated ``status``/``limit`` filters, or the 400 response for a bad one."""
+    status = request.query_params.get("status", "approved")
+    if status not in ("approved", "pending", "retired", "declined", "all"):
+        return _error(400, "status must be one of: approved, pending, retired, declined, all")
+    limit = 50
+    limit_raw = request.query_params.get("limit")
+    if limit_raw is not None:
+        try:
+            limit = max(1, min(int(limit_raw), _MAX_LIST_LIMIT))
+        except ValueError:
+            return _error(400, "limit must be an integer")
+    return status, limit
+
+
+async def _handle_list_skills(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    scope_err = _authorize_skill_read(user, user_id, tenant_id)
+    if scope_err:
+        return scope_err
+
+    parsed = _parse_skill_list_query(request)
+    if isinstance(parsed, Response):
+        return parsed
+    status, limit = parsed
+    if status in _REVIEW_ONLY_STATUSES:
+        privilege_err = _require_review_privilege(user)
+        if privilege_err:
+            return privilege_err
+    agent_id = request.query_params.get("agent_id") or None
+    project = request.query_params.get("project") or None
+
+    uid = user_id or DEFAULT_USER_ID
+    set_current_user_id(uid)
+    set_current_account_id(tenant_id)
+    try:
+        skills = await run_in_threadpool(
+            _list_skills,
+            server.UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            status=status,
+            limit=limit,
+        )
+    finally:
+        reset_tenant_context()
+    return JSONResponse({"ok": True, "status": status, "count": len(skills), "skills": skills})
+
+
+async def _handle_get_skill(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    scope_err = _authorize_skill_read(user, user_id, tenant_id)
+    if scope_err:
+        return scope_err
+
+    skill_name = request.path_params["skill_name"]
+    agent_id = request.query_params.get("agent_id") or None
+    project = request.query_params.get("project") or None
+    uid = user_id or DEFAULT_USER_ID
+    set_current_user_id(uid)
+    set_current_account_id(tenant_id)
+    try:
+        skill = await run_in_threadpool(
+            _load_skill,
+            skill_name,
+            server.UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+        )
+    finally:
+        reset_tenant_context()
+    if skill is None:
+        return _error(404, f"Approved skill {skill_name!r} not found")
+    return JSONResponse({"ok": True, "skill": skill})
+
+
+async def _handle_crystallize_skills(request: Request) -> Response:
+    user, auth_err = _authenticate(request)
+    if auth_err:
+        return auth_err
+    user_id, tenant_id, ident_err = _resolve_identity(request)
+    if ident_err:
+        return ident_err
+    tenant_err = _authorize_tenant(user, tenant_id)
+    if tenant_err:
+        return tenant_err
+
+    # Crystallization stages pending skills for the named user, and pending
+    # skills are admin-readable review data (see _require_review_privilege);
+    # the write side is gated the same way so a user key cannot fill a review
+    # queue it cannot read.
+    privilege_err = _require_review_privilege(user)
+    if privilege_err:
+        return privilege_err
+
+    body, err = await _validated_body(request, CrystallizeSkillsBody)
+    if err:
+        return err
+
+    uid = user_id or DEFAULT_USER_ID
+    set_current_user_id(uid)
+    set_current_account_id(tenant_id)
+    try:
+        result = await run_in_threadpool(
+            _crystallize_skills,
+            server.UserScope(user_id=uid, tenant_id=tenant_id, agent_id=body.agent_id, project=body.project),
+            min_successes=body.min_successes,
+            limit=body.limit,
+        )
+    finally:
+        reset_tenant_context()
+    return JSONResponse({"ok": True, **result})
+
+
 async def _handle_inject(request: Request) -> Response:
     user, auth_err = _authenticate(request)
     if auth_err:
@@ -1109,6 +1285,7 @@ def _openapi_spec() -> dict[str, Any]:
         ReflectBody,
         MentalModelBody,
         CurateObservationsBody,
+        CrystallizeSkillsBody,
         TemporalQueryBody,
         ReprocessBody,
         CreateDocumentBody,
@@ -1261,6 +1438,48 @@ def _openapi_spec() -> dict[str, Any]:
                     "responses": _ok(),
                 }
             },
+            "/skills": {
+                "get": {
+                    "summary": "List crystallized skills (defaults to approved, signature-verified skills)",
+                    "operationId": "listSkills",
+                    "parameters": [
+                        {
+                            "name": "status",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "string",
+                                "enum": ["approved", "pending", "retired", "declined", "all"],
+                                "default": "approved",
+                            },
+                        },
+                        {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer"}},
+                        {"name": "agent_id", "in": "query", "required": False, "schema": {"type": "string"}},
+                        {"name": "project", "in": "query", "required": False, "schema": {"type": "string"}},
+                    ],
+                    "responses": _ok(),
+                }
+            },
+            "/skills/{skill_name}": {
+                "get": {
+                    "summary": "Load one approved, signature-verified skill by name or ID",
+                    "operationId": "getSkill",
+                    "parameters": [
+                        {"name": "skill_name", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "agent_id", "in": "query", "required": False, "schema": {"type": "string"}},
+                        {"name": "project", "in": "query", "required": False, "schema": {"type": "string"}},
+                    ],
+                    "responses": _ok(),
+                }
+            },
+            "/skills/crystallize": {
+                "post": {
+                    "summary": "Evaluate procedural observations and stage qualifying SKILL.md artifacts",
+                    "operationId": "crystallizeSkills",
+                    "requestBody": _body("CrystallizeSkillsBody"),
+                    "responses": _ok(),
+                }
+            },
             "/inject": {
                 "post": {
                     "summary": "Inject context for a conversation",
@@ -1373,6 +1592,9 @@ _ROUTES: tuple[tuple[str, list[str], str, Any], ...] = (
     ("/reflect", ["POST"], "rest_reflect", _handle_reflect),
     ("/mental-models", ["POST"], "rest_manage_mental_models", _handle_manage_mental_models),
     ("/observations/curate", ["POST"], "rest_curate_observations", _handle_curate_observations),
+    ("/skills", ["GET"], "rest_list_skills", _handle_list_skills),
+    ("/skills/crystallize", ["POST"], "rest_crystallize_skills", _handle_crystallize_skills),
+    ("/skills/{skill_name}", ["GET"], "rest_get_skill", _handle_get_skill),
     ("/inject", ["POST"], "rest_inject", _handle_inject),
     ("/session/transcript", ["POST"], "rest_session_transcript", _handle_session_transcript),
     ("/documents", ["POST"], "rest_create_document", _handle_create_document),

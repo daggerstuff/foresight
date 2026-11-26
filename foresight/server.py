@@ -41,7 +41,17 @@ from starlette.responses import HTMLResponse, JSONResponse
 from . import connection_pool, oauth_store, reflect as reflect_mod
 from .activity_log import record_activity
 from .audit import record_secret_defense_event, secret_defense_metadata
-from .auth import AuthMiddleware, _should_require_api_key, get_auth_manager
+from .auth import (
+    AuthMiddleware,
+    OAuthCallerMiddleware,
+    Role,
+    _should_require_api_key,
+    auth_enforced,
+    caller_is_readonly,
+    get_auth_manager,
+    get_caller_role,
+    get_caller_user_id,
+)
 from .auth_oauth import ForesightOAuthProvider, OAuthEndpointOptions
 from .backend import RedisCompanion, create_backend
 from .backend.backend_migrations import (
@@ -76,12 +86,14 @@ from .connection_pool import (
 from .context_blocks import (
     PENDING_ITEMS,
     PROJECT_CONTEXT,
+    RULES_BLOCK_LABEL,
     SESSION_PATTERNS,
     USER_PREFERENCES,
     auto_distill_context_blocks,
     get_context_block_agent,
     get_context_snapshot,
     get_context_whisper,
+    retrieve_matching_rules,
 )
 from .context_cache import get_context_cache
 from .crisis_detection import get_crisis_service
@@ -107,6 +119,7 @@ from .event_bus import (
     memory_updated,
     sync_progress,
 )
+from .experience import EpisodeVerdict, capture_session_outcome, distill_experiences, record_outcome
 from .ghost_cleanup import run_ghost_cleanup
 from .git_info import find_git_root
 from .graph_edge_decay import run_edge_decay_update, run_edge_pruning
@@ -158,7 +171,11 @@ from .memory_types import (
     RetentionPolicy,
 )
 from .narrative_cache import NarrativeCache
-from .observations import curate_observations as _curate, list_observations
+from .observations import (
+    _ns_clause as _obs_ns_clause,
+    curate_observations as _curate,
+    list_observations,
+)
 from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
 from .profile_export import export_profile as _export
 from .profile_synthesizer import (
@@ -186,6 +203,19 @@ from .semantic_search import (
     get_semantic_search,
 )
 from .sensitivity import evaluate_secrets, resolve_is_sensitive
+from .skill_crystallization import (
+    SKILL_CATEGORY as _SKILL_CATEGORY,
+    SKILL_REVIEW_RETIRED as _SKILL_REVIEW_RETIRED,
+    SigningOutcome,
+    crystallize_skills as _crystallize_skills,
+    ensure_skill_signed,
+    is_skill_memory_loadable as _is_skill_memory_loadable,
+    list_skills as _list_skills,
+    relationship_source_is_live as _relationship_source_is_live,
+    retire_skills_for_superseded_evidence as _retire_skills_for_superseded_evidence,
+    retire_stale_skills as _retire_stale_skills,
+    select_skill_candidates,
+)
 from .sql_helpers import join_sql_parts, placeholders, quote_identifier
 from .sync import Operation, OperationQueue, OperationType, SyncProgress, get_sync_manager
 from .telemetry import get_telemetry_store
@@ -587,6 +617,8 @@ class InferredAction(BaseModel):
     memory_id: str | None = Field(default=None, description="Memory ID for approve/decline/undo")
     reason: str | None = Field(default=None, description="Reason recorded when declining")
     limit: int | None = Field(default=None, description="Max items for list (1-50, default 50)")
+    agent_id: str | None = Field(default=None, description="Agent namespace lane for the review queue")
+    project: str | None = Field(default=None, description="Project namespace lane for the review queue")
 
 
 class VersionAction(BaseModel):
@@ -906,6 +938,32 @@ class ProcessSessionTranscriptParams(BaseModel):
     )
 
 
+class RecordEpisodeOutcomeParams(BaseModel):
+    """Arguments for :func:`record_episode_outcome`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    outcome: Literal["success", "failure", "mixed", "unknown"] = Field(
+        description="Session outcome as judged by the caller (user, or test/CI automation)"
+    )
+    session_id: str | None = Field(default=None, description="Session whose episode to score")
+    episode_id: str | None = Field(default=None, description="Episode ID to score (alternative to session_id)")
+    score: float | None = Field(default=None, ge=0.0, le=1.0, description="Optional 0-1 score; defaults from outcome")
+    score_source: Literal["user_feedback", "ci_result"] = Field(
+        default="user_feedback",
+        description=(
+            "Explicit source only: user feedback or CI/test result ingestion. "
+            "Automatic sources (llm_rubric, fallback) are replaceable and are never "
+            "recorded through this tool."
+        ),
+    )
+    detail: str | None = Field(
+        default=None,
+        description="Free-text rationale; error text here is normalized into the failure signature",
+    )
+    user_id: str | None = Field(default=None, description="Optional user ID override")
+
+
 class CaptureInFlightMemoryParams(BaseModel):
     """Arguments for :func:`capture_in_flight_memory`."""
 
@@ -976,6 +1034,8 @@ class ManageInferredParams(BaseModel):
         default=None, description="Action and parameters (list, approve, decline, undo)"
     )
     user_id: str | None = Field(default=None, description="Optional user ID override")
+    agent_id: str | None = Field(default=None, description="Agent namespace lane for the review queue")
+    project: str | None = Field(default=None, description="Project namespace lane for the review queue")
     action: Literal["list", "approve", "decline", "undo"] | None = Field(
         default=None, description="Action to perform (fallback when options is not provided)"
     )
@@ -2000,7 +2060,13 @@ if _oauth_base_url:
         website_url="https://foresight.vectorize.io",
         version="0.19.0",
         auth=_oauth_provider,
-        middleware=[TenantMiddleware(), AttributionMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+        middleware=[
+            TenantMiddleware(),
+            AttributionMiddleware(),
+            InputValidationMiddleware(),
+            RateLimitMiddleware(),
+            OAuthCallerMiddleware(),
+        ],
     )
 else:
     mcp = FastMCP(
@@ -2383,6 +2449,15 @@ def _publish_supersede_effects(supersede_matches: list[Any], memory_id: str, uid
         )
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [m.superseded_memory_id for m in supersede_matches],
+            user_id=uid,
+            tenant_id=tenant_id,
+            reason="evidence_superseded",
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on supersede failed: %s", exc)
 
 
 def _link_related_memory(request: _StoreRequest, memory_id: str) -> None:
@@ -2828,6 +2903,10 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
     get_context_cache().invalidate_user(uid)
+    try:
+        _retire_stale_skills(UserScope(user_id=uid, tenant_id=tenant_id))
+    except Exception as exc:
+        logger.debug("skill retirement check on update failed: %s", exc)
     return f"Updated memory {options.memory_id}"
 
 
@@ -2978,6 +3057,12 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [memory_id], user_id=uid, tenant_id=tenant_id, reason="supporting memory deleted"
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on delete failed: %s", exc)
 
     # ── POST_DELETE hook ───────────────────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_DELETE, hook_ctx)
@@ -3032,6 +3117,12 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [memory_id], user_id=uid, tenant_id=tenant_id, reason="supporting memory archived"
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on archive failed: %s", exc)
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
@@ -3058,6 +3149,12 @@ def _handle_memory_expire(uid: str, tenant_id: str, memory_id: str | None) -> st
         reflect_mod.mark_mental_models_stale([memory_id], user_id=uid, tenant_id=tenant_id)
     except Exception as exc:
         logger.debug("mental model invalidation failed: %s", exc)
+    try:
+        _retire_skills_for_superseded_evidence(
+            [memory_id], user_id=uid, tenant_id=tenant_id, reason="supporting memory expired"
+        )
+    except Exception as exc:
+        logger.debug("skill retirement on expire failed: %s", exc)
     _invalidate_recall_caches(uid, tenant_id)
     return f"Expired memory {memory_id}. It is excluded from default retrieval; restore to bring it back."
 
@@ -4023,7 +4120,8 @@ def reflect(
         model = None
     if model is not None and not model.get("stale"):
         if reflect_mod.mental_model_citations_valid(model, user_id=uid, tenant_id=tenant_id):
-            reflect_mod.touch_mental_model(model["id"])
+            if not caller_is_readonly():
+                reflect_mod.touch_mental_model(model["id"])
             payload = {
                 "answer": model["answer"],
                 "citations": model["citations"],
@@ -4042,8 +4140,9 @@ def reflect(
             get_telemetry_store().record_reflect(cached=True, answer_chars=len(model["answer"]), latency_ms=0.0)
             return json.dumps(payload, indent=2, ensure_ascii=False)
         # Citations no longer resolve — drop the stale model and recompute.
-        with contextlib.suppress(Exception):
-            reflect_mod.delete_mental_model(model["id"], user_id=uid, tenant_id=tenant_id)
+        if not caller_is_readonly():
+            with contextlib.suppress(Exception):
+                reflect_mod.delete_mental_model(model["id"], user_id=uid, tenant_id=tenant_id)
 
     try:
         payload = reflect_mod.reflect(
@@ -4056,12 +4155,13 @@ def reflect(
         logger.exception("reflect failed")
         return _tool_error("reflect", str(exc))
 
-    try:
-        payload["mental_model_id"] = reflect_mod.store_mental_model(
-            question, payload, user_id=uid, tenant_id=tenant_id, agent_id=agent_id
-        )
-    except Exception:
-        logger.debug("mental model store failed; serving uncached reflect", exc_info=True)
+    if not caller_is_readonly():
+        try:
+            payload["mental_model_id"] = reflect_mod.store_mental_model(
+                question, payload, user_id=uid, tenant_id=tenant_id, agent_id=agent_id
+            )
+        except Exception:
+            logger.debug("mental model store failed; serving uncached reflect", exc_info=True)
 
     get_telemetry_store().record_reflect(
         cached=False,
@@ -4189,15 +4289,24 @@ def curate_observations(
     uid = user_id or USER_ID
     tenant_id = get_current_account_id()
 
+    scope = UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project)
     try:
         result = _curate(
-            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            scope,
             category=category,
             limit=limit,
         )
     except Exception as exc:
         logger.exception("curate_observations failed")
         return _tool_error("observations", str(exc))
+
+    try:
+        retired_skills = _retire_stale_skills(scope)
+        candidates = select_skill_candidates(scope, limit=50)
+        result["skills_retired"] = len(retired_skills)
+        result["skill_candidates"] = candidates
+    except Exception:
+        logger.debug("skill candidate evaluation failed during observation curation", exc_info=True)
 
     return _tool_response(ok=True, action="curate", **result)
 
@@ -4808,7 +4917,111 @@ def process_session_transcript(
     # Hands-off auto cleanup and distillation of context blocks
     _distill_context_blocks(uid, tenant_id)
 
+    # FOR-60: build/score the episode for this session and distil experiences.
+    # Never allowed to break transcript processing.
+    try:
+        capture_session_outcome(
+            session_id,
+            user_id=uid,
+            tenant_id=tenant_id,
+            messages=messages,
+        )
+    except Exception:
+        logger.exception("Episode capture failed for session %s", session_id)
+
+    # This call stores memories and distils context, so a query injected
+    # before it must not be served from the injection cache.
+    get_context_cache().invalidate_user(uid)
+
     return f"Processed transcript for session {session_id} ({stats.stored} new memories)"
+
+
+@mcp.tool(output_schema=None)
+def record_episode_outcome(
+    params: Annotated[
+        RecordEpisodeOutcomeParams,
+        Field(description='Every argument for record_episode_outcome, sent as {"params": {...}}.'),
+    ],
+) -> str:
+    """Record the outcome of a finished session as an episode score.
+
+    Use this when a human judges how a session went (source ``user_feedback``)
+    or when CI/test automation reports the result (source ``ci_result``).
+    The episode is created if the session was never seen. Explicit outcomes
+    are never overridden by automatic scoring. Failure details are
+    normalized into an error signature so the failure-signature recall can
+    surface this episode when a similar error appears again.
+    """
+    uid = params.user_id or USER_ID
+    # An authenticated caller may only score its own episodes or the configured
+    # owner's. Naming a third user is a write into that user's episode history,
+    # so it needs an admin key. Without a bound caller we cannot tell "nobody
+    # authenticated" from "auth is switched off": when auth is enforced (API
+    # keys or the OAuth provider) the request is refused rather than silently
+    # attributed to USER_ID, and when it is off the legacy single-user
+    # behaviour stands, which is what the CLI and in-process jobs rely on.
+    caller_user_id = get_caller_user_id()
+    caller_role = get_caller_role()
+    if caller_role is Role.READONLY:
+        return json.dumps(
+            {
+                "ok": False,
+                "action": "record_episode_outcome",
+                "error": {"message": "Recording an episode outcome requires a user or admin API key."},
+            }
+        )
+    if caller_user_id is None and auth_enforced():
+        return json.dumps(
+            {
+                "ok": False,
+                "action": "record_episode_outcome",
+                "error": {"message": "Authentication required: no caller identity is bound for this request."},
+            }
+        )
+    allowed_ids = (USER_ID, caller_user_id)
+    if (
+        params.user_id
+        and caller_user_id is not None
+        and params.user_id not in allowed_ids
+        and caller_role is not Role.ADMIN
+    ):
+        return json.dumps(
+            {
+                "ok": False,
+                "action": "record_episode_outcome",
+                "error": {
+                    "message": (
+                        "Recording an outcome for another user requires an admin API key; "
+                        "omit user_id to score the configured owner's episodes."
+                    )
+                },
+            }
+        )
+    tenant_id = get_current_account_id()
+    try:
+        episode = record_outcome(
+            uid,
+            tenant_id,
+            EpisodeVerdict(
+                outcome=params.outcome,
+                score=params.score,
+                score_source=params.score_source,
+                detail=params.detail,
+                episode_id=params.episode_id,
+                session_id=params.session_id,
+            ),
+        )
+    except LookupError as exc:
+        return json.dumps({"ok": False, "action": "record_episode_outcome", "error": {"message": str(exc)}})
+    except ValueError as exc:
+        return json.dumps({"ok": False, "action": "record_episode_outcome", "error": {"message": str(exc)}})
+
+    try:
+        distill_experiences(user_id=uid, tenant_id=tenant_id)
+    except Exception:
+        logger.exception("post-outcome distillation failed")
+
+    return json.dumps({"ok": True, "action": "record_episode_outcome", "episode": episode}, default=str)
 
 
 @mcp.tool(output_schema=None)
@@ -5630,6 +5843,25 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
 
         promotion_summary = _promote_in_place(ctx, source_rows, created_ids, cancel_event)
         clustering_summary = _run_post_curation_clustering(ctx)
+        skill_curation: dict[str, Any] = {
+            "skill_candidates": [],
+            "staged_skills": [],
+            "retired_skills": [],
+        }
+        if payload["tool_access"] != "disabled":
+            try:
+                skill_scope = UserScope(user_id=ctx.uid, tenant_id=ctx.tenant_id)
+                skill_bank = (
+                    payload["source_bank_id"] if payload["output_mode"] == "in_place" else payload["output_bank_id"]
+                )
+                crystallized = _crystallize_skills(skill_scope, bank_id=skill_bank)
+                skill_curation = {
+                    "skill_candidates": crystallized["candidates"],
+                    "staged_skills": crystallized["skills"],
+                    "retired_skills": crystallized["retired_skills"],
+                }
+            except Exception:
+                logger.debug("skill crystallization failed during curation run (non-fatal)", exc_info=True)
 
         summary = {
             "source_memory_count": len(source_rows),
@@ -5640,6 +5872,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "reflection": reflection,
             "transcript_processed": bool(payload.get("transcript_bundle")),
             "clustering": clustering_summary,
+            **skill_curation,
         }
         summary.update(promotion_summary)
         _raise_if_run_canceled(ctx.uid, ctx.tenant_id, run_id)
@@ -6144,9 +6377,9 @@ def inject_context(
         ),
     )
     latency_ms = (time.perf_counter() - t0) * 1000
-    memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
-        :max_memories
-    ]
+    memories: list[HybridResult] = [
+        r for r in _filter_loadable_memories(hybrid_result.results, uid, tenant_id) if r.combined_score >= min_relevance
+    ][:max_memories]
     # Track last injection for system status visibility (PIX-3955)
     _last_injection_stats.update(
         {
@@ -6173,13 +6406,19 @@ def inject_context(
     )
 
     # Reinforce surfaced memories so retrieval strengthens them (closes the
-    # decay loop: decay weakens, retrieval strengthens).
-    if memories:
+    # decay loop: decay weakens, retrieval strengthens). A read-only caller gets
+    # the read without either write, and the capture thread is skipped here
+    # rather than only inside the helper because contextvars do not cross into a
+    # new thread, so the helper could not see the caller's role there.
+    readonly_caller = caller_is_readonly()
+    if memories and not readonly_caller:
         _auto_reinforce_batch([m.memory_id for m in memories], uid, tenant_id)
 
     # Side-effect: silently capture any phrase-triggered or in-flight pattern memories
     # in the background without blocking retrieval or requiring end-of-session wrapup.
-    if conversation_text:
+    # A read-only principal may call inject_context, but its capture side
+    # effect writes memories, so skip it for READONLY callers.
+    if conversation_text and get_caller_role() is not Role.READONLY:
         try:
             threading.Thread(
                 target=_auto_capture_in_flight,
@@ -6197,6 +6436,7 @@ def inject_context(
         terms=terms,
         agent_id=agent_id,
         project=project,
+        query_text=query_text,
     )
 
     budgeted = _format_injection_output_budgeted(view, budget) if budget is not None and budget.is_bounded else None
@@ -6204,25 +6444,7 @@ def inject_context(
     if not include_details:
         res_output = budgeted.formatted if budgeted is not None else _format_injection_output(view)
     else:
-        blocks_by_point = _format_context_blocks_by_injection_point(
-            uid, tenant_id, terms, agent_id=agent_id, project=project
-        )
-        legacy_formatted = _format_injection_output(view)
-        top_score = max((m.combined_score for m in memories), default=0.0)
-        static_safety_text = _format_static_and_safety_lanes(uid, tenant_id, agent_id=agent_id, project=project)
-        payload: dict[str, Any] = {
-            "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
-            "memories": [m.to_dict() for m in memories],
-            # Unrounded: the hook's score gate compares this against a
-            # threshold, and rounding can lift a just-below result above it.
-            "top_score": float(top_score),
-            "static_and_safety": static_safety_text,
-            "context_blocks": blocks_by_point,
-            "patterns": _active_observations(uid, tenant_id, agent_id=agent_id, project=project),
-        }
-        if budgeted is not None:
-            payload["budget"] = budgeted.to_dict()
-        res_output = json.dumps(payload, indent=2)
+        res_output = json.dumps(_build_injection_details_payload(view, budgeted), indent=2)
 
     # Store in fast in-memory cache & record telemetry
     cache.set(cache_key, res_output, user_id=uid, ttl_seconds=60.0)
@@ -6248,6 +6470,8 @@ def _auto_capture_in_flight(
     natural language patterns (fixes, decisions, preferences, tool recipes)
     without waiting for an end-of-session wrapup.
     """
+    if caller_is_readonly():
+        return 0
     stored_count = 0
     # 1. Check explicit phrase triggers if text is provided
     if text:
@@ -6304,6 +6528,38 @@ def _auto_capture_in_flight(
 _auto_capture_triggered = _auto_capture_in_flight
 
 
+def _filter_loadable_memories(
+    results: list[HybridResult],
+    uid: str,
+    tenant_id: str,
+) -> list[HybridResult]:
+    """Exclude staged/retired/tampered skill artifacts from agent injection results."""
+    skill_ids = [r.memory_id for r in results if getattr(r, "category", None) == _SKILL_CATEGORY]
+    if not skill_ids:
+        return results
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            join_sql_parts(
+                "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND id IN (",
+                placeholders(len(skill_ids)),
+                ")",
+            ),
+            (tenant_id, uid, *skill_ids),
+        ).fetchall()
+    finally:
+        conn.close()
+    row_map = {dict(r)["id"]: dict(r) for r in rows}
+    filtered: list[HybridResult] = []
+    for r in results:
+        if getattr(r, "category", None) == _SKILL_CATEGORY:
+            row = row_map.get(r.memory_id)
+            if row is None or not _is_skill_memory_loadable(row):
+                continue
+        filtered.append(r)
+    return filtered
+
+
 def _active_observations(
     uid: str,
     tenant_id: str,
@@ -6339,6 +6595,7 @@ class InjectionView:
     terms: list[str]
     agent_id: str | None = None
     project: str | None = None
+    query_text: str = ""
 
 
 def _memory_context_lines(memories: list[HybridResult]) -> list[str]:
@@ -6370,6 +6627,10 @@ def _context_block_lines(
         for block in all_blocks:
             label = block.get("label", "")
             content = (block.get("content") or "").strip()
+            # Rules render through their own condition-matched lane; the raw
+            # block here would inject rules whose exception applies.
+            if label == RULES_BLOCK_LABEL:
+                continue
             if content:
                 snippet = content[:CONTEXT_BLOCK_SNIPPET_CHARS] + (
                     "..." if len(content) > CONTEXT_BLOCK_SNIPPET_CHARS else ""
@@ -6410,15 +6671,40 @@ def _join_sections(sections: list[list[str]]) -> list[str]:
     return lines
 
 
-def _format_static_and_safety_lanes(
-    uid: str,
-    tenant_id: str,
-    agent_id: str | None = None,
-    project: str | None = None,
-) -> str:
-    """Format static and safety lanes for inclusion during gated recall."""
-    block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
-    lane_items: dict[Lane, list[LaneItem]] = {Lane.STATIC: [], Lane.SAFETY: []}
+def _matching_rule_entries(view: InjectionView) -> list[Any]:
+    try:
+        return retrieve_matching_rules(
+            view.query_text or " ".join(view.terms),
+            terms=view.terms,
+            scope=UserScope(
+                user_id=view.uid,
+                tenant_id=view.tenant_id,
+                agent_id=view.agent_id,
+                project=view.project,
+            ),
+        )
+    except Exception:
+        # Warn rather than swallow: a lookup failure silently drops must /
+        # must_not constraints from the prompt.
+        logger.warning("rule lookup failed; no rules injected this turn", exc_info=True)
+        return []
+
+
+def _rule_lines(view: InjectionView) -> list[str]:
+    rules = _matching_rule_entries(view)
+    if not rules:
+        return []
+    return ["[Rules]", *[f"- {r.format_line()}" for r in rules]]
+
+
+def _format_static_and_safety_lanes(view: InjectionView) -> str:
+    """Format rules, static, and safety lanes for inclusion during gated recall."""
+    block_agent = get_context_block_agent(view.uid, view.tenant_id, view.agent_id, view.project)
+    lane_items: dict[Lane, list[LaneItem]] = {Lane.RULES: [], Lane.STATIC: [], Lane.SAFETY: []}
+    for idx, rule in enumerate(_matching_rule_entries(view), start=1):
+        lane_items[Lane.RULES].append(
+            LaneItem(id=f"rule:{idx}", content=rule.format_line(), score=1.0, lane=Lane.RULES)
+        )
     user_prefs = block_agent.state.get_block(USER_PREFERENCES)
     if user_prefs and not user_prefs.is_empty():
         lane_items[Lane.STATIC].append(
@@ -6430,6 +6716,43 @@ def _format_static_and_safety_lanes(
     return format_static_and_safety(lane_items)
 
 
+def _build_injection_details_payload(view: InjectionView, budgeted: BudgetResult | None) -> dict[str, Any]:
+    """Assemble the structured JSON payload for ``inject_context(include_details=True)``."""
+    blocks_by_point = _format_context_blocks_by_injection_point(
+        view.uid, view.tenant_id, view.terms, agent_id=view.agent_id, project=view.project
+    )
+    legacy_formatted = _format_injection_output(view)
+    top_score = max((m.combined_score for m in view.memories), default=0.0)
+    matched_rules = _matching_rule_entries(view)
+    payload: dict[str, Any] = {
+        "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
+        "memories": [m.to_dict() for m in view.memories],
+        # Unrounded: the hook's score gate compares this against a
+        # threshold, and rounding can lift a just-below result above it.
+        "top_score": float(top_score),
+        "static_and_safety": _format_static_and_safety_lanes(view),
+        "rules": [r.to_dict() for r in matched_rules],
+        "context_blocks": blocks_by_point,
+        "patterns": _active_observations(view.uid, view.tenant_id, agent_id=view.agent_id, project=view.project),
+        "skills": [
+            {
+                "memory_id": s["memory_id"],
+                "skill_name": s["skill_name"],
+                "version": s["version"],
+                "description": s["description"],
+            }
+            for s in _list_skills(
+                UserScope(user_id=view.uid, tenant_id=view.tenant_id, agent_id=view.agent_id, project=view.project),
+                status="approved",
+                limit=10,
+            )
+        ],
+    }
+    if budgeted is not None:
+        payload["budget"] = budgeted.to_dict()
+    return payload
+
+
 def _format_injection_output(view: InjectionView) -> str:
     """Format memories and context block signals into a human-readable string.
 
@@ -6439,6 +6762,7 @@ def _format_injection_output(view: InjectionView) -> str:
     """
     lines = _join_sections(
         [
+            _rule_lines(view),
             _memory_context_lines(view.memories),
             _context_block_lines(view.uid, view.tenant_id, view.terms, view.agent_id, view.project),
             _observation_lines(view.uid, view.tenant_id, view.agent_id, view.project),
@@ -6457,6 +6781,11 @@ def _format_injection_output_budgeted(view: InjectionView, budget: InjectionBudg
     agent_id = view.agent_id
     project = view.project
     lane_items: dict[Lane, list[LaneItem]] = {lane: [] for lane in Lane}
+
+    for idx, rule in enumerate(_matching_rule_entries(view), start=1):
+        lane_items[Lane.RULES].append(
+            LaneItem(id=f"rule:{idx}", content=rule.format_line(), score=1.0, lane=Lane.RULES)
+        )
 
     block_agent = get_context_block_agent(uid, tenant_id, agent_id, project)
     user_prefs = block_agent.state.get_block(USER_PREFERENCES)
@@ -7005,6 +7334,8 @@ def _auto_reinforce_batch(memory_ids: list[str], uid: str, tenant_id: str) -> No
 
     Best-effort: failures are logged and swallowed.
     """
+    if caller_is_readonly():
+        return
     if not memory_ids:
         return
     try:
@@ -8140,7 +8471,10 @@ def synthesize_profile(
     max_chars = params.max_chars
     include_buckets = params.include_buckets
 
-    uid = user_id or USER_ID
+    try:
+        uid = _readable_user_for_caller(user_id)
+    except PermissionError as exc:
+        return _tool_error("synthesize_profile", str(exc))
     cfg = ProfileConfig(
         max_static_memories=max_static_memories,
         max_dynamic_memories=max_dynamic_memories,
@@ -8153,6 +8487,26 @@ def synthesize_profile(
         return profile_to_prompt(profile, max_chars=max_chars)
 
     return json.dumps(profile, indent=2, ensure_ascii=False)
+
+
+def _readable_user_for_caller(requested: str | None) -> str:
+    """The user whose data this caller may read.
+
+    Profile synthesis, profile export and the inferred review queue are read
+    surfaces, so a read-only credential reaches them; the user id in the
+    request is not trusted on its own, or a read-only token could read any
+    user's profile or review queue in the tenant.
+
+    The configured ``USER_ID`` belongs to the operator, so it is not a
+    read-only caller's default either: an omitted id resolves to the caller
+    itself.
+    """
+    caller_id = get_caller_user_id()
+    if caller_is_readonly() and caller_id is not None:
+        if requested is not None and requested != caller_id:
+            raise PermissionError("a read-only caller may only read its own data")
+        return caller_id
+    return requested or USER_ID
 
 
 @mcp.tool(output_schema=None)
@@ -8183,7 +8537,10 @@ def export_profile(
         JSON envelope ``{"document": {...}, "signature": ..., "signature_alg": ...}``
         or a Markdown document with a signature footer.
     """
-    uid = user_id or USER_ID
+    try:
+        uid = _readable_user_for_caller(user_id)
+    except PermissionError as exc:
+        return _tool_error("export_profile", str(exc))
     tenant_id = get_current_account_id()
 
     try:
@@ -8705,6 +9062,17 @@ def link_memories(
         )
     except MemoryRelationshipError as exc:
         return f"Error: {exc}"
+    if relationship_type in ("updates", "contradicts"):
+        try:
+            if _relationship_source_is_live(source_memory_id, user_id=uid, tenant_id=get_current_account_id()):
+                _retire_skills_for_superseded_evidence(
+                    [target_memory_id],
+                    user_id=uid,
+                    tenant_id=get_current_account_id(),
+                    reason=f"memory {target_memory_id} {relationship_type} by {source_memory_id}",
+                )
+        except Exception as exc:
+            logger.debug("best-effort post-link work failed: %s", exc)
     return json.dumps(rel.to_dict(), indent=2)
 
 
@@ -8787,31 +9155,64 @@ def traverse_memory_graph(
 INFERRED_LIST_MAX_LIMIT = 50
 
 
-def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
-    """List inferred memories pending review, supporting-parent count first."""
+def _review_ns_clause(agent_id: str | None, project: str | None, prefix: str = "") -> tuple[str, list]:
+    """Lane filter for review actions: the caller's lane plus the shared one.
+
+    An omitted lane means the shared lane, never "any lane": passing None to
+    _obs_ns_clause drops the predicate entirely, so a lane-less approve would
+    mutate a skill staged in another agent's or project's lane.
+    """
+    return _obs_ns_clause(agent_id or "default", project or "default", prefix=prefix)
+
+
+def _handle_inferred_list(
+    uid: str,
+    tenant_id: str,
+    limit: int | None,
+    *,
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> str:
+    """List inferred memories and staged/retired skills pending review, supporting-parent count first.
+
+    The queue is scoped to the same default-lane namespace the review actions use, so
+    it cannot offer rows that approve/decline would then refuse to reach.
+    """
     capped = max(1, min(limit if limit is not None else INFERRED_LIST_MAX_LIMIT, INFERRED_LIST_MAX_LIMIT))
+    ns_frag, ns_params = _review_ns_clause(agent_id, project, prefix="m.")
+    try:
+        _retire_stale_skills(UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project))
+    except Exception:
+        logger.debug("stale skill reconciliation failed during inferred list", exc_info=True)
     conn = get_db_connection()
     try:
         rows = conn.execute(
-            """
+            join_sql_parts(
+                """
             SELECT m.id, m.content, m.category, m.scope, m.retention, m.importance,
-                   m.created_at, m.updated_at, m.review_status,
+                   m.created_at, m.updated_at, m.review_status, m.review_reason,
+                   m.memory_type, m.metrics, m.is_latest, m.agent_id, m.project,
                    (SELECT COUNT(*) FROM memory_relationships r
                     WHERE r.source_memory_id = m.id AND r.relationship_type = 'derives') AS parent_count
             FROM memories m
             WHERE m.user_id = ? AND m.tenant_id = ? AND m.inferred = 1 AND m.is_ghost = 0
               AND m.expired_at IS NULL
               AND (m.review_status IS NULL OR m.review_status != 'declined')
+            """,
+                ns_frag,
+                """
             ORDER BY parent_count DESC, m.created_at DESC
             LIMIT ?
-            """,
-            (uid, tenant_id, capped),
+                """,
+            ),
+            (uid, tenant_id, *ns_params, capped),
         ).fetchall()
     finally:
         conn.close()
 
-    items = [
-        {
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        item: dict[str, Any] = {
             "id": r["id"],
             "content": decrypt_if_encrypted(r["content"], tenant_id=tenant_id, user_id=uid),
             "category": r["category"],
@@ -8821,55 +9222,204 @@ def _handle_inferred_list(uid: str, tenant_id: str, limit: int | None) -> str:
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
             "review_status": r["review_status"],
+            "review_reason": r["review_reason"],
             "parent_count": r["parent_count"],
+            "agent_id": r["agent_id"] or "default",
+            "project": r["project"] or "default",
         }
-        for r in rows
-    ]
+        if r["category"] == _SKILL_CATEGORY:
+            try:
+                skill_meta = json.loads(r["metrics"] or "{}")
+            except (TypeError, ValueError):
+                skill_meta = {}
+            item["skill"] = {
+                "skill_name": skill_meta.get("skill_name"),
+                "skill_version": skill_meta.get("skill_version"),
+                "observation_id": skill_meta.get("observation_id"),
+                "pattern_key": skill_meta.get("pattern_key"),
+                "success_count": skill_meta.get("success_count"),
+                "retired": r["review_status"] == _SKILL_REVIEW_RETIRED,
+                "signature_alg": skill_meta.get("signature_alg"),
+            }
+        items.append(item)
     return _tool_response(ok=True, action="list", items=items, count=len(items), limit=capped)
 
 
-def _handle_inferred_approve(uid: str, tenant_id: str, memory_id: str) -> str:
-    """Promote an inferred memory to a stated fact (clears the ranking penalty)."""
+def _approve_settled_response(
+    row: Any,
+    uid: str,
+    tenant_id: str,
+    memory_id: str,
+    scope: UserScope,
+) -> str | None:
+    """Answer an approval with nothing left to settle, or None to continue.
+
+    A missing row, a retired skill, an approved row and an inferred row for
+    another memory all end the call here; only a pending row is approved.
+    """
+    if row is None:
+        return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
+    if row["review_status"] == _SKILL_REVIEW_RETIRED:
+        return _tool_error(
+            "approve",
+            f"skill {memory_id} is retired because its evidence was superseded and cannot be approved.",
+            memory_id=memory_id,
+            status="retired",
+        )
+    if row["inferred"] == 1:
+        return None
+    if row["review_status"] != "approved":
+        return _tool_error("approve", f"memory {memory_id} is not inferred.", memory_id=memory_id)
+    if row["category"] != _SKILL_CATEGORY:
+        return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=True, status="approved")
+    # A skill approved while no signing key existed is approved and unsigned,
+    # and every later approval returned here without signing it, so it stayed
+    # unloadable for good. Signing is idempotent: a valid signature is left alone.
+    outcome = ensure_skill_signed(memory_id, scope)
+    if outcome.status == "signed":
+        get_hybrid_retriever().invalidate_caches(uid, tenant_id)
+        get_context_cache().invalidate_user(uid)
+    return _tool_response(
+        ok=True,
+        action="approve",
+        memory_id=memory_id,
+        already_applied=True,
+        status="approved",
+        signed=outcome.status == "signed",
+        signature_status=outcome.status,
+    )
+
+
+def _handle_inferred_approve(
+    uid: str, tenant_id: str, memory_id: str, *, agent_id: str | None = None, project: str | None = None
+) -> str:
+    """Promote an inferred memory or staged skill to approved status."""
     now = datetime.now(UTC).isoformat()
+    ns_frag, ns_params = _review_ns_clause(agent_id, project)
+    scope = UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project)
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT inferred, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (memory_id, uid, tenant_id),
+            join_sql_parts(
+                "SELECT inferred, review_status, category FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
+            (memory_id, uid, tenant_id, *ns_params),
         ).fetchone()
-        if row is None:
-            return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
-        if row["inferred"] != 1:
-            if row["review_status"] == "approved":
-                return _tool_response(
-                    ok=True, action="approve", memory_id=memory_id, already_applied=True, status="approved"
-                )
-            return _tool_error("approve", f"memory {memory_id} is not inferred.", memory_id=memory_id)
-        conn.execute(
-            "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (now, memory_id, uid, tenant_id),
+    finally:
+        conn.close()
+    settled = _approve_settled_response(row, uid, tenant_id, memory_id, scope)
+    if settled is not None:
+        return settled
+    category = str(row["category"] or "")
+
+    # Signed before the status commit: a skill that cannot be signed must not be
+    # marked approved. list_skills and load_skill both reject an unverifiable
+    # artifact, and the retry that would fix it answers already_applied, so the
+    # approval itself has to be the thing that fails.
+    outcome = SigningOutcome("not_configured")
+    if category == _SKILL_CATEGORY:
+        outcome = ensure_skill_signed(memory_id, scope)
+        refusal = {
+            "invalid": f"skill {memory_id} carries a signature that does not verify; re-crystallize it.",
+            "absent": f"memory {memory_id} not found.",
+            "stale": f"skill {memory_id} changed while it was being signed; retry the approval.",
+        }
+        if outcome.status in refusal:
+            return _tool_error("approve", refusal[outcome.status], memory_id=memory_id, status=outcome.status)
+
+    # Bound to the artifact that was just signed: a crystallization that
+    # restages the skill between the signature and this write leaves a document
+    # here that nobody signed, and approving it would publish that document as
+    # valid. A restaged row keeps inferred = 1, so it fails this write and is
+    # reported instead of approved.
+    signed_hash = outcome.content_hash or ""
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute(
+            join_sql_parts(
+                "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
+                "WHERE id = ? AND user_id = ? AND tenant_id = ? AND inferred = 1",
+                ns_frag,
+                " AND content_hash = ?" if signed_hash else "",
+            ),
+            (now, memory_id, uid, tenant_id, *ns_params, *((signed_hash,) if signed_hash else ())),
         )
+        committed = bool(cursor.rowcount)
         conn.commit()
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
-    get_context_cache().invalidate_user(uid)
-    return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=False, status="approved")
+    if committed:
+        get_hybrid_retriever().invalidate_caches(uid, tenant_id)
+        get_context_cache().invalidate_user(uid)
+        return _tool_response(
+            ok=True,
+            action="approve",
+            memory_id=memory_id,
+            already_applied=False,
+            status="approved",
+            signature_status="valid" if outcome.status in ("signed", "already_valid") else None,
+        )
+
+    # Another approve or decline settled the row between the read and the
+    # commit. Report the state the row is actually in instead of claiming this
+    # call approved it.
+    conn = get_db_connection()
+    try:
+        current = conn.execute(
+            join_sql_parts(
+                "SELECT review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
+            (memory_id, uid, tenant_id, *ns_params),
+        ).fetchone()
+    finally:
+        conn.close()
+    if current is None:
+        return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
+    if signed_hash and str(current["review_status"] or "") != "approved":
+        # The row was replaced after it was signed, so the signature covers an
+        # artifact that is no longer here. Approving again signs the new one.
+        return _tool_error(
+            "approve",
+            f"skill {memory_id} changed while it was being approved; retry the approval.",
+            memory_id=memory_id,
+            status="stale",
+        )
+    return _tool_response(
+        ok=True,
+        action="approve",
+        memory_id=memory_id,
+        already_applied=True,
+        status=str(current["review_status"] or ""),
+        signed=outcome.status == "signed",
+        signature_status=outcome.status,
+    )
 
 
-def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: str | None) -> str:
+def _handle_inferred_decline(scope: UserScope, memory_id: str, reason: str | None) -> str:
     """Soft-forget a rejected inferred memory (recoverable via undo)."""
     now = datetime.now(UTC).isoformat()
+    ns_frag, ns_params = _review_ns_clause(scope.agent_id, scope.project)
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT inferred, is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (memory_id, uid, tenant_id),
+            join_sql_parts(
+                "SELECT inferred, is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
+            (memory_id, scope.user_id, scope.tenant_id, *ns_params),
         ).fetchone()
         if row is None:
             return _tool_error("decline", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["review_status"] == _SKILL_REVIEW_RETIRED:
+            return _tool_error(
+                "decline",
+                f"skill {memory_id} is retired; re-crystallize from fresh evidence instead.",
+                memory_id=memory_id,
+                status="retired",
+            )
         if row["review_status"] == "declined" and row["is_ghost"] == 1:
             return _tool_response(
                 ok=True, action="decline", memory_id=memory_id, already_applied=True, status="declined"
@@ -8877,39 +9427,58 @@ def _handle_inferred_decline(uid: str, tenant_id: str, memory_id: str, reason: s
         if row["inferred"] != 1:
             return _tool_error("decline", f"memory {memory_id} is not inferred.", memory_id=memory_id)
         conn.execute(
-            "UPDATE memories SET is_ghost = 1, review_status = 'declined', review_reason = ?, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (reason, now, memory_id, uid, tenant_id),
+            join_sql_parts(
+                "UPDATE memories SET is_ghost = 1, review_status = 'declined', review_reason = ?, updated_at = ? "
+                "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
+            (reason, now, memory_id, scope.user_id, scope.tenant_id, *ns_params),
         )
         conn.commit()
     finally:
         conn.close()
 
-    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
-    get_context_cache().invalidate_user(uid)
+    get_hybrid_retriever().invalidate_caches(scope.user_id, scope.tenant_id)
+    get_context_cache().invalidate_user(scope.user_id)
     return _tool_response(
         ok=True, action="decline", memory_id=memory_id, already_applied=False, status="declined", reason=reason
     )
 
 
-def _handle_inferred_undo(uid: str, tenant_id: str, memory_id: str) -> str:
+def _handle_inferred_undo(
+    uid: str, tenant_id: str, memory_id: str, *, agent_id: str | None = None, project: str | None = None
+) -> str:
     """Reverse approve/decline and return the memory to the review queue."""
     now = datetime.now(UTC).isoformat()
+    ns_frag, ns_params = _review_ns_clause(agent_id, project)
     conn = get_db_connection()
     try:
         row = conn.execute(
-            "SELECT is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (memory_id, uid, tenant_id),
+            join_sql_parts(
+                "SELECT is_ghost, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
+            (memory_id, uid, tenant_id, *ns_params),
         ).fetchone()
         if row is None:
             return _tool_error("undo", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["review_status"] == _SKILL_REVIEW_RETIRED:
+            return _tool_error(
+                "undo",
+                f"skill {memory_id} is retired; re-crystallize from fresh evidence instead.",
+                memory_id=memory_id,
+                status="retired",
+            )
         if row["review_status"] is None and row["is_ghost"] != 1:
             return _tool_error("undo", f"memory {memory_id} has no review action to undo.", memory_id=memory_id)
         conn.execute(
-            "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, "
-            "review_reason = NULL, updated_at = ? "
-            "WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (now, memory_id, uid, tenant_id),
+            join_sql_parts(
+                "UPDATE memories SET inferred = 1, is_ghost = 0, review_status = NULL, "
+                "review_reason = NULL, updated_at = ? "
+                "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
+            (now, memory_id, uid, tenant_id, *ns_params),
         )
         conn.commit()
     finally:
@@ -8943,8 +9512,9 @@ def manage_inferred(
     ``{"params": {"action": "approve", "memory_id": "..."}}``.
 
     Args:
-        params: ``ManageInferredParams`` — action, memory_id, reason, and
-            limit. Each field's description is advertised in the tool schema.
+        params: ``ManageInferredParams`` — action, memory_id, reason,
+            limit, and the agent_id/project lane. Each field's description
+            is advertised in the tool schema.
 
     Returns:
         JSON envelope with ``ok``, ``action``, and action-specific payload.
@@ -8961,18 +9531,45 @@ def manage_inferred(
             return _tool_error("manage_inferred", "either 'options' or 'action' must be provided.")
         options = InferredAction(action=action, memory_id=memory_id, reason=reason, limit=limit)
 
-    uid = user_id or USER_ID
+    agent_id = params.agent_id or options.agent_id
+    project = params.project or options.project
+    try:
+        uid = _readable_user_for_caller(user_id)
+    except PermissionError as exc:
+        return _tool_error("manage_inferred", str(exc))
     tenant_id = get_current_account_id()
 
+    return _dispatch_inferred_review(options, uid, tenant_id, agent_id=agent_id, project=project)
+
+
+def _dispatch_inferred_review(
+    options: InferredAction,
+    uid: str,
+    tenant_id: str,
+    *,
+    agent_id: str | None,
+    project: str | None,
+) -> str:
+    """Route one review action to its handler after the caller guards have run.
+
+    ``manage_inferred`` has to settle the caller and the tenant before any
+    handler touches a row; the per-action fan-out lives here so the tool body
+    keeps its guards and nothing else.
+    """
     if options.action == "list":
-        return _handle_inferred_list(uid, tenant_id, options.limit)
-    if not options.memory_id:
+        return _handle_inferred_list(uid, tenant_id, options.limit, agent_id=agent_id, project=project)
+    memory_id = options.memory_id
+    if not memory_id:
         return _tool_error(options.action, "'memory_id' is required for this action.")
     if options.action == "approve":
-        return _handle_inferred_approve(uid, tenant_id, options.memory_id)
+        return _handle_inferred_approve(uid, tenant_id, memory_id, agent_id=agent_id, project=project)
     if options.action == "decline":
-        return _handle_inferred_decline(uid, tenant_id, options.memory_id, options.reason)
-    return _handle_inferred_undo(uid, tenant_id, options.memory_id)
+        return _handle_inferred_decline(
+            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+            memory_id,
+            options.reason,
+        )
+    return _handle_inferred_undo(uid, tenant_id, memory_id, agent_id=agent_id, project=project)
 
 
 # =============================================================================
@@ -9579,7 +10176,7 @@ Review these synthesized (inferred) memories and confirm or reject each one:
 - Ensure no durable or permanent facts are accidentally degraded or lost.
 - Verify that merged memories retain all essential entity tags and attributes.
 - Approve or cancel the curation run using `manage_curation_runs`.
-- Approve or decline each inferred memory using `manage_inferred`.
+- Approve or decline each inferred memory or staged/retired skill using `manage_inferred`.
 """
 
 
@@ -9626,6 +10223,33 @@ def resource_system_status() -> str:
 def resource_curation_runs() -> str:
     """Live resource stream of memory curation runs."""
     return manage_curation_runs(ManageCurationRunsParams(options=CurationRunAction(action="list")))
+
+
+@mcp.resource("foresight://skills")
+def resource_skills() -> str:
+    """Live resource stream of approved, signature-verified crystallized skills."""
+    uid = USER_ID
+    tenant_id = get_current_account_id()
+    skills = _list_skills(UserScope(user_id=uid, tenant_id=tenant_id), status="approved", limit=50)
+    return json.dumps(
+        {
+            "ok": True,
+            "count": len(skills),
+            "skills": [
+                {
+                    "memory_id": s["memory_id"],
+                    "skill_name": s["skill_name"],
+                    "description": s["description"],
+                    "version": s["version"],
+                    "signature": s["signature"],
+                    "signature_valid": s["signature_valid"],
+                    "content": s["content"],
+                }
+                for s in skills
+            ],
+        },
+        indent=2,
+    )
 
 
 # ============================================================================

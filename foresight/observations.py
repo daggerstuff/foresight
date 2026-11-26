@@ -23,6 +23,8 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,6 +38,14 @@ logger = logging.getLogger("foresight_observations")
 MIN_CLUSTER_SIZE = 2
 MAX_INJECTION_OBSERVATIONS = 3
 _RECENCY_HALF_LIFE_DAYS = 30.0
+_MAX_SUMMARY_CHARS = 200
+_ARCHIVE_LISTENERS: list[Callable[[str, str, str], Any]] = []
+
+
+def register_archive_listener(listener: Callable[[str, str, str], Any]) -> None:
+    """Register a callback invoked as ``listener(observation_id, user_id, tenant_id)`` on archive."""
+    if listener not in _ARCHIVE_LISTENERS:
+        _ARCHIVE_LISTENERS.append(listener)
 
 
 def _execute(sql: str, params: tuple | list = ()) -> None:
@@ -51,6 +61,33 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def mark_steps_checked(
+    pattern_key: str,
+    checked_at: str,
+    *,
+    user_id: str = "default",
+    tenant_id: str = "default",
+) -> None:
+    """Record that the stored steps were re-derived against the current transcripts.
+
+    last_refined_at says when the observation text last changed, and the
+    recency ordering and confidence decay read it that way, so verifying a
+    recipe whose text and evidence are unchanged must not move it. This stamp
+    is the separate fact the distillation scan compares against episode update
+    times when it decides whether the stored steps still describe the sessions
+    behind them.
+    """
+    if not pattern_key or not checked_at:
+        return
+    _execute(
+        "UPDATE observations SET steps_checked_at = ? WHERE tenant_id = ? AND user_id = ? "
+        "AND pattern_key = ? AND status <> 'archived' "
+        "AND COALESCE(agent_id, 'default') = 'default' AND COALESCE(project, 'default') = 'default' "
+        "AND (steps_checked_at IS NULL OR steps_checked_at < ?)",
+        (checked_at, tenant_id, user_id, pattern_key, checked_at),
+    )
+
+
 def _observation_row(row: dict) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -61,10 +98,13 @@ def _observation_row(row: dict) -> dict[str, Any]:
         "category": row.get("category"),
         "confidence": float(row.get("confidence") or 0.5),
         "supporting_memory_ids": json.loads(row.get("supporting_memory_ids") or "[]"),
+        "supporting_episode_ids": json.loads(row.get("supporting_episode_ids") or "[]"),
+        "memory_type": row.get("memory_type") or "semantic",
         "evidence_count": int(row.get("evidence_count") or 0),
         "status": row.get("status", "active"),
         "first_seen_at": row["first_seen_at"],
         "last_refined_at": row.get("last_refined_at"),
+        "steps_checked_at": row.get("steps_checked_at"),
         "version": int(row.get("version") or 1),
     }
 
@@ -96,6 +136,83 @@ def _slug(text: str, length: int = 48) -> str:
     return slug[:length] or "pattern"
 
 
+_PROCEDURAL_CATEGORIES = frozenset({"procedural", "procedure", "workflow", "recipe"})
+
+
+def _parse_json_obj(raw: Any, default: Any) -> Any:
+    if isinstance(raw, type(default)):
+        return raw
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, type(default)) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _procedural_key(row: dict[str, Any]) -> str | None:
+    """Derive a stable procedural pattern key for a procedural memory row."""
+    if bool(row.get("is_sensitive")):
+        return None
+    cat = (row.get("category") or "").strip().lower()
+    mtype = (row.get("memory_type") or "").strip().lower()
+    if mtype != "procedural" and cat not in _PROCEDURAL_CATEGORIES:
+        return None
+
+    metrics = _parse_json_obj(row.get("metrics"), {})
+    # exp_key is what experience distillation writes; without it every
+    # lesson collapses into one shared "procedural:lesson" cluster.
+    for key in ("exp_key", "procedure_key", "skill_name", "procedure"):
+        val = metrics.get(key)
+        if isinstance(val, str) and val.strip():
+            return f"procedural:{_slug(val)}"
+
+    tags = _parse_json_obj(row.get("tags"), [])
+    for tag in tags:
+        if not isinstance(tag, str):
+            continue
+        low = tag.strip().lower()
+        for prefix in ("procedure:", "skill:", "workflow:"):
+            if low.startswith(prefix) and len(low) > len(prefix):
+                return f"procedural:{_slug(low[len(prefix) :])}"
+
+    if cat and cat not in _PROCEDURAL_CATEGORIES and cat not in ("fact", "general"):
+        return f"procedural:{_slug(cat)}"
+
+    content = (row.get("content") or "").strip()
+    head = content.splitlines()[0][:64] if content else "procedure"
+    return f"procedural:{_slug(head)}"
+
+
+def _detect_procedural_candidates(rows: list[dict]) -> list[dict[str, Any]]:
+    """Cluster procedural memories/episodes into procedural observation candidates."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        pkey = _procedural_key(row)
+        if pkey is None:
+            continue
+        groups.setdefault(pkey, []).append(row)
+
+    candidates: list[dict[str, Any]] = []
+    for pkey, members in groups.items():
+        ids = [m["id"] for m in members]
+        if len(ids) < MIN_CLUSTER_SIZE:
+            continue
+        first_text = str(members[0].get("content") or "").strip()
+        summary = first_text[:_MAX_SUMMARY_CHARS] + ("..." if len(first_text) > _MAX_SUMMARY_CHARS else "")
+        candidates.append(
+            {
+                "pattern_key": pkey,
+                "observation_text": f"Procedural pattern ({pkey.split(':', 1)[-1]}): {summary}",
+                "category": "procedural",
+                "confidence": min(0.95, 0.5 + 0.08 * len(ids)),
+                "supporting_memory_ids": ids,
+            }
+        )
+    return candidates
+
+
 def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     """Detect recurring patterns via the enhanced synthesizer.
 
@@ -103,16 +220,26 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
     confidence, supporting_memory_ids.
     """
 
-    objects = _memory_objects(rows)
-    if not objects:
-        return []
+    # The synthesizer embeds memory content in its insights, so sensitive rows
+    # must never reach it. Category clusters only carry a count and a category
+    # name, and procedural clusters already skip sensitive rows.
+    objects = _memory_objects([row for row in rows if not bool(row.get("is_sensitive"))])
 
     synth = EnhancedMemorySynthesizer()
     candidates: list[dict[str, Any]] = []
 
+    # Procedural pattern clusters (never distill is_sensitive rows).
+    procedural_candidates = _detect_procedural_candidates(rows)
+    candidates.extend(procedural_candidates)
+    procedural_ids = {mid for c in procedural_candidates for mid in c["supporting_memory_ids"]}
+
     # Recurring category clusters — the base "keeps happening" signal.
     by_category: dict[str, list[dict]] = {}
     for row in rows:
+        # Already carried by a procedural candidate (memory_type='procedural'
+        # rows are often category='lesson'), so a second cluster would duplicate.
+        if row["id"] in procedural_ids:
+            continue
         cat = row.get("category") or "general"
         by_category.setdefault(cat, []).append(row)
     for cat, members in by_category.items():
@@ -134,6 +261,8 @@ def _detect_candidates(rows: list[dict]) -> list[dict[str, Any]]:
 
     # Synthesizer-driven detection: contradictions and temporal trends,
     # promoted to evidence-linked observations via generated insights.
+    if not objects:
+        return candidates
     try:
         contradictions = synth._detect_contradictions(objects)
         trends = synth._analyze_temporal_trends(objects)
@@ -169,6 +298,9 @@ def _ns_clause(agent_id: str | None, project: str | None, prefix: str = "") -> t
     return frag, params
 
 
+_MAX_UPSERT_ATTEMPTS = 5
+
+
 def _find_observation(
     pattern_key: str,
     *,
@@ -197,12 +329,21 @@ def _upsert_observation(
     tenant_id: str,
     agent_id: str | None = None,
     project: str | None = None,
-) -> dict[str, Any]:
-    """Insert or refine an observation. Evidence is unioned, never dropped."""
+) -> tuple[dict[str, Any], bool]:
+    """Insert or refine an observation. Evidence is unioned, never dropped.
+
+    Returns the stored row and whether this call is the one that wrote it. A
+    caller whose verdict scan has been overtaken by another writer gets
+    False: its candidate was not published, and counting it as an upsert hides
+    a merge that never ran.
+    """
     now = _now_iso()
     existing = _find_observation(
         candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project
     )
+
+    supporting_episode_ids = list(dict.fromkeys(candidate.get("supporting_episode_ids") or []))
+    memory_type = candidate.get("memory_type") or "semantic"
 
     if existing is None:
         obs_id = uuid.uuid4().hex[:16]
@@ -210,9 +351,9 @@ def _upsert_observation(
         _execute(
             """INSERT INTO observations
             (id, tenant_id, user_id, agent_id, project, pattern_key, observation_text, category,
-             confidence, supporting_memory_ids, evidence_count, status,
+             confidence, supporting_memory_ids, supporting_episode_ids, memory_type, evidence_count, status,
              first_seen_at, last_refined_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)""",
             (
                 obs_id,
                 tenant_id,
@@ -224,41 +365,116 @@ def _upsert_observation(
                 candidate.get("category"),
                 candidate["confidence"],
                 json.dumps(supporting),
-                len(supporting),
+                json.dumps(supporting_episode_ids),
+                memory_type,
+                len(supporting) + len(supporting_episode_ids),
                 now,
                 now,
             ),
         )
         row = _fetch_one("SELECT * FROM observations WHERE id = ?", (obs_id,))
-        return _observation_row(row) if row else {"id": obs_id, **candidate}
+        return (_observation_row(row) if row else {"id": obs_id, **candidate}), True
 
-    # Refine: union evidence, bump version, advance last_refined_at.
-    merged_ids = list(dict.fromkeys(existing["supporting_memory_ids"] + candidate["supporting_memory_ids"]))
-    new_version = existing["version"] + 1
-    new_confidence = max(existing["confidence"], float(candidate["confidence"]))
-    _execute(
-        """UPDATE observations SET observation_text = ?, category = ?, confidence = ?,
-           supporting_memory_ids = ?, evidence_count = ?, status = 'refined',
-           last_refined_at = ?, version = ?
-           WHERE id = ? AND tenant_id = ? AND user_id = ?""",
-        (
-            candidate["observation_text"],
-            candidate.get("category") or existing.get("category"),
-            new_confidence,
-            json.dumps(merged_ids),
-            len(merged_ids),
-            now,
-            new_version,
-            existing["id"],
-            tenant_id,
-            user_id,
-        ),
+    memory_type = candidate.get("memory_type") or "semantic"
+    current = existing
+    # None on both fields means the caller never scanned (a plain refinement,
+    # which merges). An explicit 0 with no episodes means the scan ran and
+    # found no row, so anything stored now arrived after the verdicts it
+    # judged: an older scan must never replace a newer writer's evidence just
+    # because its own baseline was empty.
+    raw_base_version = candidate.get("scan_base_version")
+    raw_base_episodes = candidate.get("scan_base_episode_ids")
+    # An episode baseline alone says which ids the scan saw, not when it saw
+    # them, so only a stated version orders the scan against the row: a
+    # replacement carrying just episode ids merges instead of being refused.
+    version_scanned = raw_base_version is not None
+    base_version = int(raw_base_version or 0)
+    replaces = bool(candidate.get("replace_episode_evidence"))
+    if replaces and version_scanned and int(current.get("version") or 0) > base_version:
+        # The row appeared or moved after the caller's scan: the evidence a
+        # replacement would drop was recorded later and was never part of the
+        # verdicts it judged. A newer pass owns this row.
+        return current, False
+    # The episode ids the caller's verdict scan could see. A replacement run
+    # that loses a version race must not drop what another writer recorded
+    # after the scan began, because the scan never judged those ids.
+    scan_base_episodes = (
+        set(raw_base_episodes) if raw_base_episodes is not None else set(existing.get("supporting_episode_ids", []))
     )
-    row = _fetch_one(
-        "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ?",
-        (existing["id"], tenant_id, user_id),
-    )
-    return _observation_row(row) if row else existing
+    for _attempt in range(_MAX_UPSERT_ATTEMPTS):
+        prior_memory_type = current.get("memory_type") or "semantic"
+        new_memory_type = (
+            memory_type if memory_type != "semantic" or prior_memory_type == "semantic" else prior_memory_type
+        )
+        merged_ids = list(dict.fromkeys(current["supporting_memory_ids"] + candidate["supporting_memory_ids"]))
+        if candidate.get("replace_episode_evidence"):
+            unseen = [eid for eid in current.get("supporting_episode_ids", []) if eid not in scan_base_episodes]
+            merged_episodes = list(dict.fromkeys(supporting_episode_ids + unseen))
+        else:
+            merged_episodes = list(dict.fromkeys(current.get("supporting_episode_ids", []) + supporting_episode_ids))
+        new_category = candidate.get("category") or current.get("category")
+        new_confidence = max(float(current.get("confidence") or 0.0), float(candidate["confidence"]))
+        if (
+            candidate["observation_text"] == current.get("observation_text")
+            and new_category == current.get("category")
+            and new_confidence == float(current.get("confidence") or 0.0)
+            and merged_ids == current["supporting_memory_ids"]
+            and merged_episodes == current.get("supporting_episode_ids", [])
+            and new_memory_type == prior_memory_type
+            # A confidence-only improvement is still a refinement: without this
+            # the row keeps its stale confidence, version, and last_refined_at.
+            and float(candidate["confidence"]) <= float(current["confidence"])
+        ):
+            return current, False
+
+        now = _now_iso()
+        conn = _connect()
+        try:
+            cursor = conn.execute(
+                """UPDATE observations SET observation_text = ?, category = ?, confidence = ?,
+                   supporting_memory_ids = ?, supporting_episode_ids = ?, memory_type = ?,
+                   evidence_count = ?, status = 'refined',
+                   last_refined_at = ?, version = ?
+                   WHERE id = ? AND tenant_id = ? AND user_id = ? AND version = ? AND status <> 'archived'""",
+                (
+                    candidate["observation_text"],
+                    new_category,
+                    new_confidence,
+                    json.dumps(merged_ids),
+                    json.dumps(merged_episodes),
+                    new_memory_type,
+                    len(merged_ids) + len(merged_episodes),
+                    now,
+                    int(current["version"]) + 1,
+                    current["id"],
+                    tenant_id,
+                    user_id,
+                    int(current["version"]),
+                ),
+            )
+            written = cursor.rowcount == 1
+            if written:
+                conn.commit()
+        finally:
+            conn.close()
+
+        row = _fetch_one(
+            "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            (current["id"], tenant_id, user_id),
+        )
+        fresh = _observation_row(row) if row else None
+        if written or fresh is None or fresh.get("status") == "archived":
+            return (fresh or current), written
+        if replaces and version_scanned and int(fresh.get("version") or 0) > base_version:
+            # A newer scan replaced this row between the version check and the
+            # update. Retrying with the original candidate would restore the
+            # evidence that scan deliberately dropped, so the replacement
+            # yields to it instead of merging.
+            return fresh, False
+        # Another writer refined the same observation first: merge onto its
+        # evidence instead of overwriting the ids it just added.
+        current = fresh
+    return current, False
 
 
 def curate_observations(
@@ -278,7 +494,8 @@ def curate_observations(
     tenant_id = scope.tenant_id
     t0 = time.perf_counter()
     sql = (
-        "SELECT id, content, category, scope, retention, created_at, tags "
+        "SELECT id, content, category, scope, retention, created_at, tags, "
+        "memory_type, metrics, is_sensitive, is_latest "
         "FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 AND is_latest = 1"
     )
     params: list[Any] = [user_id, tenant_id]
@@ -294,7 +511,7 @@ def curate_observations(
     rows = _fetch_all(sql, params)
     candidates = _detect_candidates(rows)
 
-    created = refined = 0
+    created = refined = skipped = 0
     observations: list[dict[str, Any]] = []
     for candidate in candidates:
         before = _find_observation(
@@ -304,11 +521,16 @@ def curate_observations(
             agent_id=scope.agent_id,
             project=scope.project,
         )
-        obs = _upsert_observation(
+        obs, applied = _upsert_observation(
             candidate, user_id=user_id, tenant_id=tenant_id, agent_id=scope.agent_id, project=scope.project
         )
         observations.append(obs)
-        if before is None:
+        # A candidate another writer already overtook was not published by this
+        # call, so counting it as a refinement would report a merge that never
+        # ran.
+        if not applied:
+            skipped += 1
+        elif before is None:
             created += 1
         else:
             refined += 1
@@ -318,6 +540,7 @@ def curate_observations(
         "candidates": len(candidates),
         "observations_created": created,
         "observations_refined": refined,
+        "observations_skipped": skipped,
         "observations": observations,
         "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
     }
@@ -381,6 +604,68 @@ def archive_observation(observation_id: str, *, user_id: str, tenant_id: str) ->
             (observation_id, tenant_id, user_id),
         )
         conn.commit()
-        return bool(cur.rowcount)
+        archived = bool(cur.rowcount)
     finally:
         conn.close()
+    if archived:
+        for listener in _ARCHIVE_LISTENERS:
+            try:
+                listener(observation_id, user_id, tenant_id)
+            except Exception:
+                logger.debug("archive listener failed (non-fatal)", exc_info=True)
+    return archived
+
+
+@dataclass(frozen=True)
+class EpisodeObservationSpec:
+    pattern_key: str
+    observation_text: str
+    category: str
+    confidence: float
+    episode_ids: list[str]
+    memory_type: str = "procedural"
+    # Distilled recipes and lessons are rebuilt from the current episode
+    # verdicts, so their evidence is replaced rather than unioned; a corrected
+    # verdict must drop the episode from the group it left.
+    replace_episode_evidence: bool = False
+    # What the caller's verdict scan actually saw. A replacement that ran
+    # alongside another writer must not treat evidence recorded after the scan
+    # as unseen, because that evidence was never judged. None means the caller
+    # did not scan, so the write merges onto whatever row it finds.
+    scan_base_episode_ids: tuple[str, ...] | None = None
+    # The row version that scan read. Zero records that the scan found no row,
+    # which is not the same as not having scanned: a row that exists now was
+    # written after the scan and none of its evidence was judged.
+    scan_base_version: int | None = None
+
+
+def upsert_episode_observation(
+    spec: EpisodeObservationSpec,
+    *,
+    user_id: str,
+    tenant_id: str,
+) -> tuple[dict[str, Any], bool]:
+    """Upsert a procedural observation whose evidence is episode IDs.
+
+    Used by the experience-memory distiller: success recipes and failure
+    signatures become observations whose ``supporting_episode_ids`` point at
+    the episodes that produced them. Evidence is unioned on refine. The
+    flag reports whether the row carries the caller write; a write refused
+    because another writer reached the row first returns False with the row
+    as it stands, so the caller retries on its next pass.
+    """
+    candidate = {
+        "pattern_key": spec.pattern_key,
+        "observation_text": spec.observation_text,
+        "category": spec.category,
+        "confidence": spec.confidence,
+        "supporting_memory_ids": [],
+        "supporting_episode_ids": list(dict.fromkeys(spec.episode_ids)),
+        "memory_type": spec.memory_type,
+        "replace_episode_evidence": spec.replace_episode_evidence,
+        "scan_base_episode_ids": (
+            tuple(spec.scan_base_episode_ids) if spec.scan_base_episode_ids is not None else None
+        ),
+        "scan_base_version": None if spec.scan_base_version is None else int(spec.scan_base_version),
+    }
+    return _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id)

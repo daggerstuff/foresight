@@ -6,10 +6,13 @@ Composable memory blocks with dynamic registration and validation.
 from __future__ import annotations
 
 import contextlib
+import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import Enum, StrEnum
+from typing import Any, cast
 
 # =============================================================================
 # Enums
@@ -47,6 +50,156 @@ class BlockScope(Enum):
     GLOBAL = "global"  # Global across all projects
     PROJECT = "project"  # Specific to a project
     SESSION = "session"  # Specific to a session
+
+
+class RuleStrength(StrEnum):
+    """Constraint strength for a structured rule entry."""
+
+    MUST = "must"
+    MUST_NOT = "must_not"
+    SHOULD = "should"
+
+
+RULES_BLOCK_LABEL = "rules"
+RULES_PLACEHOLDER = "(No rules configured yet. Populated from explicit rules or graduated procedural experiences.)"
+_ALWAYS_APPLIES = frozenset({"", "*", "always", "any"})
+_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:,|;|\||\bor\b)\s*", re.IGNORECASE)
+# One-character tokens are kept: dropping them let "python 3" match a
+# Python 2 context, because only the remaining token had to be present.
+_TOKEN_RE = re.compile(r"[a-z0-9_+#]+(?:\.[a-z0-9_+#]+)*")
+
+
+def _clause_matches(clause: str, context_lower: str, term_set: set[str]) -> bool:
+    norm = clause.strip().lower()
+    if not norm:
+        return False
+    # Word-bounded: a plain substring test lets "ci" match "decision" and
+    # "merge" match "merger", which both triggers and suppresses rules wrongly.
+    if re.search(rf"(?<![a-z0-9_+#]){re.escape(norm)}(?![a-z0-9_+#])", context_lower):
+        return True
+    tokens = _TOKEN_RE.findall(norm)
+    if not tokens:
+        return False
+    # term_set already carries the context's own word tokens (see matches()).
+    return all(tok in term_set for tok in tokens)
+
+
+@dataclass(frozen=True)
+class RuleEntry:
+    """Structured constraint stored inside the ``rules`` context block."""
+
+    statement: str
+    strength: RuleStrength = RuleStrength.SHOULD
+    applies_when: str = ""
+    exception: str = ""
+    source: str = "manual"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.statement, str) or not self.statement.strip():
+            raise ValueError("RuleEntry.statement must be a non-empty string")
+        # Reject non-string qualifiers instead of stringifying them into
+        # misleading values ("None", "123").
+        for name in ("applies_when", "exception", "source"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"RuleEntry.{name} must be a string")
+        object.__setattr__(self, "statement", self.statement.strip())
+        object.__setattr__(self, "strength", RuleStrength(str(self.strength).strip().lower()))
+        object.__setattr__(self, "applies_when", str(self.applies_when or "").strip())
+        object.__setattr__(self, "exception", str(self.exception or "").strip())
+        object.__setattr__(self, "source", str(self.source or "manual").strip() or "manual")
+
+    def matches(self, context_text: str, terms: list[str] | None = None) -> bool:
+        """Return True when ``applies_when`` matches and ``exception`` does not."""
+        context_lower = (context_text or "").lower()
+        term_set = {str(t).lower() for t in (terms or []) if t} | set(_TOKEN_RE.findall(context_lower))
+
+        if self.exception:
+            exc_clauses = [c for c in _CLAUSE_SPLIT_RE.split(self.exception) if c.strip()]
+            if any(_clause_matches(c, context_lower, term_set) for c in exc_clauses):
+                return False
+
+        when_norm = self.applies_when.strip().lower()
+        if when_norm in _ALWAYS_APPLIES:
+            return True
+
+        clauses = [c for c in _CLAUSE_SPLIT_RE.split(self.applies_when) if c.strip()]
+        return any(_clause_matches(c, context_lower, term_set) for c in clauses)
+
+    def format_line(self) -> str:
+        """Render the rule as a compact, unambiguous prompt line."""
+        tag = self.strength.value.upper()
+        parts = [f"[{tag}] {self.statement}"]
+        qualifiers: list[str] = []
+        if self.applies_when:
+            qualifiers.append(f"when: {self.applies_when}")
+        if self.exception:
+            qualifiers.append(f"except: {self.exception}")
+        if self.source:
+            qualifiers.append(f"source: {self.source}")
+        if qualifiers:
+            parts.append(f"({'; '.join(qualifiers)})")
+        return " ".join(parts)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "statement": self.statement,
+            "strength": self.strength.value,
+            "applies_when": self.applies_when,
+            "exception": self.exception,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuleEntry:
+        if not isinstance(data, dict):
+            raise ValueError("Rule entry must be a JSON object")
+        required = {"statement", "strength"}
+        missing = [k for k in required if k not in data]
+        if missing:
+            raise ValueError(f"Rule entry missing required fields: {', '.join(missing)}")
+        return cls(
+            statement=data["statement"],
+            strength=RuleStrength(str(data["strength"]).strip().lower()),
+            # Raw qualifiers go to __post_init__, which alone decides what a
+            # valid one is: stringifying here turned False into "" and let a
+            # rule that was meant to be conditional load as unconditional, and
+            # turned lists/dicts into matching text. None remains permitted and
+            # is normalised to "" there, so the cast is what that validation
+            # guarantees for every accepted value.
+            applies_when=cast(str, data.get("applies_when")),
+            exception=cast(str, data.get("exception")),
+            source=cast(str, data.get("source")),
+        )
+
+
+def parse_rules_block(content: str) -> list[RuleEntry]:
+    """Parse serialized ``rules`` block content into validated ``RuleEntry`` objects."""
+    text = (content or "").strip()
+    if not text or text == RULES_PLACEHOLDER:
+        return []
+    parsed = json.loads(text)
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        raise ValueError("Rules block content must be a JSON list of rule objects")
+    return [RuleEntry.from_dict(item) for item in parsed]
+
+
+def serialize_rules_block(entries: list[RuleEntry]) -> str:
+    """Serialize ``RuleEntry`` objects into canonical ``rules`` block content."""
+    if not entries:
+        return RULES_PLACEHOLDER
+    return json.dumps([entry.to_dict() for entry in entries], indent=2)
+
+
+def validate_rules_content(content: str) -> bool:
+    """Validator for the registered ``rules`` block schema."""
+    try:
+        parse_rules_block(content)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 # =============================================================================
@@ -422,6 +575,20 @@ Finding information:
         merge_strategy=MergeStrategy.REPLACE,
         injection_point=InjectionPoint.WHISPER_ONLY,
         scope=BlockScope.GLOBAL,
+    ),
+    MemoryBlockSchema(
+        label=RULES_BLOCK_LABEL,
+        description="Structured must / must_not / should constraints with applies_when and exception",
+        content=RULES_PLACEHOLDER,
+        retention_policy=RetentionPolicy.PERMANENT,
+        merge_strategy=MergeStrategy.REPLACE,
+        injection_point=InjectionPoint.PRE_PROMPT,
+        scope=BlockScope.GLOBAL,
+        validator=validate_rules_content,
+        metadata={
+            "fields": ["statement", "strength", "applies_when", "exception", "source"],
+            "strengths": [s.value for s in RuleStrength],
+        },
     ),
 ]
 

@@ -19,10 +19,10 @@ import pytest
 from pydantic import BaseModel, Field
 
 import foresight_cli.cli as cli_module
-from foresight_cli.utils import config as cfg
+from foresight_cli.utils import config as cfg, output as out
 
-ANNOTATED_OPTION_TOTAL = 70
-ANNOTATED_COMMAND_TOTAL = 39
+ANNOTATED_OPTION_TOTAL = 75
+ANNOTATED_COMMAND_TOTAL = 42
 USAGE_ERROR_STATUS = 2
 
 
@@ -156,3 +156,21 @@ def test_null_user_id_in_config_does_not_reach_the_declared_field(tmp_path, monk
 
     assert isinstance(loaded.user_id, str)
     assert loaded.user_id == cfg.DEFAULTS["user_id"]
+
+
+def test_errors_survive_agent_mode(capsys, monkeypatch):
+    monkeypatch.setattr(out, "_settings", out.OutputSettings(mode="agent"))
+
+    out.error("Approved skill 'x' not found")
+
+    assert "[ERROR] Approved skill 'x' not found" in capsys.readouterr().err
+
+
+def test_error_prints_bracketed_text_literally_in_agent_mode(capsys, monkeypatch):
+    # Rich parses a plain string as markup, so a diagnostic carrying "[/]"
+    # raised MarkupError and the error line never reached the agent at all.
+    monkeypatch.setattr(out, "_settings", out.OutputSettings(mode="agent"))
+
+    out.error("approval failed for [/] reason")
+
+    assert "[ERROR] approval failed for [/] reason" in capsys.readouterr().err

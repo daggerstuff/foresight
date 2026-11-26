@@ -4,14 +4,17 @@ Implements PIX-3949: bounded payload output for inject_context and
 get_relevant_memories with lane-based character budget allocation.
 
 Lanes (in priority order):
-1. static   - user profile / preferences (highest priority, rarely changes)
-2. dynamic  - project context / pending items (session-specific)
-3. memories - top-ranked retrieval results (most content, first to truncate)
-4. blocks   - context block signals (supplementary)
-5. safety   - clinical gating / safety notes (always preserved if present)
+1. rules    - matched must / must_not / should constraints (never truncated)
+2. static   - user profile / preferences (rarely changes)
+3. dynamic  - project context / pending items (session-specific)
+4. memories - top-ranked retrieval results (most content, first to truncate)
+5. blocks   - context block signals (supplementary)
+6. safety   - clinical gating / safety notes (never truncated)
 
 Budget allocation strategy:
-- Each lane receives a percentage of the total character budget.
+- The rules and safety lanes are never truncated or omitted (see
+  NEVER_TRUNCATED_LANES); every other lane receives a percentage of the
+  total character budget.
 - Within a lane, items are ordered by score/importance (highest first).
 - When a lane exhausts its budget:
   1. Remaining items get truncated to summaries (first sentence only).
@@ -39,6 +42,7 @@ logger = logging.getLogger("foresight_budget")
 class Lane(StrEnum):
     """Injection lanes in priority order."""
 
+    RULES = "rules"
     STATIC = "static"
     DYNAMIC = "dynamic"
     MEMORIES = "memories"
@@ -48,12 +52,16 @@ class Lane(StrEnum):
 
 # Priority order for lane allocation
 LANE_PRIORITY: list[Lane] = [
+    Lane.RULES,
     Lane.STATIC,
     Lane.DYNAMIC,
     Lane.MEMORIES,
     Lane.BLOCKS,
     Lane.SAFETY,
 ]
+
+# Lanes that are never truncated or omitted regardless of budget pressure.
+NEVER_TRUNCATED_LANES: frozenset[Lane] = frozenset({Lane.RULES, Lane.SAFETY})
 
 
 class TruncationLevel(StrEnum):
@@ -66,6 +74,7 @@ class TruncationLevel(StrEnum):
 
 # Default percentage allocation per lane (must sum to 1.0)
 DEFAULT_LANE_WEIGHTS: dict[Lane, float] = {
+    Lane.RULES: 0.0,
     Lane.STATIC: 0.10,
     Lane.DYNAMIC: 0.15,
     Lane.MEMORIES: 0.50,
@@ -309,9 +318,12 @@ def allocate_lane(
     get full content first. Lower-scoring items are progressively
     truncated or omitted as the budget is exhausted.
     """
-    if not budget.is_bounded:
-        # Unbounded: everything at FULL
-        rendered = [(item, _render_item(item, TruncationLevel.FULL, budget)) for item in items]
+    if not budget.is_bounded or lane in NEVER_TRUNCATED_LANES:
+        # Unbounded or never-truncated lane (rules, safety): every item stays FULL
+        sorted_items = sorted(items, key=lambda i: i.score, reverse=True) if budget.is_bounded else items
+        rendered = [(item, _render_item(item, TruncationLevel.FULL, budget)) for item in sorted_items]
+        # -1 is the unbounded sentinel: these lanes ignore the global cap, so
+        # reporting their weighted share would misstate the budget in details.
         return LaneAllocation(lane=lane, budget_chars=-1, full_items=rendered)
 
     lane_budget = budget.lane_budget(lane)
@@ -409,13 +421,13 @@ def format_budgeted_payload(
 
 
 def format_static_and_safety(lane_items: dict[Lane, list[LaneItem]]) -> str:
-    """Format only static and safety lanes, ignoring retrieval and dynamic lanes.
+    """Format rules, static, and safety lanes, ignoring retrieval and dynamic lanes.
 
-    Ensures static profile preferences and clinical safety notes are preserved
-    even when memory retrieval is below the gating threshold.
+    Ensures matched rules, static profile preferences, and clinical safety notes
+    are preserved even when memory retrieval is below the gating threshold.
     """
     sections: list[str] = []
-    for lane in (Lane.STATIC, Lane.SAFETY):
+    for lane in (Lane.RULES, Lane.STATIC, Lane.SAFETY):
         items = lane_items.get(lane, [])
         if not items:
             continue

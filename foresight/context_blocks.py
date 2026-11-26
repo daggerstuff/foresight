@@ -7,17 +7,34 @@ blocks while reusing the existing compatibility-backed implementation.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from .block_registry import MemoryBlockSchema, get_registry, initialize_default_blocks
+from .block_registry import (
+    RULES_BLOCK_LABEL,
+    MemoryBlockSchema,
+    RuleEntry,
+    RuleStrength,
+    get_registry,
+    initialize_default_blocks,
+    parse_rules_block,
+    serialize_rules_block,
+)
 from .connection_pool import get_db_connection
+from .context_cache import get_context_cache
+from .observations import _ns_clause
+from .sensitivity import resolve_is_sensitive
+from .sql_helpers import join_sql_parts, placeholders
 from .subconscious import (
     DEFAULT_MEMORY_BLOCKS,
     PENDING_ITEMS,
     PROJECT_CONTEXT,
+    RULES,
     SESSION_PATTERNS,
     USER_PREFERENCES,
     ContextBlockAgent,
@@ -27,6 +44,12 @@ from .subconscious import (
     normalize_block_line,
 )
 
+logger = logging.getLogger("foresight_context_blocks")
+
+# Serializes the read-modify-write of the rules block: two concurrent add_rule
+# calls otherwise read the same list and the later write drops the earlier rule.
+_RULES_LOCK = threading.Lock()
+
 DEFAULT_CONTEXT_BLOCKS = DEFAULT_MEMORY_BLOCKS
 ContextBlock = MemoryBlock
 
@@ -34,16 +57,22 @@ __all__ = [
     "DEFAULT_CONTEXT_BLOCKS",
     "PENDING_ITEMS",
     "PROJECT_CONTEXT",
+    "RULES",
     "SESSION_PATTERNS",
     "USER_PREFERENCES",
     "ContextBlock",
     "ContextBlockAgent",
     "ContextBlockState",
     "MemoryBlockSchema",
+    "RuleEntry",
+    "RuleGraduateOptions",
+    "RuleStrength",
     "add_context_guidance",
+    "add_rule",
     "add_subconscious_guidance",
     "clear_context_block",
     "clear_subconscious_block",
+    "compile_experience_to_rule",
     "get_context_block",
     "get_context_block_agent",
     "get_context_snapshot",
@@ -51,11 +80,14 @@ __all__ = [
     "get_subconscious_block",
     "get_subconscious_context",
     "get_subconscious_whisper",
+    "graduate_experience_to_rule",
     "list_context_block_schemas",
     "list_context_blocks",
+    "list_rules",
     "register_context_block_schema",
     "reset_context_block",
     "reset_subconscious_block",
+    "retrieve_matching_rules",
     "update_context_block",
     "update_subconscious_block",
 ]
@@ -316,3 +348,372 @@ def auto_distill_context_blocks(user_id: str, tenant_id: str = "default") -> dic
         logger.debug("auto_distill_context_blocks exception (non-fatal): %s", e)
 
     return {"ok": True, "distilled_blocks": updated_blocks}
+
+
+# =============================================================================
+# Rules block helpers & graduation from procedural experiences (FOR-32)
+# =============================================================================
+
+_PROCEDURAL_RULE_CATEGORIES = frozenset({"procedural", "procedure", "workflow", "recipe"})
+_MUST_NOT_RE = re.compile(r"\b(?:must\s+not|must_not|never)\b", re.IGNORECASE)
+_MUST_RE = re.compile(r"\bmust\b", re.IGNORECASE)
+_SHOULD_RE = re.compile(r"\b(?:should|prefer|recommended|consider)\b", re.IGNORECASE)
+# Sentences and semicolons delimit independent statements; commas do not.
+# "You should, where possible, never deploy" is one recommendation, while
+# "Never deploy X. Consider Y." is a prohibition followed by advice. A dot only
+# ends a sentence when whitespace or the end of the text follows, so a host
+# ("api.example.com") or a version ("3.11") stays inside one clause instead of
+# separating the "should" that governs it from the "never" it governs.
+_STRENGTH_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:[!?;]|\n|\.(?=\s|$))\s*")
+
+
+@dataclass(frozen=True)
+class RuleGraduateOptions:
+    """Options controlling rule graduation from a procedural experience.
+
+    There is deliberately no caller-supplied ``reviewed`` flag: review must be
+    evidenced by a persisted, approved skill record, so any caller cannot
+    promote an unreviewed instruction into the rules lane.
+    """
+
+    requested_strength: RuleStrength | str | None = None
+    applies_when: str = ""
+    exception: str = ""
+    agent_id: str | None = None
+    project: str | None = None
+
+
+def list_rules(
+    user_id: str = "default",
+    tenant_id: str = "default",
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> list[RuleEntry]:
+    """Return all structured rules stored in the ``rules`` context block."""
+    agent = get_context_block_agent(user_id, tenant_id, agent_id=agent_id, project=project)
+    raw = agent.get_block(RULES_BLOCK_LABEL) or ""
+    try:
+        return parse_rules_block(raw)
+    except (TypeError, ValueError):
+        return []
+
+
+def add_rule(
+    entry: RuleEntry,
+    *,
+    user_id: str = "default",
+    tenant_id: str = "default",
+    agent_id: str | None = None,
+    project: str | None = None,
+) -> RuleEntry:
+    """Validate and persist a structured rule in the ``rules`` context block."""
+    with _RULES_LOCK:
+        return _add_rule_locked(entry, user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project)
+
+
+def _add_rule_locked(
+    entry: RuleEntry,
+    *,
+    user_id: str,
+    tenant_id: str,
+    agent_id: str | None,
+    project: str | None,
+) -> RuleEntry:
+    agent = get_context_block_agent(user_id, tenant_id, agent_id=agent_id, project=project)
+    existing = list_rules(user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project)
+    key = (
+        normalize_block_line(entry.statement),
+        entry.strength.value,
+        entry.applies_when.strip().lower(),
+        entry.exception.strip().lower(),
+    )
+    for prior in existing:
+        prior_key = (
+            normalize_block_line(prior.statement),
+            prior.strength.value,
+            prior.applies_when.strip().lower(),
+            prior.exception.strip().lower(),
+        )
+        if prior_key == key:
+            return prior
+    updated = [*existing, entry]
+    agent.update_block(RULES_BLOCK_LABEL, serialize_rules_block(updated))
+    # A repeated inject_context for the same query must not serve the pre-rule
+    # payload from the 60s injection cache.
+    get_context_cache().invalidate_user(user_id)
+    return entry
+
+
+def retrieve_matching_rules(
+    context_text: str,
+    *,
+    terms: list[str] | None = None,
+    user_id: str = "default",
+    tenant_id: str = "default",
+    scope: Any = None,
+) -> list[RuleEntry]:
+    """Return rules whose ``applies_when`` matches and ``exception`` does not."""
+    uid = getattr(scope, "user_id", None) or user_id
+    tid = getattr(scope, "tenant_id", None) or tenant_id
+    aid = getattr(scope, "agent_id", None)
+    proj = getattr(scope, "project", None)
+    rules = list_rules(user_id=uid, tenant_id=tid, agent_id=aid, project=proj)
+    return [rule for rule in rules if rule.matches(context_text, terms=terms)]
+
+
+# A conjunction or a clause-ending mark between a recommendation and a
+# following prohibition means the prohibition stands on its own.
+_CLAUSE_BREAK_RE = re.compile(r"[;:]|\b(?:and|but|then|also)\b", re.IGNORECASE)
+
+
+def _clause_strength(text: str) -> RuleStrength | None:
+    """Strength carried by one clause, or None when it states none.
+
+    "should never" is a weak recommendation, not a prohibition, but only when
+    that should governs the never. A clause that already said "must" ("you must
+    run the suite, and you should never skip it") states an obligation, and one
+    that opens with "never" is a prohibition even if it later mentions what
+    someone should consider. Every prohibition is judged on its own, because a
+    recommendation only governs the one it opens: "should never skip smoke
+    tests, and must not deploy" states a recommendation and a prohibition.
+    """
+    shoulds = list(_SHOULD_RE.finditer(text))
+    prohibitions = list(_MUST_NOT_RE.finditer(text))
+    # Every prohibition is judged against the recommendation that actually
+    # governs it: the nearest one before it, and only while no conjunction or
+    # clause break stands between the two. Inspecting just the first one let an
+    # earlier "should never" absorb a later "must not".
+    for must_not in prohibitions:
+        governing = None
+        for candidate in shoulds:
+            if candidate.start() < must_not.start():
+                governing = candidate
+        if governing is None:
+            return RuleStrength.MUST_NOT
+        between = text[governing.end() : must_not.start()]
+        if _CLAUSE_BREAK_RE.search(between) is not None:
+            return RuleStrength.MUST_NOT
+    if not shoulds:
+        if _MUST_RE.search(text):
+            return RuleStrength.MUST
+        return None
+    # No ungoverned prohibition is left, so the clause states whatever its
+    # recommendation says, upgraded to an obligation when a "must" precedes it.
+    governing_should = shoulds[0]
+    if prohibitions:
+        for candidate in shoulds:
+            if candidate.start() > prohibitions[0].start():
+                break
+            governing_should = candidate
+    if _MUST_RE.search(text[: governing_should.start()]) is not None:
+        return RuleStrength.MUST
+    return RuleStrength.SHOULD
+
+
+def _infer_experience_strength(observation: dict[str, Any]) -> RuleStrength:
+    explicit = observation.get("strength")
+    if explicit is not None:
+        return RuleStrength(str(explicit).strip().lower())
+    text = str(observation.get("observation_text") or "").strip()
+    # Strength is inferred per clause: a recommendation in one clause
+    # ("consider running the full suite too") must not downgrade an independent
+    # prohibition in another ("Never skip the smoke tests"). The strongest
+    # clause wins, and a text that states nothing keeps the 'should' default.
+    strengths = {
+        strength
+        for strength in (_clause_strength(clause) for clause in _STRENGTH_CLAUSE_SPLIT_RE.split(text))
+        if strength is not None
+    }
+    if RuleStrength.MUST_NOT in strengths:
+        return RuleStrength.MUST_NOT
+    if RuleStrength.MUST in strengths:
+        return RuleStrength.MUST
+    return RuleStrength.SHOULD
+
+
+def compile_experience_to_rule(
+    observation: dict[str, Any],
+    *,
+    requested_strength: RuleStrength | str | None = None,
+    applies_when: str = "",
+    exception: str = "",
+) -> RuleEntry:
+    """Compile a procedural observation into a ``RuleEntry``.
+
+    Preserves strength: a ``should`` experience never upgrades to ``must`` or
+    ``must_not`` even if ``requested_strength`` asks for a stronger level.
+    """
+    source_strength = _infer_experience_strength(observation)
+    if requested_strength is None:
+        final_strength = source_strength
+    else:
+        desired = RuleStrength(str(requested_strength).strip().lower())
+        if source_strength == RuleStrength.SHOULD:
+            # Never upgrade 'should' to 'must' / 'must_not'.
+            final_strength = RuleStrength.SHOULD
+        elif desired == RuleStrength.SHOULD:
+            final_strength = RuleStrength.SHOULD
+        else:
+            final_strength = source_strength
+
+    statement = str(observation.get("observation_text") or "").strip()
+    if not statement:
+        raise ValueError("Procedural observation has no text to compile into a rule")
+
+    obs_id = str(observation.get("id") or "").strip()
+    source = f"observation:{obs_id}" if obs_id else "experience"
+    return RuleEntry(
+        statement=statement,
+        strength=final_strength,
+        applies_when=applies_when or str(observation.get("applies_when") or ""),
+        exception=exception or str(observation.get("exception") or ""),
+        source=source,
+    )
+
+
+def _experience_has_sensitive_evidence(
+    conn: Any,
+    observation: dict[str, Any],
+    *,
+    user_id: str,
+    tenant_id: str,
+) -> bool:
+    text = str(observation.get("observation_text") or "")
+    if text and resolve_is_sensitive(None, text)[0]:
+        return True
+
+    mem_ids = json.loads(observation.get("supporting_memory_ids") or "[]")
+    if mem_ids:
+        slots = placeholders(len(mem_ids))
+        rows = conn.execute(
+            join_sql_parts(
+                "SELECT is_sensitive FROM memories WHERE tenant_id = ? AND user_id = ? AND id IN (",
+                slots,
+                ")",
+            ),
+            (tenant_id, user_id, *mem_ids),
+        ).fetchall()
+        if any(bool(dict(r).get("is_sensitive")) for r in rows):
+            return True
+
+    ep_ids = json.loads(observation.get("supporting_episode_ids") or "[]")
+    if ep_ids:
+        # Fail closed: a lookup error must abort graduation, never look like
+        # "no sensitive evidence".
+        slots = placeholders(len(ep_ids))
+        rows = conn.execute(
+            join_sql_parts(
+                "SELECT is_sensitive FROM episodes WHERE tenant_id = ? AND user_id = ? AND id IN (",
+                slots,
+                ")",
+            ),
+            (tenant_id, user_id, *ep_ids),
+        ).fetchall()
+        if any(bool(dict(r).get("is_sensitive")) for r in rows):
+            return True
+    return False
+
+
+def _approved_skill_versions(conn: Any, observation_id: str, *, user_id: str, tenant_id: str) -> set[int]:
+    """The observation versions an approved skill has reviewed.
+
+    A skill is staged against one version of the observation text and approved
+    for exactly that wording, so refining the observation must invalidate the
+    approval instead of silently widening it to text no reviewer saw.
+    """
+    versions: set[int] = set()
+    rows = conn.execute(
+        "SELECT metrics FROM memories WHERE tenant_id = ? AND user_id = ? "
+        "AND category = 'skill' AND review_status = 'approved' AND is_ghost = 0",
+        (tenant_id, user_id),
+    ).fetchall()
+    for row in rows:
+        try:
+            meta = json.loads(dict(row).get("metrics") or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if str(meta.get("observation_id") or "") != observation_id:
+            continue
+        try:
+            versions.add(int(meta.get("observation_version") or 1))
+        except (TypeError, ValueError):
+            # A malformed version must not abort every graduation attempt for
+            # this observation; treat the record as not covering it.
+            continue
+    return versions
+
+
+def graduate_experience_to_rule(
+    observation_id: str,
+    *,
+    user_id: str = "default",
+    tenant_id: str = "default",
+    options: RuleGraduateOptions | None = None,
+) -> RuleEntry:
+    """Graduate a reviewed, non-sensitive procedural observation into the ``rules`` block."""
+    opts = options or RuleGraduateOptions()
+    conn = get_db_connection()
+    try:
+        # Scope the lookup to the caller's lane plus the shared lane, so one
+        # lane's private observation cannot be graduated through another. An
+        # omitted lane means the shared lane, never "any lane": passing None
+        # to _ns_clause drops the predicate entirely and would match a private
+        # observation from some other lane.
+        ns_frag, ns_params = _ns_clause(opts.agent_id or "default", opts.project or "default")
+        row = conn.execute(
+            join_sql_parts(
+                "SELECT * FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ? ",
+                ns_frag,
+            ),
+            (observation_id, tenant_id, user_id, *ns_params),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"Observation {observation_id!r} not found")
+        obs = dict(row)
+
+        if obs.get("status") == "archived":
+            raise ValueError(f"Observation {observation_id!r} is archived and cannot graduate to a rule")
+
+        category = str(obs.get("category") or "").strip().lower()
+        memory_type = str(obs.get("memory_type") or "").strip().lower()
+        pattern_key = str(obs.get("pattern_key") or "").strip().lower()
+        if (
+            memory_type != "procedural"
+            and category not in _PROCEDURAL_RULE_CATEGORIES
+            and not pattern_key.startswith("procedural:")
+        ):
+            raise ValueError(f"Observation {observation_id!r} is not procedural")
+
+        if _experience_has_sensitive_evidence(conn, obs, user_id=user_id, tenant_id=tenant_id):
+            raise ValueError(f"Observation {observation_id!r} carries sensitive evidence and cannot become a rule")
+
+        approved_versions = _approved_skill_versions(conn, observation_id, user_id=user_id, tenant_id=tenant_id)
+        if not approved_versions:
+            raise ValueError(f"Observation {observation_id!r} must be reviewed by an approved skill before graduating")
+        current_version = int(obs.get("version") or 1)
+        if current_version not in approved_versions:
+            reviewed = ", ".join(str(v) for v in sorted(approved_versions))
+            raise ValueError(
+                f"Observation {observation_id!r} is version {current_version} but its approved skill reviewed "
+                f"version {reviewed}; re-review is required before graduating"
+            )
+    finally:
+        conn.close()
+
+    rule = compile_experience_to_rule(
+        obs,
+        requested_strength=opts.requested_strength,
+        applies_when=opts.applies_when,
+        exception=opts.exception,
+    )
+    return add_rule(
+        rule,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        # The rule lands in the lane the observation itself lives in, so a
+        # graduation never widens a private observation's reach.
+        agent_id=str(obs.get("agent_id") or "") or opts.agent_id,
+        project=str(obs.get("project") or "") or opts.project,
+    )

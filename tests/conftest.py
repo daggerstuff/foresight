@@ -70,6 +70,9 @@ if not _TEST_DB_URL:
 def setup_postgres_backend():
     """Initialize the global Postgres backend once per test session."""
     os.environ["FORESIGHT_DB_URL"] = _TEST_DB_URL
+    # Skill artifacts are HMAC-signed and verified fail-closed, so the suite needs a
+    # configured secret; tests that assert the unconfigured path delete this variable.
+    os.environ.setdefault("FORESIGHT_PROFILE_SIGNING_KEY", "test-profile-signing-key")
 
     _initialize_backend()
     init_db()

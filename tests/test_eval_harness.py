@@ -11,8 +11,11 @@ import os
 import tempfile
 from types import SimpleNamespace
 
+import pytest
+
 import foresight.eval_harness as eval_harness_module
 from foresight.eval_harness import (
+    EXPERIENCE_SEED_MEMORIES,
     FIXTURE_MEMORIES,
     PII_MATCH_PREVIEW_CHARS,
     SCENARIOS,
@@ -23,12 +26,31 @@ from foresight.eval_harness import (
     run_eval,
     scan_for_pii,
 )
+from foresight.tenant_context import (
+    get_current_account_id,
+    get_current_app_id,
+    get_current_integration_id,
+    get_current_user_id,
+    reset_tenant_context,
+    set_current_account_id,
+    set_current_app_id,
+    set_current_integration_id,
+    set_current_user_id,
+)
 from foresight_cli.commands import eval as eval_cmd
 
 # seed_fixtures is the floor every scenario relies on; more is fine, less is a
 # broken fixture set.
 MIN_SEEDED_ENTITIES = 5
 MIN_SEEDED_LINKS = 5
+
+# Scenarios whose expected memories do not exist until seeding distils them.
+# The harness resolves these from its own seeded episodes at run time; the ids
+# below are placeholders that must never survive into a run.
+GENERATED_SCENARIO_IDS = {
+    "S12_experience_repeat_task": "__experience_success__",
+    "S13_experience_failure_signature": "__experience_failure__",
+}
 
 # =============================================================================
 # PII Scanner
@@ -95,8 +117,47 @@ class TestFixtures:
     def test_all_scenario_expected_ids_exist(self):
         fixture_ids = {mem["id"] for mem in FIXTURE_MEMORIES}
         for scenario in SCENARIOS:
+            if scenario.id in GENERATED_SCENARIO_IDS:
+                continue
             missing = scenario.expected_memory_ids - fixture_ids
             assert not missing, f"Scenario {scenario.id} expects unknown IDs: {missing}"
+
+    def test_generated_scenarios_declare_placeholders_only(self):
+        declared = {s.id: s.expected_memory_ids for s in SCENARIOS if s.id in GENERATED_SCENARIO_IDS}
+        assert set(declared) == set(GENERATED_SCENARIO_IDS)
+        for scenario_id, placeholder in GENERATED_SCENARIO_IDS.items():
+            assert declared[scenario_id] == {placeholder}, f"{scenario_id} declares {declared[scenario_id]}"
+
+    def test_generated_placeholders_resolve_to_this_runs_distilled_memories(self):
+        harness = EvalHarness(user_id="_eval_gen_user_", tenant_id="_eval_gen_tenant_")
+        try:
+            harness.seed_fixtures()
+            resolved = harness.generated_expectations
+            assert set(resolved) == set(GENERATED_SCENARIO_IDS)
+            placeholders = set(GENERATED_SCENARIO_IDS.values())
+            conn = harness._get_connection()
+            for outcome, scenario_id in (
+                ("success", "S12_experience_repeat_task"),
+                ("failure", "S13_experience_failure_signature"),
+            ):
+                memory_ids = resolved[scenario_id]
+                assert len(memory_ids) == 1, f"{scenario_id} resolved to {memory_ids}"
+                memory_id = next(iter(memory_ids))
+                assert memory_id not in placeholders, f"{scenario_id} kept the placeholder {memory_id}"
+                row = conn.execute(
+                    "SELECT metrics FROM memories WHERE id = ? AND tenant_id = ? AND user_id = ? "
+                    "AND memory_type = 'procedural'",
+                    (memory_id, harness.tenant_id, harness.user_id),
+                ).fetchone()
+                assert row is not None, f"{scenario_id} resolved to a missing memory {memory_id}"
+                metrics = json.loads(row["metrics"] or "{}")
+                assert harness.seeded_episode_ids[outcome] in (metrics.get("episode_ids") or []), (
+                    f"{scenario_id} memory {memory_id} did not come from this run's {outcome} episode"
+                )
+                scenario = next(s for s in SCENARIOS if s.id == scenario_id)
+                assert harness._resolve_expectations(scenario).expected_memory_ids == memory_ids
+        finally:
+            harness.close()
 
 
 # =============================================================================
@@ -130,7 +191,8 @@ class TestHarnessSeeding:
             assert count > 0, "No fixtures were seeded"
             conn = harness._get_connection()
             row = conn.execute("SELECT COUNT(*) as cnt FROM memories").fetchone()
-            assert row["cnt"] == len(FIXTURE_MEMORIES), f"Expected {len(FIXTURE_MEMORIES)} memories, got {row['cnt']}"
+            expected = len(FIXTURE_MEMORIES) + EXPERIENCE_SEED_MEMORIES
+            assert row["cnt"] == expected, f"Expected {expected} memories, got {row['cnt']}"
         finally:
             harness.close()
 
@@ -153,7 +215,67 @@ class TestHarnessSeeding:
             harness.seed_fixtures()
             conn = harness._get_connection()
             row = conn.execute("SELECT COUNT(*) as cnt FROM memories").fetchone()
-            assert row["cnt"] == len(FIXTURE_MEMORIES)
+            assert row["cnt"] == len(FIXTURE_MEMORIES) + EXPERIENCE_SEED_MEMORIES
+        finally:
+            harness.close()
+
+    def test_seeded_experience_expectations_point_at_seeded_episodes(self):
+        harness = EvalHarness(db_path=":memory:")
+        try:
+            harness.seed_fixtures()
+            conn = harness._get_connection()
+            for outcome, scenario_id in (
+                ("success", "S12_experience_repeat_task"),
+                ("failure", "S13_experience_failure_signature"),
+            ):
+                expected = harness.generated_expectations[scenario_id]
+                assert len(expected) == 1, f"{scenario_id} resolved to {expected}"
+                memory_id = next(iter(expected))
+                row = conn.execute(
+                    "SELECT memory_type, metrics, error_signature FROM memories WHERE id = ?",
+                    (memory_id,),
+                ).fetchone()
+                assert row is not None, f"{scenario_id} expects a memory that was never written"
+                assert row["memory_type"] == "procedural"
+                metrics = json.loads(row["metrics"])
+                assert metrics["episode_ids"] == [harness.seeded_episode_ids[outcome]]
+                assert (row["error_signature"] is not None) is (outcome == "failure")
+            for scenario in SCENARIOS:
+                if scenario.id in GENERATED_SCENARIO_IDS:
+                    assert scenario.expected_memory_ids == {GENERATED_SCENARIO_IDS[scenario.id]}
+        finally:
+            harness.close()
+
+    def test_foreign_procedural_memory_cannot_satisfy_experience_scenarios(self):
+        harness = EvalHarness(db_path=":memory:")
+        try:
+            harness._apply_patches()
+            conn = harness._get_connection()
+            conn.execute(
+                """INSERT INTO memories
+                   (id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id,
+                    created_at, updated_at, tags, emotional_context, metrics,
+                    is_ghost, synthesized_from, importance, memory_type, is_sensitive, error_signature)
+                   VALUES (?, ?, ?, 'arc', 'long_term', 'lesson', ?, 'default', ?,
+                           ?, ?, '[]', '{}', ?, 0, '[]', 0.9, 'procedural', 0, ?)""",
+                (
+                    "decoy_procedural_failure",
+                    "Unrelated failure recipe",
+                    "decoy-hash",
+                    harness.user_id,
+                    harness.tenant_id,
+                    "2024-01-01T00:00:00+00:00",
+                    "2024-01-01T00:00:00+00:00",
+                    json.dumps({"exp_key": "failure:decoy", "episode_ids": ["decoy_episode"], "occurrences": 1}),
+                    "ConnectionRefusedError",
+                ),
+            )
+            conn.commit()
+            harness.seed_fixtures()
+            resolved = {mid for ids in harness.generated_expectations.values() for mid in ids}
+            assert "decoy_procedural_failure" not in resolved
+            for scenario_id, memory_ids in harness.generated_expectations.items():
+                assert all(m != "decoy_procedural_failure" for m in memory_ids), scenario_id
         finally:
             harness.close()
 
@@ -595,3 +717,99 @@ class TestReportPersistence:
         finally:
             if os.path.exists(bad_path):
                 os.unlink(bad_path)
+
+
+class TestHarnessTeardown:
+    """A setup that raises halfway must not leave the process patched."""
+
+    def test_a_setup_that_raises_after_patching_still_unpatches(self, monkeypatch):
+        before_user = get_current_user_id()
+        harness = EvalHarness(db_path=":memory:")
+        original_db_path = eval_harness_module.config_module.DB_PATH
+
+        # No process-wide backend to park, which is the shape that used to slip
+        # through the teardown guard: nothing to restore but the patches. Both
+        # accessors are faked so the harness cannot touch the real backend a
+        # neighbouring test installed.
+        parked: list[object] = []
+        monkeypatch.setattr(eval_harness_module, "get_backend", lambda: None)
+        monkeypatch.setattr(eval_harness_module, "set_backend", parked.append)
+
+        def _interrupt(_tenant_id: str) -> None:
+            raise RuntimeError("setup interrupted")
+
+        monkeypatch.setattr(eval_harness_module, "set_current_account_id", _interrupt)
+
+        try:
+            with pytest.raises(RuntimeError, match="setup interrupted"):
+                harness._apply_patches()
+        finally:
+            harness.close()
+
+        assert original_db_path == eval_harness_module.config_module.DB_PATH
+        assert get_current_user_id() == before_user
+        assert harness._patches_applied is False
+        assert harness._monkeypatches == []
+
+    def test_a_retry_after_a_failed_setup_does_not_inherit_partial_state(self, monkeypatch, tmp_path):
+        harness = EvalHarness(db_path=str(tmp_path / "retry.db"))
+        original_db_path = eval_harness_module.config_module.DB_PATH
+
+        attempts = {"count": 0}
+        real_set_current_account_id = eval_harness_module.set_current_account_id
+
+        def _interrupt_once(tenant_id: str) -> None:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("setup interrupted")
+            real_set_current_account_id(tenant_id)
+
+        monkeypatch.setattr(eval_harness_module, "set_current_account_id", _interrupt_once)
+
+        try:
+            with pytest.raises(RuntimeError, match="setup interrupted"):
+                harness.seed_fixtures()
+
+            restored_db_path = eval_harness_module.config_module.DB_PATH
+            assert restored_db_path == original_db_path
+            assert harness._monkeypatches == []
+            assert harness._patches_applied is False
+
+            assert harness.seed_fixtures() > 0
+        finally:
+            harness.close()
+
+        restored_db_path = eval_harness_module.config_module.DB_PATH
+        assert restored_db_path == original_db_path
+        assert harness._monkeypatches == []
+        assert harness._patches_applied is False
+
+    def test_a_failed_setup_rollback_keeps_the_callers_scope(self, monkeypatch, tmp_path):
+        harness = EvalHarness(db_path=str(tmp_path / "scope.db"))
+        set_current_user_id("caller-user")
+        set_current_account_id("caller-account")
+        set_current_app_id("caller-app")
+        set_current_integration_id("caller-integration")
+
+        attempts = {"count": 0}
+        real_set_current_account_id = eval_harness_module.set_current_account_id
+
+        def _interrupt_once(tenant_id: str) -> None:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("setup interrupted")
+            real_set_current_account_id(tenant_id)
+
+        monkeypatch.setattr(eval_harness_module, "set_current_account_id", _interrupt_once)
+
+        try:
+            with pytest.raises(RuntimeError, match="setup interrupted"):
+                harness.seed_fixtures()
+            assert get_current_user_id() == "caller-user"
+            assert get_current_account_id() == "caller-account"
+            assert get_current_app_id() == "caller-app"
+            assert get_current_integration_id() == "caller-integration"
+        finally:
+            harness.close()
+            monkeypatch.undo()
+            reset_tenant_context()

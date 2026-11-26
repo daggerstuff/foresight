@@ -742,6 +742,98 @@ MIGRATIONS: dict[int, list[str]] = {
         # already recorded 27 would never re-run it.
         "UPDATE mental_models SET stale = 1 WHERE synthesized_by IS NULL",
     ],
+    30: [
+        # FOR-60 / PIX-5039 experience memory. One row per finished task
+        # (session), linked to the raw events it was built from. Outcome
+        # scoring is recorded on the episode itself: score_source is one of
+        # 'user_feedback' | 'ci_result' | 'llm_rubric' | 'fallback'.
+        # episode_events carries the raw event ids so distilled procedural
+        # observations can cite episodes as evidence.
+        #
+        # The episodes table predates this migration in at least one
+        # long-lived database (created out of band with the columns id,
+        # tenant_id, user_id, outcome, outcome_score, resolved, summary), so
+        # every statement here is idempotent against both fresh and
+        # pre-existing tables: CREATE ... IF NOT EXISTS for new tables, plus
+        # plain ADD COLUMN for new columns (the runner tolerates
+        # "already exists"/"duplicate column" errors, SQLite has no
+        # ADD COLUMN IF NOT EXISTS). Never edit rows of the old table.
+        """CREATE TABLE IF NOT EXISTS episodes (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL DEFAULT 'default',
+            session_id TEXT NOT NULL DEFAULT '',
+            agent_id TEXT,
+            project TEXT,
+            outcome TEXT NOT NULL DEFAULT 'unknown',
+            outcome_score REAL,
+            score_source TEXT,
+            score_detail TEXT,
+            summary TEXT NOT NULL DEFAULT '',
+            error_signature TEXT,
+            is_sensitive INTEGER NOT NULL DEFAULT 0,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            raw_event_first_id TEXT,
+            raw_event_last_id TEXT,
+            raw_event_first_pos INTEGER,
+            raw_event_last_pos INTEGER,
+            raw_event_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        )""",
+        "ALTER TABLE episodes ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE episodes ADD COLUMN agent_id TEXT",
+        "ALTER TABLE episodes ADD COLUMN project TEXT",
+        "ALTER TABLE episodes ADD COLUMN outcome_score REAL",
+        "ALTER TABLE episodes ADD COLUMN score_source TEXT",
+        "ALTER TABLE episodes ADD COLUMN score_detail TEXT",
+        "ALTER TABLE episodes ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE episodes ADD COLUMN error_signature TEXT",
+        "ALTER TABLE episodes ADD COLUMN is_sensitive INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE episodes ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE episodes ADD COLUMN raw_event_first_id TEXT",
+        "ALTER TABLE episodes ADD COLUMN raw_event_last_id TEXT",
+        "ALTER TABLE episodes ADD COLUMN raw_event_first_pos INTEGER",
+        "ALTER TABLE episodes ADD COLUMN raw_event_last_pos INTEGER",
+        "ALTER TABLE episodes ADD COLUMN raw_event_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE episodes ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE episodes ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+        "UPDATE episodes SET created_at = '1970-01-01T00:00:00+00:00' WHERE created_at = ''",
+        "UPDATE episodes SET updated_at = '1970-01-01T00:00:00+00:00' WHERE updated_at = ''",
+        # Partial unique index: pre-existing rows carry session_id = '' and
+        # must not collide. Session ids are non-empty for real episodes.
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_session "
+        "ON episodes(tenant_id, user_id, session_id) WHERE session_id <> ''",
+        "CREATE INDEX IF NOT EXISTS idx_episodes_scope ON episodes(tenant_id, user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_episodes_signature ON episodes(tenant_id, user_id, error_signature)",
+        """CREATE TABLE IF NOT EXISTS episode_events (
+            episode_id TEXT NOT NULL,
+            raw_event_id TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (episode_id, raw_event_id),
+            FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (raw_event_id) REFERENCES raw_events(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_episode_events_raw ON episode_events(raw_event_id)",
+        # Procedural observations carry episode ids as evidence (memory_type
+        # marks the observation as distilled experience rather than a mined
+        # pattern). Plain ADD COLUMN: runners tolerate "already exists" and
+        # SQLite has no IF NOT EXISTS for ADD COLUMN.
+        "ALTER TABLE observations ADD COLUMN supporting_episode_ids TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE observations ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'semantic'",
+        # Distilled failure signatures land on a procedural memory row so the
+        # keyword signal can surface prior failures for a matching error.
+        "ALTER TABLE memories ADD COLUMN error_signature TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_memories_error_signature ON memories(tenant_id, user_id, error_signature)",
+    ],
+    31: [
+        # Backfill for long-lived databases that recorded Postgres-only
+        # migration 22 before `created_at` was added to memory_provenance.
+        "ALTER TABLE memory_provenance ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+    ],
+    32: [
+        "ALTER TABLE observations ADD COLUMN steps_checked_at TEXT",
+    ],
 }
 
 

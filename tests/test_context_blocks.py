@@ -15,6 +15,7 @@ import pytest
 
 from foresight.capture import CaptureStats
 from foresight.connection_pool import reset_pool
+from foresight.context_blocks import RuleStrength, _clause_strength
 from foresight.server import _bridge_capture_memories_to_blocks
 from foresight.subconscious import (
     PENDING_ITEMS,
@@ -423,3 +424,18 @@ def test_bridge_capture_ignores_unknown_category(agent):
 
     count = _bridge_capture_memories_to_blocks(agent, [("tool_recipe", "npm install --save-dev vitest")])
     assert count == 0
+
+
+def test_joint_obligation_and_prohibition_is_a_requirement():
+    joint = "You must run the full suite, and you should never skip the smoke tests."
+    prohibition = "You must never force-push to master."
+
+    assert _clause_strength(joint) == RuleStrength.MUST
+    assert _clause_strength(prohibition) == RuleStrength.MUST_NOT
+
+
+def test_a_later_prohibition_is_not_absorbed_by_an_earlier_should_never():
+    """ "should never" governs only the clause it opens, not every later prohibition."""
+    text = "You should check coverage and should never skip smoke tests, and must not deploy without approval."
+
+    assert _clause_strength(text) == RuleStrength.MUST_NOT

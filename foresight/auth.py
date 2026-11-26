@@ -3,6 +3,7 @@ Authentication System for Foresight MCP
 Provides API key-based authentication with secure password hashing.
 """
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -15,7 +16,9 @@ from enum import Enum
 
 from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
-from mcp.types import TextContent
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.shared.exceptions import MCPError
+from mcp.types import INVALID_REQUEST, TextContent
 
 from .config import DB_PATH
 from .connection_pool import get_pool
@@ -74,6 +77,12 @@ class AuthError(Exception):
 
 
 _VALID_TENANT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+
+# Seconds between last_login writes for a key-authenticated request. The key
+# is revalidated per call so revocation is immediate, but the write does not
+# have to be: a per-request UPDATE + commit turned every API-key read into a
+# transaction on the user's row.
+_API_KEY_LOGIN_INTERVAL_SECONDS = 300
 
 
 def _utcnow() -> datetime:
@@ -392,14 +401,18 @@ class AuthManager:
             api_key = row["api_key"]
             tenant_access_json = row["tenant_access"]
 
-            # Update last login
-            conn.execute(
-                """
+            # Record the login, but not on every request: the key itself is
+            # revalidated above, so a revoked key stops working immediately.
+            now = _utcnow()
+            last_seen = _parse_db_timestamp(last_login_str)
+            if last_seen is None or (now - last_seen).total_seconds() >= _API_KEY_LOGIN_INTERVAL_SECONDS:
+                conn.execute(
+                    """
                 UPDATE users SET last_login = ? WHERE user_id = ?
             """,
-                (_utcnow().isoformat(), user_id),
-            )
-            conn.commit()
+                    (now.isoformat(), user_id),
+                )
+                conn.commit()
 
             return User(
                 user_id=user_id,
@@ -443,6 +456,24 @@ class AuthManager:
             cursor = conn.execute(
                 join_sql_parts("SELECT ", self._USER_COLUMNS, " FROM users WHERE username = ?"),
                 (username,),
+            )
+            row = cursor.fetchone()
+            return self._row_to_user(row) if row else None
+        finally:
+            pool.release(conn)
+
+    def get_user_by_id(self, user_id: str) -> User | None:
+        """Fetch a user by user id (active or not).
+
+        OAuth access tokens carry the user id as their ``subject``, which is an
+        opaque token (``create_user``), so a subject cannot be resolved by name.
+        """
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            cursor = conn.execute(
+                join_sql_parts("SELECT ", self._USER_COLUMNS, " FROM users WHERE user_id = ?"),
+                (user_id,),
             )
             row = cursor.fetchone()
             return self._row_to_user(row) if row else None
@@ -640,8 +671,178 @@ def initialize_default_users() -> None:
 # FastMCP authentication middleware
 
 
+# ---------------------------------------------------------------------------
+# Caller identity
+# ---------------------------------------------------------------------------
+#
+# A tool body cannot see the request message, so the middleware binds who the
+# request was authenticated as before the tool runs and resets it afterwards.
+# Tool bodies that make authorization decisions read it instead of trusting a
+# caller-supplied ``user_id``.
+
+_CALLER_USER: contextvars.ContextVar[User | None] = contextvars.ContextVar("foresight_caller_user", default=None)
+
+
+def set_caller_identity(user: User) -> contextvars.Token[User | None]:
+    """Bind the authenticated caller for the current request.
+
+    The middleware calls this on the way in and passes the returned token to
+    :func:`reset_caller_identity`. In-process callers that authenticated
+    themselves may bind it directly, and must reset the token.
+    """
+    return _CALLER_USER.set(user)
+
+
+def reset_caller_identity(token: contextvars.Token[User | None]) -> None:
+    """Restore the caller identity that was in effect before the bound request."""
+    _CALLER_USER.reset(token)
+
+
+def get_caller_user() -> User | None:
+    """Return the authenticated caller, or ``None`` when auth is not enforced."""
+    return _CALLER_USER.get()
+
+
+def get_caller_user_id() -> str | None:
+    """Return the authenticated caller's user id, or ``None``."""
+    user = _CALLER_USER.get()
+    return user.user_id if user is not None else None
+
+
+def get_caller_role() -> Role | None:
+    """Return the authenticated caller's role, or ``None``."""
+    user = _CALLER_USER.get()
+    return user.role if user is not None else None
+
+
+def caller_is_readonly() -> bool:
+    """Return True when the bound caller is a read-only principal.
+
+    Read tools that also write - ``inject_context`` reinforcing the memories it
+    surfaced, ``reflect`` touching the mental models it answers from - consult
+    this so a read-only credential gets the read without the side effect.
+    """
+    return get_caller_role() is Role.READONLY
+
+
+def auth_enforced() -> bool:
+    """Return True when the server requires an authenticated principal.
+
+    API-key mode is enforced unless an explicit local override disables it, and
+    OAuth mode always is: ``server`` installs ``ForesightOAuthProvider`` in place
+    of ``AuthMiddleware`` when ``FORESIGHT_OAUTH_BASE_URL`` is set, so the
+    API-key switch says nothing about it. Tool bodies use this to tell "no
+    caller because nobody authenticated" from "no caller because auth is off".
+    """
+    if os.environ.get("FORESIGHT_OAUTH_BASE_URL"):
+        return True
+    explicit = (os.environ.get("FORESIGHT_REQUIRE_API_KEY") or "").strip().lower()
+    return explicit not in {"", "0", "false", "no", "off"}
+
+
+# The read surfaces a read-only principal may still call. Everything else a
+# tool call can name is a write: memories, episodes, skills, curation, config.
+READONLY_TOOLS = frozenset(
+    {
+        "search_memories",
+        "get_catch_up",
+        "inject_context",
+        "query_memories_temporal",
+        "get_system_status",
+        "export_profile",
+        "synthesize_profile",
+        "reflect",
+    }
+)
+
+# Tools that mix reads and writes. A read-only principal may call the actions
+# listed here and nothing else: an unlisted or unparsable action is refused, so
+# a mixed tool's read half is the only thing a read-only key ever gets.
+READONLY_ACTIONS: dict[str, frozenset[str]] = {
+    "manage_context_blocks": frozenset({"list", "get"}),
+    "manage_memory_versions": frozenset({"list", "diff"}),
+    "manage_curation_runs": frozenset({"list", "get"}),
+    "manage_mental_models": frozenset({"list"}),
+    "manage_inferred": frozenset({"list"}),
+}
+
+
+def _message_action(message: object | None) -> str | None:
+    """Return the ``action`` a tool call asked for, from either arguments shape.
+
+    Schema-shaped tools take one ``params`` model, so their action arrives as
+    ``arguments["params"]["action"]``; a handler that takes ``action`` directly
+    leaves it at the top level. All of them are read so the policy cannot be
+    sidestepped by nesting the request one level deeper.
+
+    A mixed tool that also takes an ``options`` model dispatches
+    ``options.action`` whenever options is present, so that field is read first:
+    ``{"action": "list", "options": {"action": "approve"}}`` is an approval, and
+    reading only the outer field let a read-only key approve an inferred memory.
+    """
+    arguments = getattr(message, "arguments", None)
+    if not isinstance(arguments, dict):
+        return None
+    params = arguments.get("params")
+    if isinstance(params, dict):
+        options = params.get("options")
+        if isinstance(options, dict):
+            nested_options = options.get("action")
+            if isinstance(nested_options, str):
+                return nested_options
+        nested = params.get("action")
+        if isinstance(nested, str):
+            return nested
+    action = arguments.get("action")
+    if isinstance(action, str):
+        return action
+    return None
+
+
+def readonly_denial(message: object | None) -> str | None:
+    """Return the refusal for a read-only caller, or None when the request may run.
+
+    ``Role.READONLY`` was granted nowhere and enforced nowhere. The rule lives
+    here so the API-key middleware and the OAuth one refuse the same requests;
+    a message without a tool ``name`` is a resource read and stays allowed.
+
+    A tool that mixes reads with writes is decided by the action the call asked
+    for, because refusing the whole tool cost the read as well: listing context
+    blocks is not rewriting them. An absent or unlisted action stays refused.
+    """
+    if not caller_is_readonly():
+        return None
+    name = getattr(message, "name", None)
+    if not isinstance(name, str) or name in READONLY_TOOLS:
+        return None
+    read_actions = READONLY_ACTIONS.get(name)
+    if read_actions is not None and _message_action(message) in read_actions:
+        return None
+    return f"Read-only credentials cannot call '{name}'."
+
+
+class _AuthFailureError(Exception):
+    """Raised inside the middleware when a request cannot be authenticated."""
+
+    def __init__(self, result: ToolResult) -> None:
+        super().__init__("request authentication failed")
+        self.result = result
+
+
+def _denial_text(failure: _AuthFailureError) -> str:
+    """Return the human-readable denial carried by an auth failure."""
+    content = failure.result.content
+    text = getattr(content[0], "text", "") if content else ""
+    return text or "Authentication required"
+
+
 class AuthMiddleware(_Middleware):
-    """FastMCP middleware that authenticates API calls via API key."""
+    """FastMCP middleware that authenticates API calls via API key.
+
+    Tool calls and resource reads both authenticate: a resource read has no
+    tool arguments, so it resolves the default tenant from the message and the
+    key's grant is validated against that, exactly as for a tool call.
+    """
 
     @staticmethod
     def _error_result(message: str) -> ToolResult:
@@ -650,24 +851,138 @@ class AuthMiddleware(_Middleware):
             is_error=True,
         )
 
+    @staticmethod
+    def _message_api_key(message: object) -> str | None:
+        """Extract the API key from request metadata, if any."""
+        if not message:
+            return None
+        meta = getattr(message, "meta", None)
+        if meta and hasattr(meta, "model_extra") and meta.model_extra:
+            api_key = meta.model_extra.get("api_key")
+            if isinstance(api_key, str) and api_key:
+                return api_key
+        return None
+
+    def _authenticate_message(self, message: object) -> User:
+        """Return the authenticated caller for ``message`` or raise _AuthFailureError."""
+        api_key = self._message_api_key(message)
+        if not api_key:
+            raise _AuthFailureError(self._error_result("Authentication required: missing api_key"))
+        user = get_auth_manager().authenticate_api_key(api_key)
+        if not user:
+            raise _AuthFailureError(self._error_result("Invalid API key"))
+        tenant_id = resolve_tenant_id_from_message(message)
+        if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
+            raise _AuthFailureError(self._error_result(f"Tenant access denied for tenant '{tenant_id}'"))
+        return user
+
+    async def _authenticated_call(self, context, call_next):
+        """Authenticate the request, bind the caller, and hand off."""
+        try:
+            user = self._authenticate_message(getattr(context, "message", None))
+        except _AuthFailureError as failure:
+            return failure.result
+        token = set_caller_identity(user)
+        try:
+            denial = readonly_denial(getattr(context, "message", None))
+            if denial is not None:
+                return self._error_result(denial)
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)
+
     async def on_call_tool(self, context, call_next):
         if not _should_require_api_key():
             return await call_next(context)
+        return await self._authenticated_call(context, call_next)
 
-        # Extract API key from request metadata
-        api_key = None
-        message = getattr(context, "message", None)
-        if message:
-            meta = getattr(message, "meta", None)
-            if meta and hasattr(meta, "model_extra") and meta.model_extra:
-                api_key = meta.model_extra.get("api_key")
-        if not api_key:
-            return self._error_result("Authentication required: missing api_key")
-        user = get_auth_manager().authenticate_api_key(api_key)
-        if not user:
-            return self._error_result("Invalid API key")
+    async def on_read_resource(self, context, call_next):
+        if not _should_require_api_key():
+            return await call_next(context)
+        # ``on_read_resource`` must produce a ResourceResult; a ToolResult here
+        # fails response validation, so surface the denial as a protocol error.
+        try:
+            user = self._authenticate_message(getattr(context, "message", None))
+        except _AuthFailureError as failure:
+            raise MCPError(INVALID_REQUEST, _denial_text(failure)) from None
+        token = set_caller_identity(user)
+        try:
+            denial = readonly_denial(getattr(context, "message", None))
+            if denial is not None:
+                raise MCPError(INVALID_REQUEST, denial)
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)
+
+
+class OAuthCallerMiddleware(_Middleware):
+    """Bind the principal the OAuth provider authenticated.
+
+    In OAuth mode ``server`` installs ``ForesightOAuthProvider`` instead of
+    ``AuthMiddleware``: the provider verifies the bearer token, but nothing binds
+    a caller, so every tool body that reads the bound caller saw "no caller" and
+    refused. The access token names its user in ``subject``, so resolve that to a
+    user record here and apply the same tenant grant check and read-only rule as
+    the API-key path. A token with no subject resolves to no principal and stays
+    refused rather than defaulting to some user.
+    """
+
+    @staticmethod
+    def _error_result(message: str) -> ToolResult:
+        return ToolResult(
+            content=[TextContent(type="text", text=message)],
+            is_error=True,
+        )
+
+    @staticmethod
+    def _access_token() -> object | None:
+        return get_access_token()
+
+    def _authenticate_message(self, message: object | None) -> User:
+        """Return the caller the access token names, or raise _AuthFailureError."""
+        access = self._access_token()
+        if access is None:
+            raise _AuthFailureError(self._error_result("Authentication required: no access token"))
+        subject = getattr(access, "subject", None)
+        if not subject:
+            raise _AuthFailureError(self._error_result("Authentication required: the access token names no user"))
+        user = get_auth_manager().get_user_by_id(subject)
+        if user is None or not user.is_active:
+            raise _AuthFailureError(self._error_result("Invalid access token: unknown or inactive user"))
         tenant_id = resolve_tenant_id_from_message(message)
         if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
-            return self._error_result(f"Tenant access denied for tenant '{tenant_id}'")
-        # Proceed to next middleware
-        return await call_next(context)
+            raise _AuthFailureError(self._error_result(f"Tenant access denied for tenant '{tenant_id}'"))
+        return user
+
+    async def _authenticated_call(self, context, call_next):
+        message = getattr(context, "message", None)
+        try:
+            user = self._authenticate_message(message)
+        except _AuthFailureError as failure:
+            return failure.result
+        token = set_caller_identity(user)
+        try:
+            denial = readonly_denial(message)
+            if denial is not None:
+                return self._error_result(denial)
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)
+
+    async def on_call_tool(self, context, call_next):
+        return await self._authenticated_call(context, call_next)
+
+    async def on_read_resource(self, context, call_next):
+        message = getattr(context, "message", None)
+        try:
+            user = self._authenticate_message(message)
+        except _AuthFailureError as failure:
+            raise MCPError(INVALID_REQUEST, _denial_text(failure)) from None
+        token = set_caller_identity(user)
+        try:
+            denial = readonly_denial(message)
+            if denial is not None:
+                raise MCPError(INVALID_REQUEST, denial)
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)

@@ -9,12 +9,14 @@ refresh exchange, bearer validation) and are run memory-only. The durable
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, TokenError
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl
 
+from foresight import auth_oauth
 from foresight.auth_oauth import ACCESS_TOKEN_TTL, MEMORY_ONLY_DB, ForesightOAuthProvider
 
 
@@ -279,3 +281,26 @@ async def test_revoke_refresh_token():
     rt = await provider.load_refresh_token(client, token_response.refresh_token)
     await provider.revoke_token(rt)
     assert await provider.load_refresh_token(client, token_response.refresh_token) is None
+
+
+async def test_rotated_api_key_stops_authorizing_after_it_was_cached(monkeypatch):
+    """An API-key token must not outlive the key row it was minted from."""
+    provider = _make_provider()
+    keys = {"key-old": SimpleNamespace(user_id="u-1", username="rotator", is_active=True)}
+
+    def _lookup(key: str) -> SimpleNamespace | None:
+        return keys.get(key)
+
+    manager = SimpleNamespace(authenticate_api_key=_lookup)
+    monkeypatch.setattr(auth_oauth, "get_auth_manager", lambda: manager)
+
+    first = await provider.load_access_token("key-old")
+    assert first is not None
+    assert first.subject == "u-1"
+
+    provider._access_tokens["key-old"] = first
+
+    del keys["key-old"]
+
+    assert await provider.load_access_token("key-old") is None
+    assert "key-old" not in provider._access_tokens

@@ -31,7 +31,7 @@ import re
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -43,7 +43,8 @@ from . import (
     subconscious,
 )
 from .backend.schema_ddl import MIGRATIONS as _SCHEMA_MIGRATIONS
-from .connection_pool import get_pool, reset_pool
+from .connection_pool import get_backend, get_pool, reset_pool, set_backend
+from .experience import EpisodeVerdict, build_episode, distill_experiences, record_outcome
 from .hybrid_retriever import reset_hybrid_retriever
 from .memory_relationships import reset_memory_relationship_store
 from .server import (
@@ -53,7 +54,15 @@ from .server import (
     inject_context as ic_fn,
 )
 from .temporal_queries import TemporalFilters, TemporalQueryBuilder
-from .tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
+from .tenant_context import (
+    MemoryScope,
+    get_current_scope,
+    reset_tenant_context,
+    set_current_account_id,
+    set_current_app_id,
+    set_current_integration_id,
+    set_current_user_id,
+)
 
 logger = logging.getLogger("foresight_eval")
 
@@ -380,6 +389,8 @@ class EvalScenario:
     expected_provenance_count: int | None = None  # Optional raw-event provenance linkage count
 
 
+EXPERIENCE_SEED_MEMORIES = 2
+
 SCENARIOS: list[EvalScenario] = [
     EvalScenario(
         id="S1_preference",
@@ -474,6 +485,22 @@ SCENARIOS: list[EvalScenario] = [
         min_expected=1,
         as_of_offset_hours=0,
         expected_provenance_count=1,
+    ),
+    EvalScenario(
+        id="S12_experience_repeat_task",
+        description="Repeat task recalls the distilled procedural recipe from a prior episode",
+        query="How do I deploy the billing service to staging again?",
+        expected_memory_ids={"__experience_success__"},
+        expectation="distilled success-recipe memory is retrieved",
+        min_expected=1,
+    ),
+    EvalScenario(
+        id="S13_experience_failure_signature",
+        description="Matching error signature surfaces the prior failure lesson",
+        query="ConnectionRefusedError: connection refused on db.internal deploying the billing service, seen before?",
+        expected_memory_ids={"__experience_failure__"},
+        expectation="distilled failure-signature memory is retrieved",
+        min_expected=1,
     ),
 ]
 
@@ -666,6 +693,17 @@ class EvalHarness:
         self._conn: Any | None = None
         self._monkeypatches: list[tuple[Any, str, Any]] = []  # (module, attr, original_value)
         self._patches_applied: bool = False
+        # Separate from _patches_applied: a setup that raised halfway leaves
+        # patches applied (and tenant context set) with the flag still False,
+        # so cleanup has to key off "setup was attempted", not "setup finished".
+        self._setup_started: bool = False
+        self._scope_backup: MemoryScope | None = None
+        # Expected memory ids that only exist after seeding (S12/S13).
+        # They live on the harness, not on the module-global SCENARIOS
+        # list, so a second harness or a caller iterating SCENARIOS never
+        # sees another database's ids.
+        self.generated_expectations: dict[str, set[str]] = {}
+        self.seeded_episode_ids: dict[str, str] = {}
 
     @property
     def db_path(self) -> str:
@@ -685,6 +723,19 @@ class EvalHarness:
         return conn
 
     def _apply_patches(self) -> None:
+        """Install the patches, rolling a partial attempt back before it propagates.
+
+        A setup that raised halfway left its patches in place, so a retry
+        recorded the harness database path and a cleared backend as the values
+        to restore later.
+        """
+        try:
+            self._install_patches()
+        except BaseException:
+            self._restore_patches()
+            raise
+
+    def _install_patches(self) -> None:
         """Patch DB_PATH and tenant context so server.py functions see our DB.
 
         Mirrors the pattern in tests/test_server.py::setup_test_db.
@@ -693,6 +744,13 @@ class EvalHarness:
         """
         if self._patches_applied:
             return
+
+        self._setup_started = True
+
+        # Park the process-wide Postgres backend (if any) so deep call sites
+        # that prefer get_db_connection() fall back to the patched temp DB.
+        self._backend_backup = get_backend()
+        set_backend(None)
 
         # Reset singletons
         reset_pool()
@@ -713,6 +771,7 @@ class EvalHarness:
         # path is used end-to-end.
         for mod_name in (
             "foresight.semantic_search",
+            "foresight.reflect",
             "foresight.subconscious",
             "foresight.memory_maintenance",
             "foresight.memory_relationships",
@@ -739,6 +798,7 @@ class EvalHarness:
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
         # Set tenant context
+        self._scope_backup = get_current_scope()
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
         self._patches_applied = True
@@ -763,7 +823,17 @@ class EvalHarness:
 
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""
+        backup = getattr(self, "_backend_backup", None)
+        if not self._setup_started:
+            # Never attempted (or already restored): leave the process-wide
+            # backend untouched instead of clearing it.
+            return
         self._patches_applied = False
+        self._setup_started = False
+
+        if backup is not None:
+            set_backend(backup)
+        self._backend_backup = None
 
         hr_module.reset_hybrid_retriever()
 
@@ -776,7 +846,19 @@ class EvalHarness:
             setattr(module, attr, orig)
         self._monkeypatches.clear()
 
-        reset_tenant_context()
+        self._restore_scope()
+
+    def _restore_scope(self) -> None:
+        """Put the caller's identity back, leaving fresh processes at defaults."""
+        scope = self._scope_backup
+        self._scope_backup = None
+        if scope is None:
+            reset_tenant_context()
+            return
+        set_current_user_id(scope.user_id)
+        set_current_account_id(scope.account_id)
+        set_current_app_id(scope.app_id)
+        set_current_integration_id(scope.integration_id)
 
     def seed_fixtures(self) -> int:
         """Seed fixture memories into the database. Returns count of memories inserted."""
@@ -991,6 +1073,11 @@ class EvalHarness:
             ),
         )
 
+        # S12/S13: seed two finished episodes (one failure, one success) with
+        # their raw events, then run the real distiller so the procedural
+        # memories carry the same provenance they would in production.
+        self._seed_experience_state(conn, now)
+
         # S11: link a raw observation to the dark-mode preference memory.
         captured_at = now + timedelta(hours=-48)
         captured_iso = captured_at.isoformat()
@@ -1023,9 +1110,122 @@ class EvalHarness:
 
         conn.commit()
 
+    def _seed_experience_state(self, conn: Any, now: datetime) -> None:
+        """Seed two episodes and distil them into procedural memories.
+
+        S12/S13 exercise the outcome loop: a prior successful episode (recipe
+        recall) and a prior failed episode whose error signature must surface
+        for a matching query. The distiller runs against the same temp DB, so
+        the seeded episodes flow through the production code path. Expected
+        memory ids are resolved from the episodes seeded here and kept on the
+        harness because the distilled ids derive from tenant/user scope.
+        """
+        captured_iso = (now + timedelta(hours=-6)).isoformat()
+        seeds = [
+            (
+                "eval_experience_fail",
+                [
+                    ("user", "deploy the billing service to staging"),
+                    ("assistant", "deploying now"),
+                    (
+                        "tool",
+                        "Traceback (most recent call last):\n"
+                        '  File "deploy.py", line 88, in <module>\n'
+                        "ConnectionRefusedError: connection refused on db.internal:5432",
+                    ),
+                ],
+                "failure",
+                "FAILED deploy staging - ConnectionRefusedError: connection refused on db.internal:5432",
+            ),
+            (
+                "eval_experience_ok",
+                [
+                    ("user", "deploy the billing service to staging"),
+                    ("assistant", "running tests and build"),
+                    ("tool", "52 passed in 3.1s\nexit code 0"),
+                ],
+                "success",
+                None,
+            ),
+        ]
+        episode_ids: dict[str, str] = {}
+        for session_id, rows, outcome, detail in seeds:
+            for pos, (role, content) in enumerate(rows):
+                raw_key = f"experience|{self.tenant_id}|{self.user_id}|{session_id}|{pos}"
+                raw_id = hashlib.sha256(raw_key.encode()).hexdigest()[:16]
+                conn.execute(
+                    "INSERT OR IGNORE INTO raw_events "
+                    "(id, tenant_id, user_id, session_id, role, content, position, captured_at,"
+                    " source, metadata, tombstone) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'eval', '{}', 0)",
+                    (raw_id, self.tenant_id, self.user_id, session_id, role, content, pos, captured_iso),
+                )
+            conn.commit()
+            episode = build_episode(session_id, user_id=self.user_id, tenant_id=self.tenant_id)
+            episode_ids[outcome] = episode["id"]
+            record_outcome(
+                self.user_id,
+                self.tenant_id,
+                EpisodeVerdict(outcome=outcome, score_source="ci_result", detail=detail, session_id=session_id),
+            )
+
+        distill_experiences(user_id=self.user_id, tenant_id=self.tenant_id)
+
+        def _memory_for_episode(episode_id: str) -> str | None:
+            """Find the procedural memory distilled from ``episode_id``.
+
+            Matching on the episode id recorded in ``metrics`` keeps the
+            expectation tied to what this harness seeded; a pre-existing
+            procedural row for the same tenant and user cannot satisfy it.
+            """
+            rows = conn.execute(
+                "SELECT id, metrics FROM memories WHERE tenant_id = ? AND user_id = ? "
+                "AND memory_type = 'procedural' AND (is_ghost = 0 OR is_ghost IS NULL)",
+                (self.tenant_id, self.user_id),
+            ).fetchall()
+            for row in rows:
+                try:
+                    metrics = json.loads(row["metrics"] or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if episode_id in (metrics.get("episode_ids") or []):
+                    return str(row["id"])
+            return None
+
+        self.seeded_episode_ids = dict(episode_ids)
+        resolved: dict[str, str] = {}
+        for outcome, scenario_id in (
+            ("success", "S12_experience_repeat_task"),
+            ("failure", "S13_experience_failure_signature"),
+        ):
+            episode_id = episode_ids.get(outcome)
+            if not episode_id:
+                raise RuntimeError(f"eval setup error: the seeded {outcome} episode was not recorded")
+            memory_id = _memory_for_episode(episode_id)
+            if memory_id is None:
+                raise RuntimeError(
+                    f"eval setup error: no procedural memory was distilled from the seeded "
+                    f"{outcome} episode {episode_id}"
+                )
+            resolved[scenario_id] = memory_id
+        self.generated_expectations = {scenario_id: {memory_id} for scenario_id, memory_id in resolved.items()}
+
     # ------------------------------------------------------------------
     # Scenario execution
     # ------------------------------------------------------------------
+
+    def _resolve_expectations(self, scenario: EvalScenario) -> EvalScenario:
+        """Return the scenario with expectations resolved for this run.
+
+        Scenarios whose memories are produced by seeding (S12/S13) carry a
+        placeholder id; the seeded run replaces it with the memory distilled
+        from *its own* episodes, on a copy so the shared SCENARIOS list and
+        concurrent harnesses are untouched.
+        """
+        generated = self.generated_expectations.get(scenario.id)
+        if not generated:
+            return scenario
+        return replace(scenario, expected_memory_ids=set(generated))
 
     def run_scenario(
         self,
@@ -1036,8 +1236,9 @@ class EvalHarness:
 
         Measures payload size, latency, memory retrieval quality, and PII safety.
         """
+        resolved = self._resolve_expectations(scenario)
         try:
-            return self._do_run_scenario(scenario, budget_chars)
+            return self._do_run_scenario(resolved, budget_chars)
         except Exception as exc:
             logger.exception("Scenario %s failed with exception", scenario.id)
             return ScenarioResult(

@@ -97,7 +97,11 @@ def test_status_human_formats_payload_budget_weights_and_injection_health():
         patch("foresight_cli.commands.system.init_db"),
         patch("foresight_cli.commands.system._initialize_backend"),
         patch("foresight_cli.commands.system.get_system_status", return_value=result),
-        patch.object(out, "_stderr_console", Console(file=stderr_buffer, force_terminal=False, color_system=None)),
+        patch.object(
+            out,
+            "_stderr_console",
+            lambda: Console(file=stderr_buffer, force_terminal=False, color_system=None),
+        ),
     ):
         out.configure(mode="human", color=False, pipe_safe=False, verbose=False)
         system_commands.status(system_commands.SystemStatusParams(user_id=None))

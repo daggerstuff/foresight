@@ -97,6 +97,10 @@ class _MemoryRow:
     review_status: str | None = None
     review_reason: str | None = None
     importance: float = 0.5
+    category: str = "fact"
+    memory_type: str = "semantic"
+    agent_id: str = "default"
+    project: str = "default"
 
 
 def _insert_memory(conn, memory_id, content, row: _MemoryRow | None = None):
@@ -104,17 +108,19 @@ def _insert_memory(conn, memory_id, content, row: _MemoryRow | None = None):
     conn.execute(
         """
         INSERT INTO memories
-            (id, content, tenant_id, user_id, category, scope, retention,
+            (id, content, tenant_id, user_id, category, memory_type, scope, retention,
              created_at, updated_at, tags, is_ghost, inferred,
-             review_status, review_reason, importance)
-        VALUES (?, ?, ?, ?, 'fact', 'session', 'short_term',
-                ?, ?, '[]', ?, ?, ?, ?, ?)
+             review_status, review_reason, importance, agent_id, project)
+        VALUES (?, ?, ?, ?, ?, ?, 'session', 'short_term',
+                ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             memory_id,
             content,
             row.tenant,
             row.uid,
+            row.category,
+            row.memory_type,
             row.created_at,
             row.created_at,
             row.is_ghost,
@@ -122,6 +128,8 @@ def _insert_memory(conn, memory_id, content, row: _MemoryRow | None = None):
             row.review_status,
             row.review_reason,
             row.importance,
+            row.agent_id,
+            row.project,
         ),
     )
     conn.commit()
@@ -148,6 +156,14 @@ def _state(conn, memory_id):
     ).fetchone()
     assert row is not None, f"memory {memory_id} missing"
     return row
+
+
+_STATE_FIELDS = ("inferred", "is_ghost", "review_status", "review_reason")
+
+
+def _state_tuple(conn, memory_id):
+    row = _state(conn, memory_id)
+    return tuple(row[name] for name in _STATE_FIELDS)
 
 
 # ====== Migration v16 ======
@@ -295,6 +311,7 @@ class TestInferredApprove:
             "memory_id": "inf_a",
             "already_applied": False,
             "status": "approved",
+            "signature_status": None,
         }
         conn = _pg()
         try:
@@ -307,6 +324,34 @@ class TestInferredApprove:
         assert row["is_ghost"] == 0
         # approved memories leave the queue
         assert _list_items()["count"] == 0
+
+    def test_queue_items_report_the_lane_that_review_actions_use(self):
+        conn = _pg()
+        try:
+            _insert_memory(
+                conn,
+                "lane_item",
+                "fact staged in a private lane",
+                _MemoryRow(agent_id="agent-a", project="proj-a"),
+            )
+        finally:
+            conn.close()
+        res = json.loads(_tool("list", user_id=UID, agent_id="agent-a", project="proj-a"))
+        assert res["ok"], res
+        item = next(i for i in res["items"] if i["id"] == "lane_item")
+        assert item["agent_id"] == "agent-a"
+        assert item["project"] == "proj-a"
+
+    def test_queue_items_in_the_shared_lane_report_the_default_lane(self):
+        conn = _pg()
+        try:
+            _insert_memory(conn, "shared_item", "fact staged in the shared lane")
+        finally:
+            conn.close()
+        res = _list_items()
+        item = next(i for i in res["items"] if i["id"] == "shared_item")
+        assert item["agent_id"] == "default"
+        assert item["project"] == "default"
 
     def test_approve_is_idempotent(self):
         conn = _pg()
@@ -360,6 +405,37 @@ class TestInferredDecline:
         assert row["review_reason"] == "contradicts source"
         # declined memories leave the queue
         assert _list_items()["count"] == 0
+
+    def test_decline_refuses_a_retired_skill(self):
+        conn = _pg()
+        try:
+            _insert_memory(
+                conn,
+                "inf_retired",
+                "staged skill whose evidence was superseded",
+                _MemoryRow(
+                    review_status="retired",
+                    review_reason="evidence superseded",
+                    category="skill",
+                    memory_type="procedural",
+                ),
+            )
+            before = _state_tuple(conn, "inf_retired")
+        finally:
+            conn.close()
+
+        res = json.loads(_tool("decline", user_id=UID, memory_id="inf_retired"))
+
+        assert res["ok"] is False
+        assert res["status"] == "retired"
+        assert "re-crystallize" in res["error"]["message"]
+        conn = _pg()
+        try:
+            after = _state_tuple(conn, "inf_retired")
+        finally:
+            conn.close()
+        assert after == before
+        assert after == (1, 0, "retired", "evidence superseded")
 
     def test_decline_is_idempotent(self):
         conn = _pg()
@@ -493,6 +569,70 @@ class TestScoping:
         res = json.loads(_tool("approve", user_id=UID, memory_id="inf_elsewhere"))
         assert res["ok"] is False
         assert "not found" in res["error"]["message"]
+
+    def test_review_actions_cannot_reach_another_lane(self):
+        conn = _pg()
+        try:
+            _insert_memory(conn, "inf_lane_mine", "the default lane's staged skill")
+            _insert_memory(
+                conn,
+                "inf_lane_theirs",
+                "another agent lane's staged skill",
+                _MemoryRow(agent_id="frontend", project="site"),
+            )
+        finally:
+            conn.close()
+        for action in ("approve", "decline", "undo"):
+            kw = {"reason": "x"} if action == "decline" else {}
+            res = json.loads(_tool(action, user_id=UID, memory_id="inf_lane_theirs", **kw))
+            assert res["ok"] is False, res
+            assert "not found" in res["error"]["message"], res
+
+        conn = _pg()
+        try:
+            assert _state_tuple(conn, "inf_lane_theirs") == (1, 0, None, None)
+        finally:
+            conn.close()
+        mine = json.loads(_tool("approve", user_id=UID, memory_id="inf_lane_mine"))
+        assert mine["ok"] is True, mine
+
+    def test_the_queue_never_offers_another_lane_s_row(self):
+        conn = _pg()
+        try:
+            _insert_memory(conn, "inf_lane_queue_mine", "my lane's review candidate")
+            _insert_memory(
+                conn,
+                "inf_lane_queue_theirs",
+                "another agent lane's review candidate",
+                _MemoryRow(agent_id="frontend", project="site"),
+            )
+        finally:
+            conn.close()
+
+        ids = [i["id"] for i in _list_items()["items"]]
+        assert "inf_lane_queue_mine" in ids
+        assert "inf_lane_queue_theirs" not in ids
+
+    def test_review_actions_reach_a_skill_in_the_named_lane(self):
+        conn = _pg()
+        try:
+            _insert_memory(
+                conn,
+                "inf_lane_frontend",
+                "a staged skill in the frontend lane",
+                _MemoryRow(agent_id="frontend", project="site"),
+            )
+        finally:
+            conn.close()
+        res = json.loads(
+            _tool("approve", user_id=UID, memory_id="inf_lane_frontend", agent_id="frontend", project="site")
+        )
+        assert res["ok"] is True, res
+        conn = _pg()
+        try:
+            assert _state_tuple(conn, "inf_lane_frontend") == (0, 0, "approved", None)
+        finally:
+            conn.close()
 
 
 # ====== tool dispatch ======

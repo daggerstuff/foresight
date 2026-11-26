@@ -21,8 +21,15 @@ from rich.text import Text
 
 OutputMode = Literal["human", "json", "agent"]
 
-_stdout_console = Console(file=sys.stdout)
-_stderr_console = Console(file=sys.stderr)
+
+def _stdout_console() -> Console:
+    """Console bound to the *current* stdout, so captures and redirects see output."""
+    return Console(file=sys.stdout)
+
+
+def _stderr_console() -> Console:
+    """Console bound to the *current* stderr, so captures and redirects see output."""
+    return Console(file=sys.stderr)
 
 
 @dataclass
@@ -100,10 +107,10 @@ def stdout(*args: Any, style: str | None = None, sep: str = " ") -> None:
         return
 
     if _settings.pipe_safe and _settings.mode == "human":
-        _stderr_console.print(text, style=style)
+        _stderr_console().print(text, style=style)
         return
 
-    _stdout_console.print(text, style=style)
+    _stdout_console().print(text, style=style)
 
 
 def stderr(*args: Any, style: str | None = None, sep: str = " ") -> None:
@@ -111,7 +118,7 @@ def stderr(*args: Any, style: str | None = None, sep: str = " ") -> None:
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
         return
-    _stderr_console.print(text, style=style)
+    _stderr_console().print(text, style=style)
 
 
 def info(*args: Any, sep: str = " ") -> None:
@@ -119,7 +126,7 @@ def info(*args: Any, sep: str = " ") -> None:
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
         return
-    _stderr_console.print(Text(text, style="cyan"))
+    _stderr_console().print(Text(text, style="cyan"))
 
 
 def warn(*args: Any, sep: str = " ") -> None:
@@ -127,15 +134,21 @@ def warn(*args: Any, sep: str = " ") -> None:
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
         return
-    _stderr_console.print(Text(text, style="yellow"))
+    _stderr_console().print(Text(text, style="yellow"))
 
 
 def error(*args: Any, sep: str = " ") -> None:
-    """Error-level message."""
+    """Error-level message.
+
+    Unlike the informational helpers, this one still speaks in agent mode: an
+    agent that only sees an exit code cannot tell a missing skill from a failed
+    approval, so the error goes to stderr as an ``[ERROR]`` line.
+    """
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
+        _stderr_console().print(Text(_agent_line("error", text)))
         return
-    _stderr_console.print(Text(text, style="bold red"))
+    _stderr_console().print(Text(text, style="bold red"))
 
 
 def done(*args: Any, sep: str = " ") -> None:
@@ -143,14 +156,14 @@ def done(*args: Any, sep: str = " ") -> None:
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
         return
-    _stderr_console.print(Text(text, style="bold green"))
+    _stderr_console().print(Text(text, style="bold green"))
 
 
 def data(label: str, value: Any) -> None:
     """Emit a labeled data point (machine-friendly in agent mode)."""
     if _settings.mode == "agent":
         return
-    _stderr_console.print(f"[bold]{label}:[/bold] {value}")
+    _stderr_console().print(f"[bold]{label}:[/bold] {value}")
 
 
 def result_block(data: Any, title: str = "Result") -> None:
@@ -163,26 +176,22 @@ def result_block(data: Any, title: str = "Result") -> None:
     # search_memories() returns a pre-formatted string — render it directly so
     # we don't JSON-encode it into escaped \\n and surrounding quotes.
     body = data if isinstance(data, str) else _json.dumps(data, indent=2, default=str)
-    console = _stderr_console if _settings.pipe_safe else _stdout_console
+    console = _stderr_console() if _settings.pipe_safe else _stdout_console()
     console.print(Panel(body, title=title))
 
 
 def print_table(columns: list[str], rows: list[list[Any]], *, title: str | None = None) -> None:
     """Print a table respecting output mode."""
     if _settings.mode == "agent":
-        # Tab-separated, first line header
-        "\t".join(columns)
-        for _row in rows:
-            pass
         return
 
     table = Table(*columns, title=title, title_style="bold")
     for _row in rows:
         table.add_row(*[str(c) for c in _row])
     if _settings.pipe_safe:
-        _stderr_console.print(table)
+        _stderr_console().print(table)
     else:
-        _stdout_console.print(table)
+        _stdout_console().print(table)
 
 
 def print_json(data: Any) -> None:
@@ -197,7 +206,7 @@ def confirm(message: str, default: bool = True) -> bool:
     """Ask user for confirmation. Falls back to default in agent mode."""
     if _settings.mode == "agent":
         return default
-    result = _stdout_console.input(f"[bold]{message}[/bold] (y/n) ")
+    result = _stdout_console().input(f"[bold]{message}[/bold] (y/n) ")
     return result.strip().lower() in ("y", "yes")
 
 
@@ -205,14 +214,15 @@ def panel(text: str, title: str = "", style: str = "blue") -> None:
     """Show a rich panel."""
     if _settings.mode == "agent":
         return
-    (_stderr_console if _settings.pipe_safe else _stdout_console).print(Panel(text, title=title, border_style=style))
+    console = _stderr_console() if _settings.pipe_safe else _stdout_console()
+    console.print(Panel(text, title=title, border_style=style))
 
 
 def markdown(text: str) -> None:
     """Render markdown content."""
     if _settings.mode == "agent":
         return
-    (_stderr_console if _settings.pipe_safe else _stdout_console).print(Markdown(text))
+    (_stderr_console() if _settings.pipe_safe else _stdout_console()).print(Markdown(text))
 
 
 def bullet_list(items: list[str], title: str | None = None) -> None:
