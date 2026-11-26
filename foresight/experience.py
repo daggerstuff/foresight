@@ -55,6 +55,35 @@ _MIN_SUMMARY_LEN = 8
 _MIN_REPORT_TAIL_WORDS = 3
 _MIN_INSTRUCTION_WORDS = 2
 
+# Words that only qualify a run result. A tail made of nothing else - "without
+# errors", "no warnings" - reports the run again, so it is not a recipe step.
+_STATUS_QUALIFIER_WORDS = frozenset(
+    {
+        "any",
+        "conflict",
+        "conflicts",
+        "error",
+        "errors",
+        "exception",
+        "exceptions",
+        "failure",
+        "failures",
+        "issue",
+        "issues",
+        "no",
+        "none",
+        "not",
+        "problem",
+        "problems",
+        "regression",
+        "regressions",
+        "warning",
+        "warnings",
+        "without",
+        "zero",
+    }
+)
+
 # Secret verdicts whose content is safe to store or send: `redact` already
 # replaced the credential, and `clean` found none. `flag` hands back the
 # original text and `block` empties it, so neither may be persisted as-is.
@@ -878,13 +907,19 @@ def _strip_result_lines(content: str) -> str:
             continue
         result_match = _RESULT_REPORT_RE.match(line)
         if result_match is not None:
-            remainder = _strip_result_clauses(line[result_match.end() :]).lstrip(" .;,-").strip()
-            if len(re.findall(r"[A-Za-z]{2,}", remainder)) < _MIN_REPORT_TAIL_WORDS:
+            remainder = re.sub(
+                r"^(?:[ .;,]+|-\s+)+",
+                "",
+                _strip_result_clauses(line[result_match.end() :]),
+            ).strip()
+            words = re.findall(r"[A-Za-z]{2,}", remainder)
+            if len(words) < _MIN_REPORT_TAIL_WORDS:
                 # "Tests passed. Run migrations." - the tail is the only step in
                 # the recipe, so a short imperative is kept while a short result
                 # ("exit code 0", "3.1s") still is not.
                 if (
-                    len(re.findall(r"[A-Za-z]{2,}", remainder)) < _MIN_INSTRUCTION_WORDS
+                    len(words) < _MIN_INSTRUCTION_WORDS
+                    or all(word.lower() in _STATUS_QUALIFIER_WORDS for word in words)
                     or _RESULT_SUFFIX_RE.match(remainder)
                     or _RESULT_REPORT_RE.match(remainder) is not None
                 ):

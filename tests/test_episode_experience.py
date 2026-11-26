@@ -1171,3 +1171,15 @@ def test_session_events_are_read_once_per_session(monkeypatch) -> None:
     assert calls == [["s1"]]
     assert experience_module._session_events(state, tenant_id=TENANT, user_id=USER, session_id="") == []
     assert calls == [["s1"]]
+
+
+def test_strip_result_lines_keeps_a_flag_after_a_result() -> None:
+    """A tail that is a command option survives; only separators are removed."""
+    assert _strip_result_lines("Build passed --run-migrations") == "--run-migrations"
+
+
+def test_strip_result_lines_drops_a_status_only_tail() -> None:
+    """A tail that only qualifies the run result is not a recipe step."""
+    assert _strip_result_lines("Tests passed without errors.") == ""
+    assert _strip_result_lines("Tests passed. No errors.") == ""
+    assert _strip_result_lines("Tests passed. Run migrations.") == "Run migrations."
