@@ -1,0 +1,43 @@
+plugins/hermes/foresight.plugin.json
+  s_a501fa1cdfdd22::t_824d2fdaea0f09 1-75
+plugins/README.md
+  s_a501fa1cdfdd22::t_597566a9ddc82a 1-14,16-94
+  s_a501fa1cdfdd22::t_93d4b445aef1df 15
+plugins/claude/foresight.plugin.json
+  s_a501fa1cdfdd22::t_267426f6b305a7 1-85
+tests/test_plugin_manifest.py
+  s_a501fa1cdfdd22::t_efa017f7a07b74 1-43,45-101,104-151
+  s_a501fa1cdfdd22::t_f3a40c180cd476 44
+  s_a501fa1cdfdd22::t_cde7a37a334b72 102-103
+plugins/mastracode/foresight.plugin.json
+  s_a501fa1cdfdd22::t_9177aa90b9c4b2 1-75
+foresight/plugin_manifest.py
+  s_a501fa1cdfdd22::t_9fd35c731dd64d 265
+  s_a501fa1cdfdd22::t_27fa082bed1b91 1-115,117-160,162,164-170,176-185,191-211,213-264,266-280,282-283,287-295,297,301,303-304,306-311
+  s_a501fa1cdfdd22::t_29b9e2eef91f70 116
+  s_a501fa1cdfdd22::t_ef2864f3c48006 284-286
+  s_a501fa1cdfdd22::t_f93337cfb0fe29 171-175
+  s_a501fa1cdfdd22::t_44965dd92d51ec 212
+  s_a501fa1cdfdd22::t_fb09d38854a663 161,163
+  s_a501fa1cdfdd22::t_25aad672507db6 281
+  s_a501fa1cdfdd22::t_35ead6197bf792 296,298-300,302,305
+  s_a501fa1cdfdd22::t_49c462b61c3726 186-190
+plugins/manifest.schema.json
+  s_a501fa1cdfdd22::t_5d61cc21f82da2 1-464
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1f20d93d43ce35fa4a4d0a074d91e46b5315fabb",
+  "prompts": {},
+  "sessions": {
+    "s_a501fa1cdfdd22": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "thoracic-coneflower",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
