@@ -1,0 +1,75 @@
+{
+  "specVersion": 1,
+  "id": "hermes",
+  "name": "Foresight Memory Provider for Hermes Agent",
+  "version": "2.0.0",
+  "description": "Plugs the shared Foresight brain into Hermes Agent as a first-class memory provider — proactive recall, distillation hooks, rich memory tools, and a desktop config panel.",
+  "author": {
+    "name": "daggerstuff"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/daggerstuff/foresight",
+  "repository": "https://github.com/daggerstuff/foresight",
+  "targets": ["hermes"],
+  "surfaces": ["provider", "status-ui", "rest"],
+  "requires": {
+    "foresight": ">=0.19.0",
+    "transports": ["http"],
+    "capabilities": [
+      "context.inject",
+      "context-blocks",
+      "capture.transcript",
+      "memory.search",
+      "memory.store",
+      "memory.reflect",
+      "profile.read",
+      "status.health"
+    ]
+  },
+  "artifacts": [
+    {
+      "type": "native-manifest",
+      "path": "plugin.yaml",
+      "surface": "provider",
+      "description": "Hermes plugin manifest (hooks + config keys)"
+    },
+    {
+      "type": "provider",
+      "path": "__init__.py",
+      "surface": "provider",
+      "description": "ForesightMemoryProvider: recall, sync_turn distillation, memory tools"
+    },
+    {
+      "type": "config",
+      "path": "config_schema.py",
+      "surface": "status-ui",
+      "description": "Declarative config schema for the Hermes desktop/web UI panel"
+    },
+    {
+      "type": "cli",
+      "path": "cli.py",
+      "description": "hermes foresight ... subcommands (status, inspect, reflect, self-test)"
+    },
+    {
+      "type": "cli",
+      "path": "install.sh",
+      "description": "Installer; supports --remote <host> fleet deploy"
+    },
+    {
+      "type": "docs",
+      "path": "README.md"
+    }
+  ],
+  "credentials": {
+    "envFile": "~/.config/foresight/credentials.env",
+    "keys": ["FORESIGHT_API_KEY", "FORESIGHT_URL", "FORESIGHT_USER_ID"]
+  },
+  "install": {
+    "command": "bash install.sh",
+    "dryRunFlag": "--dry-run"
+  },
+  "uninstall": {
+    "notes": "Remove the symlinked plugin dir from ~/.hermes/plugins/foresight and run hermes memory setup to switch providers; see README.md."
+  },
+  "keywords": ["memory", "provider", "hermes", "recall"]
+}
