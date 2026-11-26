@@ -4956,6 +4956,14 @@ def record_episode_outcome(
     # behaviour stands, which is what the CLI and in-process jobs rely on.
     caller_user_id = get_caller_user_id()
     caller_role = get_caller_role()
+    if caller_role is Role.READONLY:
+        return json.dumps(
+            {
+                "ok": False,
+                "action": "record_episode_outcome",
+                "error": {"message": "Recording an episode outcome requires a user or admin API key."},
+            }
+        )
     if caller_user_id is None and auth_enforced():
         return json.dumps(
             {

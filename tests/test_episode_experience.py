@@ -656,6 +656,35 @@ class _StubAuthManager:
         return user.user_id == self._user.user_id and tenant_id == TENANT
 
 
+def test_a_readonly_caller_cannot_record_an_outcome():
+    caller = User(
+        user_id="readonly-verdict-user",
+        username="readonly-verdict",
+        email="readonly-verdict@test.local",
+        role=Role.READONLY,
+    )
+    session_id = _session_id()
+    _episode_for(session_id, _failure_transcript())
+
+    token = set_caller_identity(caller)
+    try:
+        raw = record_episode_outcome(
+            RecordEpisodeOutcomeParams(
+                session_id=session_id,
+                user_id=caller.user_id,
+                outcome="failure",
+                score_source="ci_result",
+                detail="FAILED deploy - ConnectionRefusedError: connection refused",
+            )
+        )
+    finally:
+        reset_caller_identity(token)
+
+    payload = json.loads(raw)
+    assert payload["ok"] is False, payload
+    assert "requires a user or admin API key" in payload["error"]["message"], payload
+
+
 def test_an_authorized_oauth_call_records_a_verdict(monkeypatch):
     """A bearer token the OAuth provider authenticated must save a verdict.
 
