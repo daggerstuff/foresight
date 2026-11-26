@@ -11,7 +11,7 @@
   "homepage": "https://github.com/daggerstuff/foresight",
   "repository": "https://github.com/daggerstuff/foresight",
   "targets": ["mastracode"],
-  "surfaces": ["extension", "rest"],
+  "surfaces": ["extension", "rest", "mcp"],
   "requires": {
     "foresight": ">=0.19.0",
     "transports": ["http"],
@@ -62,10 +62,10 @@
   ],
   "credentials": {
     "envFile": "~/.config/foresight/credentials.env",
-    "keys": ["FORESIGHT_API_KEY", "FORESIGHT_URL", "FORESIGHT_USER_ID"]
+    "keys": ["FORESIGHT_MCP_URL", "FORESIGHT_IDENTITY", "FORESIGHT_USER_ID"]
   },
   "install": {
-    "command": "mastracode /plugins → Install new plugin → Local path",
+    "notes": "In Mastra Code open /plugins, choose Install new plugin, then Local path and point it at this directory.",
     "dryRunFlag": null
   },
   "uninstall": {

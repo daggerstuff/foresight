@@ -38,12 +38,15 @@ uv run python -m foresight.plugin_manifest plugins/
 
 - `artifacts[]` — every file the plugin installs: `type` (`config`, `hook`,
   `skill`, `rule`, `extension`, `provider`, `cli`, `docs`, `native-manifest`,
-  `source`), repo-relative `path` (no absolute paths or `..`), optional
-  `surface`, per-`targets` overrides, and `description`.
+  `source`), plugin-directory-relative `path` (no absolute, home-relative,
+  or `..` segments), optional `surface`, per-`targets` overrides, and
+  `description`.
 - `credentials` — **references only**: `envFile` (e.g.
   `~/.config/foresight/credentials.env`, mode 600) and `keys` (env var names).
   Never embed secrets.
-- `install` / `uninstall` — command + `dryRunFlag`, or notes for manual removal.
+- `install` / `uninstall` — `command` (run from the plugin directory) or
+  `notes` for hosts that install through a UI; `install` needs one of the two.
+  Optional `dryRunFlag` previews the install.
 - `author`, `license`, `homepage`, `repository`, `keywords`, `description`.
 
 ### Identity & lanes
@@ -68,19 +71,18 @@ Status: ✅ native plugin · 🔌 MCP/REST wiring only · 📋 planned (P-FOR-58
 | `hermes` | — | ✅ REST | — | ✅ provider | ✅ `recall_status` | ✅ sync_turn/pre_compress/session_end | `plugins/hermes` |
 | `mastracode` | — | ✅ REST | — | ✅ TS plugin | 📋 | ✅ processOutputResult | `plugins/mastracode` |
 | `opencode` | ✅ | ✅ autoinject | — | ✅ JS plugin | — | 📋 | `foresight-autoinject.js` (audit FOR-72) |
-| `omp` (Oh My Pi) | ✅ | ✅ | — | ✅ TS extension | — | 📋 | `foresight-omp-extension.ts` (audit FOR-72) |
 | `copilot` | — | ✅ sessionStart hook | — | — | — | — | `foresight-copilot-hook.json` (audit FOR-72) |
 | `gemini-cli` / `antigravity` | 📋 | 📋 | 📋 `GEMINI.md` | 📋 | — | 📋 | FOR-74 |
 | `codex` | 📋 | 📋 | 📋 `AGENTS.md` | 📋 | — | 📋 | FOR-75 |
 | `omo` | 📋 | 📋 | 📋 | 📋 | 📋 | 📋 | FOR-76 |
 | `deepseek-harness` | 📋 | 📋 | 📋 | 📋 dsh-market | 📋 | 📋 | FOR-77 (pairs with FOR-29) |
 | `pi` | 📋 | 📋 | 📋 | 📋 | — | 📋 | FOR-78 |
-| `ohmypi` | 📋 | 📋 | 📋 | 📋 | — | 📋 | FOR-79 (confirm vs `pi`) |
+| `ohmypi` | ✅ | ✅ | — | ✅ TS extension | — | 📋 | `foresight-omp-extension.ts` (audit FOR-72; FOR-79) |
 | `devin` | 📋 | 📋 | 📋 skills | 📋 | — | 📋 | FOR-81 |
 | `cursor` | 📋 | 📋 | 📋 rules | 📋 | — | 📋 | FOR-82 |
 | `goose` | 📋 | 📋 | 📋 | 📋 | — | 📋 | FOR-83 |
-| `generic-mcp` | ✅ | — | — | — | — | — | any MCP client; config generator FOR-84 |
-| `web` | — | ✅ hosted REST/OAuth | — | — | — | — | connector fallback; FOR-85 |
+| `generic-mcp` | 📋 | — | — | — | — | — | any MCP client; config generator FOR-84 |
+| `web` | — | 📋 hosted REST/OAuth | — | — | — | — | connector fallback; FOR-85 |
 
 ## Adding a plugin
 

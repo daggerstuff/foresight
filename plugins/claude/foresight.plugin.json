@@ -11,14 +11,21 @@
   "homepage": "https://github.com/daggerstuff/foresight",
   "repository": "https://github.com/daggerstuff/foresight",
   "targets": ["claude-code", "claude-desktop"],
-  "surfaces": ["mcp", "hooks", "skills"],
+  "surfaces": ["mcp", "rest", "hooks", "skills"],
   "requires": {
     "foresight": ">=0.19.0",
     "transports": ["http", "stdio"],
     "capabilities": [
       "context.inject",
+      "context-blocks",
       "capture.transcript",
       "capture.in-flight",
+      "memory.search",
+      "memory.store",
+      "memory.update",
+      "memory.delete",
+      "temporal.query",
+      "curation.manage",
       "status.health"
     ]
   },
@@ -40,18 +47,21 @@
       "type": "hook",
       "path": "hooks/hooks.json",
       "surface": "hooks",
+      "targets": ["claude-code"],
       "description": "UserPromptSubmit / PreCompact / PostCompact / Stop / SessionEnd hooks"
     },
     {
       "type": "hook",
       "path": "hooks/foresight_hook.py",
       "surface": "hooks",
+      "targets": ["claude-code"],
       "description": "Context injection + transcript capture hook implementation"
     },
     {
       "type": "skill",
       "path": "skills/foresight/SKILL.md",
       "surface": "skills",
+      "targets": ["claude-code"],
       "description": "Teaches Claude the Foresight MCP tools and best practices"
     },
     {

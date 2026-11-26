@@ -11,7 +11,7 @@
   "homepage": "https://github.com/daggerstuff/foresight",
   "repository": "https://github.com/daggerstuff/foresight",
   "targets": ["hermes"],
-  "surfaces": ["provider", "status-ui", "rest"],
+  "surfaces": ["provider", "status-ui", "rest", "hooks"],
   "requires": {
     "foresight": ">=0.19.0",
     "transports": ["http"],
@@ -22,6 +22,7 @@
       "memory.search",
       "memory.store",
       "memory.reflect",
+      "memory.delete",
       "profile.read",
       "status.health"
     ]
@@ -48,7 +49,7 @@
     {
       "type": "cli",
       "path": "cli.py",
-      "description": "hermes foresight ... subcommands (status, inspect, reflect, self-test)"
+      "description": "hermes foresight ... subcommands (status, search, remember, reflect, profile, test)"
     },
     {
       "type": "cli",
@@ -61,7 +62,7 @@
     }
   ],
   "credentials": {
-    "envFile": "~/.config/foresight/credentials.env",
+    "envFile": "~/.hermes/.env",
     "keys": ["FORESIGHT_API_KEY", "FORESIGHT_URL", "FORESIGHT_USER_ID"]
   },
   "install": {

@@ -85,6 +85,25 @@
         "path": {
           "description": "Path relative to the plugin directory.",
           "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^/"
+              },
+              {
+                "pattern": "^[A-Za-z]:"
+              },
+              {
+                "pattern": "^\\\\"
+              },
+              {
+                "pattern": "(?:^|[/\\\\])~"
+              },
+              {
+                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)"
+              }
+            ]
+          },
           "title": "Path",
           "type": "string"
         },
@@ -184,12 +203,21 @@
     },
     "PluginInstall": {
       "additionalProperties": false,
+      "description": "How to install the plugin: a shell command, or notes for a UI-driven host.",
       "properties": {
         "command": {
-          "description": "Shell command that installs the plugin.",
-          "minLength": 1,
-          "title": "Command",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Shell command that installs the plugin, run from the plugin directory.",
+          "title": "Command"
         },
         "dryRunFlag": {
           "anyOf": [
@@ -203,11 +231,22 @@
           "default": null,
           "description": "Flag that previews changes without applying them.",
           "title": "Dryrunflag"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Manual install steps for hosts that install from a path or UI.",
+          "title": "Notes"
         }
       },
-      "required": [
-        "command"
-      ],
       "title": "PluginInstall",
       "type": "object"
     },
@@ -216,6 +255,7 @@
       "description": "What the plugin needs from a Foresight deployment.",
       "properties": {
         "capabilities": {
+          "description": "Foresight capabilities the plugin uses; may be empty, but never omitted.",
           "items": {
             "$ref": "#/$defs/ForesightCapability"
           },
@@ -229,6 +269,7 @@
           "type": "string"
         },
         "transports": {
+          "description": "Transports the plugin can speak; may be empty, but never omitted.",
           "items": {
             "$ref": "#/$defs/ServerTransport"
           },
@@ -237,7 +278,9 @@
         }
       },
       "required": [
-        "foresight"
+        "foresight",
+        "transports",
+        "capabilities"
       ],
       "title": "PluginRequires",
       "type": "object"
@@ -412,7 +455,7 @@
       "$ref": "#/$defs/PluginRequires"
     },
     "specVersion": {
-      "default": 1,
+      "const": 1,
       "description": "Contract version; currently only 1.",
       "title": "Specversion",
       "type": "integer"
@@ -446,12 +489,12 @@
     },
     "version": {
       "description": "Plugin semver, independent of the Foresight server version.",
-      "minLength": 1,
       "title": "Version",
       "type": "string"
     }
   },
   "required": [
+    "specVersion",
     "id",
     "name",
     "version",

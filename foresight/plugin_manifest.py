@@ -17,16 +17,40 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Iterator, Mapping
 from enum import StrEnum
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 PLUGIN_MANIFEST_FILENAME = "foresight.plugin.json"
 PLUGIN_MANIFEST_SCHEMA_PATH = "plugins/manifest.schema.json"
+
+VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+
+# Artifact paths are checked under both separator conventions: ``..\..\x`` is a
+# single POSIX path part, so a POSIX-only split would let it escape. The same
+# patterns are emitted into the JSON Schema so the loader and the schema cannot
+# disagree about which paths are legal.
+_FORBIDDEN_PATH_PATTERNS = (
+    r"^/",  # POSIX absolute
+    r"^[A-Za-z]:",  # Windows drive, absolute or relative
+    r"^\\",  # Windows root or UNC prefix
+    r"(?:^|[/\\])~",  # home-relative segment
+    r"(?:^|[/\\])\.\.(?:[/\\]|$)",  # parent-directory segment
+)
+
+_PATH_SCHEMA_EXTRA: dict[str, Any] = {"not": {"anyOf": [{"pattern": pattern} for pattern in _FORBIDDEN_PATH_PATTERNS]}}
 
 
 class AgentTarget(StrEnum):
@@ -112,8 +136,25 @@ class PluginManifestError(ValueError):
     """Raised when a foresight.plugin.json fails contract validation."""
 
 
+def _check_relative_path(value: str) -> str:
+    """Reject absolute, home-relative, and parent-escaping artifact paths."""
+    if not value:
+        raise ValueError("artifact path must not be empty")
+    posix = PurePosixPath(value)
+    windows = PureWindowsPath(value)
+    if posix.is_absolute() or posix.root:
+        raise ValueError("artifact path must be relative to the plugin directory")
+    if windows.is_absolute() or windows.drive or windows.root:
+        raise ValueError("artifact path must be relative to the plugin directory")
+    if "~" in posix.parts or "~" in windows.parts:
+        raise ValueError("artifact path must not be home-relative")
+    if ".." in posix.parts or ".." in windows.parts:
+        raise ValueError("artifact path must not escape the plugin directory")
+    return value
+
+
 class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class PluginAuthor(_StrictModel):
@@ -128,15 +169,23 @@ class PluginRequires(_StrictModel):
         min_length=1,
         description='Version constraint, e.g. ">=0.19.0". Free-form semver range.',
     )
-    transports: list[ServerTransport] = Field(default_factory=list)
-    capabilities: list[ForesightCapability] = Field(default_factory=list)
+    transports: list[ServerTransport] = Field(
+        description="Transports the plugin can speak; may be empty, but never omitted.",
+    )
+    capabilities: list[ForesightCapability] = Field(
+        description="Foresight capabilities the plugin uses; may be empty, but never omitted.",
+    )
 
 
 class PluginArtifact(_StrictModel):
     """One artifact the plugin installs into the agent's home/config."""
 
     type: ArtifactType
-    path: str = Field(min_length=1, description="Path relative to the plugin directory.")
+    path: str = Field(
+        min_length=1,
+        json_schema_extra=_PATH_SCHEMA_EXTRA,
+        description="Path relative to the plugin directory.",
+    )
     surface: PluginSurface | None = Field(
         default=None,
         description="Capability surface this artifact implements, if any.",
@@ -150,9 +199,7 @@ class PluginArtifact(_StrictModel):
     @field_validator("path")
     @classmethod
     def _path_is_relative(cls, value: str) -> str:
-        if value.startswith(("/", "~")) or ".." in Path(value).parts:
-            raise ValueError("artifact path must be relative to the plugin directory")
-        return value
+        return _check_relative_path(value)
 
 
 class PluginCredentials(_StrictModel):
@@ -167,12 +214,29 @@ class PluginCredentials(_StrictModel):
 
 
 class PluginInstall(_StrictModel):
-    command: str = Field(min_length=1, description="Shell command that installs the plugin.")
+    """How to install the plugin: a shell command, or notes for a UI-driven host."""
+
+    command: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Shell command that installs the plugin, run from the plugin directory.",
+    )
+    notes: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Manual install steps for hosts that install from a path or UI.",
+    )
     dry_run_flag: str | None = Field(
         default=None,
         alias="dryRunFlag",
         description="Flag that previews changes without applying them.",
     )
+
+    @model_validator(mode="after")
+    def _command_or_notes(self) -> PluginInstall:
+        if not self.command and not self.notes:
+            raise ValueError("install must provide a command or notes")
+        return self
 
 
 class PluginUninstall(_StrictModel):
@@ -183,8 +247,7 @@ class PluginUninstall(_StrictModel):
 class PluginManifest(_StrictModel):
     """Root manifest model; one per plugin directory as ``foresight.plugin.json``."""
 
-    spec_version: int = Field(
-        default=1,
+    spec_version: Literal[1] = Field(
         alias="specVersion",
         description="Contract version; currently only 1.",
     )
@@ -194,7 +257,9 @@ class PluginManifest(_StrictModel):
         description="Stable plugin id, e.g. 'claude', 'hermes', 'mastracode'.",
     )
     name: str = Field(min_length=1)
-    version: str = Field(min_length=1, description="Plugin semver, independent of the Foresight server version.")
+    version: str = Field(
+        description="Plugin semver, independent of the Foresight server version.",
+    )
     description: str | None = None
     author: PluginAuthor | None = None
     license: str | None = None
@@ -209,16 +274,27 @@ class PluginManifest(_StrictModel):
     uninstall: PluginUninstall | None = None
     keywords: list[str] = Field(default_factory=list)
 
-    @field_validator("spec_version")
+    @field_validator("spec_version", mode="before")
     @classmethod
-    def _supported_spec_version(cls, value: int) -> int:
-        if value != 1:
-            raise ValueError("unsupported specVersion; only 1 is defined")
+    def _normalise_spec_version(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("specVersion must be the integer 1, not a boolean")
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def _version_is_semver(cls, value: str) -> str:
+        if VERSION_PATTERN.match(value) is None:
+            raise ValueError(f"version must be semver such as 1.2.3, got {value!r}")
         return value
 
 
 def parse_plugin_manifest(data: Mapping[str, Any]) -> PluginManifest:
     """Validate an already-decoded manifest mapping."""
+    if not isinstance(data, Mapping):
+        raise PluginManifestError(f"expected a JSON object at the manifest root, got {type(data).__name__}")
     try:
         return PluginManifest.model_validate(dict(data))
     except ValidationError as exc:
@@ -230,9 +306,15 @@ def load_plugin_manifest(path: str | Path) -> PluginManifest:
     p = Path(path)
     manifest_path = p if p.is_file() else p / PLUGIN_MANIFEST_FILENAME
     try:
-        data = json.loads(manifest_path.read_text())
+        text = manifest_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise PluginManifestError(f"{manifest_path}: file not found") from exc
+    except UnicodeDecodeError as exc:
+        raise PluginManifestError(f"{manifest_path}: not valid UTF-8 text: {exc}") from exc
+    except OSError as exc:
+        raise PluginManifestError(f"{manifest_path}: cannot read file: {exc}") from exc
+    try:
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise PluginManifestError(f"{manifest_path}: invalid JSON: {exc}") from exc
     try:
@@ -247,6 +329,8 @@ def iter_plugin_manifests(root: str | Path) -> Iterator[Path]:
     if r.is_file():
         yield r
         return
+    if not r.is_dir():
+        raise PluginManifestError(f"{r}: no such file or directory")
     yield from sorted(r.rglob(PLUGIN_MANIFEST_FILENAME))
 
 
@@ -287,7 +371,13 @@ def _main(argv: list[str] | None = None) -> int:
     failures = 0
     checked = 0
     for path in args.paths:
-        for manifest_path in iter_plugin_manifests(path):
+        try:
+            manifest_paths = list(iter_plugin_manifests(path))
+        except PluginManifestError as exc:
+            failures += 1
+            sys.stderr.write(f"FAIL {exc}\n")
+            continue
+        for manifest_path in manifest_paths:
             checked += 1
             try:
                 manifest = load_plugin_manifest(manifest_path)
