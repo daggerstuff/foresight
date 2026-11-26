@@ -218,6 +218,18 @@ def _messages_to_text(messages: list[dict[str, Any]]) -> str:
 
 _RESULT_ROLES = ("assistant", "tool", "tool_use", "function")
 
+# A step that only reports how the run ended (a test summary line, an exit
+# code) is evidence of the outcome, not of the procedure that produced it.
+_RESULT_REPORT_RE = re.compile(
+    r"^(?:"
+    r"exit\s*(?:code)?\s*:?\s*-?\d+|"
+    r"\d+\s+(?:passed|failed|errors?|warnings?|skipped|tests?)\b|"
+    r"(?:all\s+)?(?:tests?|checks?|build|suite|pipeline)\s+"
+    r"(?:passed|failed|green|red|ok|succeeded)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _result_transcript(events: list[dict[str, Any]]) -> str:
     """Keep only the messages that report what the run did.
@@ -534,7 +546,9 @@ def auto_score_episode(
             f"failure_signals={assessment['failures']} success_signals={assessment['successes']}"
         )[:_MAX_DETAIL_CHARS]
 
-    signature = normalize_error_signature(redacted_transcript)
+    # A signature taken from the whole transcript follows whatever the request
+    # quoted; the result-bearing output is what a later session will match on.
+    signature = normalize_error_signature(assessment_text or redacted_transcript)
 
     conn = _connect()
     try:
@@ -724,7 +738,7 @@ def _procedure_steps(
         if (event.get("role") or "").lower() not in ("assistant", "tool", "tool_use", "function"):
             continue
         text = re.sub(r"\s+", " ", str(event.get("content") or "")).strip()
-        if len(text) < _MIN_SUMMARY_LEN:
+        if len(text) < _MIN_SUMMARY_LEN or _RESULT_REPORT_RE.match(text):
             continue
         verdict = evaluate_secrets(text, tenant_id=tenant_id)
         # `flag` mode hands back the original text, so a recipe step may only be
@@ -830,19 +844,23 @@ def distill_experiences(
         snapshot=_procedural_snapshot(user_id=user_id, tenant_id=tenant_id),
         same_task_failures={},
     )
-    _distill_failure_group(failures, state=state, user_id=user_id, tenant_id=tenant_id)
-    _distill_success_group(successes, state=state, user_id=user_id, tenant_id=tenant_id)
-    _retire_stale_groups(
-        {f"failure:{sig}" for sig in failures} | {f"success:{slug}" for slug in successes},
-        user_id=user_id,
-        tenant_id=tenant_id,
-        result=result,
-    )
-    if result["procedural_memories_written"] or result["groups_retired"]:
-        # One invalidation per distillation run, scoped to this user and tenant:
-        # the eviction only touches entries keyed by this scope, and a batch of
-        # upserts costs one pass over the cache instead of one per group.
-        get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
+    try:
+        _distill_failure_group(failures, state=state, user_id=user_id, tenant_id=tenant_id)
+        _distill_success_group(successes, state=state, user_id=user_id, tenant_id=tenant_id)
+        _retire_stale_groups(
+            {f"failure:{sig}" for sig in failures} | {f"success:{slug}" for slug in successes},
+            user_id=user_id,
+            tenant_id=tenant_id,
+            result=result,
+        )
+    finally:
+        # A group that committed before a later write raised still left a recall
+        # miss behind, so the eviction runs on the way out of the failure too.
+        if result["procedural_memories_written"] or result["groups_retired"]:
+            # One invalidation per distillation run, scoped to this user and tenant:
+            # the eviction only touches entries keyed by this scope, and a batch of
+            # upserts costs one pass over the cache instead of one per group.
+            get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
     return result
 
 
@@ -910,8 +928,14 @@ def _distill_failure_group(
         if changed:
             result["procedural_memories_written"] += 1
         if is_signature:
-            slug = _slug(sample_summary)
-            same_task_failures.setdefault(slug, []).extend(ids)
+            # Each episode counts under the task it was actually doing: one
+            # signature can hit several tasks, and a recipe may only see the
+            # failures of its own task.
+            for ep in group:
+                summary = (ep.get("summary") or "").strip()
+                if len(summary) < _MIN_SUMMARY_LEN:
+                    continue
+                same_task_failures.setdefault(_slug(summary), []).append(ep["id"])
     state.same_task_failures = same_task_failures
 
 

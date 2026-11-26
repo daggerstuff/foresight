@@ -1121,7 +1121,12 @@ class HybridRetriever:
                         ns_frag,
                         expiry_frag,
                         """
-                    ORDER BY importance DESC, created_at DESC
+                    ORDER BY CASE
+                                 WHEN error_signature = ? THEN 0
+                                 WHEN error_signature = ? THEN 1
+                                 ELSE 2
+                             END,
+                             importance DESC, created_at DESC
                     LIMIT ?
                     """,
                     ),
@@ -1132,6 +1137,8 @@ class HybridRetriever:
                         err_class,
                         error_signature_like_prefix(err_class),
                         *ns_params,
+                        err_sig,
+                        err_class,
                         limit,
                     ],
                 )

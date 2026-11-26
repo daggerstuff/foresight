@@ -11,6 +11,7 @@ from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
 
 import foresight.auth as auth_module
+import foresight.experience as experience_module
 from foresight.auth import (
     OAuthCallerMiddleware,
     Role,
@@ -741,3 +742,186 @@ def test_an_authorized_oauth_call_records_a_verdict(monkeypatch):
     payload = json.loads(raw)
     assert payload["ok"] is True, payload
     assert payload["episode"]["outcome"] == "failure"
+
+
+def test_error_signature_comes_from_the_result_output_not_the_request():
+    """A problem the request names is not this session's failure."""
+    messages = [
+        {"role": "user", "content": "fix the deploy: ConnectionRefusedError: connection refused on 10.0.0.8:5432"},
+        {"role": "assistant", "content": "reading the socket teardown path"},
+        {
+            "role": "tool",
+            "content": 'Traceback (most recent call last):\n  File "parser.py", line 12\nValueError: bad input token',
+        },
+    ]
+    session_id = _session_id()
+    episode = _episode_for(session_id, messages)
+
+    scored = auto_score_episode(episode["id"], user_id=USER, tenant_id=TENANT, messages=messages)
+
+    assert scored is not None
+    assert "valueerror" in (scored["error_signature"] or "")
+    assert "connectionrefused" not in (scored["error_signature"] or "")
+
+
+def test_a_result_report_alone_does_not_justify_a_reusable_recipe(monkeypatch):
+    session_id = _session_id()
+    messages = [
+        {"role": "user", "content": "run the billing release checklist for the result report case"},
+        {"role": "assistant", "content": "52 passed in 3.1s"},
+        {"role": "tool", "content": "exit code 0"},
+    ]
+    episode = _episode_for(session_id, messages)
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
+    )
+    events = [
+        {"role": "assistant", "content": "52 passed in 3.1s"},
+        {"role": "tool", "content": "exit code 0"},
+    ]
+    monkeypatch.setattr("foresight.experience._raw_events_for_session", lambda *_a, **_k: events)
+
+    result = distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    rows = _fetch_all(
+        "SELECT observation_text FROM observations WHERE tenant_id = ? AND user_id = ? "
+        "AND pattern_key LIKE ? AND supporting_episode_ids LIKE ?",
+        (TENANT, USER, "success:%", f"%{episode['id']}%"),
+    )
+    assert rows, "the success observation is kept"
+    assert "Reusable recipe" not in rows[0]["observation_text"]
+    assert result["recipes_with_steps"] == 0
+
+
+def test_distiller_flushes_recall_when_a_later_group_write_raises(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class _Recorder:
+        def invalidate_caches(self, user_id: str, tenant_id: str) -> None:
+            calls.append((user_id, tenant_id))
+
+    monkeypatch.setattr("foresight.experience.get_hybrid_retriever", _Recorder)
+
+    real_upsert = experience_module.upsert_episode_observation
+
+    def _fail_on_a_success_observation(spec, *, user_id, tenant_id):
+        if spec.pattern_key.startswith("success:"):
+            raise RuntimeError("observation write failed")
+        return real_upsert(spec, user_id=user_id, tenant_id=tenant_id)
+
+    monkeypatch.setattr("foresight.experience.upsert_episode_observation", _fail_on_a_success_observation)
+
+    _distill_failing_episode("flush-a")
+    session_id = _session_id()
+    _episode_for(session_id, _success_transcript("flush-b"))
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
+    )
+
+    with pytest.raises(RuntimeError, match="observation write failed"):
+        distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    # The failure group committed before the success write raised, so the recall
+    # miss it left behind has to be evicted anyway, once.
+    assert calls == [(USER, TENANT)]
+
+
+def test_failure_group_keeps_each_episode_with_its_own_task():
+    task_a = "deploy the billing service to staging before the window"
+    task_b = "restart the analytics worker pool after the drain"
+    failure_event = {
+        "role": "tool",
+        "content": "Traceback (most recent call last):\nConnectionRefusedError: connection refused on db.internal:5432",
+    }
+    ep_a = _episode_for(_session_id(), [{"role": "user", "content": task_a}, failure_event])
+    ep_b = _episode_for(_session_id(), [{"role": "user", "content": task_b}, failure_event])
+    for ep in (ep_a, ep_b):
+        record_outcome(
+            USER,
+            TENANT,
+            EpisodeVerdict(
+                outcome="failure",
+                score_source="ci_result",
+                detail="ConnectionRefusedError: connection refused",
+                session_id=ep["session_id"],
+            ),
+        )
+    ep_ok = _episode_for(
+        _session_id(),
+        [
+            {"role": "user", "content": task_b},
+            {"role": "tool", "content": "restarted the worker pool and the queue drained cleanly"},
+        ],
+    )
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="success", score_source="ci_result", session_id=ep_ok["session_id"]),
+    )
+
+    distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    rows = _fetch_all(
+        "SELECT supporting_episode_ids FROM observations WHERE tenant_id = ? AND user_id = ? AND pattern_key LIKE ?",
+        (TENANT, USER, "success:%"),
+    )
+    targets = [set(json.loads(row["supporting_episode_ids"] or "[]")) for row in rows]
+    target = next((ids for ids in targets if ep_b["id"] in ids), None)
+    assert target is not None, "task B's recipe must cite task B's own failure"
+    assert ep_a["id"] not in target
+
+
+def test_exact_signature_matches_rank_ahead_of_class_matches():
+    """A class match may fill the window, but never by pushing the exact one out."""
+    markers = ("rank-alpha", "rank-beta", "rank-gamma")
+    for marker in markers:
+        session_id = _session_id()
+        _episode_for(session_id, _failure_transcript())
+        record_outcome(
+            USER,
+            TENANT,
+            EpisodeVerdict(
+                outcome="failure",
+                score_source="ci_result",
+                detail=f"ValueError: bad input {marker}",
+                session_id=session_id,
+            ),
+        )
+    distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    rows = _fetch_all(
+        "SELECT id FROM memories WHERE tenant_id = ? AND user_id = ? AND memory_type = 'procedural' "
+        "AND error_signature LIKE ? ORDER BY id",
+        (TENANT, USER, "valueerror: bad input rank-%"),
+    )
+    ids = [str(row["id"]) for row in rows]
+    assert len(ids) == len(markers), "one distilled lesson per distinct failure detail"
+    exact, class_a, class_b = ids[0], ids[1], ids[2]
+    shared_content = "unrelated note about release choreography"
+    query = "ValueError: bad input on 10.20.30.40:9999"
+    exact_signature = normalize_error_signature(query)
+    assert exact_signature
+    assert exact_signature != query
+    _execute(
+        "UPDATE memories SET error_signature = ?, content = ?, importance = 0.05, created_at = ? WHERE id = ?",
+        (exact_signature, shared_content, "2020-01-01T00:00:00Z", exact),
+    )
+    for mid in (class_a, class_b):
+        _execute(
+            "UPDATE memories SET error_signature = ?, content = ?, importance = 1.0, created_at = ? WHERE id = ?",
+            ("valueerror: bad input on config.yml", shared_content, "2026-11-26T00:00:00Z", mid),
+        )
+
+    ranked = get_hybrid_retriever()._keyword_search(
+        query,
+        USER,
+        TENANT,
+        2,
+        HybridSearchOptions(tenant_id=TENANT, limit=2),
+    )
+
+    assert exact in ranked, "the exact normalized-message match must survive the candidate limit"
