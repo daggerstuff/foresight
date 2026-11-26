@@ -61,6 +61,33 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def mark_steps_checked(
+    pattern_key: str,
+    checked_at: str,
+    *,
+    user_id: str = "default",
+    tenant_id: str = "default",
+) -> None:
+    """Record that the stored steps were re-derived against the current transcripts.
+
+    last_refined_at says when the observation text last changed, and the
+    recency ordering and confidence decay read it that way, so verifying a
+    recipe whose text and evidence are unchanged must not move it. This stamp
+    is the separate fact the distillation scan compares against episode update
+    times when it decides whether the stored steps still describe the sessions
+    behind them.
+    """
+    if not pattern_key or not checked_at:
+        return
+    _execute(
+        "UPDATE observations SET steps_checked_at = ? WHERE tenant_id = ? AND user_id = ? "
+        "AND pattern_key = ? AND status <> 'archived' "
+        "AND COALESCE(agent_id, 'default') = 'default' AND COALESCE(project, 'default') = 'default' "
+        "AND (steps_checked_at IS NULL OR steps_checked_at < ?)",
+        (checked_at, tenant_id, user_id, pattern_key, checked_at),
+    )
+
+
 def _observation_row(row: dict) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -77,6 +104,7 @@ def _observation_row(row: dict) -> dict[str, Any]:
         "status": row.get("status", "active"),
         "first_seen_at": row["first_seen_at"],
         "last_refined_at": row.get("last_refined_at"),
+        "steps_checked_at": row.get("steps_checked_at"),
         "version": int(row.get("version") or 1),
     }
 

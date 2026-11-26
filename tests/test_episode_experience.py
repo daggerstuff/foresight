@@ -393,6 +393,58 @@ def test_a_recaptured_session_rederives_its_recipe_steps():
     assert drain_step in recipes[0]["observation_text"], recipes[0]["observation_text"]
 
 
+def test_a_verified_unchanged_recipe_stops_reloading_its_session(monkeypatch):
+    """A recapture that leaves the recipe alone is re-read once, not on every pass."""
+    session_id = _session_id()
+    messages = [
+        {"role": "user", "content": "run the nightly release checklist"},
+        {"role": "assistant", "content": "apply the early migration before the restart"},
+    ]
+    get_capture_pipeline().run(
+        session_id=session_id,
+        messages=messages,
+        user_id=USER,
+        tenant_id=TENANT,
+        options=CaptureOptions(infer=False),
+    )
+    episode = build_episode(session_id, user_id=USER, tenant_id=TENANT)
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
+    )
+
+    real_read = experience_module._raw_events_for_session
+    loaded: list[str] = []
+
+    def recording_read(tenant_id, user_id, sid):
+        loaded.append(sid)
+        return real_read(tenant_id, user_id, sid)
+
+    monkeypatch.setattr(experience_module, "_raw_events_for_session", recording_read)
+
+    first = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert first["recipes_with_steps"] == 1, first
+    assert loaded == [session_id], loaded
+
+    # A recapture rewrites the session without changing the recipe it yields:
+    # the episode id and its text stay, and only its update stamp moves on.
+    _execute(
+        "UPDATE episodes SET updated_at = ? WHERE id = ?",
+        ("2999-01-01T00:00:00+00:00", episode["id"]),
+    )
+
+    loaded.clear()
+    verified = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert verified["recipes_with_steps"] == 1, verified
+    assert loaded == [session_id], loaded
+
+    loaded.clear()
+    later = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert later["recipes_with_steps"] == 1, later
+    assert loaded == [], "a verified unchanged recipe reloaded its raw events: " + repr(loaded)
+
+
 def test_keyword_search_surfaces_failure_signature():
     _distill_failing_episode("recall-check")
     distill_experiences(user_id=USER, tenant_id=TENANT)

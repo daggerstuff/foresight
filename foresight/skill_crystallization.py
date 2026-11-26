@@ -458,6 +458,15 @@ def _derive_skill_name(obs: dict[str, Any]) -> str:
 _SKILL_LIST_PAGE_SIZE = 200
 
 
+def _observation_is_live(conn: Any, observation_id: str, scope: UserScope) -> bool:
+    """Whether the observation a skill records is still live evidence."""
+    row = conn.execute(
+        "SELECT 1 FROM observations WHERE id = ? AND tenant_id = ? AND user_id = ? AND status <> 'archived'",
+        (observation_id, scope.tenant_id, scope.user_id),
+    ).fetchone()
+    return row is not None
+
+
 def _existing_skill_by_observation(
     conn: Any,
     observation_id: str,
@@ -475,7 +484,9 @@ def _existing_skill_by_observation(
     The lookup is restricted to the caller's lane plus the shared ``default``
     lane, and the match itself requires the exact destination namespace, so a
     skill staged for one project (or in the shared lane) is never reused as the
-    target of another project's crystallization.
+    target of another project's crystallization. A skill is superseded only
+    when the observation it records is no longer live evidence: a row that
+    still backs the reviewed content keeps it.
     """
     frag, ns_params = _ns_clause(scope.agent_id, scope.project)
     dest_agent = scope.agent_id or "default"
@@ -507,8 +518,11 @@ def _existing_skill_by_observation(
             return rd, None
         if pattern_key and metrics.get("pattern_key") == pattern_key:
             if recorded and observation_id and recorded != observation_id:
-                # Another observation's skill holds this key.
-                superseded = superseded or rd
+                # Another observation's skill holds this key. Retiring it is
+                # only honest when the observation it records is gone: a live
+                # row still backs content a human reviewed.
+                if not _observation_is_live(conn, recorded, scope):
+                    superseded = superseded or rd
             elif legacy is None:
                 # A row staged before observation ids were recorded: the shared
                 # key is the only link it has, so it stays the update target.
@@ -975,6 +989,7 @@ class SigningOutcome:
 
     status: str
     signature: str | None = None
+    content_hash: str | None = None
 
 
 def _sign_staged_skill_once(
@@ -1002,13 +1017,20 @@ def _sign_staged_skill_once(
         return SigningOutcome("absent")
     stored = str(row["content"] or "")
     content = decrypt_if_encrypted(stored, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    read_hash = str(row["content_hash"] or "")
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     _verified, parsed = verify_skill_markdown(content)
     signature_status = str(parsed.get("signature_status") or "")
     if signature_status == "valid":
-        return SigningOutcome("already_valid")
+        return SigningOutcome("already_valid", content_hash=content_hash)
     resigned = ""
     signature: str | None = None
     if signature_status == "missing":
+        # content_hash is the digest this row was written with, so a mismatch
+        # means the artifact changed without its hash being updated. Signing it
+        # would publish content nobody staged as a valid skill.
+        if read_hash and read_hash != content_hash:
+            return SigningOutcome("invalid")
         resigned, signature = _resign_skill_document(parsed, content)
     if signature is None:
         # Present but unverifiable, or no signature line to fill in: rewriting
@@ -1022,7 +1044,6 @@ def _sign_staged_skill_once(
         meta = {}
     meta["signature"] = signature
     meta["signature_alg"] = "HMAC-SHA256"
-    read_hash = str(row["content_hash"] or "")
     cursor = conn.execute(
         join_sql_parts(
             "UPDATE memories SET content = ?, content_hash = ?, metrics = ?, updated_at = ? "
@@ -1046,7 +1067,7 @@ def _sign_staged_skill_once(
         conn.rollback()
         return None
     conn.commit()
-    return SigningOutcome("signed", signature)
+    return SigningOutcome("signed", signature, content_hash=hashlib.sha256(resigned.encode("utf-8")).hexdigest())
 
 
 def ensure_skill_signed(memory_id: str, scope: UserScope) -> SigningOutcome:

@@ -9328,6 +9328,12 @@ def _handle_inferred_approve(
         if outcome.status in refusal:
             return _tool_error("approve", refusal[outcome.status], memory_id=memory_id, status=outcome.status)
 
+    # Bound to the artifact that was just signed: a crystallization that
+    # restages the skill between the signature and this write leaves a document
+    # here that nobody signed, and approving it would publish that document as
+    # valid. A restaged row keeps inferred = 1, so it fails this write and is
+    # reported instead of approved.
+    signed_hash = outcome.content_hash or ""
     conn = get_db_connection()
     try:
         cursor = conn.execute(
@@ -9335,8 +9341,9 @@ def _handle_inferred_approve(
                 "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
                 "WHERE id = ? AND user_id = ? AND tenant_id = ? AND inferred = 1",
                 ns_frag,
+                " AND content_hash = ?" if signed_hash else "",
             ),
-            (now, memory_id, uid, tenant_id, *ns_params),
+            (now, memory_id, uid, tenant_id, *ns_params, *((signed_hash,) if signed_hash else ())),
         )
         committed = bool(cursor.rowcount)
         conn.commit()
@@ -9371,6 +9378,15 @@ def _handle_inferred_approve(
         conn.close()
     if current is None:
         return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
+    if signed_hash and str(current["review_status"] or "") != "approved":
+        # The row was replaced after it was signed, so the signature covers an
+        # artifact that is no longer here. Approving again signs the new one.
+        return _tool_error(
+            "approve",
+            f"skill {memory_id} changed while it was being approved; retry the approval.",
+            memory_id=memory_id,
+            status="stale",
+        )
     return _tool_response(
         ok=True,
         action="approve",

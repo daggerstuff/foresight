@@ -432,3 +432,10 @@ def test_joint_obligation_and_prohibition_is_a_requirement():
 
     assert _clause_strength(joint) == RuleStrength.MUST
     assert _clause_strength(prohibition) == RuleStrength.MUST_NOT
+
+
+def test_a_later_prohibition_is_not_absorbed_by_an_earlier_should_never():
+    """ "should never" governs only the clause it opens, not every later prohibition."""
+    text = "You should check coverage and should never skip smoke tests, and must not deploy without approval."
+
+    assert _clause_strength(text) == RuleStrength.MUST_NOT

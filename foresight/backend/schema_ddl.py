@@ -831,6 +831,9 @@ MIGRATIONS: dict[int, list[str]] = {
         # migration 22 before `created_at` was added to memory_provenance.
         "ALTER TABLE memory_provenance ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
     ],
+    32: [
+        "ALTER TABLE observations ADD COLUMN steps_checked_at TEXT",
+    ],
 }
 
 

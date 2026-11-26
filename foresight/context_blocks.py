@@ -473,32 +473,41 @@ def _clause_strength(text: str) -> RuleStrength | None:
     that should governs the never. A clause that already said "must" ("you must
     run the suite, and you should never skip it") states an obligation, and one
     that opens with "never" is a prohibition even if it later mentions what
-    someone should consider.
+    someone should consider. Every prohibition is judged on its own, because a
+    recommendation only governs the one it opens: "should never skip smoke
+    tests, and must not deploy" states a recommendation and a prohibition.
     """
-    should = _SHOULD_RE.search(text)
-    must_not = _MUST_NOT_RE.search(text)
-    if must_not is not None and (should is None or must_not.start() < should.start()):
-        return RuleStrength.MUST_NOT
-    if should is not None:
-        # The recommendation that governs a "never" is the nearest one before
-        # it: "check coverage and should never skip smoke tests" states two
-        # recommendations, while "you must run the suite, should check coverage,
-        # and must not skip smoke tests" states an independent prohibition,
-        # because a conjunction between the two opens a clause the earlier
-        # recommendation no longer governs.
-        governing = should
-        if must_not is not None:
-            for later in _SHOULD_RE.finditer(text[: must_not.start()]):
-                governing = later
-        between = text[governing.end() : must_not.start()] if must_not is not None else ""
+    shoulds = list(_SHOULD_RE.finditer(text))
+    prohibitions = list(_MUST_NOT_RE.finditer(text))
+    # Every prohibition is judged against the recommendation that actually
+    # governs it: the nearest one before it, and only while no conjunction or
+    # clause break stands between the two. Inspecting just the first one let an
+    # earlier "should never" absorb a later "must not".
+    for must_not in prohibitions:
+        governing = None
+        for candidate in shoulds:
+            if candidate.start() < must_not.start():
+                governing = candidate
+        if governing is None:
+            return RuleStrength.MUST_NOT
+        between = text[governing.end() : must_not.start()]
         if _CLAUSE_BREAK_RE.search(between) is not None:
             return RuleStrength.MUST_NOT
-        if _MUST_RE.search(text[: governing.start()]) is not None:
+    if not shoulds:
+        if _MUST_RE.search(text):
             return RuleStrength.MUST
-        return RuleStrength.SHOULD
-    if _MUST_RE.search(text):
+        return None
+    # No ungoverned prohibition is left, so the clause states whatever its
+    # recommendation says, upgraded to an obligation when a "must" precedes it.
+    governing_should = shoulds[0]
+    if prohibitions:
+        for candidate in shoulds:
+            if candidate.start() > prohibitions[0].start():
+                break
+            governing_should = candidate
+    if _MUST_RE.search(text[: governing_should.start()]) is not None:
         return RuleStrength.MUST
-    return None
+    return RuleStrength.SHOULD
 
 
 def _infer_experience_strength(observation: dict[str, Any]) -> RuleStrength:

@@ -29,14 +29,19 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
 from .error_signatures import normalize_error_signature
 from .hybrid_retriever import get_hybrid_retriever
 from .llm_client import default_llm_call
-from .observations import EpisodeObservationSpec, archive_observation, upsert_episode_observation
+from .observations import (
+    EpisodeObservationSpec,
+    archive_observation,
+    mark_steps_checked,
+    upsert_episode_observation,
+)
 from .reflect import _connect, _fetch_all, _fetch_one
 from .sensitivity import evaluate_secrets, resolve_is_sensitive
 
@@ -701,6 +706,10 @@ class _ObservationBaseline:
     # in the group moved after this, because a recaptured session keeps its
     # episode id and would otherwise pin the first transcript forever.
     refined_at: str
+    # When those steps were last re-derived against the group. A verification
+    # leaves the text alone, so it cannot move refined_at, which would make a
+    # checked recipe look freshly refined.
+    steps_checked_at: str = ""
 
 
 def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, _ObservationBaseline]:
@@ -714,7 +723,7 @@ def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, _Observa
     """
     rows = _fetch_all(
         "SELECT pattern_key, observation_text, confidence, supporting_episode_ids, "
-        "category, memory_type, version, last_refined_at FROM observations "
+        "category, memory_type, version, last_refined_at, steps_checked_at FROM observations "
         "WHERE tenant_id = ? AND user_id = ? AND status <> 'archived' "
         "AND COALESCE(agent_id, 'default') = 'default' AND COALESCE(project, 'default') = 'default'",
         (tenant_id, user_id),
@@ -739,6 +748,7 @@ def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, _Observa
             version=int(row.get("version") or 0),
             episode_ids=episode_ids,
             refined_at=str(row.get("last_refined_at") or ""),
+            steps_checked_at=str(row.get("steps_checked_at") or ""),
         )
     return shape
 
@@ -1145,6 +1155,7 @@ def _baseline_from(stored: dict[str, Any]) -> _ObservationBaseline:
         version=int(stored.get("version") or 0),
         episode_ids=episodes,
         refined_at=str(stored.get("last_refined_at") or ""),
+        steps_checked_at=str(stored.get("steps_checked_at") or ""),
     )
 
 
@@ -1156,9 +1167,13 @@ def _steps_still_current(prior: _ObservationBaseline, group: list[dict[str, Any]
     separates "nothing changed" from "the same id now holds a new transcript",
     and an episode with no stamp cannot be proven current, so it re-derives.
     """
-    if not prior.refined_at:
+    # A re-derivation that left the text and evidence unchanged does not move
+    # last_refined_at, so the later of the two stamps is the last time the
+    # stored steps were proven against these transcripts.
+    stamp = max(prior.refined_at, prior.steps_checked_at)
+    if not stamp:
         return False
-    return all(bool(ep.get("updated_at")) and str(ep.get("updated_at")) <= prior.refined_at for ep in group)
+    return all(bool(ep.get("updated_at")) and str(ep.get("updated_at")) <= stamp for ep in group)
 
 
 def _distill_failure_group(
@@ -1344,6 +1359,13 @@ def _distill_success_group(
                 # dropped, and the count proves this run published less than it
                 # derived instead of reporting a write that never happened.
                 result["observations_deferred"] += 1
+        else:
+            # Nothing about the claim changed, so the steps were re-derived only
+            # because the transcripts moved past the last stamp. Record that
+            # check so the next pass reuses them instead of reading again.
+            checked_at = max((str(ep.get("updated_at") or "") for ep in group), default="")
+            mark_steps_checked(pattern_key, checked_at, user_id=user_id, tenant_id=tenant_id)
+            observations[pattern_key] = replace(prior, steps_checked_at=checked_at)
         _, changed = _upsert_procedural_memory(
             ProceduralMemorySpec(
                 key=f"success:{slug}",

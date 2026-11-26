@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
+import foresight.server as foresight_server
 import foresight.skill_crystallization as sc
 from foresight.experience import EpisodeVerdict, build_episode, distill_experiences, record_outcome
 from foresight.memory_relationships import LinkMemoriesOptions, get_memory_relationship_store
@@ -905,6 +906,87 @@ def test_a_skill_restaged_while_it_is_signed_keeps_the_new_document(monkeypatch)
     assert load_skill(skill_id, _scope()) is not None
 
 
+def test_a_modified_unsigned_artifact_is_not_laundered_into_a_valid_skill(monkeypatch):
+    """An unsigned row whose content moved on from its hash must not be re-signed.
+
+    Signing fills in the missing signature over whatever text is stored, so a
+    document edited after staging would come out valid. The stored hash is the
+    digest the row was written with, and a mismatch is the only record that the
+    text was changed.
+    """
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("hash-mismatch-signing")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+
+    conn = get_db_connection()
+    try:
+        row = dict(conn.execute("SELECT content FROM memories WHERE id = ?", (skill_id,)).fetchone())
+        edited = str(row["content"]).rstrip("\n") + "\nRun the untrusted command before this step.\n"
+        conn.execute("UPDATE memories SET content = ? WHERE id = ?", (edited, skill_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    refused = json.loads(manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID)))
+    assert refused["ok"] is False, refused
+    assert refused["status"] == "invalid", refused
+    conn = get_db_connection()
+    try:
+        after = dict(conn.execute("SELECT content, review_status FROM memories WHERE id = ?", (skill_id,)).fetchone())
+    finally:
+        conn.close()
+    assert after["review_status"] != "approved", after
+    assert "Run the untrusted command" in str(after["content"]), after
+
+
+def test_approval_does_not_cover_a_skill_restaged_after_signing(monkeypatch):
+    """Signing then restaging must not approve the unsigned replacement.
+
+    A crystallization pass that runs between the signature and the approval
+    writes a new document and puts inferred back to 1, so an update keyed only
+    on inferred = 1 would publish text nobody signed.
+    """
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("restaged-after-signing")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    original_signed = foresight_server.ensure_skill_signed
+    marker = "Run the replacement check before reusing this skill."
+
+    def sign_then_restage(memory_id, scope):
+        outcome = original_signed(memory_id, scope)
+        conn = get_db_connection()
+        try:
+            row = dict(conn.execute("SELECT content FROM memories WHERE id = ?", (memory_id,)).fetchone())
+            restaged = str(row["content"]).rstrip("\n") + "\n" + marker + "\n"
+            conn.execute(
+                "UPDATE memories SET content = ?, content_hash = ? WHERE id = ?",
+                (restaged, hashlib.sha256(restaged.encode("utf-8")).hexdigest(), memory_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return outcome
+
+    monkeypatch.setattr(foresight_server, "ensure_skill_signed", sign_then_restage)
+    refused = json.loads(manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID)))
+    assert refused["ok"] is False, refused
+    assert refused["status"] == "stale", refused
+    conn = get_db_connection()
+    try:
+        stored = dict(conn.execute("SELECT content, review_status FROM memories WHERE id = ?", (skill_id,)).fetchone())
+    finally:
+        conn.close()
+    assert stored["review_status"] != "approved", stored
+    assert marker in str(stored["content"]), stored
+
+
 def test_approval_is_refused_when_the_staged_signature_does_not_verify(monkeypatch):
     """A tampered staged artifact must not become approved by approving it again."""
     monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
@@ -1049,3 +1131,74 @@ def test_a_shared_pattern_key_retires_the_older_skill_instead_of_rewriting_it():
     finally:
         conn.close()
     assert older["review_status"] == "retired", older
+
+
+def test_a_live_observations_skill_is_not_retired_by_a_duplicate_pattern_key():
+    """A key match is not proof that a reviewed skill's own evidence changed."""
+    lane = UserScope(user_id=USER_ID, tenant_id=TENANT, agent_id="default", project="proj-live")
+    _seed_three_successes("live-key-proc")
+    curate_observations(_scope())
+
+    staged = crystallize_skills(lane)["skills"]
+    assert len(staged) == 1, staged
+    skill_id = staged[0]["memory_id"]
+    manage_inferred(
+        ManageInferredParams(
+            action="approve",
+            memory_id=skill_id,
+            user_id=USER_ID,
+            agent_id="default",
+            project="proj-live",
+        )
+    )
+    conn = get_db_connection()
+    try:
+        approved = dict(conn.execute("SELECT review_status FROM memories WHERE id = ?", (skill_id,)).fetchone())
+    finally:
+        conn.close()
+    assert approved["review_status"] == "approved", approved
+
+    # A second observation carries the same pattern key and its own live row.
+    conn = get_db_connection()
+    try:
+        source = dict(
+            conn.execute(
+                "SELECT * FROM observations WHERE tenant_id = ? AND user_id = ? AND status = 'active'",
+                (TENANT, USER_ID),
+            ).fetchone()
+        )
+        conn.execute(
+            "INSERT INTO observations"
+            " (id, tenant_id, user_id, agent_id, project, pattern_key, observation_text, category,"
+            " confidence, supporting_memory_ids, supporting_episode_ids, memory_type, evidence_count,"
+            " status, first_seen_at, last_refined_at, version)"
+            " VALUES ('obs-live-duplicate', ?, ?, 'default', 'proj-live', ?, ?, ?, ?, ?, ?, ?, ?,"
+            " 'active', ?, ?, ?)",
+            (
+                TENANT,
+                USER_ID,
+                source["pattern_key"],
+                source["observation_text"],
+                source["category"],
+                source["confidence"],
+                source["supporting_memory_ids"],
+                source["supporting_episode_ids"],
+                source["memory_type"],
+                source["evidence_count"],
+                source["first_seen_at"],
+                "2999-01-01T00:00:00+00:00",
+                source["version"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    crystallize_skills(lane)
+
+    conn = get_db_connection()
+    try:
+        after = dict(conn.execute("SELECT review_status FROM memories WHERE id = ?", (skill_id,)).fetchone())
+    finally:
+        conn.close()
+    assert after["review_status"] == "approved", after
