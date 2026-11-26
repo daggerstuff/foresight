@@ -1,0 +1,60 @@
+.gitignore
+  s_a501fa1cdfdd22::t_28ee622914e646 40
+plugins/sdk/python/README.md
+  s_a501fa1cdfdd22::t_34b2da791b4455 1-47
+plugins/sdk/typescript/vitest.config.ts
+  s_a501fa1cdfdd22::t_a34cb9c6e094d0 1-10
+plugins/sdk/typescript/README.md
+  s_a501fa1cdfdd22::t_bfba10b4785217 1-48
+plugins/README.md
+  s_a501fa1cdfdd22::t_fd62afddff1ebc 59-80
+plugins/sdk/typescript/tsconfig.json
+  s_a501fa1cdfdd22::t_78a469e23263fc 1-14
+plugins/sdk/typescript/package.json
+  s_a501fa1cdfdd22::t_4a6301d26033f0 1-25
+plugins/claude/hooks/foresight_hook.py
+  s_a501fa1cdfdd22::t_30a8e4bdd671be 17-28,30-36
+  s_a501fa1cdfdd22::t_255b6b665c28f3 195-197
+  s_a501fa1cdfdd22::t_b987100d1a690b 6
+  s_a501fa1cdfdd22::t_9f5dfda7646e45 29
+  s_a501fa1cdfdd22::t_50542cf82a1f77 214-220,230-232
+  s_a501fa1cdfdd22::t_a174d6dd277804 768-769
+plugins/sdk/python/foresight_plugin_sdk.py
+  s_a501fa1cdfdd22::t_4736646c0f3672 1-347
+plugins/sdk/typescript/tests/index.test.ts
+  s_a501fa1cdfdd22::t_26158c7fc180b9 1-229
+plugins/mastracode/src/client.ts
+  s_a501fa1cdfdd22::t_1932173a3303cb 3-6,9-23
+plugins/sdk/typescript/src/index.ts
+  s_a501fa1cdfdd22::t_772c28856ffe48 1-404
+plugins/claude/install.sh
+  s_a501fa1cdfdd22::t_e29dc205c2ada4 156-158,172-176
+  s_a501fa1cdfdd22::t_8ef299270d5d18 131-132
+tests/test_plugin_sdk.py
+  s_a501fa1cdfdd22::t_949c7bac6e0d1c 5-6,14,25-26,32,55,88-89,91,103,107,121,123,129,132,142-149,168-169,177,188-189,199,202-206,220-222,251,257,260,271-272
+  s_a501fa1cdfdd22::t_1f4dc3f8c3a107 1-4,7-13,15-21,30-31,33-36,38-46,48-54,56-87,90,92-102,104-106,108-120,122,124-128,130-131,133-141,150-167,170-174,176,178-187,190-196,198,200-201,207-219,223-250,252-256,258-259,261-270,273-274
+  s_a501fa1cdfdd22::t_7583f8839e5e31 47
+  s_a501fa1cdfdd22::t_ae68cff8d4c0d4 197
+  s_a501fa1cdfdd22::t_82e83034558bdb 22-24,27,29
+  s_a501fa1cdfdd22::t_f047348434093c 28
+  s_a501fa1cdfdd22::t_f34a5fd7ccbf1a 37
+  s_a501fa1cdfdd22::t_9d2da3a0de88cc 175
+plugins/mastracode/package.json
+  s_a501fa1cdfdd22::t_cc95a0d3dc2df9 12-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fce3673caca9472511e40d7a0b842854c426ad8c",
+  "prompts": {},
+  "sessions": {
+    "s_a501fa1cdfdd22": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "thoracic-coneflower",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
