@@ -128,6 +128,8 @@ if [ "$DO_CLAUDE_CODE" -eq 1 ]; then
   else
     HOOK_DEST="$CLAUDE_DIR/hooks/foresight_hook.py"
     HOOK_SRC="$PLUGIN_DIR/hooks/foresight_hook.py"
+    SDK_SRC="$PLUGIN_DIR/../sdk/python/foresight_plugin_sdk.py"
+    SDK_DEST="$CLAUDE_DIR/hooks/foresight_plugin_sdk.py"
     LEGACY_HOOK_DEST="$CLAUDE_DIR/hooks/foresight-hook.sh"
     SKILL_SRC="$PLUGIN_DIR/skills/foresight/SKILL.md"
 
@@ -151,6 +153,9 @@ if [ "$DO_CLAUDE_CODE" -eq 1 ]; then
 
     if [ "$DRY_RUN" -eq 1 ]; then
       printf "  [dry-run] cp %s %s\n" "$HOOK_SRC" "$HOOK_DEST"
+      if [ -f "$SDK_SRC" ]; then
+        printf "  [dry-run] cp %s %s\n" "$SDK_SRC" "$SDK_DEST"
+      fi
       if [ -e "$LEGACY_HOOK_DEST" ]; then
         printf "  [dry-run] rm %s\n" "$LEGACY_HOOK_DEST"
       fi
@@ -164,6 +169,11 @@ if [ "$DO_CLAUDE_CODE" -eq 1 ]; then
       [ -z "$SKILL_SKIP" ] && mkdir -p "$SKILL_DEST_DIR"
       cp "$HOOK_SRC" "$HOOK_DEST"
       chmod +x "$HOOK_DEST"
+      if [ -f "$SDK_SRC" ]; then
+        cp "$SDK_SRC" "$SDK_DEST"
+      else
+        _warn "Plugin SDK not found at $SDK_SRC — hook will use built-in fallbacks"
+      fi
       rm -f "$LEGACY_HOOK_DEST"
       if [ -n "$SKILL_SKIP" ]; then
         _warn "Skill install skipped: $SKILL_SKIP"
