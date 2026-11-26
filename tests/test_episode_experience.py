@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
+from mcp.server.auth.middleware.auth_context import auth_context_var
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from mcp.server.auth.provider import AccessToken
 
-from foresight.auth import Role, User, reset_caller_identity, set_caller_identity
+import foresight.auth as auth_module
+from foresight.auth import (
+    OAuthCallerMiddleware,
+    Role,
+    User,
+    reset_caller_identity,
+    set_caller_identity,
+)
 from foresight.capture import CaptureOptions, get_capture_pipeline
 from foresight.experience import (
     EpisodeVerdict,
@@ -631,3 +643,69 @@ def test_error_signature_is_derived_from_the_redacted_transcript(monkeypatch):
     assert seen, "the scorer must derive a signature"
     assert secret not in seen[0]
     assert "InvalidClientTokenId" in seen[0]
+
+
+class _StubAuthManager:
+    def __init__(self, user: User) -> None:
+        self._user = user
+
+    def get_user_by_id(self, user_id: str) -> User | None:
+        return self._user if user_id == self._user.user_id else None
+
+    def validate_user_tenant_access(self, user: User, tenant_id: str) -> bool:
+        return user.user_id == self._user.user_id and tenant_id == TENANT
+
+
+def test_an_authorized_oauth_call_records_a_verdict(monkeypatch):
+    """A bearer token the OAuth provider authenticated must save a verdict.
+
+    The provider verifies the token but binds no principal, so the middleware
+    has to resolve the token's subject before the tool body's caller check runs.
+    """
+    caller = User(
+        user_id="oauth-verdict-user",
+        username="oauth-verdict",
+        email="oauth-verdict@test.local",
+        role=Role.USER,
+    )
+    monkeypatch.setenv("FORESIGHT_OAUTH_BASE_URL", "https://foresight.example.test")
+    monkeypatch.setattr(auth_module, "_auth_manager", _StubAuthManager(caller))
+
+    session_id = _session_id()
+    _episode_for(session_id, _failure_transcript())
+
+    access = AccessToken(
+        token="oauth-access-token",
+        client_id="client",
+        scopes=["foresight.write"],
+        subject=caller.user_id,
+    )
+
+    async def call_next(_context):
+        return record_episode_outcome(
+            RecordEpisodeOutcomeParams(
+                session_id=session_id,
+                user_id=caller.user_id,
+                outcome="failure",
+                score_source="ci_result",
+                detail="FAILED deploy - ConnectionRefusedError: connection refused",
+            )
+        )
+
+    context = SimpleNamespace(
+        message=SimpleNamespace(
+            name="record_episode_outcome",
+            arguments={"tenant_id": TENANT},
+            meta=SimpleNamespace(model_extra={}),
+        )
+    )
+
+    token = auth_context_var.set(AuthenticatedUser(access))
+    try:
+        raw = asyncio.run(OAuthCallerMiddleware().on_call_tool(context, call_next))
+    finally:
+        auth_context_var.reset(token)
+
+    payload = json.loads(raw)
+    assert payload["ok"] is True, payload
+    assert payload["episode"]["outcome"] == "failure"

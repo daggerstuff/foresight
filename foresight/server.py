@@ -43,6 +43,7 @@ from .activity_log import record_activity
 from .audit import record_secret_defense_event, secret_defense_metadata
 from .auth import (
     AuthMiddleware,
+    OAuthCallerMiddleware,
     Role,
     _should_require_api_key,
     auth_enforced,
@@ -2056,7 +2057,13 @@ if _oauth_base_url:
         website_url="https://foresight.vectorize.io",
         version="0.19.0",
         auth=_oauth_provider,
-        middleware=[TenantMiddleware(), AttributionMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()],
+        middleware=[
+            TenantMiddleware(),
+            AttributionMiddleware(),
+            InputValidationMiddleware(),
+            RateLimitMiddleware(),
+            OAuthCallerMiddleware(),
+        ],
     )
 else:
     mcp = FastMCP(

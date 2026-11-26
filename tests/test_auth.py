@@ -3,9 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from mcp.server.auth.middleware.auth_context import auth_context_var
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from mcp.server.auth.provider import AccessToken
 
 import foresight.auth as auth_module
-from foresight.auth import AuthManager, AuthMiddleware, Role
+from foresight.auth import AuthManager, AuthMiddleware, OAuthCallerMiddleware, Role
 
 
 def _tool_result_is_error(result) -> bool:
@@ -229,3 +232,165 @@ async def test_auth_middleware_binds_caller_identity_for_resource_reads(temp_db_
     assert result == "skills"
     assert seen == [user.user_id]
     assert auth_module.get_caller_user_id() is None
+
+
+# --- OAuth caller binding and read-only enforcement -------------------------
+#
+# The OAuth provider verifies a bearer token but binds no principal, so every
+# tool body that reads the bound caller saw "no caller". And Role.READONLY
+# existed with no enforcement at all: a read-only key could write through every
+# tool.
+
+
+def _make_named_tool_context(api_key: str, tenant_id: str, tool_name: str):
+    context = _make_context(api_key, tenant_id)
+    context.message.name = tool_name
+    return context
+
+
+def _bind_oauth_access_token(subject: str | None):
+    access = AccessToken(
+        token="oauth-access-token",
+        client_id="client",
+        scopes=["foresight.read"],
+        subject=subject,
+    )
+    return auth_context_var.set(AuthenticatedUser(access))
+
+
+def _reset_oauth_access_token(token) -> None:
+    auth_context_var.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_readonly_key_cannot_call_a_write_tool(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = manager.create_user(
+        username="readonly-writer",
+        email="readonly-writer@example.com",
+        password="SecretPass123!",
+        role=Role.READONLY,
+        tenant_access=["tenant-a"],
+    )
+
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="wrote")
+
+    result = await AuthMiddleware().on_call_tool(
+        _make_named_tool_context(user.api_key, "tenant-a", "record_episode_outcome"),
+        call_next,
+    )
+
+    assert _tool_result_is_error(result) is True
+    assert "Read-only" in result.content[0].text
+    call_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_readonly_key_can_still_read(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = manager.create_user(
+        username="readonly-reader",
+        email="readonly-reader@example.com",
+        password="SecretPass123!",
+        role=Role.READONLY,
+        tenant_access=["tenant-a"],
+    )
+
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="memories")
+
+    result = await AuthMiddleware().on_call_tool(
+        _make_named_tool_context(user.api_key, "tenant-a", "search_memories"),
+        call_next,
+    )
+
+    assert result == "memories"
+    call_next.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_oauth_middleware_binds_the_token_subject_as_the_caller(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = manager.create_user(
+        username="oauth-caller",
+        email="oauth-caller@example.com",
+        password="SecretPass123!",
+        tenant_access=["tenant-a"],
+    )
+
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    seen: list[str | None] = []
+
+    async def call_next(_context):
+        seen.append(auth_module.get_caller_user_id())
+        return "ok"
+
+    token = _bind_oauth_access_token(user.user_id)
+    try:
+        result = await OAuthCallerMiddleware().on_call_tool(_make_context("", "tenant-a"), call_next)
+    finally:
+        _reset_oauth_access_token(token)
+
+    assert result == "ok"
+    assert seen == [user.user_id]
+    assert auth_module.get_caller_user_id() is None
+
+
+@pytest.mark.asyncio
+async def test_oauth_middleware_refuses_a_token_without_a_user(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    manager.create_user(
+        username="oauth-subjectless",
+        email="oauth-subjectless@example.com",
+        password="SecretPass123!",
+        tenant_access=["tenant-a"],
+    )
+
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    call_next = AsyncMock(return_value="ok")
+
+    token = _bind_oauth_access_token(None)
+    try:
+        result = await OAuthCallerMiddleware().on_call_tool(_make_context("", "tenant-a"), call_next)
+    finally:
+        _reset_oauth_access_token(token)
+
+    assert _tool_result_is_error(result) is True
+    assert "names no user" in result.content[0].text
+    call_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oauth_middleware_applies_the_read_only_gate(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = manager.create_user(
+        username="oauth-readonly",
+        email="oauth-readonly@example.com",
+        password="SecretPass123!",
+        role=Role.READONLY,
+        tenant_access=["tenant-a"],
+    )
+
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    call_next = AsyncMock(return_value="wrote")
+
+    token = _bind_oauth_access_token(user.user_id)
+    try:
+        result = await OAuthCallerMiddleware().on_call_tool(
+            _make_named_tool_context("", "tenant-a", "record_episode_outcome"),
+            call_next,
+        )
+    finally:
+        _reset_oauth_access_token(token)
+
+    assert _tool_result_is_error(result) is True
+    assert "Read-only" in result.content[0].text
+    call_next.assert_not_awaited()

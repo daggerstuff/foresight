@@ -16,6 +16,7 @@ from enum import Enum
 
 from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.types import TextContent
 
 from .config import DB_PATH
@@ -450,6 +451,24 @@ class AuthManager:
         finally:
             pool.release(conn)
 
+    def get_user_by_id(self, user_id: str) -> User | None:
+        """Fetch a user by user id (active or not).
+
+        OAuth access tokens carry the user id as their ``subject``, which is an
+        opaque token (``create_user``), so a subject cannot be resolved by name.
+        """
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        try:
+            cursor = conn.execute(
+                join_sql_parts("SELECT ", self._USER_COLUMNS, " FROM users WHERE user_id = ?"),
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return self._row_to_user(row) if row else None
+        finally:
+            pool.release(conn)
+
     def list_users(self) -> list[User]:
         """List all users (provisioning/audit view; does not expose secrets)."""
         pool = get_pool(self.db_path)
@@ -700,6 +719,36 @@ def auth_enforced() -> bool:
     return explicit not in {"", "0", "false", "no", "off"}
 
 
+# The read surfaces a read-only principal may still call. Everything else a
+# tool call can name is a write: memories, episodes, skills, curation, config.
+READONLY_TOOLS = frozenset(
+    {
+        "search_memories",
+        "get_catch_up",
+        "inject_context",
+        "query_memories_temporal",
+        "get_system_status",
+        "export_profile",
+        "reflect",
+    }
+)
+
+
+def readonly_denial(message: object | None) -> str | None:
+    """Return the refusal for a read-only caller, or None when the request may run.
+
+    ``Role.READONLY`` was granted nowhere and enforced nowhere. The rule lives
+    here so the API-key middleware and the OAuth one refuse the same requests;
+    a message without a tool ``name`` is a resource read and stays allowed.
+    """
+    if get_caller_role() is not Role.READONLY:
+        return None
+    name = getattr(message, "name", None)
+    if not isinstance(name, str) or name in READONLY_TOOLS:
+        return None
+    return f"Read-only credentials cannot call '{name}'."
+
+
 class _AuthFailureError(Exception):
     """Raised inside the middleware when a request cannot be authenticated."""
 
@@ -756,6 +805,9 @@ class AuthMiddleware(_Middleware):
             return failure.result
         token = set_caller_identity(user)
         try:
+            denial = readonly_denial(getattr(context, "message", None))
+            if denial is not None:
+                return self._error_result(denial)
             return await call_next(context)
         finally:
             reset_caller_identity(token)
@@ -768,4 +820,65 @@ class AuthMiddleware(_Middleware):
     async def on_read_resource(self, context, call_next):
         if not _should_require_api_key():
             return await call_next(context)
+        return await self._authenticated_call(context, call_next)
+
+
+class OAuthCallerMiddleware(_Middleware):
+    """Bind the principal the OAuth provider authenticated.
+
+    In OAuth mode ``server`` installs ``ForesightOAuthProvider`` instead of
+    ``AuthMiddleware``: the provider verifies the bearer token, but nothing binds
+    a caller, so every tool body that reads the bound caller saw "no caller" and
+    refused. The access token names its user in ``subject``, so resolve that to a
+    user record here and apply the same tenant grant check and read-only rule as
+    the API-key path. A token with no subject resolves to no principal and stays
+    refused rather than defaulting to some user.
+    """
+
+    @staticmethod
+    def _error_result(message: str) -> ToolResult:
+        return ToolResult(
+            content=[TextContent(type="text", text=message)],
+            is_error=True,
+        )
+
+    @staticmethod
+    def _access_token() -> object | None:
+        return get_access_token()
+
+    def _authenticate_message(self, message: object | None) -> User:
+        """Return the caller the access token names, or raise _AuthFailureError."""
+        access = self._access_token()
+        if access is None:
+            raise _AuthFailureError(self._error_result("Authentication required: no access token"))
+        subject = getattr(access, "subject", None)
+        if not subject:
+            raise _AuthFailureError(self._error_result("Authentication required: the access token names no user"))
+        user = get_auth_manager().get_user_by_id(subject)
+        if user is None or not user.is_active:
+            raise _AuthFailureError(self._error_result("Invalid access token: unknown or inactive user"))
+        tenant_id = resolve_tenant_id_from_message(message)
+        if not get_auth_manager().validate_user_tenant_access(user, tenant_id):
+            raise _AuthFailureError(self._error_result(f"Tenant access denied for tenant '{tenant_id}'"))
+        return user
+
+    async def _authenticated_call(self, context, call_next):
+        message = getattr(context, "message", None)
+        try:
+            user = self._authenticate_message(message)
+        except _AuthFailureError as failure:
+            return failure.result
+        token = set_caller_identity(user)
+        try:
+            denial = readonly_denial(message)
+            if denial is not None:
+                return self._error_result(denial)
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)
+
+    async def on_call_tool(self, context, call_next):
+        return await self._authenticated_call(context, call_next)
+
+    async def on_read_resource(self, context, call_next):
         return await self._authenticated_call(context, call_next)
