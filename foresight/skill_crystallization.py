@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -981,7 +982,7 @@ def _sign_staged_skill_once(
     memory_id: str,
     scope: UserScope,
     ns_sql: str,
-    ns_params: tuple[Any, ...],
+    ns_params: Sequence[Any],
 ) -> SigningOutcome | None:
     """Try to sign the staged artifact once, or None when another writer won.
 
