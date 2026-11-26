@@ -639,7 +639,7 @@ def test_readonly_caller_cannot_read_another_users_profile(tool_name, temp_db_pa
 
     Both profile tools take a caller-supplied user_id, and the tenant grant does
     not authorize that owner, so a read-only credential could read every profile
-    in the tenant. Both route the requested id through _profile_user_for_caller,
+    in the tenant. Both route the requested id through _readable_user_for_caller,
     which refuses a foreign id before the store is touched.
     """
     manager = AuthManager(db_path=temp_db_path)
@@ -670,9 +670,141 @@ def test_readonly_caller_cannot_read_another_users_profile(tool_name, temp_db_pa
     finally:
         auth_module.reset_caller_identity(token)
 
-    assert "only read its own profile" in refused
-    assert "only read its own profile" not in own
+    assert "only read its own data" in refused
+    assert "only read its own data" not in own
     assert reads == [user.user_id]
+
+
+@pytest.mark.parametrize("tool_name", ["synthesize_profile", "export_profile"])
+def test_readonly_profile_read_defaults_to_the_caller(temp_db_path, monkeypatch, tool_name):
+    """A read-only caller that names no user reads its own profile.
+
+    The configured FORESIGHT_USER_ID belongs to the operator, not to a
+    read-only credential, so defaulting an omitted id to it denied the ordinary
+    read while an explicit own id worked - the opposite of the intent.
+    """
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "profile-default")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    reads: list[str] = []
+
+    def _profile_spy(uid: str, *_args: object, **_kwargs: object) -> dict[str, list]:
+        reads.append(uid)
+        return {"static": [], "dynamic": []}
+
+    def _export_spy(scope: object, *_args: object, **_kwargs: object) -> str:
+        reads.append(scope.user_id)
+        return "{}"
+
+    monkeypatch.setattr(server_module, "_synthesize_profile", _profile_spy)
+    monkeypatch.setattr(server_module, "_export", _export_spy)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        if tool_name == "synthesize_profile":
+            result = server_module.synthesize_profile(server_module.SynthesizeProfileParams())
+        else:
+            result = server_module.export_profile()
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert "only read its own" not in result
+    assert reads == [user.user_id]
+
+
+def test_writable_caller_keeps_the_configured_profile_default(temp_db_path, monkeypatch):
+    """The operator's default id still applies to callers that may read it."""
+    manager = AuthManager(db_path=temp_db_path)
+    user = _writable_user(manager, "profile-default")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    reads: list[str] = []
+
+    def _profile_spy(uid: str, *_args: object, **_kwargs: object) -> dict[str, list]:
+        reads.append(uid)
+        return {"static": [], "dynamic": []}
+
+    monkeypatch.setattr(server_module, "_synthesize_profile", _profile_spy)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        server_module.synthesize_profile(server_module.SynthesizeProfileParams())
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert reads == [server_module.USER_ID]
+
+
+@pytest.mark.asyncio
+async def test_readonly_key_cannot_write_through_the_options_model(temp_db_path, monkeypatch):
+    """The gate must read the action the handler dispatches.
+
+    manage_inferred runs ``params.options.action`` whenever options is present,
+    so ``{"action": "list", "options": {"action": "approve"}}`` is an approval.
+    Reading only ``params.action`` let a read-only key change review state.
+    """
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "options-write")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="approved")
+
+    result = await AuthMiddleware().on_call_tool(
+        _make_named_tool_context(
+            user.api_key,
+            "tenant-a",
+            "manage_inferred",
+            {"params": {"action": "list", "options": {"action": "approve", "memory_id": "m1"}}},
+        ),
+        call_next,
+    )
+
+    assert _tool_result_is_error(result) is True
+    assert "Read-only" in result.content[0].text
+    call_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_readonly_key_can_read_through_the_options_model(temp_db_path, monkeypatch):
+    """An action given only in the options model is still a read."""
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "options-read")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="listed")
+
+    result = await AuthMiddleware().on_call_tool(
+        _make_named_tool_context(
+            user.api_key,
+            "tenant-a",
+            "manage_inferred",
+            {"params": {"options": {"action": "list"}}},
+        ),
+        call_next,
+    )
+
+    assert result == "listed"
+    call_next.assert_awaited_once()
+
+
+def test_readonly_caller_cannot_list_another_users_inferred_queue(temp_db_path, monkeypatch):
+    """The queue is a read surface; its user id is not the request's to choose."""
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "inferred")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        refused = server_module.manage_inferred(
+            server_module.ManageInferredParams(action="list", user_id="someone-else")
+        )
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert "only read its own" in refused
 
 
 def test_api_key_revalidation_throttles_the_login_write(temp_db_path):

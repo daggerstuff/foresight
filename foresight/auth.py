@@ -772,20 +772,30 @@ def _message_action(message: object | None) -> str | None:
 
     Schema-shaped tools take one ``params`` model, so their action arrives as
     ``arguments["params"]["action"]``; a handler that takes ``action`` directly
-    leaves it at the top level. Both are read so the policy cannot be sidestepped
-    by nesting the request one level deeper.
+    leaves it at the top level. All of them are read so the policy cannot be
+    sidestepped by nesting the request one level deeper.
+
+    A mixed tool that also takes an ``options`` model dispatches
+    ``options.action`` whenever options is present, so that field is read first:
+    ``{"action": "list", "options": {"action": "approve"}}`` is an approval, and
+    reading only the outer field let a read-only key approve an inferred memory.
     """
     arguments = getattr(message, "arguments", None)
     if not isinstance(arguments, dict):
         return None
-    action = arguments.get("action")
-    if isinstance(action, str):
-        return action
     params = arguments.get("params")
     if isinstance(params, dict):
+        options = params.get("options")
+        if isinstance(options, dict):
+            nested_options = options.get("action")
+            if isinstance(nested_options, str):
+                return nested_options
         nested = params.get("action")
         if isinstance(nested, str):
             return nested
+    action = arguments.get("action")
+    if isinstance(action, str):
+        return action
     return None
 
 

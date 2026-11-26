@@ -1017,3 +1017,11 @@ def test_ghosted_lesson_still_retires_its_observation_when_the_group_empties():
         (TENANT, USER),
     )
     assert not any(str(row["pattern_key"]).startswith("failure:") for row in left), left
+
+
+def test_strip_result_lines_keeps_a_short_trailing_instruction():
+    # "Run migrations." is the only step in the recipe; two words survive, and a
+    # bare result ("exit code 0") still does not.
+    assert _strip_result_lines("Tests passed. Run migrations.") == "Run migrations."
+    assert _strip_result_lines("Tests passed. exit code 0") == ""
+    assert _strip_result_lines("52 passed in 3.1s") == ""

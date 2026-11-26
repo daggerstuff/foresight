@@ -478,7 +478,7 @@ def _existing_skill_by_observation(
             "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND category = ? ",
             "AND is_ghost = 0",
             frag,
-            " ORDER BY updated_at DESC, created_at DESC",
+            " ORDER BY updated_at DESC, created_at DESC, id DESC",
         ),
         (scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params),
     ).fetchall()
@@ -1232,17 +1232,16 @@ def list_skills(
                 "AND inferred = 0 AND review_status = 'approved' AND is_ghost = 0 AND is_latest = 1 ",
                 "AND expired_at IS NULL ",
                 frag,
-                " ORDER BY updated_at DESC, created_at DESC",
+                " ORDER BY updated_at DESC, created_at DESC, id DESC",
             )
             params: list[Any] = [scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params]
         else:
             sql = join_sql_parts(
                 "SELECT * FROM memories WHERE tenant_id = ? AND user_id = ? AND category = ? ",
                 frag,
-                " ORDER BY updated_at DESC, created_at DESC",
+                " ORDER BY updated_at DESC, created_at DESC, id DESC",
             )
             params = [scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params]
-        now_iso = _now_iso()
         cap = None if limit is None else max(1, int(limit))
         records: list[dict[str, Any]] = []
         offset = 0
@@ -1252,6 +1251,7 @@ def list_skills(
                 break
             offset += len(page)
             for row in page:
+                now_iso = _now_iso()
                 rd = dict(row)
                 rec = _skill_record(rd, verify_signatures=verify_signatures)
                 if not _skill_selected(rd, rec, status, verify_signatures, now_iso):

@@ -53,6 +53,7 @@ _FAILURE_SCORE = 0.4
 _MIN_SUMMARY_LEN = 8
 # Words that must follow a result report before it counts as an explanation.
 _MIN_REPORT_TAIL_WORDS = 3
+_MIN_INSTRUCTION_WORDS = 2
 
 # Secret verdicts whose content is safe to store or send: `redact` already
 # replaced the credential, and `clean` found none. `flag` hands back the
@@ -810,8 +811,20 @@ def _strip_result_lines(content: str) -> str:
             continue
         result_match = _RESULT_REPORT_RE.match(line)
         if result_match is not None:
-            remainder = _strip_result_clauses(line[result_match.end() :])
+            remainder = (
+                _strip_result_clauses(line[result_match.end() :]).lstrip(" .;,-").strip()
+            )
             if len(re.findall(r"[A-Za-z]{2,}", remainder)) < _MIN_REPORT_TAIL_WORDS:
+                # "Tests passed. Run migrations." - the tail is the only step in
+                # the recipe, so a short imperative is kept while a short result
+                # ("exit code 0", "3.1s") still is not.
+                if (
+                    len(re.findall(r"[A-Za-z]{2,}", remainder)) < _MIN_INSTRUCTION_WORDS
+                    or _RESULT_SUFFIX_RE.match(remainder)
+                    or _RESULT_REPORT_RE.match(remainder) is not None
+                ):
+                    continue
+                kept.append(remainder)
                 continue
         kept.append(line)
     return " ".join(kept)

@@ -8470,7 +8470,7 @@ def synthesize_profile(
     include_buckets = params.include_buckets
 
     try:
-        uid = _profile_user_for_caller(user_id)
+        uid = _readable_user_for_caller(user_id)
     except PermissionError as exc:
         return _tool_error("synthesize_profile", str(exc))
     cfg = ProfileConfig(
@@ -8487,18 +8487,24 @@ def synthesize_profile(
     return json.dumps(profile, indent=2, ensure_ascii=False)
 
 
-def _profile_user_for_caller(requested: str | None) -> str:
-    """The profile user this caller may read.
+def _readable_user_for_caller(requested: str | None) -> str:
+    """The user whose data this caller may read.
 
-    The profile tools are read surfaces, so a read-only credential reaches
-    them; the user id in the request is not trusted on its own, or a read-only
-    token could synthesize or export any user's profile in the tenant.
+    Profile synthesis, profile export and the inferred review queue are read
+    surfaces, so a read-only credential reaches them; the user id in the
+    request is not trusted on its own, or a read-only token could read any
+    user's profile or review queue in the tenant.
+
+    The configured ``USER_ID`` belongs to the operator, so it is not a
+    read-only caller's default either: an omitted id resolves to the caller
+    itself.
     """
-    uid = requested or USER_ID
     caller_id = get_caller_user_id()
-    if caller_is_readonly() and caller_id is not None and uid != caller_id:
-        raise PermissionError("a read-only caller may only read its own profile")
-    return uid
+    if caller_is_readonly() and caller_id is not None:
+        if requested is not None and requested != caller_id:
+            raise PermissionError("a read-only caller may only read its own data")
+        return caller_id
+    return requested or USER_ID
 
 
 @mcp.tool(output_schema=None)
@@ -8530,7 +8536,7 @@ def export_profile(
         or a Markdown document with a signature footer.
     """
     try:
-        uid = _profile_user_for_caller(user_id)
+        uid = _readable_user_for_caller(user_id)
     except PermissionError as exc:
         return _tool_error("export_profile", str(exc))
     tenant_id = get_current_account_id()
@@ -9413,7 +9419,10 @@ def manage_inferred(
 
     agent_id = params.agent_id or options.agent_id
     project = params.project or options.project
-    uid = user_id or USER_ID
+    try:
+        uid = _readable_user_for_caller(user_id)
+    except PermissionError as exc:
+        return _tool_error("manage_inferred", str(exc))
     tenant_id = get_current_account_id()
 
     if options.action == "list":

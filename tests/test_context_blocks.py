@@ -423,3 +423,13 @@ def test_bridge_capture_ignores_unknown_category(agent):
 
     count = _bridge_capture_memories_to_blocks(agent, [("tool_recipe", "npm install --save-dev vitest")])
     assert count == 0
+
+
+def test_joint_obligation_and_prohibition_is_a_requirement():
+    from foresight.context_blocks import RuleStrength, _clause_strength
+
+    joint = "You must run the full suite, and you should never skip the smoke tests."
+    prohibition = "You must never force-push to master."
+
+    assert _clause_strength(joint) == RuleStrength.MUST
+    assert _clause_strength(prohibition) == RuleStrength.MUST_NOT

@@ -472,11 +472,9 @@ def _clause_strength(text: str) -> RuleStrength | None:
     """
     should = _SHOULD_RE.search(text)
     must_not = _MUST_NOT_RE.search(text)
-    if (
-        should is not None
-        and (must_not is None or should.start() < must_not.start())
-        and _MUST_RE.search(text[: should.start()]) is None
-    ):
+    if should is not None and (must_not is None or should.start() < must_not.start()):
+        if _MUST_RE.search(text[: should.start()]) is not None:
+            return RuleStrength.MUST
         return RuleStrength.SHOULD
     if must_not is not None:
         return RuleStrength.MUST_NOT
