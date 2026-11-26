@@ -36,7 +36,15 @@ from pydantic import (
 PLUGIN_MANIFEST_FILENAME = "foresight.plugin.json"
 PLUGIN_MANIFEST_SCHEMA_PATH = "plugins/manifest.schema.json"
 
-VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+# Official SemVer 2.0.0 pattern (semver.org); the loader and the generated schema share it
+# so neither accepts a leading-zero or empty prerelease identifier.
+_VERSION_PATTERN_TEXT = (
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+)
+VERSION_PATTERN = re.compile(_VERSION_PATTERN_TEXT)
 
 # Artifact paths are checked under both separator conventions: ``..\..\x`` is a
 # single POSIX path part, so a POSIX-only split would let it escape. The same
@@ -46,7 +54,7 @@ _FORBIDDEN_PATH_PATTERNS = (
     r"^/",  # POSIX absolute
     r"^[A-Za-z]:",  # Windows drive, absolute or relative
     r"^\\",  # Windows root or UNC prefix
-    r"(?:^|[/\\])~",  # home-relative segment
+    r"^~",  # leading home-relative path such as ~/x or ~alice/x
     r"(?:^|[/\\])\.\.(?:[/\\]|$)",  # parent-directory segment
 )
 
@@ -137,7 +145,11 @@ class PluginManifestError(ValueError):
 
 
 def _check_relative_path(value: str) -> str:
-    """Reject absolute, home-relative, and parent-escaping artifact paths."""
+    """Reject absolute, leading home-relative, and parent-escaping artifact paths.
+
+    Only the first component is home-relative: ``~alice/hook.py`` points outside the
+    plugin directory, while ``assets/~backup/hook.py`` is an ordinary nested filename.
+    """
     if not value:
         raise ValueError("artifact path must not be empty")
     posix = PurePosixPath(value)
@@ -146,15 +158,19 @@ def _check_relative_path(value: str) -> str:
         raise ValueError("artifact path must be relative to the plugin directory")
     if windows.is_absolute() or windows.drive or windows.root:
         raise ValueError("artifact path must be relative to the plugin directory")
-    if "~" in posix.parts or "~" in windows.parts:
+    posix_parts = posix.parts
+    windows_parts = windows.parts
+    if (posix_parts and posix_parts[0].startswith("~")) or (windows_parts and windows_parts[0].startswith("~")):
         raise ValueError("artifact path must not be home-relative")
-    if ".." in posix.parts or ".." in windows.parts:
+    if ".." in posix_parts or ".." in windows_parts:
         raise ValueError("artifact path must not escape the plugin directory")
     return value
 
 
 class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Dump by alias so model_dump() output parses again as a manifest, nested objects
+    # included; callers can still pass by_alias=False to get field names.
+    model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
 
 
 class PluginAuthor(_StrictModel):
@@ -258,6 +274,7 @@ class PluginManifest(_StrictModel):
     )
     name: str = Field(min_length=1)
     version: str = Field(
+        pattern=_VERSION_PATTERN_TEXT,
         description="Plugin semver, independent of the Foresight server version.",
     )
     description: str | None = None
@@ -334,9 +351,20 @@ def iter_plugin_manifests(root: str | Path) -> Iterator[Path]:
     yield from sorted(r.rglob(PLUGIN_MANIFEST_FILENAME))
 
 
+# Pydantic emits field declarations but not model validators, so the install requirement
+# is restated here; without it the schema would accept an install object that names
+# neither a command nor notes, which the loader rejects.
+_INSTALL_SCHEMA_ANY_OF: list[dict[str, Any]] = [
+    {"required": ["command"], "properties": {"command": {"type": "string", "minLength": 1}}},
+    {"required": ["notes"], "properties": {"notes": {"type": "string", "minLength": 1}}},
+]
+
+
 def manifest_json_schema() -> dict[str, Any]:
     """Return the JSON Schema for the manifest contract (canonical: plugins/manifest.schema.json)."""
-    return PluginManifest.model_json_schema()
+    schema = PluginManifest.model_json_schema()
+    schema["$defs"]["PluginInstall"]["anyOf"] = _INSTALL_SCHEMA_ANY_OF
+    return schema
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -368,33 +396,39 @@ def _main(argv: list[str] | None = None) -> int:
     if not args.paths:
         parser.error("at least one path is required unless --write-schema is used")
 
-    failures = 0
+    unreadable_paths = 0
+    empty_paths = 0
+    invalid_manifests = 0
     checked = 0
     for path in args.paths:
         try:
             manifest_paths = list(iter_plugin_manifests(path))
         except PluginManifestError as exc:
-            failures += 1
+            unreadable_paths += 1
             sys.stderr.write(f"FAIL {exc}\n")
+            continue
+        if not manifest_paths:
+            empty_paths += 1
+            sys.stderr.write(f"FAIL {path}: no foresight.plugin.json files found\n")
             continue
         for manifest_path in manifest_paths:
             checked += 1
             try:
                 manifest = load_plugin_manifest(manifest_path)
             except PluginManifestError as exc:
-                failures += 1
+                invalid_manifests += 1
                 sys.stderr.write(f"FAIL {manifest_path}: {exc}\n")
                 continue
             sys.stdout.write(
                 f"OK   {manifest_path}  ({manifest.id} v{manifest.version}, targets={len(manifest.targets)})\n"
             )
-    if checked == 0:
-        sys.stderr.write("no foresight.plugin.json files found\n")
-        return 2
-    if failures:
-        sys.stderr.write(f"{failures}/{checked} manifest(s) invalid\n")
-        return 1
-    return 0
+    if unreadable_paths:
+        sys.stderr.write(f"{unreadable_paths} path(s) could not be read\n")
+    if empty_paths:
+        sys.stderr.write(f"{empty_paths} path(s) contained no manifests\n")
+    if invalid_manifests:
+        sys.stderr.write(f"{invalid_manifests}/{checked} manifest(s) invalid\n")
+    return 1 if invalid_manifests or unreadable_paths or empty_paths else 0
 
 
 if __name__ == "__main__":

@@ -55,6 +55,26 @@ def _path_schema() -> dict:
     return artifact
 
 
+def _install_accepts(install: dict) -> bool:
+    try:
+        parse_plugin_manifest(_minimal_manifest(install=install))
+    except PluginManifestError:
+        return False
+    return True
+
+
+def _install_schema_accepts(install: dict) -> bool:
+    branches = manifest_json_schema()["$defs"]["PluginInstall"].get("anyOf")
+    assert branches, "PluginInstall.anyOf missing from the generated schema"
+    for branch in branches:
+        if all(
+            isinstance(install.get(key), str) and len(install[key]) >= branch["properties"][key].get("minLength", 0)
+            for key in branch["required"]
+        ):
+            return True
+    return False
+
+
 def _schema_accepts(path_value: str) -> bool:
     path_schema = _path_schema()
     if len(path_value) < path_schema.get("minLength", 0):
@@ -64,6 +84,20 @@ def _schema_accepts(path_value: str) -> bool:
         return False
     forbidden = [rule["pattern"] for rule in path_schema["not"]["anyOf"]]
     return all(re.search(pattern, path_value) is None for pattern in forbidden)
+
+
+def _version_accepts(version_value: str) -> bool:
+    try:
+        parse_plugin_manifest(_minimal_manifest(version=version_value))
+    except PluginManifestError:
+        return False
+    return True
+
+
+def _version_schema_accepts(version_value: str) -> bool:
+    version_schema = manifest_json_schema()["properties"]["version"]
+    pattern = version_schema.get("pattern")
+    return pattern is None or re.search(pattern, version_value) is not None
 
 
 class TestParsePluginManifest:
@@ -131,6 +165,16 @@ class TestParsePluginManifest:
         with pytest.raises(PluginManifestError):
             parse_plugin_manifest(_minimal_manifest(artifacts=[{"type": "hook", "path": bad_path}]))
 
+    def test_rejects_home_relative_tilde_path(self):
+        with pytest.raises(PluginManifestError, match="home-relative"):
+            parse_plugin_manifest(_minimal_manifest(artifacts=[{"type": "hook", "path": "~alice/hook.py"}]))
+
+    def test_accepts_nested_tilde_filename(self):
+        manifest = parse_plugin_manifest(
+            _minimal_manifest(artifacts=[{"type": "hook", "path": "assets/~backup/hook.py"}])
+        )
+        assert manifest.artifacts[0].path == "assets/~backup/hook.py"
+
     def test_accepts_windows_style_relative_path(self):
         manifest = parse_plugin_manifest(
             _minimal_manifest(artifacts=[{"type": "hook", "path": "hooks\\foresight_hook.py"}])
@@ -149,6 +193,15 @@ class TestParsePluginManifest:
     def test_accepts_semver_with_prerelease_and_build(self):
         manifest = parse_plugin_manifest(_minimal_manifest(version="1.2.3-rc.1+build.5"))
         assert manifest.version == "1.2.3-rc.1+build.5"
+
+    @pytest.mark.parametrize("bad_version", ["1.0.0-01", "1.0.0-00.1", "1.0.0-a..b", "1.0.0+build..5"])
+    def test_rejects_invalid_prerelease_identifiers(self, bad_version: str):
+        with pytest.raises(PluginManifestError):
+            parse_plugin_manifest(_minimal_manifest(version=bad_version))
+
+    @pytest.mark.parametrize("good_version", ["0.0.1", "1.2.3-alpha", "1.2.3-alpha.1", "1.2.3-0.3.7", "1.2.3+build.5"])
+    def test_accepts_valid_prerelease_identifiers(self, good_version: str):
+        assert parse_plugin_manifest(_minimal_manifest(version=good_version)).version == good_version
 
     @pytest.mark.parametrize("missing", ["transports", "capabilities"])
     def test_requires_must_declare_transports_and_capabilities(self, missing: str):
@@ -264,6 +317,38 @@ class TestIterPluginManifests:
     def test_cli_fails_on_missing_path(self, tmp_path: Path):
         assert _main([str(PLUGINS_ROOT / "claude"), str(tmp_path / "does-not-exist")]) == 1
 
+    def test_cli_does_not_count_missing_path_as_manifest(self, tmp_path: Path, capsys):
+        assert _main([str(PLUGINS_ROOT / "claude"), str(tmp_path / "does-not-exist")]) == 1
+        err = capsys.readouterr().err
+        assert "1 path(s) could not be read" in err
+        assert "manifest(s) invalid" not in err
+
+    def test_cli_missing_paths_only(self, tmp_path: Path, capsys):
+        assert _main([str(tmp_path / "does-not-exist")]) == 1
+        err = capsys.readouterr().err
+        assert "1 path(s) could not be read" in err
+        assert "no foresight.plugin.json files found" not in err
+
+    def test_cli_fails_on_empty_directory(self, tmp_path: Path, capsys):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert _main([str(PLUGINS_ROOT / "claude"), str(empty)]) == 1
+        err = capsys.readouterr().err
+        assert f"FAIL {empty}: no foresight.plugin.json files found" in err
+        assert "manifest(s) invalid" not in err
+
+    def test_cli_empty_directory_only(self, tmp_path: Path, capsys):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert _main([str(empty)]) == 1
+        err = capsys.readouterr().err
+        assert "1 path(s) contained no manifests" in err
+
+    def test_cli_every_requested_path_has_manifests(self, capsys):
+        assert _main([str(PLUGINS_ROOT / "claude"), str(PLUGINS_ROOT / "hermes")]) == 0
+        err = capsys.readouterr().err
+        assert "no manifests" not in err
+
 
 class TestSchemaSync:
     def test_checked_in_schema_matches_model(self):
@@ -271,6 +356,13 @@ class TestSchemaSync:
         assert schema_path.exists(), f"{PLUGIN_MANIFEST_SCHEMA_PATH} missing — regenerate with --write-schema"
         on_disk = json.loads(schema_path.read_text())
         assert on_disk == manifest_json_schema()
+
+    @pytest.mark.parametrize(
+        "version_value",
+        ["0.1.0", "1.2.3", "1.2.3-rc.1+build.5", "latest", "v1.0.0", "1.0", "1.0.0-", "1.0.0-01", "1.0.0-a..b"],
+    )
+    def test_schema_version_matches_loader(self, version_value: str):
+        assert _version_schema_accepts(version_value) == _version_accepts(version_value), version_value
 
     def test_schema_requires_spec_version(self):
         assert "specVersion" in manifest_json_schema()["required"]
@@ -296,10 +388,44 @@ class TestSchemaSync:
             "C:x",
             "/etc/passwd",
             "~/x",
+            "~alice/hook.py",
+            "assets/~backup/hook.py",
+            "assets\\~backup\\hook.py",
         ],
     )
     def test_schema_artifact_path_matches_loader(self, path_value: str):
         assert _schema_accepts(path_value) == _artifact_accepts(path_value), path_value
+
+    @pytest.mark.parametrize(
+        "install",
+        [
+            {"command": "bash install.sh"},
+            {"notes": "Install via /plugins UI"},
+            {"command": "bash install.sh", "notes": "or the UI"},
+            {"dryRunFlag": "--dry-run"},
+            {"command": None, "notes": None},
+            {"command": ""},
+        ],
+    )
+    def test_schema_install_matches_loader(self, install: dict):
+        assert _install_schema_accepts(install) == _install_accepts(install), install
+
+
+class TestDumpRoundTrip:
+    def test_model_dump_emits_aliases(self):
+        manifest = parse_plugin_manifest(_minimal_manifest(install={"notes": "manual"}))
+        dumped = manifest.model_dump()
+        assert dumped["specVersion"] == 1
+        assert "spec_version" not in dumped
+        assert parse_plugin_manifest(dumped).install is not None
+
+    def test_model_dump_json_round_trips(self):
+        manifest = parse_plugin_manifest(_minimal_manifest(version="1.2.3"))
+        assert parse_plugin_manifest(json.loads(manifest.model_dump_json())).version == "1.2.3"
+
+    def test_model_dump_python_names_on_request(self):
+        manifest = parse_plugin_manifest(_minimal_manifest())
+        assert manifest.model_dump(by_alias=False)["spec_version"] == 1
 
 
 class TestRepoManifests:

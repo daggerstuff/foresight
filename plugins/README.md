@@ -69,7 +69,7 @@ Status: ✅ native plugin · 🔌 MCP/REST wiring only · 📋 planned (P-FOR-58
 | `claude-code` | ✅ `.mcp.json` | ✅ hooks | ✅ `SKILL.md` | — | — | ✅ Stop/SessionEnd | `plugins/claude` |
 | `claude-desktop` | ✅ stdio/http | — | — | — | — | — | same plugin, `--desktop` |
 | `hermes` | — | ✅ REST | — | ✅ provider | ✅ `recall_status` | ✅ sync_turn/pre_compress/session_end | `plugins/hermes` |
-| `mastracode` | — | ✅ REST | — | ✅ TS plugin | 📋 | ✅ processOutputResult | `plugins/mastracode` |
+| `mastracode` | ✅ `/mcp` tools/call | ✅ REST | — | ✅ TS plugin | 📋 | ✅ processOutputResult | `plugins/mastracode` |
 | `opencode` | ✅ | ✅ autoinject | — | ✅ JS plugin | — | 📋 | `foresight-autoinject.js` (audit FOR-72) |
 | `copilot` | — | ✅ sessionStart hook | — | — | — | — | `foresight-copilot-hook.json` (audit FOR-72) |
 | `gemini-cli` / `antigravity` | 📋 | 📋 | 📋 `GEMINI.md` | 📋 | — | 📋 | FOR-74 |

@@ -97,7 +97,7 @@
                 "pattern": "^\\\\"
               },
               {
-                "pattern": "(?:^|[/\\\\])~"
+                "pattern": "^~"
               },
               {
                 "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)"
@@ -203,6 +203,30 @@
     },
     "PluginInstall": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "command": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        },
+        {
+          "properties": {
+            "notes": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notes"
+          ]
+        }
+      ],
       "description": "How to install the plugin: a shell command, or notes for a UI-driven host.",
       "properties": {
         "command": {
@@ -489,6 +513,7 @@
     },
     "version": {
       "description": "Plugin semver, independent of the Foresight server version.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
       "title": "Version",
       "type": "string"
     }
