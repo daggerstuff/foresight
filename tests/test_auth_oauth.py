@@ -298,6 +298,9 @@ async def test_rotated_api_key_stops_authorizing_after_it_was_cached(monkeypatch
     assert first is not None
     assert first.subject == "u-1"
 
+    provider._access_tokens["key-old"] = first
+
     del keys["key-old"]
 
     assert await provider.load_access_token("key-old") is None
+    assert "key-old" not in provider._access_tokens

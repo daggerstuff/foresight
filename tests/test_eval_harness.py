@@ -28,9 +28,13 @@ from foresight.eval_harness import (
 )
 from foresight.tenant_context import (
     get_current_account_id,
+    get_current_app_id,
+    get_current_integration_id,
     get_current_user_id,
     reset_tenant_context,
     set_current_account_id,
+    set_current_app_id,
+    set_current_integration_id,
     set_current_user_id,
 )
 from foresight_cli.commands import eval as eval_cmd
@@ -784,6 +788,8 @@ class TestHarnessTeardown:
         harness = EvalHarness(db_path=str(tmp_path / "scope.db"))
         set_current_user_id("caller-user")
         set_current_account_id("caller-account")
+        set_current_app_id("caller-app")
+        set_current_integration_id("caller-integration")
 
         attempts = {"count": 0}
         real_set_current_account_id = eval_harness_module.set_current_account_id
@@ -801,6 +807,8 @@ class TestHarnessTeardown:
                 harness.seed_fixtures()
             assert get_current_user_id() == "caller-user"
             assert get_current_account_id() == "caller-account"
+            assert get_current_app_id() == "caller-app"
+            assert get_current_integration_id() == "caller-integration"
         finally:
             harness.close()
             monkeypatch.undo()

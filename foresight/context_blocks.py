@@ -461,6 +461,11 @@ def retrieve_matching_rules(
     return [rule for rule in rules if rule.matches(context_text, terms=terms)]
 
 
+# A conjunction or a clause-ending mark between a recommendation and a
+# following prohibition means the prohibition stands on its own.
+_CLAUSE_BREAK_RE = re.compile(r"[;:]|\b(?:and|but|then|also)\b", re.IGNORECASE)
+
+
 def _clause_strength(text: str) -> RuleStrength | None:
     """Strength carried by one clause, or None when it states none.
 
@@ -472,12 +477,19 @@ def _clause_strength(text: str) -> RuleStrength | None:
     """
     should = _SHOULD_RE.search(text)
     must_not = _MUST_NOT_RE.search(text)
-    if should is not None and (must_not is None or should.start() < must_not.start()):
+    if must_not is not None and (should is None or must_not.start() < should.start()):
+        return RuleStrength.MUST_NOT
+    if should is not None:
+        # "you should never skip it" is one clause, but "you must run the suite,
+        # should check coverage, and must not skip smoke tests" states an
+        # independent prohibition: a conjunction between the two opens a new
+        # clause, so the recommendation is no longer governing the never.
+        between = text[should.end() : must_not.start()] if must_not is not None else ""
+        if _CLAUSE_BREAK_RE.search(between) is not None:
+            return RuleStrength.MUST_NOT
         if _MUST_RE.search(text[: should.start()]) is not None:
             return RuleStrength.MUST
         return RuleStrength.SHOULD
-    if must_not is not None:
-        return RuleStrength.MUST_NOT
     if _MUST_RE.search(text):
         return RuleStrength.MUST
     return None

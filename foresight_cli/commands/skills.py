@@ -156,7 +156,9 @@ def list_cmd(params: SkillsListParams) -> None:
                 s["status"],
                 f"v{s['version']}",
                 str(s["success_count"]),
-                "valid" if s["signature_valid"] else "INVALID",
+                {"valid": "valid", "missing": "UNSIGNED", "unverified": "unverified"}.get(
+                    str(s.get("signature_status") or ""), "INVALID"
+                ),
             ]
             for s in skills
         ]
@@ -213,6 +215,7 @@ def verify_cmd(params: SkillsVerifyParams) -> None:
             "source": str(candidate_path),
             "skill_name": parsed.get("name"),
             "signature_valid": ok,
+            "signature_status": str(parsed.get("signature_status") or ("valid" if ok else "invalid")),
         }
     else:
         scope = _init_scope(params.user_id, agent_id=params.agent_id, project=params.project)
@@ -225,11 +228,21 @@ def verify_cmd(params: SkillsVerifyParams) -> None:
             "source": skill["memory_id"],
             "skill_name": skill["skill_name"],
             "signature_valid": skill["signature_valid"],
+            "signature_status": str(
+                skill.get("signature_status") or ("valid" if skill["signature_valid"] else "missing")
+            ),
         }
 
     def _human() -> None:
-        if payload["signature_valid"]:
+        status = str(payload.get("signature_status") or "")
+        label = {"valid": "valid", "missing": "UNSIGNED", "unverified": "unverified"}.get(status, "INVALID")
+        if status == "valid" and payload["signature_valid"]:
             out.done(f"Signature VALID for {payload.get('skill_name') or payload['source']}")
+        elif status in ("missing", "unverified"):
+            out.error(
+                f"Signature {label} for {payload.get('skill_name') or payload['source']}: "
+                "the document carries no signature, so its contents are unauthenticated."
+            )
         elif not skill_signing_configured():
             out.error(
                 f"Signature INVALID for {payload.get('skill_name') or payload['source']}: "

@@ -15,6 +15,7 @@ import pytest
 
 from foresight.capture import CaptureStats
 from foresight.connection_pool import reset_pool
+from foresight.context_blocks import RuleStrength, _clause_strength
 from foresight.server import _bridge_capture_memories_to_blocks
 from foresight.subconscious import (
     PENDING_ITEMS,
@@ -426,8 +427,6 @@ def test_bridge_capture_ignores_unknown_category(agent):
 
 
 def test_joint_obligation_and_prohibition_is_a_requirement():
-    from foresight.context_blocks import RuleStrength, _clause_strength
-
     joint = "You must run the full suite, and you should never skip the smoke tests."
     prohibition = "You must never force-push to master."
 

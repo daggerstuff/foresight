@@ -22,6 +22,7 @@ from foresight.auth import (
 from foresight.capture import CaptureOptions, get_capture_pipeline
 from foresight.experience import (
     EpisodeVerdict,
+    _observation_shape,
     _procedure_steps,
     _strip_result_lines,
     auto_score_episode,
@@ -32,7 +33,11 @@ from foresight.experience import (
     record_outcome,
 )
 from foresight.hybrid_retriever import HybridSearchOptions, get_hybrid_retriever
-from foresight.observations import list_observations
+from foresight.observations import (
+    EpisodeObservationSpec,
+    list_observations,
+    upsert_episode_observation,
+)
 from foresight.reflect import UserScope, _execute, _fetch_all
 from foresight.sensitivity import reset_secret_defense_policies, set_secret_defense_policy
 from foresight.server import RecordEpisodeOutcomeParams, record_episode_outcome
@@ -282,6 +287,52 @@ def test_success_episode_becomes_recipe_observation():
     obs = list_observations(UserScope(user_id=USER, tenant_id=TENANT), status="active", limit=50)
     recipes = [o for o in obs if o["pattern_key"].startswith("success:") and o["memory_type"] == "procedural"]
     assert recipes, "expected a procedural success observation"
+
+
+def test_distillation_reads_recipe_sessions_in_one_query(monkeypatch):
+    """Recipe groups share one raw_events read instead of taking one each."""
+    markers = ("batching-alpha", "batching-beta", "batching-gamma")
+    steps_by_session: dict[str, list[dict[str, object]]] = {}
+    for marker in markers:
+        session_id = _session_id()
+        steps_by_session[session_id] = [
+            {
+                "session_id": session_id,
+                "id": f"{session_id}-step",
+                "role": "assistant",
+                "content": f"apply the {marker} patch and rerun the suite",
+                "position": 1,
+            }
+        ]
+        _episode_for(
+            session_id,
+            [
+                {"role": "user", "content": f"run the {marker} release checklist"},
+                {"role": "assistant", "content": f"apply the {marker} migration and rerun the suite"},
+                {"role": "tool", "content": "52 passed in 3.1s\nexit code 0"},
+            ],
+        )
+        record_outcome(
+            USER,
+            TENANT,
+            EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
+        )
+
+    reads: list[str] = []
+    real_fetch_all = experience_module._fetch_all
+
+    def serving_fetch_all(sql, params=()):
+        if "FROM raw_events" not in sql:
+            return real_fetch_all(sql, params)
+        reads.append(sql)
+        _tenant, _user, *wanted = params
+        return [row for session_id in wanted for row in steps_by_session.get(session_id, [])]
+
+    monkeypatch.setattr(experience_module, "_fetch_all", serving_fetch_all)
+    result = distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    assert result["recipes_with_steps"] == len(markers), (result, reads)
+    assert len(reads) == 1, (result, reads)
 
 
 def test_keyword_search_surfaces_failure_signature():
@@ -1025,3 +1076,98 @@ def test_strip_result_lines_keeps_a_short_trailing_instruction():
     assert _strip_result_lines("Tests passed. Run migrations.") == "Run migrations."
     assert _strip_result_lines("Tests passed. exit code 0") == ""
     assert _strip_result_lines("52 passed in 3.1s") == ""
+
+
+def test_observation_shape_tracks_category_and_memory_type() -> None:
+    """A stored row whose classification drifted must still be rewritten.
+
+    The no-op cache compares shapes; omitting category and memory_type makes a stale
+    classification compare equal, so the row is never corrected.
+    """
+    procedural = _observation_shape("text", 0.5, ["e1"], "procedural", "procedural")
+    assert procedural == _observation_shape("text", 0.5, ["e1"], "procedural", "procedural")
+    assert procedural != _observation_shape("text", 0.5, ["e1"], "semantic", "procedural")
+    assert procedural != _observation_shape("text", 0.5, ["e1"], "procedural", "semantic")
+
+
+def test_observation_spec_carries_its_scan_baseline() -> None:
+    """The caller states the evidence its verdict scan saw, defaulting to none."""
+    spec = EpisodeObservationSpec(
+        pattern_key="k",
+        observation_text="t",
+        category="procedural",
+        confidence=0.5,
+        episode_ids=["a"],
+    )
+    assert spec.scan_base_episode_ids == ()
+    explicit = EpisodeObservationSpec(
+        pattern_key="k",
+        observation_text="t",
+        category="procedural",
+        confidence=0.5,
+        episode_ids=["c"],
+        scan_base_episode_ids=("a",),
+    )
+    assert explicit.scan_base_episode_ids == ("a",)
+
+
+def test_replacement_keeps_evidence_that_arrived_after_the_scan():
+    pattern_key = "success:late-evidence"
+    text = "Deploy through the shared runner after refreshing the lockfile."
+
+    def write(*, episode_ids, confidence=0.9, replace=False, scan_base=()):
+        return upsert_episode_observation(
+            EpisodeObservationSpec(
+                pattern_key=pattern_key,
+                observation_text=text,
+                category="procedural",
+                confidence=confidence,
+                episode_ids=list(episode_ids),
+                replace_episode_evidence=replace,
+                scan_base_episode_ids=scan_base,
+            ),
+            user_id=USER,
+            tenant_id=TENANT,
+        )
+
+    write(episode_ids=["ep-a"])
+    # A second writer adds an episode while the distiller is scanning.
+    assert "ep-late" in write(episode_ids=["ep-a", "ep-late"])["supporting_episode_ids"]
+
+    replaced = write(episode_ids=["ep-b"], confidence=0.95, replace=True, scan_base=("ep-a",))
+    kept = replaced["supporting_episode_ids"]
+    assert "ep-b" in kept
+    assert "ep-late" in kept
+    assert "ep-a" not in kept
+
+
+def test_steps_are_rebuilt_from_the_stored_observation() -> None:
+    stored = (
+        '[procedural] Known success - task like "deploy" succeeded 2 time(s).'
+        " Steps: 1) refresh the lockfile 2) deploy through the shared runner."
+        " The same task failed once."
+    )
+    assert experience_module._steps_from_stored(stored) == [
+        "refresh the lockfile",
+        "deploy through the shared runner",
+    ]
+    assert experience_module._steps_from_stored("no steps in this text") == []
+
+
+def test_session_events_are_read_once_per_session(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_snapshot(_tenant_id, _user_id, session_ids):
+        calls.append(list(session_ids))
+        return {sid: [{"id": f"ev-{sid}"}] for sid in session_ids}
+
+    monkeypatch.setattr(experience_module, "_session_events_snapshot", fake_snapshot)
+    state = SimpleNamespace(session_events={})
+
+    first = experience_module._session_events(state, tenant_id=TENANT, user_id=USER, session_id="s1")
+    second = experience_module._session_events(state, tenant_id=TENANT, user_id=USER, session_id="s1")
+
+    assert first == second == [{"id": "ev-s1"}]
+    assert calls == [["s1"]]
+    assert experience_module._session_events(state, tenant_id=TENANT, user_id=USER, session_id="") == []
+    assert calls == [["s1"]]

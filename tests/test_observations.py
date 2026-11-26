@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -249,6 +250,75 @@ def test_replace_keeps_evidence_a_competing_writer_added(monkeypatch):
     assert merged["version"] == created["version"] + 2
 
 
+class _AlwaysRacingConnection:
+    """Connection proxy where a competing writer wins before every UPDATE."""
+
+    def __init__(self, inner, on_each_update):
+        self._inner = inner
+        self._on_each_update = on_each_update
+
+    def execute(self, sql, params=()):
+        if "UPDATE observations" in sql:
+            self._on_each_update()
+        return self._inner.execute(sql, params)
+
+    def commit(self):
+        return self._inner.commit()
+
+    def close(self):
+        return self._inner.close()
+
+
+def test_upsert_defers_to_the_stored_row_when_every_attempt_loses(monkeypatch):
+    """Five lost version races report the stored row instead of our own write."""
+    stamp = datetime.now(UTC).isoformat()
+    first = _store(f"exhausted race step one ({stamp})", category="procedural")
+    pattern = f"procedural:exhausted-race-{uuid.uuid4().hex[:8]}"
+    created = observations_module._upsert_observation(
+        _refine_candidate(pattern, [first], "Rebuild the search index before the backfill."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    real_connect = observations_module._connect
+    losses: list[int] = []
+
+    def competing_write():
+        losses.append(len(losses) + 1)
+        other = real_connect()
+        try:
+            other.execute(
+                "UPDATE observations SET supporting_episode_ids = ?, version = version + 1 WHERE id = ?",
+                (json.dumps([f"episode-other-{len(losses)}"]), created["id"]),
+            )
+            other.commit()
+        finally:
+            other.close()
+
+    monkeypatch.setattr(
+        observations_module,
+        "_connect",
+        lambda: _AlwaysRacingConnection(real_connect(), competing_write),
+    )
+
+    stored = observations_module._upsert_observation(
+        {
+            **_refine_candidate(pattern, [first], "Rebuild the search index before the backfill, twice."),
+            "supporting_episode_ids": ["episode-this-writer-scanned"],
+            "replace_episode_evidence": True,
+        },
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    merge_attempts = 5
+    # The bounded loop stops after its last attempt and reports what is stored,
+    # so the next pass retries instead of a write that never landed looking done.
+    assert len(losses) == merge_attempts
+    assert stored["observation_text"] == created["observation_text"]
+    assert stored["version"] == created["version"] + merge_attempts
+
+
 def test_repeated_refinement_keeps_version_when_nothing_changed():
     stamp = datetime.now(UTC).isoformat()
     first = _store(f"unchanged cluster step one ({stamp})", category="procedural")
@@ -348,3 +418,70 @@ def test_confidence_only_refinement_bumps_the_version_for_rule_graduation():
     assert refined["id"] == created["id"]
     assert refined["version"] == created["version"] + 1
     assert refined["confidence"] > created["confidence"]
+
+
+def test_replace_with_a_stale_scan_version_is_refused():
+    stamp = datetime.now(UTC).isoformat()
+    memory_id = _store(f"stale version guard ({stamp})", category="procedural")
+    pattern = "procedural:stale-version"
+    created = observations_module._upsert_observation(
+        _refine_candidate(pattern, [memory_id], "Rotate the key before redeploying."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    newer = observations_module._upsert_observation(
+        _refine_candidate(pattern, [memory_id], "Rotate the key, then confirm the new key serves traffic."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    assert newer["version"] > created["version"]
+
+    refused = observations_module._upsert_observation(
+        {
+            "pattern_key": pattern,
+            "observation_text": "A rewrite built from a scan that started before the last write.",
+            "category": "procedural",
+            "confidence": 0.6,
+            "supporting_memory_ids": [],
+            "supporting_episode_ids": [memory_id],
+            "memory_type": "procedural",
+            "replace_episode_evidence": True,
+            "scan_base_version": created["version"],
+        },
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    assert refused["observation_text"] == newer["observation_text"]
+    assert refused["version"] == newer["version"]
+
+
+def test_a_scan_version_matching_the_stored_row_still_writes():
+    stamp = datetime.now(UTC).isoformat()
+    memory_id = _store(f"matching version guard ({stamp})", category="procedural")
+    pattern = "procedural:matching-version"
+    created = observations_module._upsert_observation(
+        _refine_candidate(pattern, [memory_id], "Run the migration smoke check first."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    refined = observations_module._upsert_observation(
+        {
+            "pattern_key": pattern,
+            "observation_text": "Run the migration smoke check, then deploy.",
+            "category": "procedural",
+            "confidence": 0.6,
+            "supporting_memory_ids": [],
+            "supporting_episode_ids": [memory_id],
+            "memory_type": "procedural",
+            "replace_episode_evidence": True,
+            "scan_base_version": created["version"],
+        },
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    assert refined["observation_text"] == "Run the migration smoke check, then deploy."
+    assert refined["version"] == created["version"] + 1
+    assert refined["supporting_episode_ids"] == [memory_id]

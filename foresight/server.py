@@ -207,6 +207,7 @@ from .skill_crystallization import (
     SKILL_CATEGORY as _SKILL_CATEGORY,
     SKILL_REVIEW_RETIRED as _SKILL_REVIEW_RETIRED,
     crystallize_skills as _crystallize_skills,
+    ensure_skill_signed,
     is_skill_memory_loadable as _is_skill_memory_loadable,
     list_skills as _list_skills,
     relationship_source_is_live as _relationship_source_is_live,
@@ -9171,9 +9172,13 @@ def _handle_inferred_list(
     agent_id: str | None = None,
     project: str | None = None,
 ) -> str:
-    """List inferred memories and staged/retired skills pending review, supporting-parent count first."""
+    """List inferred memories and staged/retired skills pending review, supporting-parent count first.
+
+    The queue is scoped to the same default-lane namespace the review actions use, so
+    it cannot offer rows that approve/decline would then refuse to reach.
+    """
     capped = max(1, min(limit if limit is not None else INFERRED_LIST_MAX_LIMIT, INFERRED_LIST_MAX_LIMIT))
-    ns_frag, ns_params = _obs_ns_clause(agent_id, project, prefix="m.")
+    ns_frag, ns_params = _review_ns_clause(agent_id, project, prefix="m.")
     try:
         _retire_stale_skills(UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project))
     except Exception:
@@ -9185,7 +9190,7 @@ def _handle_inferred_list(
                 """
             SELECT m.id, m.content, m.category, m.scope, m.retention, m.importance,
                    m.created_at, m.updated_at, m.review_status, m.review_reason,
-                   m.memory_type, m.metrics, m.is_latest,
+                   m.memory_type, m.metrics, m.is_latest, m.agent_id, m.project,
                    (SELECT COUNT(*) FROM memory_relationships r
                     WHERE r.source_memory_id = m.id AND r.relationship_type = 'derives') AS parent_count
             FROM memories m
@@ -9218,6 +9223,8 @@ def _handle_inferred_list(
             "review_status": r["review_status"],
             "review_reason": r["review_reason"],
             "parent_count": r["parent_count"],
+            "agent_id": r["agent_id"] or "default",
+            "project": r["project"] or "default",
         }
         if r["category"] == _SKILL_CATEGORY:
             try:
@@ -9247,7 +9254,7 @@ def _handle_inferred_approve(
     try:
         row = conn.execute(
             join_sql_parts(
-                "SELECT inferred, review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                "SELECT inferred, review_status, category FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
                 ns_frag,
             ),
             (memory_id, uid, tenant_id, *ns_params),
@@ -9279,9 +9286,23 @@ def _handle_inferred_approve(
     finally:
         conn.close()
 
+    signature: str | None = None
+    if row["category"] == _SKILL_CATEGORY:
+        signature = ensure_skill_signed(
+            memory_id,
+            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+        )
+
     get_hybrid_retriever().invalidate_caches(uid, tenant_id)
     get_context_cache().invalidate_user(uid)
-    return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=False, status="approved")
+    return _tool_response(
+        ok=True,
+        action="approve",
+        memory_id=memory_id,
+        already_applied=False,
+        status="approved",
+        signature_status="valid" if signature else None,
+    )
 
 
 def _handle_inferred_decline(scope: UserScope, memory_id: str, reason: str | None) -> str:
@@ -9425,19 +9446,37 @@ def manage_inferred(
         return _tool_error("manage_inferred", str(exc))
     tenant_id = get_current_account_id()
 
+    return _dispatch_inferred_review(options, uid, tenant_id, agent_id=agent_id, project=project)
+
+
+def _dispatch_inferred_review(
+    options: InferredAction,
+    uid: str,
+    tenant_id: str,
+    *,
+    agent_id: str | None,
+    project: str | None,
+) -> str:
+    """Route one review action to its handler after the caller guards have run.
+
+    ``manage_inferred`` has to settle the caller and the tenant before any
+    handler touches a row; the per-action fan-out lives here so the tool body
+    keeps its guards and nothing else.
+    """
     if options.action == "list":
         return _handle_inferred_list(uid, tenant_id, options.limit, agent_id=agent_id, project=project)
-    if not options.memory_id:
+    memory_id = options.memory_id
+    if not memory_id:
         return _tool_error(options.action, "'memory_id' is required for this action.")
     if options.action == "approve":
-        return _handle_inferred_approve(uid, tenant_id, options.memory_id, agent_id=agent_id, project=project)
+        return _handle_inferred_approve(uid, tenant_id, memory_id, agent_id=agent_id, project=project)
     if options.action == "decline":
         return _handle_inferred_decline(
             UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
-            options.memory_id,
+            memory_id,
             options.reason,
         )
-    return _handle_inferred_undo(uid, tenant_id, options.memory_id, agent_id=agent_id, project=project)
+    return _handle_inferred_undo(uid, tenant_id, memory_id, agent_id=agent_id, project=project)
 
 
 # =============================================================================

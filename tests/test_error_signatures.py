@@ -68,3 +68,30 @@ def test_a_header_without_a_detail_does_not_swallow_the_next_line():
     # failure that must key the signature.
     assert normalize_error_signature("timeout:\nValueError: bad input") == "valueerror: bad input"
     assert normalize_error_signature("timeout:") == "timeout"
+
+
+def test_quoted_host_names_normalise_to_one_signature():
+    # Some drivers quote the host, so the same unreachable database arrived as
+    # two failure groups depending on which driver logged it.
+    signatures = {
+        normalize_error_signature(
+            "OperationalError: could not translate host name "
+            f"{quote}db1.prod.internal{quote} to address: Name or service not known"
+        )
+        for quote in ('"', "'")
+    }
+    assert None not in signatures
+    assert len(signatures) == 1
+
+
+def test_quoted_single_label_host_normalises_like_a_dotted_host() -> None:
+    dotted = normalize_error_signature(
+        'OperationalError: could not translate host name "db.prod.internal" to address: Name or service not known'
+    )
+    internal = normalize_error_signature(
+        'OperationalError: could not translate host name "db" to address: Name or service not known'
+    )
+
+    assert dotted
+    assert "prod.internal" not in dotted
+    assert internal == dotted

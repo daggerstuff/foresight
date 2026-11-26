@@ -557,3 +557,29 @@ def test_comma_joined_must_before_a_should_stays_must():
         "memory_type": "procedural",
     }
     assert compile_experience_to_rule(combined).strength == RuleStrength.MUST
+
+
+def test_prohibition_after_a_recommendation_is_not_downgraded():
+    mixed = {
+        "id": "obs_should_then_must_not",
+        "observation_text": "You must run the suite, should check coverage, and must not skip smoke tests.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(mixed).strength == RuleStrength.MUST_NOT
+
+    governed = {
+        "id": "obs_should_governs_never",
+        "observation_text": "You should never skip the smoke tests.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(governed).strength == RuleStrength.SHOULD
+
+    recommendation_only = {
+        "id": "obs_should_only_after_break",
+        "observation_text": "Run the suite, then should check coverage.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(recommendation_only).strength == RuleStrength.SHOULD

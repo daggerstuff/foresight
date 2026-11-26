@@ -24,6 +24,10 @@ _HOST_CONTEXT_RES = (
     re.compile(rf"(?<=\bhost=){_HOST_NAME}\b"),
     re.compile(rf"(?<=\bserver=){_HOST_NAME}\b"),
     re.compile(rf"(?<=\bhostname=){_HOST_NAME}\b"),
+    # A quoted host name is a host even when it is single-label: an internal
+    # "db" or "postgres" reaches the same log shape as a dotted FQDN, and the
+    # dotted pattern left it in place so one cause kept several signatures.
+    re.compile(r"(?<=\bhost name )[\"'][^\"'\s]+[\"']"),
 )
 _HEX_RE = re.compile(r"\b(?:0x)?[0-9a-f]{8,}\b", re.IGNORECASE)
 _UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)

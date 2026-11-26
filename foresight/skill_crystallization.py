@@ -866,6 +866,32 @@ def parse_skill_markdown(skill_md: str) -> dict[str, Any]:
     }
 
 
+def _skill_signing_payload(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Canonical payload a SKILL.md signature covers, built from its parsed fields.
+
+    Verification and re-signing both build the payload here, so an artifact signed
+    after approval is signed over exactly what verification checks.
+    """
+    meta = parsed["metadata"]
+    return _canonical_skill_payload(
+        {
+            "skill_name": parsed["name"],
+            "description": parsed["description"],
+            "skill_version": int(meta.get("skill_version") or 1),
+            "tenant_id": str(meta.get("tenant_id") or ""),
+            "user_id": str(meta.get("user_id") or ""),
+            "observation_id": str(meta.get("observation_id") or ""),
+            "pattern_key": str(meta.get("pattern_key") or ""),
+            "evidence_ids": list(meta.get("evidence_ids") or []),
+            "success_count": int(meta.get("success_count") or 0),
+            "failure_count": int(meta.get("failure_count") or 0),
+            "confidence": float(meta.get("confidence") or 0.0),
+            "retired": bool(meta.get("retired", False)),
+            "instructions": parsed["instructions"],
+        }
+    )
+
+
 def verify_skill_markdown(skill_md: str) -> tuple[bool, dict[str, Any]]:
     """Verify the HMAC-SHA256 signature embedded in a rendered SKILL.md document.
 
@@ -890,28 +916,96 @@ def verify_skill_markdown(skill_md: str) -> tuple[bool, dict[str, Any]]:
         return False, {**parsed, "signature_status": "missing"}
 
     try:
-        signing_doc = _canonical_skill_payload(
-            {
-                "skill_name": parsed["name"],
-                "description": parsed["description"],
-                "skill_version": int(meta.get("skill_version") or 1),
-                "tenant_id": str(meta.get("tenant_id") or ""),
-                "user_id": str(meta.get("user_id") or ""),
-                "observation_id": str(meta.get("observation_id") or ""),
-                "pattern_key": str(meta.get("pattern_key") or ""),
-                "evidence_ids": list(meta.get("evidence_ids") or []),
-                "success_count": int(meta.get("success_count") or 0),
-                "failure_count": int(meta.get("failure_count") or 0),
-                "confidence": float(meta.get("confidence") or 0.0),
-                "retired": bool(meta.get("retired", False)),
-                "instructions": parsed["instructions"],
-            }
-        )
+        signing_doc = _skill_signing_payload(parsed)
     except (TypeError, ValueError):
         return False, {**parsed, "signature_status": "invalid"}
 
     verified = verify_skill_document(signing_doc, signature)
     return verified, {**parsed, "signature_status": "valid" if verified else "invalid"}
+
+
+_SIGNATURE_LINE_RE = re.compile(r"(?m)^  signature: .*$")
+
+
+def _resign_skill_document(parsed: dict[str, Any], content: str) -> tuple[str, str | None]:
+    """Return ``content`` carrying a fresh signature over its own parsed fields.
+
+    Only the signature line changes: the instructions and every other frontmatter
+    field stay byte-identical, so re-signing an approved artifact cannot alter the
+    skill a caller reads.
+    """
+    signature = sign_skill_document(_skill_signing_payload(parsed))
+    replacement = f"  signature: {json.dumps(signature)}"
+    resigned, count = _SIGNATURE_LINE_RE.subn(lambda _match: replacement, content, count=1)
+    if count != 1:
+        return content, None
+    return resigned, signature
+
+
+def ensure_skill_signed(memory_id: str, scope: UserScope) -> str | None:
+    """Sign an approved skill whose staged artifact predates the signing key.
+
+    A skill staged while no signing key was configured carries an empty signature,
+    so approving it would publish a skill that ``load_skill`` and ``list_skills``
+    cannot verify. Approval is the last point at which the artifact is still the
+    staged document, so the signature is filled in here.
+
+    An artifact whose signature is present but does not verify is never rewritten:
+    that mismatch means the content changed after signing, and overwriting it would
+    launder a tampered skill into an apparently valid one.
+
+    Returns the new signature, or ``None`` when nothing needed signing.
+    """
+    if not skill_signing_configured():
+        return None
+    ns_sql, ns_params = _ns_clause(scope.agent_id or "default", scope.project or "default")
+    conn = _connect()
+    try:
+        row = conn.execute(
+            join_sql_parts(
+                "SELECT content, metrics FROM memories WHERE id = ? AND tenant_id = ? AND user_id = ? AND category = ?",
+                ns_sql,
+            ),
+            (memory_id, scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params),
+        ).fetchone()
+        if row is None:
+            return None
+        content = decrypt_if_encrypted(str(row["content"] or ""), tenant_id=scope.tenant_id, user_id=scope.user_id)
+        _verified, parsed = verify_skill_markdown(content)
+        if str(parsed.get("signature_status") or "") != "missing":
+            return None
+        resigned, signature = _resign_skill_document(parsed, content)
+        if signature is None:
+            return None
+        try:
+            meta = json.loads(row["metrics"] or "{}")
+        except (TypeError, ValueError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["signature"] = signature
+        meta["signature_alg"] = "HMAC-SHA256"
+        conn.execute(
+            join_sql_parts(
+                "UPDATE memories SET content = ?, content_hash = ?, metrics = ?, updated_at = ? "
+                "WHERE id = ? AND tenant_id = ? AND user_id = ?",
+                ns_sql,
+            ),
+            (
+                encrypt_if_enabled(resigned, tenant_id=scope.tenant_id, user_id=scope.user_id),
+                hashlib.sha256(resigned.encode("utf-8")).hexdigest(),
+                json.dumps(meta),
+                _now_iso(),
+                memory_id,
+                scope.tenant_id,
+                scope.user_id,
+                *ns_params,
+            ),
+        )
+        conn.commit()
+        return signature
+    finally:
+        conn.close()
 
 
 def _record_skill_version(conn: Any, snapshot: dict[str, Any]) -> str:
@@ -1160,15 +1254,18 @@ def _skill_record(row: dict[str, Any], *, verify_signatures: bool = True) -> dic
     parsed: dict[str, Any] = {}
     if verify_signatures:
         sig_valid, parsed = verify_skill_markdown(content)
+        signature_status = str(parsed.get("signature_status") or ("valid" if sig_valid else "invalid"))
     else:
         try:
             parsed = parse_skill_markdown(content)
             sig_valid = bool(meta.get("signature"))
         except ValueError:
             parsed = {}
+        signature_status = "unverified" if sig_valid else "missing"
     skill_name = str(meta.get("skill_name") or parsed.get("name") or row["id"])
     return {
         "memory_id": row["id"],
+        "signature_status": signature_status,
         "skill_name": skill_name,
         "description": str(meta.get("description") or parsed.get("description") or ""),
         "status": _skill_status(row),
@@ -1245,13 +1342,15 @@ def list_skills(
         cap = None if limit is None else max(1, int(limit))
         records: list[dict[str, Any]] = []
         offset = 0
+        # One cutoff for the whole listing: reading the clock per row let two
+        # skills with the same expiry straddle a page boundary.
+        now_iso = _now_iso()
         while cap is None or len(records) < cap:
             page = conn.execute(sql + " LIMIT ? OFFSET ?", (*params, _SKILL_LIST_PAGE_SIZE, offset)).fetchall()
             if not page:
                 break
             offset += len(page)
             for row in page:
-                now_iso = _now_iso()
                 rd = dict(row)
                 rec = _skill_record(rd, verify_signatures=verify_signatures)
                 if not _skill_selected(rd, rec, status, verify_signatures, now_iso):

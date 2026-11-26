@@ -340,10 +340,15 @@ def _upsert_observation(
 
     memory_type = candidate.get("memory_type") or "semantic"
     current = existing
+    scan_base_version = int(candidate.get("scan_base_version") or 0)
+    if scan_base_version and int(current.get("version") or 0) > scan_base_version:
+        # The row moved after the caller's scan: the evidence it would drop was
+        # recorded later and was never part of the verdicts it judged.
+        return current
     # The episode ids the caller's verdict scan could see. A replacement run
     # that loses a version race must not drop what another writer recorded
     # after the scan began, because the scan never judged those ids.
-    scan_base_episodes = set(existing.get("supporting_episode_ids", []))
+    scan_base_episodes = set(candidate.get("scan_base_episode_ids") or existing.get("supporting_episode_ids", []))
     for _attempt in range(5):
         prior_memory_type = current.get("memory_type") or "semantic"
         new_memory_type = (
@@ -561,6 +566,13 @@ class EpisodeObservationSpec:
     # verdicts, so their evidence is replaced rather than unioned; a corrected
     # verdict must drop the episode from the group it left.
     replace_episode_evidence: bool = False
+    # What the caller's verdict scan actually saw. A replacement that ran
+    # alongside another writer must not treat evidence recorded after the scan
+    # as unseen, because that evidence was never judged.
+    scan_base_episode_ids: tuple[str, ...] = ()
+    # The row version that scan read. A caller whose scan predates a write it
+    # never judged must not replace that write's evidence.
+    scan_base_version: int = 0
 
 
 def upsert_episode_observation(
@@ -584,5 +596,7 @@ def upsert_episode_observation(
         "supporting_episode_ids": list(dict.fromkeys(spec.episode_ids)),
         "memory_type": spec.memory_type,
         "replace_episode_evidence": spec.replace_episode_evidence,
+        "scan_base_episode_ids": tuple(spec.scan_base_episode_ids),
+        "scan_base_version": int(spec.scan_base_version),
     }
     return _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id)

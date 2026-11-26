@@ -658,6 +658,7 @@ def test_cli_skills_list_approve_export_and_verify(tmp_path: Path, capsys, monke
     listed = json.loads(capsys.readouterr().out)
     assert listed["count"] == 1
     assert listed["skills"][0]["skill_name"] == "cli-workflow"
+    assert listed["skills"][0]["signature_status"] == "valid"
 
     assert cli_module.main(["--json", "skills", "export", "--output-dir", str(out_dir), "--user-id", USER_ID]) == 0
     exported = json.loads(capsys.readouterr().out)
@@ -671,6 +672,7 @@ def test_cli_skills_list_approve_export_and_verify(tmp_path: Path, capsys, monke
     assert cli_module.main(["--json", "skills", "verify", str(skill_file)]) == 0
     verified = json.loads(capsys.readouterr().out)
     assert verified["signature_valid"] is True
+    assert verified["signature_status"] == "valid"
 
 
 def test_write_time_supersede_retires_skill(monkeypatch):
@@ -836,6 +838,20 @@ def test_configuring_a_key_resigns_a_previously_unsigned_skill(monkeypatch):
     repaired = next(s for s in list_skills(_scope(), status="pending") if s["memory_id"] == skill_id)
     assert repaired["signature_valid"] is True
     assert repaired["signature"]
+
+
+def test_approve_signs_a_skill_staged_while_unsigned(monkeypatch):
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("approve-signing")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID))
+    approved = next(s for s in list_skills(_scope(), status="approved") if s["memory_id"] == skill_id)
+    assert approved["signature_valid"] is True
+    assert approved["signature_status"] == "valid"
+    assert load_skill(skill_id, _scope()) is not None
 
 
 def test_expired_skill_is_not_loadable_by_memory_id(monkeypatch):

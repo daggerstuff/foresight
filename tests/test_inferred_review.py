@@ -311,6 +311,7 @@ class TestInferredApprove:
             "memory_id": "inf_a",
             "already_applied": False,
             "status": "approved",
+            "signature_status": None,
         }
         conn = _pg()
         try:
@@ -323,6 +324,34 @@ class TestInferredApprove:
         assert row["is_ghost"] == 0
         # approved memories leave the queue
         assert _list_items()["count"] == 0
+
+    def test_queue_items_report_the_lane_that_review_actions_use(self):
+        conn = _pg()
+        try:
+            _insert_memory(
+                conn,
+                "lane_item",
+                "fact staged in a private lane",
+                _MemoryRow(agent_id="agent-a", project="proj-a"),
+            )
+        finally:
+            conn.close()
+        res = json.loads(_tool("list", user_id=UID, agent_id="agent-a", project="proj-a"))
+        assert res["ok"], res
+        item = next(i for i in res["items"] if i["id"] == "lane_item")
+        assert item["agent_id"] == "agent-a"
+        assert item["project"] == "proj-a"
+
+    def test_queue_items_in_the_shared_lane_report_the_default_lane(self):
+        conn = _pg()
+        try:
+            _insert_memory(conn, "shared_item", "fact staged in the shared lane")
+        finally:
+            conn.close()
+        res = _list_items()
+        item = next(i for i in res["items"] if i["id"] == "shared_item")
+        assert item["agent_id"] == "default"
+        assert item["project"] == "default"
 
     def test_approve_is_idempotent(self):
         conn = _pg()
@@ -558,6 +587,7 @@ class TestScoping:
             res = json.loads(_tool(action, user_id=UID, memory_id="inf_lane_theirs", **kw))
             assert res["ok"] is False, res
             assert "not found" in res["error"]["message"], res
+
         conn = _pg()
         try:
             assert _state_tuple(conn, "inf_lane_theirs") == (1, 0, None, None)
@@ -565,6 +595,23 @@ class TestScoping:
             conn.close()
         mine = json.loads(_tool("approve", user_id=UID, memory_id="inf_lane_mine"))
         assert mine["ok"] is True, mine
+
+    def test_the_queue_never_offers_another_lane_s_row(self):
+        conn = _pg()
+        try:
+            _insert_memory(conn, "inf_lane_queue_mine", "my lane's review candidate")
+            _insert_memory(
+                conn,
+                "inf_lane_queue_theirs",
+                "another agent lane's review candidate",
+                _MemoryRow(agent_id="frontend", project="site"),
+            )
+        finally:
+            conn.close()
+
+        ids = [i["id"] for i in _list_items()["items"]]
+        assert "inf_lane_queue_mine" in ids
+        assert "inf_lane_queue_theirs" not in ids
 
     def test_review_actions_reach_a_skill_in_the_named_lane(self):
         conn = _pg()

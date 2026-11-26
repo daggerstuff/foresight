@@ -318,6 +318,34 @@ def _raw_events_for_session(tenant_id: str, user_id: str, session_id: str) -> li
     )
 
 
+def _session_events_snapshot(
+    tenant_id: str,
+    user_id: str,
+    session_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Read every replayable event of the run's sessions in one query.
+
+    A success group derives its steps from its last episode's session, which was
+    one round trip per group. Grouping the same rows by session keeps the
+    derived steps identical while the whole pass costs a single read.
+    """
+    wanted = [sid for sid in dict.fromkeys(session_ids) if sid]
+    if not wanted:
+        return {}
+    placeholders = ", ".join("?" for _ in wanted)
+    rows = _fetch_all(
+        f"""SELECT session_id, id, role, content, position FROM raw_events
+           WHERE tenant_id = ? AND user_id = ? AND tombstone = 0
+             AND session_id IN ({placeholders})
+           ORDER BY session_id ASC, position ASC, captured_at ASC""",
+        (tenant_id, user_id, *wanted),
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("session_id") or ""), []).append(row)
+    return grouped
+
+
 def build_episode(
     session_id: str,
     *,
@@ -612,8 +640,10 @@ class _DistillState:
 
     result: dict[str, Any]
     snapshot: _ProceduralSnapshot | None
-    observations: dict[str, tuple[str, str, tuple[str, ...]]]
+    observations: dict[str, _ObservationBaseline]
     same_task_failures: dict[str, list[str]]
+    session_events: dict[str, list[dict[str, Any]]]
+    recipe_sessions: dict[str, str]
 
 
 def _procedural_snapshot(*, user_id: str, tenant_id: str) -> _ProceduralSnapshot:
@@ -633,13 +663,42 @@ def _procedural_snapshot(*, user_id: str, tenant_id: str) -> _ProceduralSnapshot
 
 
 def _observation_shape(
-    observation_text: str, confidence: float, episode_ids: list[str]
-) -> tuple[str, str, tuple[str, ...]]:
-    """The comparable state of one distilled observation."""
-    return (observation_text, f"{float(confidence):.6f}", tuple(dict.fromkeys(episode_ids)))
+    observation_text: str,
+    confidence: float,
+    episode_ids: list[str],
+    category: str,
+    memory_type: str,
+) -> tuple[str, str, tuple[str, ...], str, str]:
+    """The comparable state of one distilled observation.
+
+    Category and memory type belong in the shape: a group whose text and evidence
+    already match but whose stored classification drifted still needs its write.
+    """
+    return (
+        observation_text,
+        f"{float(confidence):.6f}",
+        tuple(dict.fromkeys(episode_ids)),
+        category,
+        memory_type,
+    )
 
 
-def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+@dataclass(frozen=True)
+class _ObservationBaseline:
+    """One stored observation as the distillation scan saw it.
+
+    ``version`` is the row version the shape was read at. A replacement computed
+    from an episode scan that started before another writer committed must not
+    publish over that write, because the scan never judged it, so the writer
+    carries this version back with the evidence it did judge.
+    """
+
+    shape: tuple[str, str, tuple[str, ...], str, str]
+    version: int
+    episode_ids: tuple[str, ...]
+
+
+def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, _ObservationBaseline]:
     """Read every live default-lane observation once, keyed by pattern key.
 
     Distillation revisits each of the user's groups on every capture, and a
@@ -649,12 +708,13 @@ def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, tuple[st
     10,000 historical groups writes only the groups it actually changed.
     """
     rows = _fetch_all(
-        "SELECT pattern_key, observation_text, confidence, supporting_episode_ids FROM observations "
+        "SELECT pattern_key, observation_text, confidence, supporting_episode_ids, "
+        "category, memory_type, version FROM observations "
         "WHERE tenant_id = ? AND user_id = ? AND status <> 'archived' "
         "AND COALESCE(agent_id, 'default') = 'default' AND COALESCE(project, 'default') = 'default'",
         (tenant_id, user_id),
     )
-    shape: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    shape: dict[str, _ObservationBaseline] = {}
     for row in rows:
         try:
             stored_ids = json.loads(row.get("supporting_episode_ids") or "[]")
@@ -662,10 +722,17 @@ def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, tuple[st
             continue
         if not isinstance(stored_ids, list):
             continue
-        shape[str(row["pattern_key"])] = _observation_shape(
-            str(row.get("observation_text") or ""),
-            float(row.get("confidence") or 0.0),
-            [str(eid) for eid in stored_ids],
+        episode_ids = tuple(dict.fromkeys(str(eid) for eid in stored_ids))
+        shape[str(row["pattern_key"])] = _ObservationBaseline(
+            shape=_observation_shape(
+                str(row.get("observation_text") or ""),
+                float(row.get("confidence") or 0.0),
+                list(episode_ids),
+                str(row.get("category") or ""),
+                str(row.get("memory_type") or ""),
+            ),
+            version=int(row.get("version") or 0),
+            episode_ids=episode_ids,
         )
     return shape
 
@@ -811,9 +878,7 @@ def _strip_result_lines(content: str) -> str:
             continue
         result_match = _RESULT_REPORT_RE.match(line)
         if result_match is not None:
-            remainder = (
-                _strip_result_clauses(line[result_match.end() :]).lstrip(" .;,-").strip()
-            )
+            remainder = _strip_result_clauses(line[result_match.end() :]).lstrip(" .;,-").strip()
             if len(re.findall(r"[A-Za-z]{2,}", remainder)) < _MIN_REPORT_TAIL_WORDS:
                 # "Tests passed. Run migrations." - the tail is the only step in
                 # the recipe, so a short imperative is kept while a short result
@@ -830,23 +895,46 @@ def _strip_result_lines(content: str) -> str:
     return " ".join(kept)
 
 
+_STEP_BLOCK_RE = re.compile(r" Steps: (.+?)(?:\s+The same task\b|$)")
+_STEP_INDEX_RE = re.compile(r"(?:^|\s)\d+\)\s*")
+
+
+def _steps_from_stored(observation_text: str) -> list[str]:
+    """Recover the recipe steps a stored observation already carries.
+
+    Steps are written as " 1) ... 2) ..." between the outcome sentence and the
+    failure note, so an unchanged group rebuilds identical text without
+    re-reading the transcript it came from.
+    """
+    match = _STEP_BLOCK_RE.search(observation_text)
+    if match is None:
+        return []
+    return [part.strip(" .") for part in _STEP_INDEX_RE.split(match.group(1)) if part.strip(" .")]
+
+
 def _procedure_steps(
     tenant_id: str,
     user_id: str,
     session_id: str,
     *,
     limit: int = 5,
+    events: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Derive the ordered steps an episode actually executed.
 
     Only agent-side output is read: the user's opening request describes the
     task, and replaying it as a step is how a recipe ended up saying "reuse the
     original request". Each step is passed through the secret policy first.
+
+    ``events`` carries the rows a distillation run already read for this
+    session, so a pass over many groups replays them from one query instead of
+    one round trip per group.
     """
     if not session_id:
         return []
     steps: list[str] = []
-    for event in _raw_events_for_session(tenant_id, user_id, session_id):
+    rows = events if events is not None else _raw_events_for_session(tenant_id, user_id, session_id)
+    for event in rows:
         if (event.get("role") or "").lower() not in ("assistant", "tool", "tool_use", "function"):
             continue
         text = _strip_result_lines(str(event.get("content") or ""))
@@ -902,6 +990,12 @@ def distill_experiences(
     but only a group whose stored observation and lesson actually differ is
     written: an untouched group costs two reads, not two transactions.
     """
+    # Both baselines are read before the episode scan: they are what the scan
+    # is allowed to treat as already-judged, so reading them afterwards would
+    # count evidence another writer committed mid-scan as seen when it was not.
+    procedural_snapshot = _procedural_snapshot(user_id=user_id, tenant_id=tenant_id)
+    observation_snapshot = _observation_snapshot(user_id=user_id, tenant_id=tenant_id)
+
     batch_size = max(1, int(limit))
     sql = (
         "SELECT * FROM episodes WHERE tenant_id = ? AND user_id = ? AND score_source IS NOT NULL "
@@ -955,11 +1049,21 @@ def distill_experiences(
     )
     result["skipped_sensitive"] = int((skipped or {}).get("n") or 0)
 
+    # A step rebuild needs its session's raw events, and a lookup per group
+    # would pay one round trip each. Reading every recipe session in this one
+    # query keeps the pass at a single event read, while the cache still lets an
+    # unchanged group reuse its stored steps without touching it.
+    recipe_sessions = {slug: str(group[-1].get("session_id") or "") for slug, group in successes.items()}
+    session_events = _session_events_snapshot(tenant_id, user_id, list(recipe_sessions.values()))
+    for session in recipe_sessions.values():
+        session_events.setdefault(session, [])
     state = _DistillState(
         result=result,
-        snapshot=_procedural_snapshot(user_id=user_id, tenant_id=tenant_id),
-        observations=_observation_snapshot(user_id=user_id, tenant_id=tenant_id),
+        snapshot=procedural_snapshot,
+        observations=observation_snapshot,
         same_task_failures={},
+        session_events=session_events,
+        recipe_sessions=recipe_sessions,
     )
     try:
         _distill_failure_group(failures, state=state, user_id=user_id, tenant_id=tenant_id)
@@ -979,6 +1083,23 @@ def distill_experiences(
             # upserts costs one pass over the cache instead of one per group.
             get_hybrid_retriever().invalidate_caches(user_id, tenant_id)
     return result
+
+
+def _session_events(
+    state: _DistillState,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Read one session's replayable events the first time a group needs them."""
+    if not session_id:
+        return []
+    cached = state.session_events.get(session_id)
+    if cached is None:
+        cached = _session_events_snapshot(tenant_id, user_id, [session_id]).get(session_id, [])
+        state.session_events[session_id] = cached
+    return cached
 
 
 def _distill_failure_group(
@@ -1012,10 +1133,13 @@ def _distill_failure_group(
             f"before retrying the same approach."
         )
         pattern_key = f"failure:{sig}"[:200]
-        wanted = _observation_shape(text, confidence, ids)
-        if observations.get(pattern_key) != wanted:
+        prior = observations.get(pattern_key)
+        wanted = _observation_shape(text, confidence, ids, "procedural", "procedural")
+        if prior is None or prior.shape != wanted:
             upsert_episode_observation(
                 EpisodeObservationSpec(
+                    scan_base_episode_ids=prior.episode_ids if prior else (),
+                    scan_base_version=prior.version if prior else 0,
                     pattern_key=pattern_key,
                     observation_text=text,
                     category="procedural",
@@ -1026,7 +1150,11 @@ def _distill_failure_group(
                 user_id=user_id,
                 tenant_id=tenant_id,
             )
-            observations[pattern_key] = wanted
+            observations[pattern_key] = _ObservationBaseline(
+                shape=wanted,
+                version=(prior.version if prior else 0) + 1,
+                episode_ids=wanted[2],
+            )
             result["observations_upserted"] += 1
         content = (
             f"[procedural lesson] Error signature: {label}\n"
@@ -1078,8 +1206,23 @@ def _distill_success_group(
         n = len(group)
         avg_score = sum((ep.get("outcome_score") or 0.5) for ep in group) / n
         confidence = min(0.95, 0.5 + 0.1 * n)
-        steps = _procedure_steps(tenant_id, user_id, str(group[-1].get("session_id") or ""))
+        session_id = state.recipe_sessions.get(slug, "")
         contradicted = [eid for eid in same_task_failures.get(slug, []) if eid not in ids]
+        pattern_key = f"success:{slug}"
+        evidence_ids = list(dict.fromkeys([*ids, *contradicted]))
+        prior = observations.get(pattern_key)
+        # An unchanged group already stored the steps its transcript yielded, so
+        # it rebuilds the same block from that text instead of paying for a raw
+        # event read over a group it is not going to write.
+        if prior is not None and prior.episode_ids == tuple(evidence_ids):
+            steps = _steps_from_stored(prior.shape[0])
+        else:
+            steps = _procedure_steps(
+                tenant_id,
+                user_id,
+                session_id,
+                events=_session_events(state, tenant_id=tenant_id, user_id=user_id, session_id=session_id),
+            )
         step_block = " Steps: " + " ".join(f"{i}) {s}" for i, s in enumerate(steps, 1)) if steps else ""
         failure_note = (
             f" The same task also failed {len(contradicted)} time(s) with an unresolved error; "
@@ -1110,12 +1253,12 @@ def _distill_success_group(
                 f"Succeeded {n} time(s) with average score {avg_score:.2f}; the transcript recorded "
                 f"no repeatable step, so no procedure is claimed.{failure_note}"
             )
-        pattern_key = f"success:{slug}"
-        evidence_ids = list(dict.fromkeys([*ids, *contradicted]))
-        wanted = _observation_shape(text, confidence, evidence_ids)
-        if observations.get(pattern_key) != wanted:
+        wanted = _observation_shape(text, confidence, evidence_ids, "procedural", "procedural")
+        if prior is None or prior.shape != wanted:
             upsert_episode_observation(
                 EpisodeObservationSpec(
+                    scan_base_episode_ids=prior.episode_ids if prior else (),
+                    scan_base_version=prior.version if prior else 0,
                     pattern_key=pattern_key,
                     observation_text=text,
                     category="procedural",
@@ -1126,7 +1269,11 @@ def _distill_success_group(
                 user_id=user_id,
                 tenant_id=tenant_id,
             )
-            observations[pattern_key] = wanted
+            observations[pattern_key] = _ObservationBaseline(
+                shape=wanted,
+                version=(prior.version if prior else 0) + 1,
+                episode_ids=wanted[2],
+            )
             result["observations_upserted"] += 1
         _, changed = _upsert_procedural_memory(
             ProceduralMemorySpec(
