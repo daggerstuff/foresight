@@ -1,0 +1,22 @@
+foresight/experience.py
+  s_a501fa1cdfdd22::t_53321bd57e2db9 228,268-269,744,746,751
+  s_a501fa1cdfdd22::t_87ce27017d5521 747-749
+  s_a501fa1cdfdd22::t_960bcd6aae1bf9 750
+  s_a501fa1cdfdd22::t_91472f34e055d1 752-753
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "20a7bdf178f8a5a1426c1009d3e063b290917505",
+  "prompts": {},
+  "sessions": {
+    "s_a501fa1cdfdd22": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "thoracic-coneflower",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
