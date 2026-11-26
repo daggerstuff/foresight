@@ -462,8 +462,14 @@ def _existing_skill_by_observation(
     observation_id: str,
     pattern_key: str,
     scope: UserScope,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Find the skill this observation already produced in its own destination lane.
+
+    Returns that skill and, separately, a skill holding the same pattern key for
+    a different observation. The second one is not a version of the first: a
+    pattern key can outlive the observation that produced it, and overwriting
+    the older row would replace content a human reviewed and reset its status,
+    so the caller retires it and stages this observation's own skill instead.
 
     The lookup is restricted to the caller's lane plus the shared ``default``
     lane, and the match itself requires the exact destination namespace, so a
@@ -486,7 +492,8 @@ def _existing_skill_by_observation(
     # can carry the same key across eras, and returning whichever row was
     # touched last made the older observation compare itself against the newer
     # skill and never update its own.
-    by_pattern: dict[str, Any] | None = None
+    legacy: dict[str, Any] | None = None
+    superseded: dict[str, Any] | None = None
     for row in rows:
         rd = dict(row)
         if str(rd.get("agent_id") or "default") != dest_agent:
@@ -494,11 +501,18 @@ def _existing_skill_by_observation(
         if str(rd.get("project") or "default") != dest_project:
             continue
         metrics = _parse_json_value(rd.get("metrics"), {})
-        if observation_id and str(metrics.get("observation_id") or "") == observation_id:
-            return rd
-        if by_pattern is None and pattern_key and metrics.get("pattern_key") == pattern_key:
-            by_pattern = rd
-    return by_pattern
+        recorded = str(metrics.get("observation_id") or "")
+        if observation_id and recorded == observation_id:
+            return rd, None
+        if pattern_key and metrics.get("pattern_key") == pattern_key:
+            if recorded and observation_id and recorded != observation_id:
+                # Another observation's skill holds this key.
+                superseded = superseded or rd
+            elif legacy is None:
+                # A row staged before observation ids were recorded: the shared
+                # key is the only link it has, so it stays the update target.
+                legacy = rd
+    return legacy, superseded
 
 
 def select_skill_candidates(
@@ -526,7 +540,7 @@ def select_skill_candidates(
             if not proof.eligible:
                 continue
             skill_name = _derive_skill_name(obs)
-            existing = _existing_skill_by_observation(conn, obs["id"], obs.get("pattern_key", ""), scope)
+            existing, superseded = _existing_skill_by_observation(conn, obs["id"], obs.get("pattern_key", ""), scope)
             existing_meta = _parse_json_value(existing.get("metrics"), {}) if existing else {}
             existing_text = str(existing_meta.get("observation_text") or "") if existing else ""
             existing_evidence = sorted(str(x) for x in (existing_meta.get("evidence_ids") or [])) if existing else []
@@ -565,6 +579,7 @@ def select_skill_candidates(
                     "failure_ids": list(proof.failure_ids or []),
                     "already_staged": existing is not None,
                     "existing_skill_id": existing["id"] if existing else None,
+                    "superseded_skill_id": superseded["id"] if superseded else None,
                     "existing_review_status": existing.get("review_status") if existing else None,
                     "needs_update": needs_update,
                     "reason": proof.reason,
@@ -942,70 +957,121 @@ def _resign_skill_document(parsed: dict[str, Any], content: str) -> tuple[str, s
     return resigned, signature
 
 
-def ensure_skill_signed(memory_id: str, scope: UserScope) -> str | None:
-    """Sign an approved skill whose staged artifact predates the signing key.
+_SIGNING_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class SigningOutcome:
+    """What approving a skill did about its staged artifact's signature.
+
+    status is one of: not_configured (no signing key is set, so nothing can be
+    signed), already_valid (the artifact arrived signed and verified), signed (a
+    fresh signature was written), invalid (the artifact carries a signature that
+    does not verify, so re-signing it would launder a tampered skill), absent
+    (the row is gone) or stale (another writer replaced the artifact on every
+    attempt, so this pass refused to overwrite it).
+    """
+
+    status: str
+    signature: str | None = None
+
+
+def _sign_staged_skill_once(
+    conn: Any,
+    memory_id: str,
+    scope: UserScope,
+    ns_sql: str,
+    ns_params: tuple[Any, ...],
+) -> SigningOutcome | None:
+    """Try to sign the staged artifact once, or None when another writer won.
+
+    Every write is conditional on the exact row that was read, so a pass that
+    restages the skill mid-flight keeps its own document instead of having an
+    older one written back over it with the new version number.
+    """
+    row = conn.execute(
+        join_sql_parts(
+            "SELECT content, content_hash, metrics FROM memories WHERE id = ? AND tenant_id = ? "
+            "AND user_id = ? AND category = ?",
+            ns_sql,
+        ),
+        (memory_id, scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params),
+    ).fetchone()
+    if row is None:
+        return SigningOutcome("absent")
+    stored = str(row["content"] or "")
+    content = decrypt_if_encrypted(stored, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    _verified, parsed = verify_skill_markdown(content)
+    signature_status = str(parsed.get("signature_status") or "")
+    if signature_status == "valid":
+        return SigningOutcome("already_valid")
+    resigned = ""
+    signature: str | None = None
+    if signature_status == "missing":
+        resigned, signature = _resign_skill_document(parsed, content)
+    if signature is None:
+        # Present but unverifiable, or no signature line to fill in: rewriting
+        # either would publish content nobody signed.
+        return SigningOutcome("invalid")
+    try:
+        meta = json.loads(row["metrics"] or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["signature"] = signature
+    meta["signature_alg"] = "HMAC-SHA256"
+    read_hash = str(row["content_hash"] or "")
+    cursor = conn.execute(
+        join_sql_parts(
+            "UPDATE memories SET content = ?, content_hash = ?, metrics = ?, updated_at = ? "
+            "WHERE id = ? AND tenant_id = ? AND user_id = ?",
+            ns_sql,
+            " AND content_hash = ?" if read_hash else " AND content = ?",
+        ),
+        (
+            encrypt_if_enabled(resigned, tenant_id=scope.tenant_id, user_id=scope.user_id),
+            hashlib.sha256(resigned.encode("utf-8")).hexdigest(),
+            json.dumps(meta),
+            _now_iso(),
+            memory_id,
+            scope.tenant_id,
+            scope.user_id,
+            *ns_params,
+            read_hash or stored,
+        ),
+    )
+    if not cursor.rowcount:
+        conn.rollback()
+        return None
+    conn.commit()
+    return SigningOutcome("signed", signature)
+
+
+def ensure_skill_signed(memory_id: str, scope: UserScope) -> SigningOutcome:
+    """Sign a staged skill whose artifact predates the signing key.
 
     A skill staged while no signing key was configured carries an empty signature,
-    so approving it would publish a skill that ``load_skill`` and ``list_skills``
-    cannot verify. Approval is the last point at which the artifact is still the
-    staged document, so the signature is filled in here.
+    so approving it would publish a skill that load_skill and list_skills cannot
+    verify. Approval is the last point at which the artifact is still the staged
+    document, so the signature is filled in here.
 
     An artifact whose signature is present but does not verify is never rewritten:
-    that mismatch means the content changed after signing, and overwriting it would
-    launder a tampered skill into an apparently valid one.
-
-    Returns the new signature, or ``None`` when nothing needed signing.
+    that mismatch means the content changed after signing, and overwriting it
+    would launder a tampered skill into an apparently valid one.
     """
     if not skill_signing_configured():
-        return None
+        return SigningOutcome("not_configured")
     ns_sql, ns_params = _ns_clause(scope.agent_id or "default", scope.project or "default")
     conn = _connect()
     try:
-        row = conn.execute(
-            join_sql_parts(
-                "SELECT content, metrics FROM memories WHERE id = ? AND tenant_id = ? AND user_id = ? AND category = ?",
-                ns_sql,
-            ),
-            (memory_id, scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params),
-        ).fetchone()
-        if row is None:
-            return None
-        content = decrypt_if_encrypted(str(row["content"] or ""), tenant_id=scope.tenant_id, user_id=scope.user_id)
-        _verified, parsed = verify_skill_markdown(content)
-        if str(parsed.get("signature_status") or "") != "missing":
-            return None
-        resigned, signature = _resign_skill_document(parsed, content)
-        if signature is None:
-            return None
-        try:
-            meta = json.loads(row["metrics"] or "{}")
-        except (TypeError, ValueError):
-            meta = {}
-        if not isinstance(meta, dict):
-            meta = {}
-        meta["signature"] = signature
-        meta["signature_alg"] = "HMAC-SHA256"
-        conn.execute(
-            join_sql_parts(
-                "UPDATE memories SET content = ?, content_hash = ?, metrics = ?, updated_at = ? "
-                "WHERE id = ? AND tenant_id = ? AND user_id = ?",
-                ns_sql,
-            ),
-            (
-                encrypt_if_enabled(resigned, tenant_id=scope.tenant_id, user_id=scope.user_id),
-                hashlib.sha256(resigned.encode("utf-8")).hexdigest(),
-                json.dumps(meta),
-                _now_iso(),
-                memory_id,
-                scope.tenant_id,
-                scope.user_id,
-                *ns_params,
-            ),
-        )
-        conn.commit()
-        return signature
+        for _attempt in range(_SIGNING_ATTEMPTS):
+            result = _sign_staged_skill_once(conn, memory_id, scope, ns_sql, ns_params)
+            if result is not None:
+                return result
     finally:
         conn.close()
+    return SigningOutcome("stale")
 
 
 def _record_skill_version(conn: Any, snapshot: dict[str, Any]) -> str:
@@ -1072,6 +1138,25 @@ def crystallize_skills(
             if existing_id and not cand.get("needs_update"):
                 unchanged.append(existing_id)
                 continue
+            superseded_id = cand.get("superseded_skill_id")
+            if superseded_id:
+                stale = conn.execute(
+                    "SELECT * FROM memories WHERE id = ? AND tenant_id = ? AND user_id = ?",
+                    (superseded_id, scope.tenant_id, scope.user_id),
+                ).fetchone()
+                if stale is not None:
+                    retired.append(
+                        _retire_skill_row(
+                            conn,
+                            dict(stale),
+                            reason=(
+                                "its pattern key now belongs to a newer observation, so it no longer "
+                                "describes the evidence it was staged from"
+                            ),
+                            superseded_evidence_ids=[str(x) for x in cand["evidence_ids"]],
+                            now=now,
+                        )
+                    )
 
             failed_ids = {str(x) for x in (cand.get("failure_ids") or [])}
             steps = _collect_procedure_steps(

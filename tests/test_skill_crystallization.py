@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -568,13 +569,15 @@ def test_list_skills_reads_a_bounded_page_instead_of_every_version(monkeypatch):
 
 
 def test_two_observations_sharing_a_pattern_key_keep_separate_skills():
-    """The exact observation wins over a shared pattern key."""
+    """A shared pattern key never hands one observation the other's skill."""
     conn = get_db_connection()
     try:
-        for memory_id, observation_id, updated in (
-            ("skill_obs_old", "obs-old", "2026-01-01T00:00:00+00:00"),
-            ("skill_obs_new", "obs-new", "2026-01-02T00:00:00+00:00"),
-        ):
+        rows = (
+            ("skill_obs_old", {"observation_id": "obs-old", "pattern_key": "shared-key"}, "2026-01-01T00:00:00+00:00"),
+            ("skill_obs_new", {"observation_id": "obs-new", "pattern_key": "shared-key"}, "2026-01-02T00:00:00+00:00"),
+            ("skill_legacy", {"pattern_key": "legacy-key"}, "2026-01-03T00:00:00+00:00"),
+        )
+        for memory_id, metrics, updated in rows:
             conn.execute(
                 "INSERT INTO memories"
                 " (id, content, tenant_id, user_id, category, memory_type, metrics,"
@@ -582,22 +585,26 @@ def test_two_observations_sharing_a_pattern_key_keep_separate_skills():
                 " created_at, updated_at)"
                 " VALUES (?, ?, ?, ?, 'skill', 'procedural', ?, 'approved', 0, 1, 0,"
                 " 'default', 'default', ?, ?)",
-                (
-                    memory_id,
-                    "name: shared-pattern",
-                    TENANT,
-                    USER_ID,
-                    json.dumps({"observation_id": observation_id, "pattern_key": "shared-key"}),
-                    updated,
-                    updated,
-                ),
+                (memory_id, "name: shared-pattern", TENANT, USER_ID, json.dumps(metrics), updated, updated),
             )
-        found = _existing_skill_by_observation(conn, "obs-old", "shared-key", _scope())
+        found, superseded = _existing_skill_by_observation(conn, "obs-old", "shared-key", _scope())
         assert found is not None
         assert found["id"] == "skill_obs_old"
-        fallback = _existing_skill_by_observation(conn, "obs-unknown", "shared-key", _scope())
-        assert fallback is not None
-        assert fallback["id"] == "skill_obs_new"
+        assert superseded is None
+
+        # A row recorded under another observation is that observation's skill:
+        # it is reported as superseded, never taken as this one's update target.
+        blocked, blocked_by = _existing_skill_by_observation(conn, "obs-unknown", "shared-key", _scope())
+        assert blocked is None
+        assert blocked_by is not None
+        assert blocked_by["id"] == "skill_obs_new"
+
+        # Only a row staged before observation ids were recorded falls back to
+        # the shared key, because the key is the only link it has.
+        legacy, blocking = _existing_skill_by_observation(conn, "obs-newer", "legacy-key", _scope())
+        assert legacy is not None
+        assert legacy["id"] == "skill_legacy"
+        assert blocking is None
     finally:
         conn.close()
 
@@ -854,6 +861,103 @@ def test_approve_signs_a_skill_staged_while_unsigned(monkeypatch):
     assert load_skill(skill_id, _scope()) is not None
 
 
+def test_a_skill_restaged_while_it_is_signed_keeps_the_new_document(monkeypatch):
+    """A restage between the signer's read and its write must survive approval.
+
+    Signing the document that was read after another pass replaced it would pair
+    the old instructions with the new version number, so the approved row would
+    serve an artifact nobody staged.
+    """
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("restaged-while-signing")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+
+    marker = "Run the replacement check before approving this skill."
+    original_resign = sc._resign_skill_document
+    restaged = {"done": False}
+
+    def resign_after_a_restage(parsed, content):
+        if not restaged["done"]:
+            restaged["done"] = True
+            conn = get_db_connection()
+            try:
+                row = dict(conn.execute("SELECT content FROM memories WHERE id = ?", (skill_id,)).fetchone())
+                replacement = str(row["content"]).rstrip("\n") + "\n" + marker + "\n"
+                conn.execute(
+                    "UPDATE memories SET content = ?, content_hash = ? WHERE id = ?",
+                    (replacement, hashlib.sha256(replacement.encode("utf-8")).hexdigest(), skill_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return original_resign(parsed, content)
+
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    monkeypatch.setattr(sc, "_resign_skill_document", resign_after_a_restage)
+    manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID))
+    monkeypatch.setattr(sc, "_resign_skill_document", original_resign)
+
+    approved = next(s for s in list_skills(_scope(), status="approved") if s["memory_id"] == skill_id)
+    assert marker in approved["content"]
+    assert approved["signature_valid"] is True
+    assert load_skill(skill_id, _scope()) is not None
+
+
+def test_approval_is_refused_when_the_staged_signature_does_not_verify(monkeypatch):
+    """A tampered staged artifact must not become approved by approving it again."""
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("tampered-approval")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+
+    conn = get_db_connection()
+    try:
+        row = dict(conn.execute("SELECT content FROM memories WHERE id = ?", (skill_id,)).fetchone())
+        forged = re.sub(r'(?m)^  signature: ".*"$', '  signature: "deadbeef"', str(row["content"]), count=1)
+        assert forged != row["content"]
+        conn.execute(
+            "UPDATE memories SET content = ?, content_hash = ? WHERE id = ?",
+            (forged, hashlib.sha256(forged.encode("utf-8")).hexdigest(), skill_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    refused = json.loads(manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID)))
+    assert refused["ok"] is False, refused
+    conn = get_db_connection()
+    try:
+        stored = dict(conn.execute("SELECT inferred, review_status FROM memories WHERE id = ?", (skill_id,)).fetchone())
+    finally:
+        conn.close()
+    assert stored["inferred"] == 1, stored
+    assert stored["review_status"] != "approved", stored
+
+
+def test_a_skill_approved_before_the_key_existed_loads_after_it_is_reapproved(monkeypatch):
+    """Approve, configure the key, re-crystallize, approve again: it has to load."""
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("approved-before-key")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+
+    first = json.loads(manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID)))
+    assert first["status"] == "approved", first
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    assert load_skill(skill_id, _scope()) is None
+    assert list_skills(_scope(), status="approved") == []
+
+    restaged = crystallize_skills(_scope())
+    assert restaged["updated_count"] == 1, restaged
+    again = json.loads(manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID)))
+    assert again["status"] == "approved", again
+    assert load_skill(skill_id, _scope()) is not None
+
+
 def test_expired_skill_is_not_loadable_by_memory_id(monkeypatch):
     monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
     _seed_three_successes("expiring-skill")
@@ -874,3 +978,74 @@ def test_expired_skill_is_not_loadable_by_memory_id(monkeypatch):
         conn.close()
 
     assert load_skill(skill_id, scope) is None
+
+
+def test_reapproving_a_skill_approved_while_unsigned_signs_it(monkeypatch):
+    """The approval that arrives after the key does is the one that has to sign."""
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("unsigned-reapproval")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+
+    first = json.loads(manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID)))
+    assert first["status"] == "approved", first
+    conn = get_db_connection()
+    try:
+        stored = dict(conn.execute("SELECT review_status FROM memories WHERE id = ?", (skill_id,)).fetchone())
+    finally:
+        conn.close()
+    assert stored["review_status"] == "approved", stored
+    # Approved but unsigned is approved and unloadable: nothing verifies it yet.
+    assert list_skills(_scope(), status="approved") == []
+
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    again = json.loads(manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID)))
+    assert again["already_applied"] is True, again
+    assert again["signed"] is True, again
+
+    signed = next(s for s in list_skills(_scope(), status="approved") if s["memory_id"] == skill_id)
+    assert signed["signature_status"] == "valid"
+    assert signed["signature_valid"] is True
+    assert load_skill(skill_id, _scope()) is not None
+
+
+def test_a_shared_pattern_key_retires_the_older_skill_instead_of_rewriting_it():
+    """A pattern key is not a reuse target: the older observation's skill is retired."""
+    _seed_three_successes("key-takeover")
+    curate_observations(_scope())
+    active = list_observations(_scope(), status="active")
+    assert len(active) == 1, active
+    observation = active[0]
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "INSERT INTO memories"
+            " (id, content, tenant_id, user_id, category, memory_type, metrics,"
+            " review_status, is_ghost, is_latest, inferred, agent_id, project,"
+            " created_at, updated_at)"
+            " VALUES ('skill_older_era', 'name: older-skill', ?, ?, 'skill', 'procedural', ?,"
+            " 'approved', 0, 1, 0, 'default', 'default',"
+            " '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+            (
+                TENANT,
+                USER_ID,
+                json.dumps({"observation_id": "obs-retired-era", "pattern_key": observation["pattern_key"]}),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    staged = crystallize_skills(_scope())
+
+    assert staged["staged_count"] == 1, staged
+    assert staged["skills"][0]["memory_id"] != "skill_older_era", staged
+    conn = get_db_connection()
+    try:
+        older = dict(
+            conn.execute("SELECT review_status, content FROM memories WHERE id = 'skill_older_era'").fetchone()
+        )
+    finally:
+        conn.close()
+    assert older["review_status"] == "retired", older

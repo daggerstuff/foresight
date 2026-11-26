@@ -193,6 +193,27 @@ def test_experience_strength_is_inferred_per_clause():
     assert compile_experience_to_rule(recommendation_only).strength == RuleStrength.SHOULD
 
 
+def test_strength_follows_the_nearest_recommendation_before_a_never():
+    """Two recommendations in one sentence leave the second one a recommendation."""
+    paired = {
+        "id": "obs_paired_recommendations",
+        "observation_text": "You should check coverage and should never skip smoke tests.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(paired).strength == RuleStrength.SHOULD
+
+    # A conjunction opens a new clause, so the prohibition the recommendation
+    # and check it follows stands on its own.
+    separate = {
+        "id": "obs_separate_clause",
+        "observation_text": "You should check coverage, and never skip smoke tests.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(separate).strength == RuleStrength.MUST_NOT
+
+
 def test_rules_lane_never_truncated_under_tightest_budget():
     rule_items = [
         LaneItem(
@@ -313,7 +334,7 @@ def test_graduate_reviewed_experience_and_inject_under_tight_budget():
         graduate_experience_to_rule(obs["id"], user_id=USER_ID, tenant_id=TENANT)
 
     # Sensitive procedural observations cannot graduate even with a review record.
-    sensitive_obs = upsert_episode_observation(
+    sensitive_obs, _ = upsert_episode_observation(
         EpisodeObservationSpec(
             pattern_key="success:sensitive-check",
             observation_text="Patient diagnosis prescription dosage must be verified.",
@@ -410,7 +431,7 @@ def test_graduation_requires_the_approved_skill_to_cover_the_current_observation
     # The approval covers version 1's wording only. Refining the observation
     # produces text no reviewer has seen, so the old approval must not carry
     # over to it.
-    refined = upsert_episode_observation(
+    refined, _ = upsert_episode_observation(
         EpisodeObservationSpec(
             pattern_key=obs["pattern_key"],
             observation_text=(
@@ -477,7 +498,7 @@ def test_qualifier_matching_keeps_punctuation_significant_terms_apart():
 
 
 def test_graduation_stays_inside_the_observations_lane() -> None:
-    laned = _upsert_observation(
+    laned, _ = _upsert_observation(
         {
             "pattern_key": "procedural:laned-graduation",
             "observation_text": "Re-run the migration twice before graduating the rule.",

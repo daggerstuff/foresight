@@ -206,6 +206,7 @@ from .sensitivity import evaluate_secrets, resolve_is_sensitive
 from .skill_crystallization import (
     SKILL_CATEGORY as _SKILL_CATEGORY,
     SKILL_REVIEW_RETIRED as _SKILL_REVIEW_RETIRED,
+    SigningOutcome,
     crystallize_skills as _crystallize_skills,
     ensure_skill_signed,
     is_skill_memory_loadable as _is_skill_memory_loadable,
@@ -9244,12 +9245,58 @@ def _handle_inferred_list(
     return _tool_response(ok=True, action="list", items=items, count=len(items), limit=capped)
 
 
+def _approve_settled_response(
+    row: Any,
+    uid: str,
+    tenant_id: str,
+    memory_id: str,
+    scope: UserScope,
+) -> str | None:
+    """Answer an approval with nothing left to settle, or None to continue.
+
+    A missing row, a retired skill, an approved row and an inferred row for
+    another memory all end the call here; only a pending row is approved.
+    """
+    if row is None:
+        return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
+    if row["review_status"] == _SKILL_REVIEW_RETIRED:
+        return _tool_error(
+            "approve",
+            f"skill {memory_id} is retired because its evidence was superseded and cannot be approved.",
+            memory_id=memory_id,
+            status="retired",
+        )
+    if row["inferred"] == 1:
+        return None
+    if row["review_status"] != "approved":
+        return _tool_error("approve", f"memory {memory_id} is not inferred.", memory_id=memory_id)
+    if row["category"] != _SKILL_CATEGORY:
+        return _tool_response(ok=True, action="approve", memory_id=memory_id, already_applied=True, status="approved")
+    # A skill approved while no signing key existed is approved and unsigned,
+    # and every later approval returned here without signing it, so it stayed
+    # unloadable for good. Signing is idempotent: a valid signature is left alone.
+    outcome = ensure_skill_signed(memory_id, scope)
+    if outcome.status == "signed":
+        get_hybrid_retriever().invalidate_caches(uid, tenant_id)
+        get_context_cache().invalidate_user(uid)
+    return _tool_response(
+        ok=True,
+        action="approve",
+        memory_id=memory_id,
+        already_applied=True,
+        status="approved",
+        signed=outcome.status == "signed",
+        signature_status=outcome.status,
+    )
+
+
 def _handle_inferred_approve(
     uid: str, tenant_id: str, memory_id: str, *, agent_id: str | None = None, project: str | None = None
 ) -> str:
     """Promote an inferred memory or staged skill to approved status."""
     now = datetime.now(UTC).isoformat()
     ns_frag, ns_params = _review_ns_clause(agent_id, project)
+    scope = UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project)
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -9259,49 +9306,79 @@ def _handle_inferred_approve(
             ),
             (memory_id, uid, tenant_id, *ns_params),
         ).fetchone()
-        if row is None:
-            return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
-        if row["review_status"] == _SKILL_REVIEW_RETIRED:
-            return _tool_error(
-                "approve",
-                f"skill {memory_id} is retired because its evidence was superseded and cannot be approved.",
-                memory_id=memory_id,
-                status="retired",
-            )
-        if row["inferred"] != 1:
-            if row["review_status"] == "approved":
-                return _tool_response(
-                    ok=True, action="approve", memory_id=memory_id, already_applied=True, status="approved"
-                )
-            return _tool_error("approve", f"memory {memory_id} is not inferred.", memory_id=memory_id)
-        conn.execute(
+    finally:
+        conn.close()
+    settled = _approve_settled_response(row, uid, tenant_id, memory_id, scope)
+    if settled is not None:
+        return settled
+    category = str(row["category"] or "")
+
+    # Signed before the status commit: a skill that cannot be signed must not be
+    # marked approved. list_skills and load_skill both reject an unverifiable
+    # artifact, and the retry that would fix it answers already_applied, so the
+    # approval itself has to be the thing that fails.
+    outcome = SigningOutcome("not_configured")
+    if category == _SKILL_CATEGORY:
+        outcome = ensure_skill_signed(memory_id, scope)
+        refusal = {
+            "invalid": f"skill {memory_id} carries a signature that does not verify; re-crystallize it.",
+            "absent": f"memory {memory_id} not found.",
+            "stale": f"skill {memory_id} changed while it was being signed; retry the approval.",
+        }
+        if outcome.status in refusal:
+            return _tool_error("approve", refusal[outcome.status], memory_id=memory_id, status=outcome.status)
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute(
             join_sql_parts(
                 "UPDATE memories SET inferred = 0, review_status = 'approved', review_reason = NULL, updated_at = ? "
-                "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                "WHERE id = ? AND user_id = ? AND tenant_id = ? AND inferred = 1",
                 ns_frag,
             ),
             (now, memory_id, uid, tenant_id, *ns_params),
         )
+        committed = bool(cursor.rowcount)
         conn.commit()
     finally:
         conn.close()
 
-    signature: str | None = None
-    if row["category"] == _SKILL_CATEGORY:
-        signature = ensure_skill_signed(
-            memory_id,
-            UserScope(user_id=uid, tenant_id=tenant_id, agent_id=agent_id, project=project),
+    if committed:
+        get_hybrid_retriever().invalidate_caches(uid, tenant_id)
+        get_context_cache().invalidate_user(uid)
+        return _tool_response(
+            ok=True,
+            action="approve",
+            memory_id=memory_id,
+            already_applied=False,
+            status="approved",
+            signature_status="valid" if outcome.status in ("signed", "already_valid") else None,
         )
 
-    get_hybrid_retriever().invalidate_caches(uid, tenant_id)
-    get_context_cache().invalidate_user(uid)
+    # Another approve or decline settled the row between the read and the
+    # commit. Report the state the row is actually in instead of claiming this
+    # call approved it.
+    conn = get_db_connection()
+    try:
+        current = conn.execute(
+            join_sql_parts(
+                "SELECT review_status FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                ns_frag,
+            ),
+            (memory_id, uid, tenant_id, *ns_params),
+        ).fetchone()
+    finally:
+        conn.close()
+    if current is None:
+        return _tool_error("approve", f"memory {memory_id} not found.", memory_id=memory_id)
     return _tool_response(
         ok=True,
         action="approve",
         memory_id=memory_id,
-        already_applied=False,
-        status="approved",
-        signature_status="valid" if signature else None,
+        already_applied=True,
+        status=str(current["review_status"] or ""),
+        signed=outcome.status == "signed",
+        signature_status=outcome.status,
     )
 
 

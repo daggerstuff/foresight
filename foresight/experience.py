@@ -347,34 +347,6 @@ def _raw_events_for_session(tenant_id: str, user_id: str, session_id: str) -> li
     )
 
 
-def _session_events_snapshot(
-    tenant_id: str,
-    user_id: str,
-    session_ids: list[str],
-) -> dict[str, list[dict[str, Any]]]:
-    """Read every replayable event of the run's sessions in one query.
-
-    A success group derives its steps from its last episode's session, which was
-    one round trip per group. Grouping the same rows by session keeps the
-    derived steps identical while the whole pass costs a single read.
-    """
-    wanted = [sid for sid in dict.fromkeys(session_ids) if sid]
-    if not wanted:
-        return {}
-    placeholders = ", ".join("?" for _ in wanted)
-    rows = _fetch_all(
-        f"""SELECT session_id, id, role, content, position FROM raw_events
-           WHERE tenant_id = ? AND user_id = ? AND tombstone = 0
-             AND session_id IN ({placeholders})
-           ORDER BY session_id ASC, position ASC, captured_at ASC""",
-        (tenant_id, user_id, *wanted),
-    )
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        grouped.setdefault(str(row.get("session_id") or ""), []).append(row)
-    return grouped
-
-
 def build_episode(
     session_id: str,
     *,
@@ -725,6 +697,10 @@ class _ObservationBaseline:
     shape: tuple[str, str, tuple[str, ...], str, str]
     version: int
     episode_ids: tuple[str, ...]
+    # When the stored text was written. Steps are reused only while no episode
+    # in the group moved after this, because a recaptured session keeps its
+    # episode id and would otherwise pin the first transcript forever.
+    refined_at: str
 
 
 def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, _ObservationBaseline]:
@@ -738,7 +714,7 @@ def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, _Observa
     """
     rows = _fetch_all(
         "SELECT pattern_key, observation_text, confidence, supporting_episode_ids, "
-        "category, memory_type, version FROM observations "
+        "category, memory_type, version, last_refined_at FROM observations "
         "WHERE tenant_id = ? AND user_id = ? AND status <> 'archived' "
         "AND COALESCE(agent_id, 'default') = 'default' AND COALESCE(project, 'default') = 'default'",
         (tenant_id, user_id),
@@ -762,6 +738,7 @@ def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, _Observa
             ),
             version=int(row.get("version") or 0),
             episode_ids=episode_ids,
+            refined_at=str(row.get("last_refined_at") or ""),
         )
     return shape
 
@@ -930,7 +907,14 @@ def _strip_result_lines(content: str) -> str:
     return " ".join(kept)
 
 
-_STEP_BLOCK_RE = re.compile(r" Steps: (.+?)(?:\s+The same task\b|$)")
+# The note the recipe writer appends after its steps. The writer and the
+# parser share these fragments so the block ends only where the writer ends it:
+# a step that merely mentions "The same task" stays part of the recipe.
+_FAILURE_NOTE_PREFIX = "The same task also failed "
+_FAILURE_NOTE_SUFFIX = " time(s) with an unresolved error;"
+_STEP_BLOCK_RE = re.compile(
+    r" Steps: (.+?)(?:\s+" + re.escape(_FAILURE_NOTE_PREFIX) + r"\d+" + re.escape(_FAILURE_NOTE_SUFFIX) + r"|$)"
+)
 _STEP_INDEX_RE = re.compile(r"(?:^|\s)\d+\)\s*")
 
 
@@ -944,7 +928,11 @@ def _steps_from_stored(observation_text: str) -> list[str]:
     match = _STEP_BLOCK_RE.search(observation_text)
     if match is None:
         return []
-    return [part.strip(" .") for part in _STEP_INDEX_RE.split(match.group(1)) if part.strip(" .")]
+    # Trim only the whitespace the writer separates steps with: a step may end
+    # in a period of its own ("run docker build ."), and dropping it here would
+    # rebuild text that never matches the transcript, so the recipe would
+    # rewrite itself on every pass.
+    return [part.strip() for part in _STEP_INDEX_RE.split(match.group(1)) if part.strip()]
 
 
 def _procedure_steps(
@@ -1073,6 +1061,7 @@ def distill_experiences(
         "failures_distilled": 0,
         "successes_distilled": 0,
         "observations_upserted": 0,
+        "observations_deferred": 0,
         "procedural_memories_written": 0,
         "recipes_with_steps": 0,
         "groups_retired": 0,
@@ -1084,14 +1073,13 @@ def distill_experiences(
     )
     result["skipped_sensitive"] = int((skipped or {}).get("n") or 0)
 
-    # A step rebuild needs its session's raw events, and a lookup per group
-    # would pay one round trip each. Reading every recipe session in this one
-    # query keeps the pass at a single event read, while the cache still lets an
-    # unchanged group reuse its stored steps without touching it.
+    # A step rebuild needs its session's raw events, but only a group whose
+    # evidence changed ever rebuilds: an unchanged group re-derives its steps
+    # from the observation text it already stored. The cache therefore starts
+    # empty and fills on demand, so a pass that changes nothing reads no events
+    # at all and a pass that changes one group reads one session.
     recipe_sessions = {slug: str(group[-1].get("session_id") or "") for slug, group in successes.items()}
-    session_events = _session_events_snapshot(tenant_id, user_id, list(recipe_sessions.values()))
-    for session in recipe_sessions.values():
-        session_events.setdefault(session, [])
+    session_events: dict[str, list[dict[str, Any]]] = {}
     state = _DistillState(
         result=result,
         snapshot=procedural_snapshot,
@@ -1132,9 +1120,45 @@ def _session_events(
         return []
     cached = state.session_events.get(session_id)
     if cached is None:
-        cached = _session_events_snapshot(tenant_id, user_id, [session_id]).get(session_id, [])
+        cached = _raw_events_for_session(tenant_id, user_id, session_id)
         state.session_events[session_id] = cached
     return cached
+
+
+def _baseline_from(stored: dict[str, Any]) -> _ObservationBaseline:
+    """The row a write actually left behind, as the next pass's baseline.
+
+    The in-memory snapshot has to describe the stored row rather than the
+    candidate, because a refused or merged write leaves evidence this candidate
+    never listed, and a baseline that disagrees would rebuild the same steps on
+    every pass.
+    """
+    episodes = tuple(str(eid) for eid in (stored.get("supporting_episode_ids") or []))
+    return _ObservationBaseline(
+        shape=_observation_shape(
+            str(stored.get("observation_text") or ""),
+            float(stored.get("confidence") or 0.0),
+            list(episodes),
+            str(stored.get("category") or "procedural"),
+            str(stored.get("memory_type") or "procedural"),
+        ),
+        version=int(stored.get("version") or 0),
+        episode_ids=episodes,
+        refined_at=str(stored.get("last_refined_at") or ""),
+    )
+
+
+def _steps_still_current(prior: _ObservationBaseline, group: list[dict[str, Any]]) -> bool:
+    """Whether every episode in the group predates the stored recipe text.
+
+    A recapture rewrites the session's episode in place, so its id stays the
+    same while the transcript it describes grows. The update stamp is what
+    separates "nothing changed" from "the same id now holds a new transcript",
+    and an episode with no stamp cannot be proven current, so it re-derives.
+    """
+    if not prior.refined_at:
+        return False
+    return all(bool(ep.get("updated_at")) and str(ep.get("updated_at")) <= prior.refined_at for ep in group)
 
 
 def _distill_failure_group(
@@ -1171,7 +1195,7 @@ def _distill_failure_group(
         prior = observations.get(pattern_key)
         wanted = _observation_shape(text, confidence, ids, "procedural", "procedural")
         if prior is None or prior.shape != wanted:
-            upsert_episode_observation(
+            stored, written = upsert_episode_observation(
                 EpisodeObservationSpec(
                     scan_base_episode_ids=prior.episode_ids if prior else (),
                     scan_base_version=prior.version if prior else 0,
@@ -1185,12 +1209,17 @@ def _distill_failure_group(
                 user_id=user_id,
                 tenant_id=tenant_id,
             )
-            observations[pattern_key] = _ObservationBaseline(
-                shape=wanted,
-                version=(prior.version if prior else 0) + 1,
-                episode_ids=wanted[2],
-            )
-            result["observations_upserted"] += 1
+            # A refused write left the newer row alone: the snapshot keeps the
+            # version it scanned, so this group is retried next pass instead of
+            # being counted as published here.
+            if written:
+                observations[pattern_key] = _baseline_from(stored)
+                result["observations_upserted"] += 1
+            else:
+                # A refused write is retried on the next pass rather than
+                # dropped, and the count proves this run published less than it
+                # derived instead of reporting a write that never happened.
+                result["observations_deferred"] += 1
         content = (
             f"[procedural lesson] Error signature: {label}\n"
             f"Context: {sample_summary}\n"
@@ -1246,10 +1275,10 @@ def _distill_success_group(
         pattern_key = f"success:{slug}"
         evidence_ids = list(dict.fromkeys([*ids, *contradicted]))
         prior = observations.get(pattern_key)
-        # An unchanged group already stored the steps its transcript yielded, so
-        # it rebuilds the same block from that text instead of paying for a raw
-        # event read over a group it is not going to write.
-        if prior is not None and prior.episode_ids == tuple(evidence_ids):
+        # A group whose evidence and transcripts are unchanged already stored
+        # the steps its transcript yielded, so it rebuilds the same block from
+        # that text instead of paying for a raw event read it does not need.
+        if prior is not None and prior.episode_ids == tuple(evidence_ids) and _steps_still_current(prior, group):
             steps = _steps_from_stored(prior.shape[0])
         else:
             steps = _procedure_steps(
@@ -1260,7 +1289,7 @@ def _distill_success_group(
             )
         step_block = " Steps: " + " ".join(f"{i}) {s}" for i, s in enumerate(steps, 1)) if steps else ""
         failure_note = (
-            f" The same task also failed {len(contradicted)} time(s) with an unresolved error; "
+            f" {_FAILURE_NOTE_PREFIX}{len(contradicted)}{_FAILURE_NOTE_SUFFIX} "
             "check those before reusing this approach."
             if contradicted
             else ""
@@ -1290,7 +1319,7 @@ def _distill_success_group(
             )
         wanted = _observation_shape(text, confidence, evidence_ids, "procedural", "procedural")
         if prior is None or prior.shape != wanted:
-            upsert_episode_observation(
+            stored, written = upsert_episode_observation(
                 EpisodeObservationSpec(
                     scan_base_episode_ids=prior.episode_ids if prior else (),
                     scan_base_version=prior.version if prior else 0,
@@ -1304,12 +1333,17 @@ def _distill_success_group(
                 user_id=user_id,
                 tenant_id=tenant_id,
             )
-            observations[pattern_key] = _ObservationBaseline(
-                shape=wanted,
-                version=(prior.version if prior else 0) + 1,
-                episode_ids=wanted[2],
-            )
-            result["observations_upserted"] += 1
+            # A refused write left the newer row alone: the snapshot keeps the
+            # version it scanned, so this group is retried next pass instead of
+            # being counted as published here.
+            if written:
+                observations[pattern_key] = _baseline_from(stored)
+                result["observations_upserted"] += 1
+            else:
+                # A refused write is retried on the next pass rather than
+                # dropped, and the count proves this run published less than it
+                # derived instead of reporting a write that never happened.
+                result["observations_deferred"] += 1
         _, changed = _upsert_procedural_memory(
             ProceduralMemorySpec(
                 key=f"success:{slug}",

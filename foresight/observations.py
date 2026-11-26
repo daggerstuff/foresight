@@ -270,6 +270,9 @@ def _ns_clause(agent_id: str | None, project: str | None, prefix: str = "") -> t
     return frag, params
 
 
+_MAX_UPSERT_ATTEMPTS = 5
+
+
 def _find_observation(
     pattern_key: str,
     *,
@@ -298,8 +301,14 @@ def _upsert_observation(
     tenant_id: str,
     agent_id: str | None = None,
     project: str | None = None,
-) -> dict[str, Any]:
-    """Insert or refine an observation. Evidence is unioned, never dropped."""
+) -> tuple[dict[str, Any], bool]:
+    """Insert or refine an observation. Evidence is unioned, never dropped.
+
+    Returns the stored row and whether this call is the one that wrote it. A
+    caller whose verdict scan has been overtaken by another writer gets
+    False: its candidate was not published, and counting it as an upsert hides
+    a merge that never ran.
+    """
     now = _now_iso()
     existing = _find_observation(
         candidate["pattern_key"], user_id=user_id, tenant_id=tenant_id, agent_id=agent_id, project=project
@@ -336,20 +345,35 @@ def _upsert_observation(
             ),
         )
         row = _fetch_one("SELECT * FROM observations WHERE id = ?", (obs_id,))
-        return _observation_row(row) if row else {"id": obs_id, **candidate}
+        return (_observation_row(row) if row else {"id": obs_id, **candidate}), True
 
     memory_type = candidate.get("memory_type") or "semantic"
     current = existing
-    scan_base_version = int(candidate.get("scan_base_version") or 0)
-    if scan_base_version and int(current.get("version") or 0) > scan_base_version:
-        # The row moved after the caller's scan: the evidence it would drop was
-        # recorded later and was never part of the verdicts it judged.
-        return current
+    # None on both fields means the caller never scanned (a plain refinement,
+    # which merges). An explicit 0 with no episodes means the scan ran and
+    # found no row, so anything stored now arrived after the verdicts it
+    # judged: an older scan must never replace a newer writer's evidence just
+    # because its own baseline was empty.
+    raw_base_version = candidate.get("scan_base_version")
+    raw_base_episodes = candidate.get("scan_base_episode_ids")
+    # An episode baseline alone says which ids the scan saw, not when it saw
+    # them, so only a stated version orders the scan against the row: a
+    # replacement carrying just episode ids merges instead of being refused.
+    version_scanned = raw_base_version is not None
+    base_version = int(raw_base_version or 0)
+    replaces = bool(candidate.get("replace_episode_evidence"))
+    if replaces and version_scanned and int(current.get("version") or 0) > base_version:
+        # The row appeared or moved after the caller's scan: the evidence a
+        # replacement would drop was recorded later and was never part of the
+        # verdicts it judged. A newer pass owns this row.
+        return current, False
     # The episode ids the caller's verdict scan could see. A replacement run
     # that loses a version race must not drop what another writer recorded
     # after the scan began, because the scan never judged those ids.
-    scan_base_episodes = set(candidate.get("scan_base_episode_ids") or existing.get("supporting_episode_ids", []))
-    for _attempt in range(5):
+    scan_base_episodes = (
+        set(raw_base_episodes) if raw_base_episodes is not None else set(existing.get("supporting_episode_ids", []))
+    )
+    for _attempt in range(_MAX_UPSERT_ATTEMPTS):
         prior_memory_type = current.get("memory_type") or "semantic"
         new_memory_type = (
             memory_type if memory_type != "semantic" or prior_memory_type == "semantic" else prior_memory_type
@@ -373,7 +397,7 @@ def _upsert_observation(
             # the row keeps its stale confidence, version, and last_refined_at.
             and float(candidate["confidence"]) <= float(current["confidence"])
         ):
-            return current
+            return current, False
 
         now = _now_iso()
         conn = _connect()
@@ -411,14 +435,18 @@ def _upsert_observation(
             (current["id"], tenant_id, user_id),
         )
         fresh = _observation_row(row) if row else None
-        if fresh is None or fresh.get("status") == "archived":
-            return fresh or current
-        if written:
-            return fresh
+        if written or fresh is None or fresh.get("status") == "archived":
+            return (fresh or current), written
+        if replaces and version_scanned and int(fresh.get("version") or 0) > base_version:
+            # A newer scan replaced this row between the version check and the
+            # update. Retrying with the original candidate would restore the
+            # evidence that scan deliberately dropped, so the replacement
+            # yields to it instead of merging.
+            return fresh, False
         # Another writer refined the same observation first: merge onto its
         # evidence instead of overwriting the ids it just added.
         current = fresh
-    return current
+    return current, False
 
 
 def curate_observations(
@@ -455,7 +483,7 @@ def curate_observations(
     rows = _fetch_all(sql, params)
     candidates = _detect_candidates(rows)
 
-    created = refined = 0
+    created = refined = skipped = 0
     observations: list[dict[str, Any]] = []
     for candidate in candidates:
         before = _find_observation(
@@ -465,11 +493,16 @@ def curate_observations(
             agent_id=scope.agent_id,
             project=scope.project,
         )
-        obs = _upsert_observation(
+        obs, applied = _upsert_observation(
             candidate, user_id=user_id, tenant_id=tenant_id, agent_id=scope.agent_id, project=scope.project
         )
         observations.append(obs)
-        if before is None:
+        # A candidate another writer already overtook was not published by this
+        # call, so counting it as a refinement would report a merge that never
+        # ran.
+        if not applied:
+            skipped += 1
+        elif before is None:
             created += 1
         else:
             refined += 1
@@ -479,6 +512,7 @@ def curate_observations(
         "candidates": len(candidates),
         "observations_created": created,
         "observations_refined": refined,
+        "observations_skipped": skipped,
         "observations": observations,
         "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
     }
@@ -568,11 +602,13 @@ class EpisodeObservationSpec:
     replace_episode_evidence: bool = False
     # What the caller's verdict scan actually saw. A replacement that ran
     # alongside another writer must not treat evidence recorded after the scan
-    # as unseen, because that evidence was never judged.
-    scan_base_episode_ids: tuple[str, ...] = ()
-    # The row version that scan read. A caller whose scan predates a write it
-    # never judged must not replace that write's evidence.
-    scan_base_version: int = 0
+    # as unseen, because that evidence was never judged. None means the caller
+    # did not scan, so the write merges onto whatever row it finds.
+    scan_base_episode_ids: tuple[str, ...] | None = None
+    # The row version that scan read. Zero records that the scan found no row,
+    # which is not the same as not having scanned: a row that exists now was
+    # written after the scan and none of its evidence was judged.
+    scan_base_version: int | None = None
 
 
 def upsert_episode_observation(
@@ -580,12 +616,15 @@ def upsert_episode_observation(
     *,
     user_id: str,
     tenant_id: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
     """Upsert a procedural observation whose evidence is episode IDs.
 
     Used by the experience-memory distiller: success recipes and failure
     signatures become observations whose ``supporting_episode_ids`` point at
-    the episodes that produced them. Evidence is unioned on refine.
+    the episodes that produced them. Evidence is unioned on refine. The
+    flag reports whether the row carries the caller write; a write refused
+    because another writer reached the row first returns False with the row
+    as it stands, so the caller retries on its next pass.
     """
     candidate = {
         "pattern_key": spec.pattern_key,
@@ -596,7 +635,9 @@ def upsert_episode_observation(
         "supporting_episode_ids": list(dict.fromkeys(spec.episode_ids)),
         "memory_type": spec.memory_type,
         "replace_episode_evidence": spec.replace_episode_evidence,
-        "scan_base_episode_ids": tuple(spec.scan_base_episode_ids),
-        "scan_base_version": int(spec.scan_base_version),
+        "scan_base_episode_ids": (
+            tuple(spec.scan_base_episode_ids) if spec.scan_base_episode_ids is not None else None
+        ),
+        "scan_base_version": None if spec.scan_base_version is None else int(spec.scan_base_version),
     }
     return _upsert_observation(candidate, user_id=user_id, tenant_id=tenant_id)

@@ -480,14 +480,20 @@ def _clause_strength(text: str) -> RuleStrength | None:
     if must_not is not None and (should is None or must_not.start() < should.start()):
         return RuleStrength.MUST_NOT
     if should is not None:
-        # "you should never skip it" is one clause, but "you must run the suite,
-        # should check coverage, and must not skip smoke tests" states an
-        # independent prohibition: a conjunction between the two opens a new
-        # clause, so the recommendation is no longer governing the never.
-        between = text[should.end() : must_not.start()] if must_not is not None else ""
+        # The recommendation that governs a "never" is the nearest one before
+        # it: "check coverage and should never skip smoke tests" states two
+        # recommendations, while "you must run the suite, should check coverage,
+        # and must not skip smoke tests" states an independent prohibition,
+        # because a conjunction between the two opens a clause the earlier
+        # recommendation no longer governs.
+        governing = should
+        if must_not is not None:
+            for later in _SHOULD_RE.finditer(text[: must_not.start()]):
+                governing = later
+        between = text[governing.end() : must_not.start()] if must_not is not None else ""
         if _CLAUSE_BREAK_RE.search(between) is not None:
             return RuleStrength.MUST_NOT
-        if _MUST_RE.search(text[: should.start()]) is not None:
+        if _MUST_RE.search(text[: governing.start()]) is not None:
             return RuleStrength.MUST
         return RuleStrength.SHOULD
     if _MUST_RE.search(text):

@@ -24,6 +24,7 @@ from foresight.experience import (
     EpisodeVerdict,
     _observation_shape,
     _procedure_steps,
+    _steps_from_stored,
     _strip_result_lines,
     auto_score_episode,
     build_episode,
@@ -289,27 +290,17 @@ def test_success_episode_becomes_recipe_observation():
     assert recipes, "expected a procedural success observation"
 
 
-def test_distillation_reads_recipe_sessions_in_one_query(monkeypatch):
-    """Recipe groups share one raw_events read instead of taking one each."""
-    markers = ("batching-alpha", "batching-beta", "batching-gamma")
-    steps_by_session: dict[str, list[dict[str, object]]] = {}
+def test_an_unchanged_recipe_group_loads_no_raw_events(monkeypatch):
+    """A re-distill reuses the steps it stored instead of reloading the run."""
+    markers = ("lazy-alpha", "lazy-beta")
+    transcripts = {}
     for marker in markers:
         session_id = _session_id()
-        steps_by_session[session_id] = [
-            {
-                "session_id": session_id,
-                "id": f"{session_id}-step",
-                "role": "assistant",
-                "content": f"apply the {marker} patch and rerun the suite",
-                "position": 1,
-            }
-        ]
         _episode_for(
             session_id,
             [
-                {"role": "user", "content": f"run the {marker} release checklist"},
-                {"role": "assistant", "content": f"apply the {marker} migration and rerun the suite"},
-                {"role": "tool", "content": "52 passed in 3.1s\nexit code 0"},
+                {"role": "user", "content": "run the " + marker + " release checklist"},
+                {"role": "assistant", "content": "apply the " + marker + " migration then rerun the suite"},
             ],
         )
         record_outcome(
@@ -317,22 +308,89 @@ def test_distillation_reads_recipe_sessions_in_one_query(monkeypatch):
             TENANT,
             EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
         )
+        transcripts[session_id] = [
+            {"role": "assistant", "content": "apply the " + marker + " migration then rerun the suite"},
+            {"role": "assistant", "content": "drain the " + marker + " queue before the restart"},
+        ]
 
-    reads: list[str] = []
-    real_fetch_all = experience_module._fetch_all
+    loaded = []
 
-    def serving_fetch_all(sql, params=()):
-        if "FROM raw_events" not in sql:
-            return real_fetch_all(sql, params)
-        reads.append(sql)
-        _tenant, _user, *wanted = params
-        return [row for session_id in wanted for row in steps_by_session.get(session_id, [])]
+    def recording_read(_tenant_id, _user_id, session_id):
+        loaded.append(session_id)
+        return list(transcripts.get(session_id, []))
 
-    monkeypatch.setattr(experience_module, "_fetch_all", serving_fetch_all)
-    result = distill_experiences(user_id=USER, tenant_id=TENANT)
+    monkeypatch.setattr(experience_module, "_raw_events_for_session", recording_read)
+    first = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert first["recipes_with_steps"] == len(markers), first
+    assert sorted(loaded) == sorted(transcripts), loaded
 
-    assert result["recipes_with_steps"] == len(markers), (result, reads)
-    assert len(reads) == 1, (result, reads)
+    loaded.clear()
+    repeat = distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    assert repeat["recipes_with_steps"] == len(markers), repeat
+    assert repeat.get("procedural_memories_written", 0) == 0, repeat
+    assert loaded == [], "an unchanged recipe group reloaded its raw events: " + repr(loaded)
+
+
+def test_a_recaptured_session_rederives_its_recipe_steps():
+    """A refreshed session keeps its episode id, so the id alone cannot mean the steps are current."""
+    session_id = _session_id()
+    drain_step = "drain the restarted queue after the restart"
+    messages = [
+        {"role": "user", "content": "run the nightly release checklist"},
+        {"role": "assistant", "content": "apply the early migration before the restart"},
+    ]
+    get_capture_pipeline().run(
+        session_id=session_id,
+        messages=messages,
+        user_id=USER,
+        tenant_id=TENANT,
+        options=CaptureOptions(infer=False),
+    )
+    episode = build_episode(session_id, user_id=USER, tenant_id=TENANT)
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
+    )
+
+    first = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert first["recipes_with_steps"] == 1, first
+    stored = [
+        obs
+        for obs in list_observations(UserScope(user_id=USER, tenant_id=TENANT), status="active", limit=50)
+        if obs["pattern_key"].startswith("success:")
+    ]
+    assert len(stored) == 1, stored
+    assert "apply the early migration before the restart" in stored[0]["observation_text"], stored[0]
+    assert "drain the restarted queue" not in stored[0]["observation_text"], stored[0]
+
+    # The session reports success again after recording one more step. Its id and
+    # summary stay the same, so only the update stamp shows the transcript moved on.
+    get_capture_pipeline().run(
+        session_id=session_id,
+        messages=[*messages, {"role": "assistant", "content": drain_step}],
+        user_id=USER,
+        tenant_id=TENANT,
+        options=CaptureOptions(infer=False),
+    )
+    refreshed = build_episode(session_id, user_id=USER, tenant_id=TENANT)
+    assert refreshed["id"] == episode["id"]
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="success", score_source="ci_result", session_id=session_id),
+    )
+
+    again = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert again["recipes_with_steps"] == 1, again
+    recipes = [
+        obs
+        for obs in list_observations(UserScope(user_id=USER, tenant_id=TENANT), status="active", limit=50)
+        if obs["pattern_key"].startswith("success:")
+    ]
+    assert len(recipes) == 1, recipes
+    assert drain_step in recipes[0]["observation_text"], recipes[0]["observation_text"]
 
 
 def test_keyword_search_surfaces_failure_signature():
@@ -1070,6 +1128,29 @@ def test_ghosted_lesson_still_retires_its_observation_when_the_group_empties():
     assert not any(str(row["pattern_key"]).startswith("failure:") for row in left), left
 
 
+def test_stored_steps_keep_a_trailing_period_of_their_own():
+    """A step written as a shell command parses back exactly as the transcript had it."""
+    shape = (
+        '[procedural] Reusable recipe - "release": succeeded 2 time(s) (avg score 0.90).'
+        " Steps: 1) run docker build . 2) rerun the suite"
+    )
+    assert _steps_from_stored(shape) == ["run docker build .", "rerun the suite"]
+
+
+def test_a_step_mentioning_the_failure_note_words_survives_the_parse():
+    """Only the writer's whole note ends the step block, not a phrase inside a step."""
+    shape = (
+        '[procedural] Reusable recipe - "release": succeeded 2 time(s) (avg score 0.90).'
+        " Steps: 1) read the note saying The same task broke here 2) rerun the suite"
+        " The same task also failed 1 time(s) with an unresolved error; "
+        "check those before reusing this approach."
+    )
+    assert _steps_from_stored(shape) == [
+        "read the note saying The same task broke here",
+        "rerun the suite",
+    ]
+
+
 def test_strip_result_lines_keeps_a_short_trailing_instruction():
     # "Run migrations." is the only step in the recipe; two words survive, and a
     # bare result ("exit code 0") still does not.
@@ -1091,7 +1172,7 @@ def test_observation_shape_tracks_category_and_memory_type() -> None:
 
 
 def test_observation_spec_carries_its_scan_baseline() -> None:
-    """The caller states the evidence its verdict scan saw, defaulting to none."""
+    """The caller states what its verdict scan saw; the default is no scan at all."""
     spec = EpisodeObservationSpec(
         pattern_key="k",
         observation_text="t",
@@ -1099,7 +1180,20 @@ def test_observation_spec_carries_its_scan_baseline() -> None:
         confidence=0.5,
         episode_ids=["a"],
     )
-    assert spec.scan_base_episode_ids == ()
+    assert spec.scan_base_episode_ids is None
+    assert spec.scan_base_version is None
+    empty_scan = EpisodeObservationSpec(
+        pattern_key="k",
+        observation_text="t",
+        category="procedural",
+        confidence=0.5,
+        episode_ids=["b"],
+        scan_base_episode_ids=(),
+        scan_base_version=0,
+    )
+    # A scan that found no row is not the same as a scan that never ran.
+    assert empty_scan.scan_base_episode_ids == ()
+    assert empty_scan.scan_base_version == 0
     explicit = EpisodeObservationSpec(
         pattern_key="k",
         observation_text="t",
@@ -1107,16 +1201,19 @@ def test_observation_spec_carries_its_scan_baseline() -> None:
         confidence=0.5,
         episode_ids=["c"],
         scan_base_episode_ids=("a",),
+        scan_base_version=1,
     )
     assert explicit.scan_base_episode_ids == ("a",)
+    assert explicit.scan_base_version == 1
 
 
 def test_replacement_keeps_evidence_that_arrived_after_the_scan():
+    """An episode-only baseline merges, so evidence that arrived late survives."""
     pattern_key = "success:late-evidence"
     text = "Deploy through the shared runner after refreshing the lockfile."
 
     def write(*, episode_ids, confidence=0.9, replace=False, scan_base=()):
-        return upsert_episode_observation(
+        row, _ = upsert_episode_observation(
             EpisodeObservationSpec(
                 pattern_key=pattern_key,
                 observation_text=text,
@@ -1129,48 +1226,55 @@ def test_replacement_keeps_evidence_that_arrived_after_the_scan():
             user_id=USER,
             tenant_id=TENANT,
         )
+        return row
 
     write(episode_ids=["ep-a"])
-    # A second writer adds an episode while the distiller is scanning.
     assert "ep-late" in write(episode_ids=["ep-a", "ep-late"])["supporting_episode_ids"]
-
-    replaced = write(episode_ids=["ep-b"], confidence=0.95, replace=True, scan_base=("ep-a",))
-    kept = replaced["supporting_episode_ids"]
-    assert "ep-b" in kept
-    assert "ep-late" in kept
-    assert "ep-a" not in kept
+    replaced = write(episode_ids=["ep-b"], replace=True, scan_base=("ep-a",))
+    assert "ep-b" in replaced["supporting_episode_ids"]
+    assert "ep-late" in replaced["supporting_episode_ids"]
+    assert "ep-a" not in replaced["supporting_episode_ids"]
 
 
 def test_steps_are_rebuilt_from_the_stored_observation() -> None:
+    # The note is built from the writer's own fragments: a fixture that quotes
+    # the note by hand drifts from what the writer appends and then proves
+    # nothing about the parser.
+    note = (
+        f" {experience_module._FAILURE_NOTE_PREFIX}1{experience_module._FAILURE_NOTE_SUFFIX}"
+        " check those before reusing this approach."
+    )
     stored = (
         '[procedural] Known success - task like "deploy" succeeded 2 time(s).'
-        " Steps: 1) refresh the lockfile 2) deploy through the shared runner."
-        " The same task failed once."
+        " Steps: 1) refresh the lockfile 2) deploy through the shared runner." + note
     )
+    # The last step keeps the period it was stored with: the writer only joins
+    # the lines it read, so trimming here would rebuild text that never matches
+    # the transcript and rewrite the recipe on every pass.
     assert experience_module._steps_from_stored(stored) == [
         "refresh the lockfile",
-        "deploy through the shared runner",
+        "deploy through the shared runner.",
     ]
     assert experience_module._steps_from_stored("no steps in this text") == []
 
 
 def test_session_events_are_read_once_per_session(monkeypatch) -> None:
-    calls: list[list[str]] = []
+    calls = []
 
-    def fake_snapshot(_tenant_id, _user_id, session_ids):
-        calls.append(list(session_ids))
-        return {sid: [{"id": f"ev-{sid}"}] for sid in session_ids}
+    def fake_read(_tenant_id, _user_id, session_id):
+        calls.append(session_id)
+        return [{"id": "ev-" + session_id}]
 
-    monkeypatch.setattr(experience_module, "_session_events_snapshot", fake_snapshot)
+    monkeypatch.setattr(experience_module, "_raw_events_for_session", fake_read)
     state = SimpleNamespace(session_events={})
 
     first = experience_module._session_events(state, tenant_id=TENANT, user_id=USER, session_id="s1")
     second = experience_module._session_events(state, tenant_id=TENANT, user_id=USER, session_id="s1")
 
     assert first == second == [{"id": "ev-s1"}]
-    assert calls == [["s1"]]
+    assert calls == ["s1"]
     assert experience_module._session_events(state, tenant_id=TENANT, user_id=USER, session_id="") == []
-    assert calls == [["s1"]]
+    assert calls == ["s1"]
 
 
 def test_strip_result_lines_keeps_a_flag_after_a_result() -> None:
