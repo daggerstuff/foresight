@@ -654,7 +654,11 @@ class ForesightOAuthProvider(OAuthProvider):
             user = None
         if user is None:
             return None
-        synthetic = AccessToken(
+        # Deliberately not cached: an API key can be rotated, and a cached
+        # synthetic token (expires_at=None) would keep authorizing the old key
+        # until the process restarted. Re-validating per request is one local
+        # users-table lookup.
+        return AccessToken(
             token=token,
             client_id="foresight-api-key",
             scopes=[],
@@ -663,8 +667,6 @@ class ForesightOAuthProvider(OAuthProvider):
             subject=user.user_id,
             claims={"username": user.username},
         )
-        self._access_tokens[token] = synthetic
-        return synthetic
 
     async def load_refresh_token(
         self,

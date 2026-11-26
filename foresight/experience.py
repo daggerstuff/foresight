@@ -51,6 +51,8 @@ _MAX_EVIDENCE_IDS = 50
 _SUCCESS_SCORE = 0.6
 _FAILURE_SCORE = 0.4
 _MIN_SUMMARY_LEN = 8
+# Words that must follow a result report before it counts as an explanation.
+_MIN_REPORT_TAIL_WORDS = 3
 
 # Secret verdicts whose content is safe to store or send: `redact` already
 # replaced the credential, and `clean` found none. `flag` hands back the
@@ -223,7 +225,7 @@ _RESULT_ROLES = ("assistant", "tool", "tool_use", "function")
 _RESULT_REPORT_RE = re.compile(
     r"^(?:"
     r"exit\s*(?:code)?\s*:?\s*-?\d+|"
-    r"\d+\s+(?:passed|failed|errors?|warnings?|skipped|tests?)\b|"
+    r"\d+\s+(?:passed|failed|errors?|warnings?|skipped)\b|"
     r"(?:all\s+)?(?:tests?|checks?|build|suite|pipeline)\s+"
     r"(?:passed|failed|green|red|ok|succeeded)\b"
     r")",
@@ -263,7 +265,8 @@ def _retire_stale_groups(
     stale_memory_ids: list[str] = []
     for row in _fetch_all(
         """SELECT id, metrics FROM memories
-           WHERE tenant_id = ? AND user_id = ? AND memory_type IN ('procedural', 'episodic')""",
+           WHERE tenant_id = ? AND user_id = ? AND memory_type IN ('procedural', 'episodic')
+             AND is_ghost = 0""",
         (tenant_id, user_id),
     ):
         try:
@@ -738,8 +741,16 @@ def _procedure_steps(
         if (event.get("role") or "").lower() not in ("assistant", "tool", "tool_use", "function"):
             continue
         text = re.sub(r"\s+", " ", str(event.get("content") or "")).strip()
-        if len(text) < _MIN_SUMMARY_LEN or _RESULT_REPORT_RE.match(text):
+        if len(text) < _MIN_SUMMARY_LEN:
             continue
+        # Skip a pure result report, but keep a message that reports a result
+        # and then explains what was done. A tail like "in 3.1s" is still part
+        # of the report, so require a few real words after the match.
+        result_match = _RESULT_REPORT_RE.match(text)
+        if result_match is not None:
+            remainder_words = re.findall(r"[A-Za-z]{2,}", text[result_match.end() :])
+            if len(remainder_words) < _MIN_REPORT_TAIL_WORDS:
+                continue
         verdict = evaluate_secrets(text, tenant_id=tenant_id)
         # `flag` mode hands back the original text, so a recipe step may only be
         # stored from a clean or already-redacted verdict.

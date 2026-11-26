@@ -17,7 +17,8 @@ from enum import Enum
 from fastmcp.server.middleware import Middleware as _Middleware
 from fastmcp.tools.base import ToolResult
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.types import TextContent
+from mcp.shared.exceptions import MCPError
+from mcp.types import INVALID_REQUEST, TextContent
 
 from .config import DB_PATH
 from .connection_pool import get_pool
@@ -729,6 +730,7 @@ READONLY_TOOLS = frozenset(
         "query_memories_temporal",
         "get_system_status",
         "export_profile",
+        "synthesize_profile",
         "reflect",
     }
 )
@@ -755,6 +757,13 @@ class _AuthFailureError(Exception):
     def __init__(self, result: ToolResult) -> None:
         super().__init__("request authentication failed")
         self.result = result
+
+
+def _denial_text(failure: _AuthFailureError) -> str:
+    """Return the human-readable denial carried by an auth failure."""
+    content = failure.result.content
+    text = getattr(content[0], "text", "") if content else ""
+    return text or "Authentication required"
 
 
 class AuthMiddleware(_Middleware):
@@ -820,7 +829,20 @@ class AuthMiddleware(_Middleware):
     async def on_read_resource(self, context, call_next):
         if not _should_require_api_key():
             return await call_next(context)
-        return await self._authenticated_call(context, call_next)
+        # ``on_read_resource`` must produce a ResourceResult; a ToolResult here
+        # fails response validation, so surface the denial as a protocol error.
+        try:
+            user = self._authenticate_message(getattr(context, "message", None))
+        except _AuthFailureError as failure:
+            raise MCPError(INVALID_REQUEST, _denial_text(failure)) from None
+        token = set_caller_identity(user)
+        try:
+            denial = readonly_denial(getattr(context, "message", None))
+            if denial is not None:
+                raise MCPError(INVALID_REQUEST, denial)
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)
 
 
 class OAuthCallerMiddleware(_Middleware):
@@ -881,4 +903,16 @@ class OAuthCallerMiddleware(_Middleware):
         return await self._authenticated_call(context, call_next)
 
     async def on_read_resource(self, context, call_next):
-        return await self._authenticated_call(context, call_next)
+        message = getattr(context, "message", None)
+        try:
+            user = self._authenticate_message(message)
+        except _AuthFailureError as failure:
+            raise MCPError(INVALID_REQUEST, _denial_text(failure)) from None
+        token = set_caller_identity(user)
+        try:
+            denial = readonly_denial(message)
+            if denial is not None:
+                raise MCPError(INVALID_REQUEST, denial)
+            return await call_next(context)
+        finally:
+            reset_caller_identity(token)

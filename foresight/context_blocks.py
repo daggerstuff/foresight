@@ -358,7 +358,10 @@ _PROCEDURAL_RULE_CATEGORIES = frozenset({"procedural", "procedure", "workflow", 
 _MUST_NOT_RE = re.compile(r"\b(?:must\s+not|must_not|never)\b", re.IGNORECASE)
 _MUST_RE = re.compile(r"\bmust\b", re.IGNORECASE)
 _SHOULD_RE = re.compile(r"\b(?:should|prefer|recommended|consider)\b", re.IGNORECASE)
-_STRENGTH_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:,|;|\||\bor\b)\s*", re.IGNORECASE)
+# Sentences and semicolons delimit independent statements; commas do not.
+# "You should, where possible, never deploy" is one recommendation, while
+# "Never deploy X. Consider Y." is a prohibition followed by advice.
+_STRENGTH_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:[.!?;]|\n)\s*")
 
 
 @dataclass(frozen=True)
@@ -458,12 +461,15 @@ def retrieve_matching_rules(
 def _clause_strength(text: str) -> RuleStrength | None:
     """Strength carried by one clause, or None when it states none.
 
-    "should never" is a weak recommendation, not a prohibition: the should
-    check must run before the must_not one, which matches bare "never".
+    "should never" is a weak recommendation, not a prohibition, but only when
+    the should comes first: a clause that opens with "never" is a prohibition
+    even if it later mentions what someone should consider.
     """
-    if _SHOULD_RE.search(text):
+    should = _SHOULD_RE.search(text)
+    must_not = _MUST_NOT_RE.search(text)
+    if should is not None and (must_not is None or should.start() < must_not.start()):
         return RuleStrength.SHOULD
-    if _MUST_NOT_RE.search(text):
+    if must_not is not None:
         return RuleStrength.MUST_NOT
     if _MUST_RE.search(text):
         return RuleStrength.MUST
@@ -592,9 +598,16 @@ def _approved_skill_versions(conn: Any, observation_id: str, *, user_id: str, te
             meta = json.loads(dict(row).get("metrics") or "{}")
         except (TypeError, ValueError):
             continue
+        if not isinstance(meta, dict):
+            continue
         if str(meta.get("observation_id") or "") != observation_id:
             continue
-        versions.add(int(meta.get("observation_version") or 1))
+        try:
+            versions.add(int(meta.get("observation_version") or 1))
+        except (TypeError, ValueError):
+            # A malformed version must not abort every graduation attempt for
+            # this observation; treat the record as not covering it.
+            continue
     return versions
 
 

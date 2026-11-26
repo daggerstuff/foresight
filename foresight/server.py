@@ -6406,7 +6406,9 @@ def inject_context(
 
     # Side-effect: silently capture any phrase-triggered or in-flight pattern memories
     # in the background without blocking retrieval or requiring end-of-session wrapup.
-    if conversation_text:
+    # A read-only principal may call inject_context, but its capture side
+    # effect writes memories, so skip it for READONLY callers.
+    if conversation_text and get_caller_role() is not Role.READONLY:
         try:
             threading.Thread(
                 target=_auto_capture_in_flight,

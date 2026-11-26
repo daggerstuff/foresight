@@ -357,6 +357,9 @@ def _upsert_observation(
             and merged_ids == current["supporting_memory_ids"]
             and merged_episodes == current.get("supporting_episode_ids", [])
             and new_memory_type == prior_memory_type
+            # A confidence-only improvement is still a refinement: without this
+            # the row keeps its stale confidence, version, and last_refined_at.
+            and float(candidate["confidence"]) <= float(current["confidence"])
         ):
             return current
 

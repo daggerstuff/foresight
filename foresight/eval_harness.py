@@ -54,7 +54,13 @@ from .server import (
     inject_context as ic_fn,
 )
 from .temporal_queries import TemporalFilters, TemporalQueryBuilder
-from .tenant_context import reset_tenant_context, set_current_account_id, set_current_user_id
+from .tenant_context import (
+    get_current_account_id,
+    get_current_user_id,
+    reset_tenant_context,
+    set_current_account_id,
+    set_current_user_id,
+)
 
 logger = logging.getLogger("foresight_eval")
 
@@ -689,6 +695,8 @@ class EvalHarness:
         # patches applied (and tenant context set) with the flag still False,
         # so cleanup has to key off "setup was attempted", not "setup finished".
         self._setup_started: bool = False
+        # The caller's tenant scope captured at install, restored on rollback.
+        self._caller_scope: tuple[str, str] | None = None
         # Expected memory ids that only exist after seeding (S12/S13).
         # They live on the harness, not on the module-global SCENARIOS
         # list, so a second harness or a caller iterating SCENARIOS never
@@ -788,7 +796,9 @@ class EvalHarness:
             target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
-        # Set tenant context
+        # Set tenant context, remembering the caller's so a rollback restores
+        # it instead of wiping the identity the middleware bound.
+        self._caller_scope = (get_current_user_id(), get_current_account_id())
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
         self._patches_applied = True
@@ -836,7 +846,13 @@ class EvalHarness:
             setattr(module, attr, orig)
         self._monkeypatches.clear()
 
-        reset_tenant_context()
+        caller_scope = getattr(self, "_caller_scope", None)
+        if caller_scope is not None:
+            set_current_user_id(caller_scope[0])
+            set_current_account_id(caller_scope[1])
+            self._caller_scope = None
+        else:
+            reset_tenant_context()
 
     def seed_fixtures(self) -> int:
         """Seed fixture memories into the database. Returns count of memories inserted."""

@@ -306,6 +306,19 @@ def _is_inactive_memory(mem: dict[str, Any], eid: str, updated_ids: set[str], no
     )
 
 
+def _tally_episode(tally: _EvidenceTally, episode: dict[str, Any], eid: str) -> None:
+    """Record one episode's evidence, including its id when it failed."""
+    if bool(episode.get("is_sensitive")):
+        tally.has_sensitive = True
+        return
+    kind, resolved = _episode_outcome_kind(episode)
+    _record_outcome_tally(tally, kind, resolved)
+    # A failed episode is failure evidence too, so it must not be rendered as a
+    # numbered procedure step.
+    if kind == "failure" and tally.failure_ids is not None:
+        tally.failure_ids.append(eid)
+
+
 def _tally_evidence(
     evidence_ids: list[str],
     episodes: dict[str, dict[str, Any]],
@@ -318,10 +331,7 @@ def _tally_evidence(
     for eid in evidence_ids:
         ep = episodes.get(eid)
         if ep is not None:
-            if bool(ep.get("is_sensitive")):
-                tally.has_sensitive = True
-            else:
-                _record_outcome_tally(tally, *_episode_outcome_kind(ep))
+            _tally_episode(tally, ep, eid)
             continue
 
         mem = memories.get(eid)
@@ -1225,8 +1235,12 @@ def load_skill(skill_name_or_id: str, scope: UserScope) -> dict[str, Any] | None
             (scope.tenant_id, scope.user_id, SKILL_CATEGORY, target, *ns_params),
         ).fetchone()
         if row is not None:
-            rec = _skill_record(dict(row), verify_signatures=True)
-            if rec["status"] == "approved" and rec["signature_valid"]:
+            rd = dict(row)
+            rec = _skill_record(rd, verify_signatures=True)
+            # Mirror list_skills' eligibility: an expired or retired row must
+            # not load just because it was addressed by ID.
+            expired = rd.get("expired_at") is not None or _is_expired(rd.get("expires_at"), _now_iso())
+            if rec["status"] == "approved" and rec["signature_valid"] and not expired:
                 return rec
     finally:
         conn.close()
@@ -1280,9 +1294,16 @@ def export_skills_to_dir(
         if not skill["signature_valid"]:
             skipped.append({"memory_id": skill["memory_id"], "reason": "invalid_signature"})
             continue
-        slug = _skill_slug(skill["skill_name"])
+        base_slug = _skill_slug(skill["skill_name"])
+        slug = base_slug
         if slug in taken_slugs and taken_slugs[slug] != skill["memory_id"]:
-            slug = f"{slug}-{skill['memory_id']}"
+            # Keep suffixing until the destination is free: a suffixed slug can
+            # itself already belong to a third skill.
+            slug = f"{base_slug}-{skill['memory_id']}"
+            counter = 2
+            while slug in taken_slugs and taken_slugs[slug] != skill["memory_id"]:
+                slug = f"{base_slug}-{skill['memory_id']}-{counter}"
+                counter += 1
         taken_slugs.setdefault(slug, skill["memory_id"])
         dest_dir = base_dir / slug
         dest_dir.mkdir(parents=True, exist_ok=True)

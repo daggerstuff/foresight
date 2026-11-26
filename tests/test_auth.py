@@ -6,6 +6,7 @@ import pytest
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
+from mcp.shared.exceptions import MCPError
 
 import foresight.auth as auth_module
 from foresight.auth import AuthManager, AuthMiddleware, OAuthCallerMiddleware, Role
@@ -176,11 +177,12 @@ async def test_auth_middleware_requires_api_key_for_resource_reads(monkeypatch):
 
     call_next = AsyncMock(return_value="skills")
 
-    result = await AuthMiddleware().on_read_resource(_make_resource_context(), call_next)
+    # Resource reads must return a ResourceResult, so the denial is raised as a
+    # protocol error rather than returned as a ToolResult.
+    with pytest.raises(MCPError) as denied:
+        await AuthMiddleware().on_read_resource(_make_resource_context(), call_next)
 
-    text = result if isinstance(result, str) else "".join(chunk.text for chunk in result.content)
-    assert "missing api_key" in text
-    assert _tool_result_is_error(result) is True
+    assert "missing api_key" in denied.value.message
     call_next.assert_not_awaited()
 
 
