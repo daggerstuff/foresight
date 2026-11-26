@@ -452,6 +452,11 @@ def _derive_skill_name(obs: dict[str, Any]) -> str:
     return _skill_slug(raw_name)
 
 
+# Rows read per page while listing skills. Every superseded version of a skill
+# is a row, so a long-lived scope holds far more rows than a caller asked for.
+_SKILL_LIST_PAGE_SIZE = 200
+
+
 def _existing_skill_by_observation(
     conn: Any,
     observation_id: str,
@@ -477,6 +482,11 @@ def _existing_skill_by_observation(
         ),
         (scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params),
     ).fetchall()
+    # The exact observation wins over a shared pattern key: two observations
+    # can carry the same key across eras, and returning whichever row was
+    # touched last made the older observation compare itself against the newer
+    # skill and never update its own.
+    by_pattern: dict[str, Any] | None = None
     for row in rows:
         rd = dict(row)
         if str(rd.get("agent_id") or "default") != dest_agent:
@@ -484,11 +494,11 @@ def _existing_skill_by_observation(
         if str(rd.get("project") or "default") != dest_project:
             continue
         metrics = _parse_json_value(rd.get("metrics"), {})
-        if metrics.get("observation_id") == observation_id or (
-            pattern_key and metrics.get("pattern_key") == pattern_key
-        ):
+        if observation_id and str(metrics.get("observation_id") or "") == observation_id:
             return rd
-    return None
+        if by_pattern is None and pattern_key and metrics.get("pattern_key") == pattern_key:
+            by_pattern = rd
+    return by_pattern
 
 
 def select_skill_candidates(
@@ -520,10 +530,24 @@ def select_skill_candidates(
             existing_meta = _parse_json_value(existing.get("metrics"), {}) if existing else {}
             existing_text = str(existing_meta.get("observation_text") or "") if existing else ""
             existing_evidence = sorted(str(x) for x in (existing_meta.get("evidence_ids") or [])) if existing else []
+            signature_stale = bool(
+                existing
+                and skill_signing_configured()
+                and not _skill_record(existing, verify_signatures=True)["signature_valid"]
+            )
+            # Re-signing only makes sense once a key exists; without this guard an
+            # unsigned deployment would re-render every skill on every run.
+            # A refinement can move only the observation version - a confidence
+            # bump leaves the text and the evidence identical - and the staged
+            # skill still records the older version, so version drift is a
+            # reason to re-offer by itself.
+            stored_version = int(existing_meta.get("observation_version") or 1) if existing else 0
             needs_update = existing is None or (
                 existing.get("review_status") == SKILL_REVIEW_RETIRED
+                or stored_version < int(obs.get("version") or 1)
                 or (bool(existing_text) and existing_text != str(obs.get("observation_text") or ""))
                 or existing_evidence != sorted(proof.evidence_ids)
+                or signature_stale
             )
             candidates.append(
                 {
@@ -735,7 +759,7 @@ def render_skill_markdown(
             f"  confidence: {confidence}",
             f"  retired: {'true' if retired else 'false'}",
             '  signature_alg: "HMAC-SHA256"',
-            f"  signature: {json.dumps(signature)}",
+            f"  signature: {json.dumps(signature or '')}",
             "---",
             "",
             instructions,
@@ -843,16 +867,27 @@ def parse_skill_markdown(skill_md: str) -> dict[str, Any]:
 
 
 def verify_skill_markdown(skill_md: str) -> tuple[bool, dict[str, Any]]:
-    """Verify the HMAC-SHA256 signature embedded in a rendered SKILL.md document."""
+    """Verify the HMAC-SHA256 signature embedded in a rendered SKILL.md document.
+
+    The returned dict always carries ``signature_status``: ``valid`` when the
+    signature verifies, ``invalid`` when a present signature does not verify (or
+    the document cannot be parsed or canonicalized), and ``missing`` when the
+    document carries no signature at all, which is what a render without a
+    configured signing key produces.
+    """
     try:
         parsed = parse_skill_markdown(skill_md)
     except ValueError as exc:
-        return False, {"error": str(exc)}
+        return False, {"error": str(exc), "signature_status": "invalid"}
 
     meta = parsed["metadata"]
-    signature = str(meta.get("signature") or "")
+    signature = str(meta.get("signature") or "").strip()
+    # Artifacts rendered before unsigned documents wrote an empty string carry the
+    # literal "null" here, and must not be mistaken for a forged signature.
+    if signature in ("", "null", "None"):
+        signature = ""
     if not signature:
-        return False, parsed
+        return False, {**parsed, "signature_status": "missing"}
 
     try:
         signing_doc = _canonical_skill_payload(
@@ -873,9 +908,10 @@ def verify_skill_markdown(skill_md: str) -> tuple[bool, dict[str, Any]]:
             }
         )
     except (TypeError, ValueError):
-        return False, parsed
+        return False, {**parsed, "signature_status": "invalid"}
 
-    return verify_skill_document(signing_doc, signature), parsed
+    verified = verify_skill_document(signing_doc, signature)
+    return verified, {**parsed, "signature_status": "valid" if verified else "invalid"}
 
 
 def _record_skill_version(conn: Any, snapshot: dict[str, Any]) -> str:
@@ -1156,6 +1192,17 @@ def _skill_record(row: dict[str, Any], *, verify_signatures: bool = True) -> dic
     }
 
 
+def _skill_selected(
+    rd: dict[str, Any], rec: dict[str, Any], status: str, verify_signatures: bool, now_iso: str
+) -> bool:
+    """Whether one listed row belongs in the caller's status selection."""
+    if status == "approved":
+        if _is_expired(rd.get("expires_at"), now_iso):
+            return False
+        return rec["status"] == "approved" and (not verify_signatures or bool(rec["signature_valid"]))
+    return status == "all" or rec["status"] == status
+
+
 def list_skills(
     scope: UserScope,
     *,
@@ -1195,26 +1242,27 @@ def list_skills(
                 " ORDER BY updated_at DESC, created_at DESC",
             )
             params = [scope.tenant_id, scope.user_id, SKILL_CATEGORY, *ns_params]
-        rows = conn.execute(sql, tuple(params)).fetchall()
+        now_iso = _now_iso()
+        cap = None if limit is None else max(1, int(limit))
+        records: list[dict[str, Any]] = []
+        offset = 0
+        while cap is None or len(records) < cap:
+            page = conn.execute(sql + " LIMIT ? OFFSET ?", (*params, _SKILL_LIST_PAGE_SIZE, offset)).fetchall()
+            if not page:
+                break
+            offset += len(page)
+            for row in page:
+                rd = dict(row)
+                rec = _skill_record(rd, verify_signatures=verify_signatures)
+                if not _skill_selected(rd, rec, status, verify_signatures, now_iso):
+                    continue
+                records.append(rec)
+                if cap is not None and len(records) >= cap:
+                    break
+            if len(page) < _SKILL_LIST_PAGE_SIZE:
+                break
     finally:
         conn.close()
-
-    now_iso = _now_iso()
-    cap = None if limit is None else max(1, int(limit))
-    records: list[dict[str, Any]] = []
-    for row in rows:
-        rd = dict(row)
-        if status == "approved" and _is_expired(rd.get("expires_at"), now_iso):
-            continue
-        rec = _skill_record(rd, verify_signatures=verify_signatures)
-        if status == "approved":
-            if rec["status"] != "approved" or (verify_signatures and not rec["signature_valid"]):
-                continue
-        elif status != "all" and rec["status"] != status:
-            continue
-        records.append(rec)
-        if cap is not None and len(records) >= cap:
-            break
     return records
 
 

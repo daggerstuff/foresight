@@ -13,7 +13,18 @@ _EXCEPTION_NAME = (
 )
 
 _PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:/[\w.\-]+){2,}|\b[\w.\-]+/[\w./\-]{4,}")
-_HOST_RE = re.compile(r"\b(?:[A-Za-z0-9\-]+\.)+[A-Za-z]{2,}\b")
+_HOST_NAME = r"(?:[A-Za-z0-9\-]+\.)+[A-Za-z]{2,}"
+# A dotted name is a host only where the text says so: a URL authority, a
+# host:port pair, or an explicit host/server assignment. A bare dotted
+# identifier is usually a qualified table name ("database.schema"), and
+# rewriting it to "<host>" made two different failures share one signature.
+_HOST_CONTEXT_RES = (
+    re.compile(rf"(?:(?<=@)|(?<=//)){_HOST_NAME}\b"),
+    re.compile(rf"\b{_HOST_NAME}(?=:\d{{2,5}}\b)"),
+    re.compile(rf"(?<=\bhost=){_HOST_NAME}\b"),
+    re.compile(rf"(?<=\bserver=){_HOST_NAME}\b"),
+    re.compile(rf"(?<=\bhostname=){_HOST_NAME}\b"),
+)
 _HEX_RE = re.compile(r"\b(?:0x)?[0-9a-f]{8,}\b", re.IGNORECASE)
 _UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
 _NUM_RE = re.compile(r"\d+")
@@ -29,8 +40,12 @@ _EXIT_CODE_RE = re.compile(r"exit(?:ed)?(?: with)?(?: code| status)[:=\s]+([1-9]
 
 def _normalize_message(msg: str) -> str:
     msg = msg.strip().lower()
+    # Hosts first: a URL authority sits inside what _PATH_RE would otherwise
+    # swallow (https://api.prod.internal/v1/run -> https:/<path>), so the
+    # authority has to be rewritten while it is still addressable.
+    for host_re in _HOST_CONTEXT_RES:
+        msg = host_re.sub("<host>", msg)
     msg = _PATH_RE.sub("<path>", msg)
-    msg = _HOST_RE.sub("<host>", msg)
     msg = _UUID_RE.sub("<uuid>", msg)
     msg = _HEX_RE.sub("<hex>", msg)
     msg = _NUM_RE.sub("#", msg)

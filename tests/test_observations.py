@@ -152,7 +152,7 @@ def _refine_candidate(pattern_key: str, memory_ids: list[str], text: str) -> dic
     }
 
 
-def test_refinement_never_resurrects_archived_observation(monkeypatch):
+def test_refinement_never_resurrects_archived_observation():
     stamp = datetime.now(UTC).isoformat()
     first = _store(f"archive guard step one ({stamp})", category="procedural")
     second = _store(f"archive guard step two ({stamp})", category="procedural")
@@ -163,18 +163,90 @@ def test_refinement_never_resurrects_archived_observation(monkeypatch):
     )
     assert observations_module.archive_observation(created["id"], user_id=USER_ID, tenant_id=TENANT) is True
 
-    monkeypatch.setattr(observations_module, "_find_observation", lambda *_args, **_kwargs: dict(created))
     merged = observations_module._upsert_observation(
         _refine_candidate("procedural:archive-guard", [first, second], "Run the migration smoke check twice."),
         user_id=USER_ID,
         tenant_id=TENANT,
     )
 
-    assert merged["id"] == created["id"]
-    assert merged["status"] == "archived"
+    # Refining a pattern whose live row was archived opens a new observation;
+    # the archived row keeps the evidence and version it was archived with.
+    assert merged["id"] != created["id"]
+    assert merged["status"] != "archived"
+
     archived = {o["id"]: o for o in list_observations(UserScope(USER_ID, TENANT), status="archived")}
     assert archived[created["id"]]["supporting_memory_ids"] == [first]
     assert archived[created["id"]]["version"] == created["version"]
+    assert archived[created["id"]]["observation_text"] == created["observation_text"]
+
+
+class _InterleavingConnection:
+    """Connection proxy that lets a competing writer commit before our first UPDATE."""
+
+    def __init__(self, inner, on_first_update):
+        self._inner = inner
+        self._on_first_update = on_first_update
+
+    def execute(self, sql, params=()):
+        if "UPDATE observations" in sql:
+            fire, self._on_first_update = self._on_first_update, None
+            if fire is not None:
+                fire()
+        return self._inner.execute(sql, params)
+
+    def commit(self):
+        return self._inner.commit()
+
+    def close(self):
+        return self._inner.close()
+
+
+def test_replace_keeps_evidence_a_competing_writer_added(monkeypatch):
+    stamp = datetime.now(UTC).isoformat()
+    first = _store(f"race guard step one ({stamp})", category="procedural")
+    pattern = "procedural:evidence-race"
+    created = observations_module._upsert_observation(
+        _refine_candidate(pattern, [first], "Run the migration smoke check."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    real_connect = observations_module._connect
+    fired = []
+
+    def competing_write():
+        fired.append(True)
+        other = real_connect()
+        try:
+            other.execute(
+                "UPDATE observations SET supporting_episode_ids = ?, version = version + 1 WHERE id = ?",
+                (json.dumps(["episode-from-other-writer"]), created["id"]),
+            )
+            other.commit()
+        finally:
+            other.close()
+
+    def racing_connect():
+        return _InterleavingConnection(real_connect(), competing_write if not fired else None)
+
+    monkeypatch.setattr(observations_module, "_connect", racing_connect)
+
+    merged = observations_module._upsert_observation(
+        {
+            **_refine_candidate(pattern, [first], "Run the migration smoke check twice."),
+            "supporting_episode_ids": ["episode-this-writer-scanned"],
+            "replace_episode_evidence": True,
+        },
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    assert fired, "the competing writer never interleaved before our update"
+    # The replacement scan never judged the other writer's episode, so the lost
+    # version race must merge it rather than overwrite it.
+    assert "episode-from-other-writer" in merged["supporting_episode_ids"]
+    assert "episode-this-writer-scanned" in merged["supporting_episode_ids"]
+    assert merged["version"] == created["version"] + 2
 
 
 def test_repeated_refinement_keeps_version_when_nothing_changed():
@@ -194,3 +266,85 @@ def test_repeated_refinement_keeps_version_when_nothing_changed():
     )
     assert changed["version"] == created["version"] + 1
     assert changed["observation_text"] == "Run the nightly smoke check twice."
+
+
+def test_confidence_only_refinement_bumps_version():
+    stamp = datetime.now(UTC).isoformat()
+    first = _store(f"confidence bump step one ({stamp})", category="procedural")
+    created = observations_module._upsert_observation(
+        _refine_candidate("procedural:confidence-bump", [first], "Run the nightly smoke check."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    assert created["confidence"] == pytest.approx(0.6)
+
+    stronger = _refine_candidate("procedural:confidence-bump", [first], "Run the nightly smoke check.")
+    stronger["confidence"] = 0.9
+    refined = observations_module._upsert_observation(stronger, user_id=USER_ID, tenant_id=TENANT)
+
+    assert refined["version"] == created["version"] + 1
+    assert refined["confidence"] == pytest.approx(0.9)
+
+
+def test_replacement_keeps_evidence_recorded_after_the_scan_began(monkeypatch):
+    created = observations_module._upsert_observation(
+        _refine_candidate("procedural:stale-replacement", [], "Rotate the key before redeploying."),
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    stale_scan = dict(created, supporting_episode_ids=["ep_old"])
+    observations_module._upsert_observation(
+        {
+            "pattern_key": "procedural:stale-replacement",
+            "observation_text": "Rotate the key before redeploying.",
+            "category": "procedural",
+            "confidence": 0.6,
+            "supporting_memory_ids": [],
+            "supporting_episode_ids": ["ep_old", "ep_new"],
+            "memory_type": "procedural",
+        },
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    monkeypatch.setattr(observations_module, "_find_observation", lambda *_a, **_k: dict(stale_scan))
+
+    replaced = observations_module._upsert_observation(
+        {
+            "pattern_key": "procedural:stale-replacement",
+            "observation_text": "Rotate the key, redeploy, then confirm the new key serves traffic.",
+            "category": "procedural",
+            "confidence": 0.6,
+            "supporting_memory_ids": [],
+            "supporting_episode_ids": ["ep_old"],
+            "memory_type": "procedural",
+            "replace_episode_evidence": True,
+        },
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    assert replaced["supporting_episode_ids"] == ["ep_old", "ep_new"]
+    assert replaced["version"] == created["version"] + 2
+
+
+def test_confidence_only_refinement_bumps_the_version_for_rule_graduation():
+    """A confidence-only improvement is a refinement, so graduation re-offers it."""
+    stamp = datetime.now(UTC).isoformat()
+    memory_id = _store(f"confidence guard step ({stamp})", category="procedural")
+    pattern = "procedural:confidence-refine"
+    created = observations_module._upsert_observation(
+        {**_refine_candidate(pattern, [memory_id], "Run the migration smoke check."), "confidence": 0.4},
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+    refined = observations_module._upsert_observation(
+        {**_refine_candidate(pattern, [memory_id], "Run the migration smoke check."), "confidence": 0.9},
+        user_id=USER_ID,
+        tenant_id=TENANT,
+    )
+
+    # Same text and same evidence, but the version must move: rule graduation
+    # keys its review on the version and would never re-offer a frozen row.
+    assert refined["id"] == created["id"]
+    assert refined["version"] == created["version"] + 1
+    assert refined["confidence"] > created["confidence"]

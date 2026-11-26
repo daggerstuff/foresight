@@ -1,4 +1,6 @@
 import os
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,6 +11,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.shared.exceptions import MCPError
 
 import foresight.auth as auth_module
+from foresight import server as server_module
 from foresight.auth import AuthManager, AuthMiddleware, OAuthCallerMiddleware, Role
 
 
@@ -244,9 +247,10 @@ async def test_auth_middleware_binds_caller_identity_for_resource_reads(temp_db_
 # tool.
 
 
-def _make_named_tool_context(api_key: str, tenant_id: str, tool_name: str):
+def _make_named_tool_context(api_key: str, tenant_id: str, tool_name: str, arguments: dict | None = None):
     context = _make_context(api_key, tenant_id)
     context.message.name = tool_name
+    context.message.arguments = {**context.message.arguments, **(arguments or {})}
     return context
 
 
@@ -396,3 +400,300 @@ async def test_oauth_middleware_applies_the_read_only_gate(temp_db_path, monkeyp
     assert _tool_result_is_error(result) is True
     assert "Read-only" in result.content[0].text
     call_next.assert_not_awaited()
+
+
+# --- Read-only policy: mixed tools and read tools with write side effects ----
+
+
+def _readonly_user(manager: AuthManager, name: str):
+    return manager.create_user(
+        username=f"readonly-{name}",
+        email=f"readonly-{name}@example.com",
+        password="SecretPass123!",
+        role=Role.READONLY,
+        tenant_access=["tenant-a"],
+    )
+
+
+def _writable_user(manager: AuthManager, name: str):
+    return manager.create_user(
+        username=f"writable-{name}",
+        email=f"writable-{name}@example.com",
+        password="SecretPass123!",
+        role=Role.ADMIN,
+        tenant_access=["tenant-a"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_readonly_key_can_read_a_mixed_tool(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "mixed-read")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="read")
+
+    cases = ({"params": {"action": "list"}}, {"action": "get"})
+    for arguments in cases:
+        result = await AuthMiddleware().on_call_tool(
+            _make_named_tool_context(user.api_key, "tenant-a", "manage_context_blocks", arguments),
+            call_next,
+        )
+        assert result == "read"
+
+    assert call_next.await_count == len(cases)
+
+
+@pytest.mark.asyncio
+async def test_readonly_key_cannot_write_through_a_mixed_tool(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "mixed-write")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="wrote")
+
+    for arguments in (
+        {"params": {"action": "update"}},
+        {"params": {"action": "reset"}},
+        {"params": {"action": "clear"}},
+        {"params": {}},
+        {},
+    ):
+        result = await AuthMiddleware().on_call_tool(
+            _make_named_tool_context(user.api_key, "tenant-a", "manage_context_blocks", arguments),
+            call_next,
+        )
+        assert _tool_result_is_error(result) is True
+        assert "Read-only" in result.content[0].text
+
+    call_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mixed_tool_policy_does_not_open_a_write_only_tool(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "write-only")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="stored")
+
+    result = await AuthMiddleware().on_call_tool(
+        _make_named_tool_context(user.api_key, "tenant-a", "manage_memories", {"params": {"action": "store"}}),
+        call_next,
+    )
+
+    assert _tool_result_is_error(result) is True
+    call_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_readonly_key_can_synthesize_a_profile(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "synthesize")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    monkeypatch.setattr(auth_module, "_should_require_api_key", lambda: True)
+
+    call_next = AsyncMock(return_value="synthesized")
+
+    result = await AuthMiddleware().on_call_tool(
+        _make_named_tool_context(user.api_key, "tenant-a", "synthesize_profile", {"params": {}}),
+        call_next,
+    )
+
+    assert result == "synthesized"
+    call_next.assert_awaited_once()
+
+
+def test_readonly_caller_does_not_reinforce_what_it_read(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "reinforce")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    reinforced: list[tuple[str, str, str]] = []
+
+    class _DecaySpy:
+        def reinforce_memory(self, memory_id: str, user_id: str, tenant_id: str) -> None:
+            reinforced.append((memory_id, user_id, tenant_id))
+
+    def _decay_model() -> _DecaySpy:
+        return _DecaySpy()
+
+    monkeypatch.setattr(server_module, "get_decay_model", _decay_model)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        server_module._auto_reinforce_batch(["mem-1"], user.user_id, "tenant-a")
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert reinforced == []
+
+
+def test_writable_caller_still_reinforces_what_it_read(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _writable_user(manager, "reinforce")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    reinforced: list[tuple[str, str, str]] = []
+
+    class _DecaySpy:
+        def reinforce_memory(self, memory_id: str, user_id: str, tenant_id: str) -> None:
+            reinforced.append((memory_id, user_id, tenant_id))
+
+    def _decay_model() -> _DecaySpy:
+        return _DecaySpy()
+
+    monkeypatch.setattr(server_module, "get_decay_model", _decay_model)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        server_module._auto_reinforce_batch(["mem-1"], user.user_id, "tenant-a")
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert reinforced == [("mem-1", user.user_id, "tenant-a")]
+
+
+def _capture_spies(monkeypatch, server_module) -> tuple[dict[str, int], list[tuple[object, str, str]]]:
+    seen = {"store": 0, "capture": 0}
+    captured: list[tuple[object, str, str]] = []
+
+    def _store(*_args: object, **_kwargs: object) -> str:
+        seen["store"] += 1
+        return "stored"
+
+    class _PipelineSpy:
+        def capture_in_flight(self, target: object, user_id: str, tenant_id: str) -> list:
+            seen["capture"] += 1
+            captured.append((target, user_id, tenant_id))
+            return []
+
+    match = SimpleNamespace(content="remember this: tea at four", metadata={})
+    monkeypatch.setattr(server_module, "_handle_memory_store", _store)
+
+    def _pipeline_spy() -> _PipelineSpy:
+        return _PipelineSpy()
+
+    def _extract(_text: str, triggers: object) -> list:
+        return [match] if triggers else []
+
+    monkeypatch.setattr(server_module, "get_capture_pipeline", _pipeline_spy)
+    monkeypatch.setattr(server_module, "extract_triggered_memories", _extract)
+    return seen, captured
+
+
+def test_readonly_caller_does_not_capture_in_flight(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "capture")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    seen, captured = _capture_spies(monkeypatch, server_module)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        stored = server_module._auto_capture_in_flight("remember this: tea at four", user.user_id, "tenant-a")
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert stored == 0
+    assert seen == {"store": 0, "capture": 0}
+    assert captured == []
+
+
+def test_writable_caller_still_captures_in_flight(temp_db_path, monkeypatch):
+    manager = AuthManager(db_path=temp_db_path)
+    user = _writable_user(manager, "capture")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+    seen, captured = _capture_spies(monkeypatch, server_module)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        stored = server_module._auto_capture_in_flight("remember this: tea at four", user.user_id, "tenant-a")
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert stored == 1
+    assert seen == {"store": 1, "capture": 1}
+    assert captured == [("remember this: tea at four", user.user_id, "tenant-a")]
+
+
+def _last_login(db_path: str, user_id: str) -> str | None:
+    """Read the stored last_login without going through the manager."""
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT last_login FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def _set_last_login(db_path: str, user_id: str, value: str) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE users SET last_login = ? WHERE user_id = ?", (value, user_id))
+        conn.commit()
+
+
+@pytest.mark.parametrize("tool_name", ["synthesize_profile", "export_profile"])
+def test_readonly_caller_cannot_read_another_users_profile(tool_name, temp_db_path, monkeypatch):
+    """A read-only key reads its own profile and never another user's.
+
+    Both profile tools take a caller-supplied user_id, and the tenant grant does
+    not authorize that owner, so a read-only credential could read every profile
+    in the tenant. Both route the requested id through _profile_user_for_caller,
+    which refuses a foreign id before the store is touched.
+    """
+    manager = AuthManager(db_path=temp_db_path)
+    user = _readonly_user(manager, "profile")
+    monkeypatch.setattr(auth_module, "_auth_manager", manager)
+
+    reads: list[str] = []
+
+    def _profile_spy(uid: str, *_args: object, **_kwargs: object) -> dict[str, list]:
+        reads.append(uid)
+        return {"static": [], "dynamic": []}
+
+    def _export_spy(scope: object, *_args: object, **_kwargs: object) -> str:
+        reads.append(scope.user_id)
+        return "{}"
+
+    monkeypatch.setattr(server_module, "_synthesize_profile", _profile_spy)
+    monkeypatch.setattr(server_module, "_export", _export_spy)
+
+    token = auth_module.set_caller_identity(user)
+    try:
+        if tool_name == "synthesize_profile":
+            refused = server_module.synthesize_profile(server_module.SynthesizeProfileParams(user_id="someone-else"))
+            own = server_module.synthesize_profile(server_module.SynthesizeProfileParams(user_id=user.user_id))
+        else:
+            refused = server_module.export_profile(user_id="someone-else")
+            own = server_module.export_profile(user_id=user.user_id)
+    finally:
+        auth_module.reset_caller_identity(token)
+
+    assert "only read its own profile" in refused
+    assert "only read its own profile" not in own
+    assert reads == [user.user_id]
+
+
+def test_api_key_revalidation_throttles_the_login_write(temp_db_path):
+    """Per-request API-key validation records the login at most once per window.
+
+    load_access_token re-validates a bearer API key on every OAuth MCP request,
+    so an unthrottled last_login write turned ordinary read traffic into a
+    database write per request.
+    """
+    manager = AuthManager(db_path=temp_db_path)
+    user = _writable_user(manager, "throttle")
+
+    assert manager.authenticate_api_key(user.api_key) is not None
+    written = _last_login(temp_db_path, user.user_id)
+    assert written is not None
+
+    assert manager.authenticate_api_key(user.api_key) is not None
+    assert _last_login(temp_db_path, user.user_id) == written
+
+    stale = (datetime.now(UTC) - timedelta(seconds=auth_module._API_KEY_LOGIN_INTERVAL_SECONDS + 1)).isoformat()
+    _set_last_login(temp_db_path, user.user_id, stale)
+
+    assert manager.authenticate_api_key(user.api_key) is not None
+    assert _last_login(temp_db_path, user.user_id) != stale

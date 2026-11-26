@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
+import foresight.skill_crystallization as sc
 from foresight.experience import EpisodeVerdict, build_episode, distill_experiences, record_outcome
 from foresight.memory_relationships import LinkMemoriesOptions, get_memory_relationship_store
 from foresight.observations import archive_observation, curate_observations, list_observations
@@ -43,6 +44,7 @@ from foresight.server import (
     resource_skills,
 )
 from foresight.skill_crystallization import (
+    _existing_skill_by_observation,
     crystallize_skills,
     export_skills_to_dir,
     list_skills,
@@ -539,6 +541,67 @@ def test_crystallization_in_a_project_lane_never_reuses_the_shared_lane_skill():
     assert load_skill("lane-scoped-proc", lane) is not None
 
 
+def test_list_skills_reads_a_bounded_page_instead_of_every_version(monkeypatch):
+    """A long-lived scope holds many superseded versions; the read stays paged."""
+    calls: list[tuple[str, tuple]] = []
+
+    class _EmptyCursor:
+        def fetchall(self):
+            return []
+
+    class _RecordingConn:
+        def execute(self, sql, params=()):
+            calls.append((str(sql), tuple(params)))
+            return _EmptyCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(sc, "_connect", _RecordingConn)
+    monkeypatch.setattr(sc, "_SKILL_LIST_PAGE_SIZE", 2)
+    scope = UserScope(user_id=USER_ID, tenant_id=TENANT)
+    assert list_skills(scope, limit=5, reconcile=False, verify_signatures=False) == []
+    assert calls, "list_skills must read from the database"
+    sql, params = calls[0]
+    assert " LIMIT " in sql.upper()
+    assert params[-2:] == (2, 0)
+
+
+def test_two_observations_sharing_a_pattern_key_keep_separate_skills():
+    """The exact observation wins over a shared pattern key."""
+    conn = get_db_connection()
+    try:
+        for memory_id, observation_id, updated in (
+            ("skill_obs_old", "obs-old", "2026-01-01T00:00:00+00:00"),
+            ("skill_obs_new", "obs-new", "2026-01-02T00:00:00+00:00"),
+        ):
+            conn.execute(
+                "INSERT INTO memories"
+                " (id, content, tenant_id, user_id, category, memory_type, metrics,"
+                " review_status, is_ghost, is_latest, inferred, agent_id, project,"
+                " created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, 'skill', 'procedural', ?, 'approved', 0, 1, 0,"
+                " 'default', 'default', ?, ?)",
+                (
+                    memory_id,
+                    "name: shared-pattern",
+                    TENANT,
+                    USER_ID,
+                    json.dumps({"observation_id": observation_id, "pattern_key": "shared-key"}),
+                    updated,
+                    updated,
+                ),
+            )
+        found = _existing_skill_by_observation(conn, "obs-old", "shared-key", _scope())
+        assert found is not None
+        assert found["id"] == "skill_obs_old"
+        fallback = _existing_skill_by_observation(conn, "obs-unknown", "shared-key", _scope())
+        assert fallback is not None
+        assert fallback["id"] == "skill_obs_new"
+    finally:
+        conn.close()
+
+
 def test_expired_contradiction_source_is_ignored_by_the_retirement_sweep():
     ids = _seed_three_successes("sweep-expired-contradiction")
     curate_observations(_scope())
@@ -735,3 +798,63 @@ def test_skill_signatures_fail_closed_without_a_configured_secret(monkeypatch):
 
     with pytest.raises(SkillSignatureUnavailableError):
         sign_skill_document(document)
+
+
+def test_unsigned_artifact_reports_missing_signature_not_tampering(monkeypatch):
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("unsigned-report")
+    curate_observations(_scope())
+    staged = crystallize_skills(_scope())
+    skill_id = staged["skills"][0]["memory_id"]
+    unsigned = next(s for s in list_skills(_scope(), status="pending") if s["memory_id"] == skill_id)
+    assert 'signature: ""' in unsigned["content"]
+
+    ok, parsed = verify_skill_markdown(unsigned["content"])
+    assert ok is False
+    assert parsed["signature_status"] == "missing"
+
+    forged = re.sub(r"(?m)^\s*signature:.*$", '  signature: "deadbeef"', unsigned["content"], count=1)
+    assert forged != unsigned["content"]
+    ok_forged, forged_parsed = verify_skill_markdown(forged)
+    assert ok_forged is False
+    assert forged_parsed["signature_status"] == "invalid"
+
+
+def test_configuring_a_key_resigns_a_previously_unsigned_skill(monkeypatch):
+    monkeypatch.delenv("FORESIGHT_PROFILE_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("FORESIGHT_ENCRYPTION_KEY", raising=False)
+    _seed_three_successes("late-signing")
+    curate_observations(_scope())
+    staged = crystallize_skills(_scope())
+    assert staged["staged_count"] == 1
+    skill_id = staged["skills"][0]["memory_id"]
+
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    resigned = crystallize_skills(_scope())
+    assert resigned["updated_count"] == 1
+    repaired = next(s for s in list_skills(_scope(), status="pending") if s["memory_id"] == skill_id)
+    assert repaired["signature_valid"] is True
+    assert repaired["signature"]
+
+
+def test_expired_skill_is_not_loadable_by_memory_id(monkeypatch):
+    monkeypatch.setenv("FORESIGHT_PROFILE_SIGNING_KEY", "test-skill-hmac-secret")
+    _seed_three_successes("expiring-skill")
+    curate_observations(_scope())
+    skill_id = crystallize_skills(_scope())["skills"][0]["memory_id"]
+    manage_inferred(ManageInferredParams(action="approve", memory_id=skill_id, user_id=USER_ID))
+    scope = _scope()
+    assert load_skill(skill_id, scope) is not None
+
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE memories SET expires_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", skill_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert load_skill(skill_id, scope) is None

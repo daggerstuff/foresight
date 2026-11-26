@@ -263,10 +263,12 @@ def _retire_stale_groups(
     """
     stale_keys: set[str] = set()
     stale_memory_ids: list[str] = []
+    # Ghosted rows still name their key: maintenance may have ghosted the
+    # memory long before a corrected verdict emptied its group, and skipping
+    # them would leave the observation claiming evidence the group lost.
     for row in _fetch_all(
-        """SELECT id, metrics FROM memories
-           WHERE tenant_id = ? AND user_id = ? AND memory_type IN ('procedural', 'episodic')
-             AND is_ghost = 0""",
+        """SELECT id, metrics, is_ghost FROM memories
+           WHERE tenant_id = ? AND user_id = ? AND memory_type IN ('procedural', 'episodic')""",
         (tenant_id, user_id),
     ):
         try:
@@ -277,7 +279,8 @@ def _retire_stale_groups(
         if not key.startswith(("failure:", "success:")) or key in active_keys:
             continue
         stale_keys.add(key)
-        stale_memory_ids.append(str(row["id"]))
+        if not int(row.get("is_ghost") or 0):
+            stale_memory_ids.append(str(row["id"]))
 
     if not stale_keys:
         return
@@ -608,6 +611,7 @@ class _DistillState:
 
     result: dict[str, Any]
     snapshot: _ProceduralSnapshot | None
+    observations: dict[str, tuple[str, str, tuple[str, ...]]]
     same_task_failures: dict[str, list[str]]
 
 
@@ -625,6 +629,44 @@ def _procedural_snapshot(*, user_id: str, tenant_id: str) -> _ProceduralSnapshot
         (tenant_id, user_id),
     )
     return {str(row["id"]): (row["content_hash"], row["metrics"], row["error_signature"]) for row in rows}
+
+
+def _observation_shape(
+    observation_text: str, confidence: float, episode_ids: list[str]
+) -> tuple[str, str, tuple[str, ...]]:
+    """The comparable state of one distilled observation."""
+    return (observation_text, f"{float(confidence):.6f}", tuple(dict.fromkeys(episode_ids)))
+
+
+def _observation_snapshot(*, user_id: str, tenant_id: str) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    """Read every live default-lane observation once, keyed by pattern key.
+
+    Distillation revisits each of the user's groups on every capture, and a
+    group whose stored observation already carries the same text and evidence
+    needs no write. Reading the stored shape up front turns an untouched group
+    into a dict lookup instead of another upsert transaction, so a capture with
+    10,000 historical groups writes only the groups it actually changed.
+    """
+    rows = _fetch_all(
+        "SELECT pattern_key, observation_text, confidence, supporting_episode_ids FROM observations "
+        "WHERE tenant_id = ? AND user_id = ? AND status <> 'archived' "
+        "AND COALESCE(agent_id, 'default') = 'default' AND COALESCE(project, 'default') = 'default'",
+        (tenant_id, user_id),
+    )
+    shape: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    for row in rows:
+        try:
+            stored_ids = json.loads(row.get("supporting_episode_ids") or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(stored_ids, list):
+            continue
+        shape[str(row["pattern_key"])] = _observation_shape(
+            str(row.get("observation_text") or ""),
+            float(row.get("confidence") or 0.0),
+            [str(eid) for eid in stored_ids],
+        )
+    return shape
 
 
 def _upsert_procedural_memory(
@@ -721,6 +763,60 @@ def _upsert_procedural_memory(
         conn.close()
 
 
+# A trailing line of a run's own output: a duration or an exit status on its
+# own carries no procedure, so it never becomes a recipe step.
+_RESULT_SUFFIX_RE = re.compile(
+    r"^(?:in\s+\d+(?:\.\d+)?\s*(?:s|secs?|seconds?|ms)|"
+    r"\(\d+(?:\.\d+)?\s*(?:s|secs?|seconds?|ms)\)|"
+    r"exit\s+(?:code|status)\s*:?\s*-?\d+)$",
+    re.IGNORECASE,
+)
+
+
+# The same report can arrive joined onto one line - "52 passed in 3.1s,
+# exit code 0" - so a trailing result clause is dropped before the words that
+# explain the work are counted.
+_RESULT_CLAUSE_RE = re.compile(
+    r"(?:^|[,;])\s*"
+    r"(?:in\s+\d+(?:\.\d+)?\s*(?:s|secs?|seconds?|ms)|"
+    r"\(\d+(?:\.\d+)?\s*(?:s|secs?|seconds?|ms)\)|"
+    r"exit\s+(?:code|status)\s*:?\s*-?\d+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_result_clauses(text: str) -> str:
+    """Drop trailing run-report clauses from a line that also explains work."""
+    while True:
+        stripped = _RESULT_CLAUSE_RE.sub("", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def _strip_result_lines(content: str) -> str:
+    """Flatten a message for the recipe, minus the lines that only report a run.
+
+    Tool output arrives line by line - "52 passed in 3.1s" then "exit code 0" -
+    so flattening first glued the report into the prose and stored it as a
+    recipe step. Each line is judged on its own: a pure result line or a bare
+    duration/exit-status line is dropped, and a line that reports a result and
+    then explains the work is kept whole.
+    """
+    kept: list[str] = []
+    for raw_line in content.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line or _RESULT_SUFFIX_RE.match(line):
+            continue
+        result_match = _RESULT_REPORT_RE.match(line)
+        if result_match is not None:
+            remainder = _strip_result_clauses(line[result_match.end() :])
+            if len(re.findall(r"[A-Za-z]{2,}", remainder)) < _MIN_REPORT_TAIL_WORDS:
+                continue
+        kept.append(line)
+    return " ".join(kept)
+
+
 def _procedure_steps(
     tenant_id: str,
     user_id: str,
@@ -740,17 +836,9 @@ def _procedure_steps(
     for event in _raw_events_for_session(tenant_id, user_id, session_id):
         if (event.get("role") or "").lower() not in ("assistant", "tool", "tool_use", "function"):
             continue
-        text = re.sub(r"\s+", " ", str(event.get("content") or "")).strip()
+        text = _strip_result_lines(str(event.get("content") or ""))
         if len(text) < _MIN_SUMMARY_LEN:
             continue
-        # Skip a pure result report, but keep a message that reports a result
-        # and then explains what was done. A tail like "in 3.1s" is still part
-        # of the report, so require a few real words after the match.
-        result_match = _RESULT_REPORT_RE.match(text)
-        if result_match is not None:
-            remainder_words = re.findall(r"[A-Za-z]{2,}", text[result_match.end() :])
-            if len(remainder_words) < _MIN_REPORT_TAIL_WORDS:
-                continue
         verdict = evaluate_secrets(text, tenant_id=tenant_id)
         # `flag` mode hands back the original text, so a recipe step may only be
         # stored from a clean or already-redacted verdict.
@@ -796,6 +884,10 @@ def distill_experiences(
     ``limit`` is the fetch batch size, not a ceiling: every eligible episode is
     distilled. A single ``ORDER BY created_at ASC LIMIT`` re-read the oldest
     batch forever once a user crossed it, so newer episodes never distilled.
+
+    Every group is measured on each run so its counts include its whole history,
+    but only a group whose stored observation and lesson actually differ is
+    written: an untouched group costs two reads, not two transactions.
     """
     batch_size = max(1, int(limit))
     sql = (
@@ -853,6 +945,7 @@ def distill_experiences(
     state = _DistillState(
         result=result,
         snapshot=_procedural_snapshot(user_id=user_id, tenant_id=tenant_id),
+        observations=_observation_snapshot(user_id=user_id, tenant_id=tenant_id),
         same_task_failures={},
     )
     try:
@@ -890,6 +983,7 @@ def _distill_failure_group(
     """
     result = state.result
     snapshot = state.snapshot
+    observations = state.observations
     same_task_failures: dict[str, list[str]] = {}
     for sig, group in failures.items():
         ids = [ep["id"] for ep in group]
@@ -904,18 +998,23 @@ def _distill_failure_group(
             f"failed {n} time(s) with this signature. Verify the failing step against `{label}` "
             f"before retrying the same approach."
         )
-        upsert_episode_observation(
-            EpisodeObservationSpec(
-                pattern_key=f"failure:{sig}"[:200],
-                observation_text=text,
-                category="procedural",
-                confidence=confidence,
-                episode_ids=ids,
-                replace_episode_evidence=True,
-            ),
-            user_id=user_id,
-            tenant_id=tenant_id,
-        )
+        pattern_key = f"failure:{sig}"[:200]
+        wanted = _observation_shape(text, confidence, ids)
+        if observations.get(pattern_key) != wanted:
+            upsert_episode_observation(
+                EpisodeObservationSpec(
+                    pattern_key=pattern_key,
+                    observation_text=text,
+                    category="procedural",
+                    confidence=confidence,
+                    episode_ids=ids,
+                    replace_episode_evidence=True,
+                ),
+                user_id=user_id,
+                tenant_id=tenant_id,
+            )
+            observations[pattern_key] = wanted
+            result["observations_upserted"] += 1
         content = (
             f"[procedural lesson] Error signature: {label}\n"
             f"Context: {sample_summary}\n"
@@ -935,7 +1034,6 @@ def _distill_failure_group(
             snapshot=snapshot,
         )
         result["failures_distilled"] += 1
-        result["observations_upserted"] += 1
         if changed:
             result["procedural_memories_written"] += 1
         if is_signature:
@@ -959,6 +1057,7 @@ def _distill_success_group(
 ) -> None:
     result = state.result
     snapshot = state.snapshot
+    observations = state.observations
     same_task_failures = state.same_task_failures
     for slug, group in successes.items():
         ids = [ep["id"] for ep in group]
@@ -998,18 +1097,24 @@ def _distill_success_group(
                 f"Succeeded {n} time(s) with average score {avg_score:.2f}; the transcript recorded "
                 f"no repeatable step, so no procedure is claimed.{failure_note}"
             )
-        upsert_episode_observation(
-            EpisodeObservationSpec(
-                pattern_key=f"success:{slug}",
-                observation_text=text,
-                category="procedural",
-                confidence=confidence,
-                episode_ids=list(dict.fromkeys([*ids, *contradicted])),
-                replace_episode_evidence=True,
-            ),
-            user_id=user_id,
-            tenant_id=tenant_id,
-        )
+        pattern_key = f"success:{slug}"
+        evidence_ids = list(dict.fromkeys([*ids, *contradicted]))
+        wanted = _observation_shape(text, confidence, evidence_ids)
+        if observations.get(pattern_key) != wanted:
+            upsert_episode_observation(
+                EpisodeObservationSpec(
+                    pattern_key=pattern_key,
+                    observation_text=text,
+                    category="procedural",
+                    confidence=confidence,
+                    episode_ids=evidence_ids,
+                    replace_episode_evidence=True,
+                ),
+                user_id=user_id,
+                tenant_id=tenant_id,
+            )
+            observations[pattern_key] = wanted
+            result["observations_upserted"] += 1
         _, changed = _upsert_procedural_memory(
             ProceduralMemorySpec(
                 key=f"success:{slug}",
@@ -1022,7 +1127,6 @@ def _distill_success_group(
             snapshot=snapshot,
         )
         result["successes_distilled"] += 1
-        result["observations_upserted"] += 1
         if changed:
             result["procedural_memories_written"] += 1
         if steps:

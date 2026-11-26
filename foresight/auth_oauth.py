@@ -67,6 +67,11 @@ REFRESH_TOKEN_TTL = 30 * 24 * 3600  # seconds
 # Authorization codes: 10 minutes (RFC 6749 recommends max 10 min)
 AUTH_CODE_TTL = 600  # seconds
 
+# Client id of the synthetic access token built from a Foresight API key.
+# Such a token is only as valid as the key row it was derived from, so it is
+# re-validated on every use instead of being trusted from the cache.
+API_KEY_CLIENT_ID: Final[Literal["foresight-api-key"]] = "foresight-api-key"
+
 # RFC 6750 authorization scheme ("Bearer"). Named to avoid bandit's
 # credential-pattern matches (B105/B106) on the string "token".
 OAUTH_SCHEME: Final[Literal["Bearer"]] = "Bearer"
@@ -625,6 +630,12 @@ class ForesightOAuthProvider(OAuthProvider):
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         """Validate a bearer access token. Called on every authenticated MCP request."""
+        # An API-key token is cached like an issued one, but it must not stay
+        # valid after the key is rotated or revoked: drop it and re-validate the
+        # key below so the next request sees the current row.
+        cached = self._access_tokens.get(token)
+        if cached is not None and cached.client_id == API_KEY_CLIENT_ID:
+            self._access_tokens.pop(token, None)
         at = self._access_tokens.get(token)
         if at is None:
             # Issued by a previous process: fall back to the durable store.
@@ -660,7 +671,7 @@ class ForesightOAuthProvider(OAuthProvider):
         # users-table lookup.
         return AccessToken(
             token=token,
-            client_id="foresight-api-key",
+            client_id=API_KEY_CLIENT_ID,
             scopes=[],
             expires_at=None,
             resource=None,

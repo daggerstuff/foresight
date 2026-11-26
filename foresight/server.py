@@ -47,6 +47,7 @@ from .auth import (
     Role,
     _should_require_api_key,
     auth_enforced,
+    caller_is_readonly,
     get_auth_manager,
     get_caller_role,
     get_caller_user_id,
@@ -4117,7 +4118,8 @@ def reflect(
         model = None
     if model is not None and not model.get("stale"):
         if reflect_mod.mental_model_citations_valid(model, user_id=uid, tenant_id=tenant_id):
-            reflect_mod.touch_mental_model(model["id"])
+            if not caller_is_readonly():
+                reflect_mod.touch_mental_model(model["id"])
             payload = {
                 "answer": model["answer"],
                 "citations": model["citations"],
@@ -4136,8 +4138,9 @@ def reflect(
             get_telemetry_store().record_reflect(cached=True, answer_chars=len(model["answer"]), latency_ms=0.0)
             return json.dumps(payload, indent=2, ensure_ascii=False)
         # Citations no longer resolve — drop the stale model and recompute.
-        with contextlib.suppress(Exception):
-            reflect_mod.delete_mental_model(model["id"], user_id=uid, tenant_id=tenant_id)
+        if not caller_is_readonly():
+            with contextlib.suppress(Exception):
+                reflect_mod.delete_mental_model(model["id"], user_id=uid, tenant_id=tenant_id)
 
     try:
         payload = reflect_mod.reflect(
@@ -4150,12 +4153,13 @@ def reflect(
         logger.exception("reflect failed")
         return _tool_error("reflect", str(exc))
 
-    try:
-        payload["mental_model_id"] = reflect_mod.store_mental_model(
-            question, payload, user_id=uid, tenant_id=tenant_id, agent_id=agent_id
-        )
-    except Exception:
-        logger.debug("mental model store failed; serving uncached reflect", exc_info=True)
+    if not caller_is_readonly():
+        try:
+            payload["mental_model_id"] = reflect_mod.store_mental_model(
+                question, payload, user_id=uid, tenant_id=tenant_id, agent_id=agent_id
+            )
+        except Exception:
+            logger.debug("mental model store failed; serving uncached reflect", exc_info=True)
 
     get_telemetry_store().record_reflect(
         cached=False,
@@ -6400,8 +6404,12 @@ def inject_context(
     )
 
     # Reinforce surfaced memories so retrieval strengthens them (closes the
-    # decay loop: decay weakens, retrieval strengthens).
-    if memories:
+    # decay loop: decay weakens, retrieval strengthens). A read-only caller gets
+    # the read without either write, and the capture thread is skipped here
+    # rather than only inside the helper because contextvars do not cross into a
+    # new thread, so the helper could not see the caller's role there.
+    readonly_caller = caller_is_readonly()
+    if memories and not readonly_caller:
         _auto_reinforce_batch([m.memory_id for m in memories], uid, tenant_id)
 
     # Side-effect: silently capture any phrase-triggered or in-flight pattern memories
@@ -6460,6 +6468,8 @@ def _auto_capture_in_flight(
     natural language patterns (fixes, decisions, preferences, tool recipes)
     without waiting for an end-of-session wrapup.
     """
+    if caller_is_readonly():
+        return 0
     stored_count = 0
     # 1. Check explicit phrase triggers if text is provided
     if text:
@@ -7322,6 +7332,8 @@ def _auto_reinforce_batch(memory_ids: list[str], uid: str, tenant_id: str) -> No
 
     Best-effort: failures are logged and swallowed.
     """
+    if caller_is_readonly():
+        return
     if not memory_ids:
         return
     try:
@@ -8457,7 +8469,10 @@ def synthesize_profile(
     max_chars = params.max_chars
     include_buckets = params.include_buckets
 
-    uid = user_id or USER_ID
+    try:
+        uid = _profile_user_for_caller(user_id)
+    except PermissionError as exc:
+        return _tool_error("synthesize_profile", str(exc))
     cfg = ProfileConfig(
         max_static_memories=max_static_memories,
         max_dynamic_memories=max_dynamic_memories,
@@ -8470,6 +8485,20 @@ def synthesize_profile(
         return profile_to_prompt(profile, max_chars=max_chars)
 
     return json.dumps(profile, indent=2, ensure_ascii=False)
+
+
+def _profile_user_for_caller(requested: str | None) -> str:
+    """The profile user this caller may read.
+
+    The profile tools are read surfaces, so a read-only credential reaches
+    them; the user id in the request is not trusted on its own, or a read-only
+    token could synthesize or export any user's profile in the tenant.
+    """
+    uid = requested or USER_ID
+    caller_id = get_caller_user_id()
+    if caller_is_readonly() and caller_id is not None and uid != caller_id:
+        raise PermissionError("a read-only caller may only read its own profile")
+    return uid
 
 
 @mcp.tool(output_schema=None)
@@ -8500,7 +8529,10 @@ def export_profile(
         JSON envelope ``{"document": {...}, "signature": ..., "signature_alg": ...}``
         or a Markdown document with a signature footer.
     """
-    uid = user_id or USER_ID
+    try:
+        uid = _profile_user_for_caller(user_id)
+    except PermissionError as exc:
+        return _tool_error("export_profile", str(exc))
     tenant_id = get_current_account_id()
 
     try:
@@ -9115,6 +9147,16 @@ def traverse_memory_graph(
 INFERRED_LIST_MAX_LIMIT = 50
 
 
+def _review_ns_clause(agent_id: str | None, project: str | None, prefix: str = "") -> tuple[str, list]:
+    """Lane filter for review actions: the caller's lane plus the shared one.
+
+    An omitted lane means the shared lane, never "any lane": passing None to
+    _obs_ns_clause drops the predicate entirely, so a lane-less approve would
+    mutate a skill staged in another agent's or project's lane.
+    """
+    return _obs_ns_clause(agent_id or "default", project or "default", prefix=prefix)
+
+
 def _handle_inferred_list(
     uid: str,
     tenant_id: str,
@@ -9194,7 +9236,7 @@ def _handle_inferred_approve(
 ) -> str:
     """Promote an inferred memory or staged skill to approved status."""
     now = datetime.now(UTC).isoformat()
-    ns_frag, ns_params = _obs_ns_clause(agent_id, project)
+    ns_frag, ns_params = _review_ns_clause(agent_id, project)
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -9239,7 +9281,7 @@ def _handle_inferred_approve(
 def _handle_inferred_decline(scope: UserScope, memory_id: str, reason: str | None) -> str:
     """Soft-forget a rejected inferred memory (recoverable via undo)."""
     now = datetime.now(UTC).isoformat()
-    ns_frag, ns_params = _obs_ns_clause(scope.agent_id, scope.project)
+    ns_frag, ns_params = _review_ns_clause(scope.agent_id, scope.project)
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -9288,7 +9330,7 @@ def _handle_inferred_undo(
 ) -> str:
     """Reverse approve/decline and return the memory to the review queue."""
     now = datetime.now(UTC).isoformat()
-    ns_frag, ns_params = _obs_ns_clause(agent_id, project)
+    ns_frag, ns_params = _review_ns_clause(agent_id, project)
     conn = get_db_connection()
     try:
         row = conn.execute(

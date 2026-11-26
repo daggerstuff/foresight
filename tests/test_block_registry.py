@@ -11,6 +11,7 @@ from foresight.block_registry import (
     MemoryBlockSchema,
     MergeStrategy,
     RetentionPolicy,
+    RuleEntry,
     get_registry,
     initialize_default_blocks,
 )
@@ -163,3 +164,17 @@ def test_initialize_default_blocks():
     registry2 = initialize_default_blocks()
     assert registry is registry2
     assert len(registry.list_schemas()) == len(DEFAULT_BLOCK_SCHEMAS)
+
+
+def test_a_language_clause_does_not_match_a_longer_language_name():
+    """An applies_when of 'c' must not fire on a c++ or c# context."""
+    rule = RuleEntry(statement="prefer the system compiler", applies_when="c")
+    assert rule.matches("build the c library") is True
+    assert rule.matches("build the c++ extension") is False
+    assert rule.matches("build the c# assembly") is False
+
+
+def test_a_language_clause_still_matches_itself():
+    """Word-bounding must not over-suppress a plus- or hash-suffixed clause."""
+    rule = RuleEntry(statement="use the c++ toolchain", applies_when="c++")
+    assert rule.matches("build the c++ extension") is True

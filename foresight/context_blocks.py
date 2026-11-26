@@ -360,8 +360,11 @@ _MUST_RE = re.compile(r"\bmust\b", re.IGNORECASE)
 _SHOULD_RE = re.compile(r"\b(?:should|prefer|recommended|consider)\b", re.IGNORECASE)
 # Sentences and semicolons delimit independent statements; commas do not.
 # "You should, where possible, never deploy" is one recommendation, while
-# "Never deploy X. Consider Y." is a prohibition followed by advice.
-_STRENGTH_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:[.!?;]|\n)\s*")
+# "Never deploy X. Consider Y." is a prohibition followed by advice. A dot only
+# ends a sentence when whitespace or the end of the text follows, so a host
+# ("api.example.com") or a version ("3.11") stays inside one clause instead of
+# separating the "should" that governs it from the "never" it governs.
+_STRENGTH_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:[!?;]|\n|\.(?=\s|$))\s*")
 
 
 @dataclass(frozen=True)
@@ -462,12 +465,18 @@ def _clause_strength(text: str) -> RuleStrength | None:
     """Strength carried by one clause, or None when it states none.
 
     "should never" is a weak recommendation, not a prohibition, but only when
-    the should comes first: a clause that opens with "never" is a prohibition
-    even if it later mentions what someone should consider.
+    that should governs the never. A clause that already said "must" ("you must
+    run the suite, and you should never skip it") states an obligation, and one
+    that opens with "never" is a prohibition even if it later mentions what
+    someone should consider.
     """
     should = _SHOULD_RE.search(text)
     must_not = _MUST_NOT_RE.search(text)
-    if should is not None and (must_not is None or should.start() < must_not.start()):
+    if (
+        should is not None
+        and (must_not is None or should.start() < must_not.start())
+        and _MUST_RE.search(text[: should.start()]) is None
+    ):
         return RuleStrength.SHOULD
     if must_not is not None:
         return RuleStrength.MUST_NOT

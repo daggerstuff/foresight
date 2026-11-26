@@ -78,6 +78,12 @@ class AuthError(Exception):
 
 _VALID_TENANT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
+# Seconds between last_login writes for a key-authenticated request. The key
+# is revalidated per call so revocation is immediate, but the write does not
+# have to be: a per-request UPDATE + commit turned every API-key read into a
+# transaction on the user's row.
+_API_KEY_LOGIN_INTERVAL_SECONDS = 300
+
 
 def _utcnow() -> datetime:
     """Return a timezone-aware UTC timestamp."""
@@ -395,14 +401,18 @@ class AuthManager:
             api_key = row["api_key"]
             tenant_access_json = row["tenant_access"]
 
-            # Update last login
-            conn.execute(
-                """
+            # Record the login, but not on every request: the key itself is
+            # revalidated above, so a revoked key stops working immediately.
+            now = _utcnow()
+            last_seen = _parse_db_timestamp(last_login_str)
+            if last_seen is None or (now - last_seen).total_seconds() >= _API_KEY_LOGIN_INTERVAL_SECONDS:
+                conn.execute(
+                    """
                 UPDATE users SET last_login = ? WHERE user_id = ?
             """,
-                (_utcnow().isoformat(), user_id),
-            )
-            conn.commit()
+                    (now.isoformat(), user_id),
+                )
+                conn.commit()
 
             return User(
                 user_id=user_id,
@@ -705,6 +715,16 @@ def get_caller_role() -> Role | None:
     return user.role if user is not None else None
 
 
+def caller_is_readonly() -> bool:
+    """Return True when the bound caller is a read-only principal.
+
+    Read tools that also write - ``inject_context`` reinforcing the memories it
+    surfaced, ``reflect`` touching the mental models it answers from - consult
+    this so a read-only credential gets the read without the side effect.
+    """
+    return get_caller_role() is Role.READONLY
+
+
 def auth_enforced() -> bool:
     """Return True when the server requires an authenticated principal.
 
@@ -735,6 +755,39 @@ READONLY_TOOLS = frozenset(
     }
 )
 
+# Tools that mix reads and writes. A read-only principal may call the actions
+# listed here and nothing else: an unlisted or unparsable action is refused, so
+# a mixed tool's read half is the only thing a read-only key ever gets.
+READONLY_ACTIONS: dict[str, frozenset[str]] = {
+    "manage_context_blocks": frozenset({"list", "get"}),
+    "manage_memory_versions": frozenset({"list", "diff"}),
+    "manage_curation_runs": frozenset({"list", "get"}),
+    "manage_mental_models": frozenset({"list"}),
+    "manage_inferred": frozenset({"list"}),
+}
+
+
+def _message_action(message: object | None) -> str | None:
+    """Return the ``action`` a tool call asked for, from either arguments shape.
+
+    Schema-shaped tools take one ``params`` model, so their action arrives as
+    ``arguments["params"]["action"]``; a handler that takes ``action`` directly
+    leaves it at the top level. Both are read so the policy cannot be sidestepped
+    by nesting the request one level deeper.
+    """
+    arguments = getattr(message, "arguments", None)
+    if not isinstance(arguments, dict):
+        return None
+    action = arguments.get("action")
+    if isinstance(action, str):
+        return action
+    params = arguments.get("params")
+    if isinstance(params, dict):
+        nested = params.get("action")
+        if isinstance(nested, str):
+            return nested
+    return None
+
 
 def readonly_denial(message: object | None) -> str | None:
     """Return the refusal for a read-only caller, or None when the request may run.
@@ -742,11 +795,18 @@ def readonly_denial(message: object | None) -> str | None:
     ``Role.READONLY`` was granted nowhere and enforced nowhere. The rule lives
     here so the API-key middleware and the OAuth one refuse the same requests;
     a message without a tool ``name`` is a resource read and stays allowed.
+
+    A tool that mixes reads with writes is decided by the action the call asked
+    for, because refusing the whole tool cost the read as well: listing context
+    blocks is not rewriting them. An absent or unlisted action stays refused.
     """
-    if get_caller_role() is not Role.READONLY:
+    if not caller_is_readonly():
         return None
     name = getattr(message, "name", None)
     if not isinstance(name, str) or name in READONLY_TOOLS:
+        return None
+    read_actions = READONLY_ACTIONS.get(name)
+    if read_actions is not None and _message_action(message) in read_actions:
         return None
     return f"Read-only credentials cannot call '{name}'."
 

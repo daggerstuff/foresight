@@ -26,7 +26,13 @@ from foresight.eval_harness import (
     run_eval,
     scan_for_pii,
 )
-from foresight.tenant_context import get_current_user_id
+from foresight.tenant_context import (
+    get_current_account_id,
+    get_current_user_id,
+    reset_tenant_context,
+    set_current_account_id,
+    set_current_user_id,
+)
 from foresight_cli.commands import eval as eval_cmd
 
 # seed_fixtures is the floor every scenario relies on; more is fine, less is a
@@ -773,3 +779,29 @@ class TestHarnessTeardown:
         assert restored_db_path == original_db_path
         assert harness._monkeypatches == []
         assert harness._patches_applied is False
+
+    def test_a_failed_setup_rollback_keeps_the_callers_scope(self, monkeypatch, tmp_path):
+        harness = EvalHarness(db_path=str(tmp_path / "scope.db"))
+        set_current_user_id("caller-user")
+        set_current_account_id("caller-account")
+
+        attempts = {"count": 0}
+        real_set_current_account_id = eval_harness_module.set_current_account_id
+
+        def _interrupt_once(tenant_id: str) -> None:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("setup interrupted")
+            real_set_current_account_id(tenant_id)
+
+        monkeypatch.setattr(eval_harness_module, "set_current_account_id", _interrupt_once)
+
+        try:
+            with pytest.raises(RuntimeError, match="setup interrupted"):
+                harness.seed_fixtures()
+            assert get_current_user_id() == "caller-user"
+            assert get_current_account_id() == "caller-account"
+        finally:
+            harness.close()
+            monkeypatch.undo()
+            reset_tenant_context()

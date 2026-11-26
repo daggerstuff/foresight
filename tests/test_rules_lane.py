@@ -516,3 +516,44 @@ def test_graduation_stays_inside_the_observations_lane() -> None:
             tenant_id=TENANT,
             options=RuleGraduateOptions(agent_id="agent-a", project="proj-a"),
         )
+
+
+def test_bare_qualifier_stays_off_punctuated_language_names():
+    conditioned = RuleEntry(statement="Keep the C toolchain small", applies_when="c")
+    assert conditioned.matches("build a c++ service") is False
+    assert conditioned.matches("build a c# service") is False
+    assert conditioned.matches("write the c helper") is True
+
+    guarded = RuleEntry(statement="Keep the C build green", applies_when="deploy", exception="c")
+    assert guarded.matches("deploy the c# tooling") is True
+    assert guarded.matches("deploy the c tooling") is False
+
+
+def test_strength_keeps_a_hostname_and_a_version_inside_their_clause():
+    """A dot inside "api.example.com" or "3.11" is not a sentence break."""
+    hostname = {
+        "id": "obs_hostname",
+        "observation_text": "You should configure api.example.com to never accept plaintext connections.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(hostname).strength == RuleStrength.SHOULD
+
+    version = {
+        "id": "obs_version",
+        "observation_text": "Upgrade to python 3.11 and you should never pin the patch version.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(version).strength == RuleStrength.SHOULD
+
+
+def test_comma_joined_must_before_a_should_stays_must():
+    """Commas do not split statements, and the earlier "must" governs the clause."""
+    combined = {
+        "id": "obs_comma_must",
+        "observation_text": "You must run the smoke tests, and should run the full suite when time allows.",
+        "category": "procedural",
+        "memory_type": "procedural",
+    }
+    assert compile_experience_to_rule(combined).strength == RuleStrength.MUST

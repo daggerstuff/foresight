@@ -25,6 +25,25 @@ def test_identical_errors_on_different_hosts_share_one_signature():
     assert prod == stage
 
 
+def test_dotted_relation_names_keep_distinct_signatures():
+    # "database.schema" / "service.schema" are qualified identifiers, not
+    # hosts: collapsing both to <host> merged two unrelated failures.
+    database = normalize_error_signature("ProgrammingError: relation database.schema does not exist")
+    service = normalize_error_signature("ProgrammingError: relation service.schema does not exist")
+    assert database is not None
+    assert service is not None
+    assert database != service
+
+
+def test_host_shaped_identifiers_still_normalize_away():
+    from_url = normalize_error_signature("HTTPError: POST https://api.prod.internal/v1/run failed")
+    from_userinfo = normalize_error_signature("HTTPError: POST https://ops@api.stage.internal/v1/run failed")
+    assert from_url is not None
+    assert from_userinfo is not None
+    assert "<host>" in from_url
+    assert "<host>" in from_userinfo
+
+
 def test_camel_case_exception_wins_over_an_incidental_keyword():
     signature = normalize_error_signature("the timeout: see notes\nValueError: bad input")
     assert signature is not None

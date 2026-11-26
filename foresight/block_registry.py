@@ -75,7 +75,7 @@ def _clause_matches(clause: str, context_lower: str, term_set: set[str]) -> bool
         return False
     # Word-bounded: a plain substring test lets "ci" match "decision" and
     # "merge" match "merger", which both triggers and suppresses rules wrongly.
-    if re.search(rf"(?<![a-z0-9_]){re.escape(norm)}(?![a-z0-9_])", context_lower):
+    if re.search(rf"(?<![a-z0-9_+#]){re.escape(norm)}(?![a-z0-9_+#])", context_lower):
         return True
     tokens = _TOKEN_RE.findall(norm)
     if not tokens:

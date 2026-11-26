@@ -55,10 +55,12 @@ from .server import (
 )
 from .temporal_queries import TemporalFilters, TemporalQueryBuilder
 from .tenant_context import (
-    get_current_account_id,
-    get_current_user_id,
+    MemoryScope,
+    get_current_scope,
     reset_tenant_context,
     set_current_account_id,
+    set_current_app_id,
+    set_current_integration_id,
     set_current_user_id,
 )
 
@@ -695,8 +697,7 @@ class EvalHarness:
         # patches applied (and tenant context set) with the flag still False,
         # so cleanup has to key off "setup was attempted", not "setup finished".
         self._setup_started: bool = False
-        # The caller's tenant scope captured at install, restored on rollback.
-        self._caller_scope: tuple[str, str] | None = None
+        self._scope_backup: MemoryScope | None = None
         # Expected memory ids that only exist after seeding (S12/S13).
         # They live on the harness, not on the module-global SCENARIOS
         # list, so a second harness or a caller iterating SCENARIOS never
@@ -796,9 +797,8 @@ class EvalHarness:
             target.DB_PATH = self.db_path
             self._monkeypatches.append((mod, "DB_PATH", orig))
 
-        # Set tenant context, remembering the caller's so a rollback restores
-        # it instead of wiping the identity the middleware bound.
-        self._caller_scope = (get_current_user_id(), get_current_account_id())
+        # Set tenant context
+        self._scope_backup = get_current_scope()
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
         self._patches_applied = True
@@ -846,13 +846,19 @@ class EvalHarness:
             setattr(module, attr, orig)
         self._monkeypatches.clear()
 
-        caller_scope = getattr(self, "_caller_scope", None)
-        if caller_scope is not None:
-            set_current_user_id(caller_scope[0])
-            set_current_account_id(caller_scope[1])
-            self._caller_scope = None
-        else:
+        self._restore_scope()
+
+    def _restore_scope(self) -> None:
+        """Put the caller's identity back, leaving fresh processes at defaults."""
+        scope = self._scope_backup
+        self._scope_backup = None
+        if scope is None:
             reset_tenant_context()
+            return
+        set_current_user_id(scope.user_id)
+        set_current_account_id(scope.account_id)
+        set_current_app_id(scope.app_id)
+        set_current_integration_id(scope.integration_id)
 
     def seed_fixtures(self) -> int:
         """Seed fixture memories into the database. Returns count of memories inserted."""

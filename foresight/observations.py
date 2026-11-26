@@ -340,6 +340,10 @@ def _upsert_observation(
 
     memory_type = candidate.get("memory_type") or "semantic"
     current = existing
+    # The episode ids the caller's verdict scan could see. A replacement run
+    # that loses a version race must not drop what another writer recorded
+    # after the scan began, because the scan never judged those ids.
+    scan_base_episodes = set(existing.get("supporting_episode_ids", []))
     for _attempt in range(5):
         prior_memory_type = current.get("memory_type") or "semantic"
         new_memory_type = (
@@ -347,13 +351,16 @@ def _upsert_observation(
         )
         merged_ids = list(dict.fromkeys(current["supporting_memory_ids"] + candidate["supporting_memory_ids"]))
         if candidate.get("replace_episode_evidence"):
-            merged_episodes = supporting_episode_ids
+            unseen = [eid for eid in current.get("supporting_episode_ids", []) if eid not in scan_base_episodes]
+            merged_episodes = list(dict.fromkeys(supporting_episode_ids + unseen))
         else:
             merged_episodes = list(dict.fromkeys(current.get("supporting_episode_ids", []) + supporting_episode_ids))
         new_category = candidate.get("category") or current.get("category")
+        new_confidence = max(float(current.get("confidence") or 0.0), float(candidate["confidence"]))
         if (
             candidate["observation_text"] == current.get("observation_text")
             and new_category == current.get("category")
+            and new_confidence == float(current.get("confidence") or 0.0)
             and merged_ids == current["supporting_memory_ids"]
             and merged_episodes == current.get("supporting_episode_ids", [])
             and new_memory_type == prior_memory_type
@@ -363,7 +370,6 @@ def _upsert_observation(
         ):
             return current
 
-        new_confidence = max(current["confidence"], float(candidate["confidence"]))
         now = _now_iso()
         conn = _connect()
         try:

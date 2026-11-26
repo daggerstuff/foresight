@@ -23,6 +23,7 @@ from foresight.capture import CaptureOptions, get_capture_pipeline
 from foresight.experience import (
     EpisodeVerdict,
     _procedure_steps,
+    _strip_result_lines,
     auto_score_episode,
     build_episode,
     distill_experiences,
@@ -383,6 +384,45 @@ def test_new_evidence_on_a_known_lesson_is_reported_as_a_write():
 
     updated = distill_experiences(user_id=USER, tenant_id=TENANT)
     assert updated["procedural_memories_written"] == 1
+
+
+def test_a_capture_writes_only_the_group_its_episode_joined():
+    """A new episode rewrites its own group, and untouched groups keep their evidence."""
+    failing_markers = ("touch-a", "touch-b")
+    for marker in failing_markers:
+        _distill_failing_episode(marker)
+    ok_session = _session_id()
+    _episode_for(ok_session, _success_transcript("touch-ok"))
+    record_outcome(USER, TENANT, EpisodeVerdict(outcome="success", score_source="ci_result", session_id=ok_session))
+
+    first = distill_experiences(user_id=USER, tenant_id=TENANT)
+    expected_groups = 2  # the shared failure pattern and the success pattern
+    assert first["observations_upserted"] == expected_groups
+
+    untouched_sql = (
+        "SELECT id, version, supporting_episode_ids FROM observations "
+        "WHERE tenant_id = ? AND user_id = ? AND pattern_key LIKE ?"
+    )
+    untouched_before = _fetch_all(untouched_sql, (TENANT, USER, "success:%"))
+    assert len(untouched_before) == 1
+
+    third = _distill_failing_episode("touch-c")
+    updated = distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    assert updated["observations_upserted"] == 1, "a capture rewrote a group its episode never joined"
+    assert updated["failures_distilled"] == 1
+
+    assert _fetch_all(untouched_sql, (TENANT, USER, "success:%")) == untouched_before
+
+    changed = _fetch_all(
+        "SELECT supporting_episode_ids FROM observations WHERE tenant_id = ? AND user_id = ? AND pattern_key LIKE ?",
+        (TENANT, USER, "failure:%"),
+    )
+    assert len(changed) == 1
+    evidence = json.loads(changed[0]["supporting_episode_ids"] or "[]")
+    episodes_in_group = len(failing_markers) + 1  # the third failing episode joined it
+    assert len(evidence) == episodes_in_group
+    assert third["id"] in evidence
 
 
 def test_rebuilding_an_episode_never_clears_sensitivity():
@@ -925,3 +965,55 @@ def test_exact_signature_matches_rank_ahead_of_class_matches():
     )
 
     assert exact in ranked, "the exact normalized-message match must survive the candidate limit"
+
+
+def test_recipe_steps_keep_only_the_line_that_explains_the_work():
+    """A run report is evidence of the outcome, not a step of the procedure."""
+    transcript = "52 passed in 3.1s\nexit code 0\nRan the migrations against staging"
+    assert _strip_result_lines(transcript) == "Ran the migrations against staging"
+
+    # The same report can arrive joined onto one line, and its later clauses are
+    # still a report: counting "exit code 0" as explanation words stored it.
+    assert _strip_result_lines("52 passed in 3.1s, exit code 0") == ""
+    assert _strip_result_lines("pytest -q\n52 passed, exit code 0") == "pytest -q"
+
+    # A line that reports the run and then explains the work survives whole.
+    keeps = "Tests passed. Then I bumped the lockfile and re-ran the install"
+    assert _strip_result_lines(keeps) == keeps
+
+
+def test_ghosted_lesson_still_retires_its_observation_when_the_group_empties():
+    """A ghosted memory still names its key: its observation must be archived too."""
+    session_id = _session_id()
+    _episode_for(session_id, _failure_transcript())
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(
+            outcome="failure",
+            score_source="ci_result",
+            detail="ConnectionRefusedError: connection refused",
+            session_id=session_id,
+        ),
+    )
+    first = distill_experiences(user_id=USER, tenant_id=TENANT)
+    assert first["procedural_memories_written"] >= 1
+
+    # Maintenance ghosts the lesson without touching its observation.
+    _execute("UPDATE memories SET is_ghost = 1 WHERE tenant_id = ? AND user_id = ?", (TENANT, USER))
+
+    record_outcome(
+        USER,
+        TENANT,
+        EpisodeVerdict(outcome="unknown", score_source="ci_result", session_id=session_id),
+    )
+    retired = distill_experiences(user_id=USER, tenant_id=TENANT)
+
+    # Nothing was left to ghost, so the archive below can only come from the
+    # observation path having seen the key on the ghosted row.
+    assert retired["groups_retired"] == 0
+    left = _fetch_all(
+        "SELECT id, pattern_key, status FROM observations WHERE tenant_id = ? AND user_id = ? AND status <> 'archived'",
+        (TENANT, USER),
+    )
+    assert not any(str(row["pattern_key"]).startswith("failure:") for row in left), left
