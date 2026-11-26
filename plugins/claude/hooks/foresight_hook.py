@@ -3,6 +3,7 @@
 
 import hashlib
 import http.client
+import importlib
 import json
 import math
 import os
@@ -12,6 +13,26 @@ import time
 import urllib.parse
 from contextlib import suppress
 from typing import Any
+
+
+def _load_plugin_sdk():
+    """Import the shared Foresight plugin SDK (FOR-69).
+
+    Installed layout: install.sh copies foresight_plugin_sdk.py next to this
+    hook. Repo layout: plugins/sdk/python/. Missing SDK must never break the
+    host session — callers fall back to the inline implementations below.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (here, os.path.join(here, "..", "..", "sdk", "python")):
+        if os.path.isdir(candidate) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+    return importlib.import_module("foresight_plugin_sdk")
+
+
+try:
+    _sdk = _load_plugin_sdk()
+except Exception:
+    _sdk = None
 
 FORESIGHT_URL = os.environ.get("FORESIGHT_MCP_URL") or "http://127.0.0.1:8764"
 DEFAULT_SESSION_ID = "claude-session"
@@ -171,6 +192,9 @@ POSTCOMPACT_DIRECTIVES = (
 
 
 def _load_credentials():
+    if _sdk is not None:
+        CREDS.update(_sdk.load_env_file(CREDS_PATH))
+        return
     with suppress(Exception), open(CREDS_PATH, encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -187,6 +211,13 @@ def _parse_json(raw: str) -> Any:
 
 
 def _headers():
+    if _sdk is not None:
+        credentials = _sdk.Credentials(
+            base_url=FORESIGHT_URL,
+            api_key=API_KEY,
+            identity=_IDENTITY,
+        )
+        return _sdk.auth_headers(credentials)
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
@@ -196,6 +227,9 @@ def _headers():
 
 
 def _post(url, payload, timeout):
+    if _sdk is not None:
+        status, _raw = _sdk.post_json(url, payload, headers=_headers(), timeout=timeout)
+        return status, _raw
     parts = urllib.parse.urlsplit(url)
     target = parts.path or "/"
     if parts.query:
@@ -731,6 +765,8 @@ def _resolve_action(argv: list[str] | None) -> str:
 
 def _read_hook_input(stdin_text: str | None) -> dict[str, Any]:
     """Read and parse json from stdin if available."""
+    if _sdk is not None:
+        return _sdk.read_hook_input(stdin_text)
     text_in = stdin_text or ""
     if stdin_text is None:
         with suppress(Exception):

@@ -56,6 +56,28 @@ uv run python -m foresight.plugin_manifest plugins/
 - Tenant/user isolation is enforced server-side via contextvars; plugins must
   not pass tenant ids as loose arguments.
 
+## Shared SDKs
+
+Plugins should not hand-roll HTTP, credential loading, or hook payload
+parsing — use the shared SDKs in `plugins/sdk/`:
+
+- **`sdk/python/foresight_plugin_sdk.py`** — single-file stdlib SDK for
+  Python hooks/providers. Installers copy it next to the hook (see
+  `plugins/claude/install.sh`); hooks import it as a sibling with inline
+  fallbacks. API + fail-safe contract: `sdk/python/README.md`.
+- **`sdk/typescript/`** (`@foresight/plugin-sdk`) — TS SDK for JS/TS plugin
+  targets; ships raw `.ts` like the MastraCode plugin. API + fail-safe
+  contract: `sdk/typescript/README.md`.
+
+Both resolve server discovery (`FORESIGHT_MCP_URL` → `FORESIGHT_URL` →
+`http://127.0.0.1:8764`), credentials (`~/.config/foresight/credentials.env`,
+mode 600, env-first precedence), and auth headers (Bearer + `X-User-Id`
+lane). All high-level helpers are fail-safe: an unreachable server must
+never break the host agent session.
+
+Current consumers: `plugins/claude/hooks/foresight_hook.py` (Python) and
+`plugins/mastracode/src/client.ts` (TypeScript re-export shim).
+
 ## Capability matrix
 
 Status: ✅ native plugin · 🔌 MCP/REST wiring only · 📋 planned (P-FOR-58) ·

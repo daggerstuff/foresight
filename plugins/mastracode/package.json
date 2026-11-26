@@ -9,7 +9,8 @@
     "check": "tsc --noEmit"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@types/node": "^22.20.5"
   },
   "peerDependencies": {
     "mastracode": "*"
