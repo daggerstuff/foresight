@@ -164,3 +164,13 @@ def test_errors_survive_agent_mode(capsys, monkeypatch):
     out.error("Approved skill 'x' not found")
 
     assert "[ERROR] Approved skill 'x' not found" in capsys.readouterr().err
+
+
+def test_error_prints_bracketed_text_literally_in_agent_mode(capsys, monkeypatch):
+    # Rich parses a plain string as markup, so a diagnostic carrying "[/]"
+    # raised MarkupError and the error line never reached the agent at all.
+    monkeypatch.setattr(out, "_settings", out.OutputSettings(mode="agent"))
+
+    out.error("approval failed for [/] reason")
+
+    assert "[ERROR] approval failed for [/] reason" in capsys.readouterr().err

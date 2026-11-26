@@ -740,3 +740,36 @@ class TestHarnessTeardown:
         assert get_current_user_id() == before_user
         assert harness._patches_applied is False
         assert harness._monkeypatches == []
+
+    def test_a_retry_after_a_failed_setup_does_not_inherit_partial_state(self, monkeypatch, tmp_path):
+        harness = EvalHarness(db_path=str(tmp_path / "retry.db"))
+        original_db_path = eval_harness_module.config_module.DB_PATH
+
+        attempts = {"count": 0}
+        real_set_current_account_id = eval_harness_module.set_current_account_id
+
+        def _interrupt_once(tenant_id: str) -> None:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("setup interrupted")
+            real_set_current_account_id(tenant_id)
+
+        monkeypatch.setattr(eval_harness_module, "set_current_account_id", _interrupt_once)
+
+        try:
+            with pytest.raises(RuntimeError, match="setup interrupted"):
+                harness.seed_fixtures()
+
+            restored_db_path = eval_harness_module.config_module.DB_PATH
+            assert restored_db_path == original_db_path
+            assert harness._monkeypatches == []
+            assert harness._patches_applied is False
+
+            assert harness.seed_fixtures() > 0
+        finally:
+            harness.close()
+
+        restored_db_path = eval_harness_module.config_module.DB_PATH
+        assert restored_db_path == original_db_path
+        assert harness._monkeypatches == []
+        assert harness._patches_applied is False

@@ -9020,18 +9020,17 @@ def link_memories(
         )
     except MemoryRelationshipError as exc:
         return f"Error: {exc}"
-    if relationship_type in ("updates", "contradicts") and _relationship_source_is_live(
-        source_memory_id, user_id=uid, tenant_id=get_current_account_id()
-    ):
+    if relationship_type in ("updates", "contradicts"):
         try:
-            _retire_skills_for_superseded_evidence(
-                [target_memory_id],
-                user_id=uid,
-                tenant_id=get_current_account_id(),
-                reason=f"memory {target_memory_id} {relationship_type} by {source_memory_id}",
-            )
+            if _relationship_source_is_live(source_memory_id, user_id=uid, tenant_id=get_current_account_id()):
+                _retire_skills_for_superseded_evidence(
+                    [target_memory_id],
+                    user_id=uid,
+                    tenant_id=get_current_account_id(),
+                    reason=f"memory {target_memory_id} {relationship_type} by {source_memory_id}",
+                )
         except Exception as exc:
-            logger.debug("skill retirement on link_memories failed: %s", exc)
+            logger.debug("best-effort post-link work failed: %s", exc)
     return json.dumps(rel.to_dict(), indent=2)
 
 
@@ -9250,6 +9249,13 @@ def _handle_inferred_decline(scope: UserScope, memory_id: str, reason: str | Non
         ).fetchone()
         if row is None:
             return _tool_error("decline", f"memory {memory_id} not found.", memory_id=memory_id)
+        if row["review_status"] == _SKILL_REVIEW_RETIRED:
+            return _tool_error(
+                "decline",
+                f"skill {memory_id} is retired; re-crystallize from fresh evidence instead.",
+                memory_id=memory_id,
+                status="retired",
+            )
         if row["review_status"] == "declined" and row["is_ghost"] == 1:
             return _tool_response(
                 ok=True, action="decline", memory_id=memory_id, already_applied=True, status="declined"

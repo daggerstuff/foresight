@@ -361,6 +361,29 @@ class TestInferredDecline:
         # declined memories leave the queue
         assert _list_items()["count"] == 0
 
+    def test_decline_refuses_a_retired_skill(self):
+        conn = _pg()
+        try:
+            _insert_memory(
+                conn,
+                "inf_retired",
+                "staged skill whose evidence was superseded",
+                _MemoryRow(review_status="retired", review_reason="evidence superseded"),
+            )
+        finally:
+            conn.close()
+
+        res = json.loads(_tool("decline", user_id=UID, memory_id="inf_retired"))
+
+        assert res["ok"] is False
+        assert res["status"] == "retired"
+        assert "retired" in res["error"]["message"]
+        conn = _pg()
+        try:
+            assert _state(conn, "inf_retired")["review_status"] == "retired"
+        finally:
+            conn.close()
+
     def test_decline_is_idempotent(self):
         conn = _pg()
         try:

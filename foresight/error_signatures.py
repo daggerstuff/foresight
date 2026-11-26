@@ -22,7 +22,7 @@ _DETAIL_STOP_RE = re.compile(r"\s+\|\s+|;\s+|(?<=[.!?])\s+")
 # Exception-shaped syntax only: a CamelCase exception name (optionally package
 # qualified) or a bare keyword, always followed by a colon. A filename such as
 # ``test_timeout.py`` or incidental prose therefore never becomes a signature.
-_EXCEPTION_RE = re.compile(rf"(?<![\w./\-])({_EXCEPTION_NAME})\b\s*:\s*([^\n]{{0,160}})")
+_EXCEPTION_RE = re.compile(rf"(?<![\w./\-])({_EXCEPTION_NAME})\b[ \t]*:[ \t]*([^\n]{{0,160}})")
 _TEST_FAILURE_RE = re.compile(r"\bFAILED\b[:\s]+([^\n]{0,140})", re.IGNORECASE)
 _EXIT_CODE_RE = re.compile(r"exit(?:ed)?(?: with)?(?: code| status)[:=\s]+([1-9]\d*)\b", re.IGNORECASE)
 

@@ -465,6 +465,17 @@ def test_single_character_clause_token_must_be_present():
     assert rule.matches("python 2.7 toolchain") is False
 
 
+def test_qualifier_matching_keeps_punctuation_significant_terms_apart():
+    """Dropping punctuation folded "C++" and "C#" into a bare "c" token."""
+    conditioned = RuleEntry(statement="Free the buffer before returning", applies_when="C++")
+    assert conditioned.matches("build a C++ service") is True
+    assert conditioned.matches("build a C# service") is False
+
+    guarded = RuleEntry(statement="Keep the C++ build green", applies_when="deploy", exception="C++")
+    assert guarded.matches("deploy the C# service") is True
+    assert guarded.matches("deploy the C++ service") is False
+
+
 def test_graduation_stays_inside_the_observations_lane() -> None:
     laned = _upsert_observation(
         {

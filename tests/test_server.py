@@ -2497,3 +2497,66 @@ def test_process_session_transcript_infer_false_stores_verbatim():
     assert "user:" in row["content"]
     metrics = json.loads(row["metrics"]) if row["metrics"] else {}
     assert metrics.get("capture_instructions") == "focus on greetings"
+
+
+def test_link_memories_survives_a_failed_liveness_read(monkeypatch):
+    """Retirement is best effort, so a failed liveness read must not hide a stored link."""
+
+    class _StoredRelationship:
+        def to_dict(self) -> dict[str, object]:
+            return {"id": "rel-1", "source_memory_id": "mem-a", "target_memory_id": "mem-b"}
+
+    class _Store:
+        def link_memories(self, **_kwargs: object) -> _StoredRelationship:
+            return _StoredRelationship()
+
+    def _boom(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("relationship store is unavailable")
+
+    monkeypatch.setattr(server_module, "get_memory_relationship_store", _Store)
+    monkeypatch.setattr(server_module, "_relationship_source_is_live", _boom)
+
+    payload = json.loads(
+        server_module.link_memories(
+            server_module.LinkMemoriesParams(
+                source_memory_id="mem-a",
+                target_memory_id="mem-b",
+                relationship_type="updates",
+            )
+        )
+    )
+
+    assert payload["id"] == "rel-1"
+
+
+def test_link_memories_leaves_retirement_alone_when_the_source_is_gone(monkeypatch):
+    retired: list[list[str]] = []
+
+    class _StoredRelationship:
+        def to_dict(self) -> dict[str, object]:
+            return {"id": "rel-2"}
+
+    class _Store:
+        def link_memories(self, **_kwargs: object) -> _StoredRelationship:
+            return _StoredRelationship()
+
+    monkeypatch.setattr(server_module, "get_memory_relationship_store", _Store)
+    monkeypatch.setattr(server_module, "_relationship_source_is_live", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        server_module,
+        "_retire_skills_for_superseded_evidence",
+        lambda ids, **_kwargs: retired.append(ids),
+    )
+
+    payload = json.loads(
+        server_module.link_memories(
+            server_module.LinkMemoriesParams(
+                source_memory_id="mem-a",
+                target_memory_id="mem-b",
+                relationship_type="contradicts",
+            )
+        )
+    )
+
+    assert payload["id"] == "rel-2"
+    assert retired == []

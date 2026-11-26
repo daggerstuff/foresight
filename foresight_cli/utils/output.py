@@ -146,7 +146,7 @@ def error(*args: Any, sep: str = " ") -> None:
     """
     text = sep.join(str(a) for a in args)
     if _settings.mode == "agent":
-        _stderr_console().print(_agent_line("error", text))
+        _stderr_console().print(Text(_agent_line("error", text)))
         return
     _stderr_console().print(Text(text, style="bold red"))
 

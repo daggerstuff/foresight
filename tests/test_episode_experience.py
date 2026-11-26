@@ -470,15 +470,18 @@ def test_distiller_invalidates_the_retriever_once_per_run(monkeypatch):
         "SELECT session_id FROM episodes WHERE tenant_id = ? AND user_id = ? AND outcome = 'failure'",
         (TENANT, USER),
     ):
+        # An inconclusive re-score retires the group without forming a new
+        # success group, so the flush below can only come from a retirement.
         record_outcome(
             USER,
             TENANT,
-            EpisodeVerdict(outcome="success", score_source="ci_result", session_id=str(session["session_id"])),
+            EpisodeVerdict(outcome="unknown", score_source="ci_result", session_id=str(session["session_id"])),
         )
 
     retired_run = distill_experiences(user_id=USER, tenant_id=TENANT)
 
     assert retired_run["groups_retired"] >= 1
+    assert retired_run["procedural_memories_written"] == 0
     assert calls == [(USER, TENANT)]
 
 

@@ -66,7 +66,7 @@ _ALWAYS_APPLIES = frozenset({"", "*", "always", "any"})
 _CLAUSE_SPLIT_RE = re.compile(r"\s*(?:,|;|\||\bor\b)\s*", re.IGNORECASE)
 # One-character tokens are kept: dropping them let "python 3" match a
 # Python 2 context, because only the remaining token had to be present.
-_TOKEN_RE = re.compile(r"[a-z0-9_]+")
+_TOKEN_RE = re.compile(r"[a-z0-9_+#]+(?:\.[a-z0-9_+#]+)*")
 
 
 def _clause_matches(clause: str, context_lower: str, term_set: set[str]) -> bool:

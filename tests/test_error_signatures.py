@@ -42,3 +42,10 @@ def test_class_prefix_is_escaped_for_like_matching():
     assert error_signature_like_prefix("value_error%!") == "value!_error!%!!: %"
     assert error_class_signature("valueerror: bad input") == "valueerror"
     assert error_class_signature(None) is None
+
+
+def test_a_header_without_a_detail_does_not_swallow_the_next_line():
+    # "timeout:" carries no detail, so the exception on the next line is the
+    # failure that must key the signature.
+    assert normalize_error_signature("timeout:\nValueError: bad input") == "valueerror: bad input"
+    assert normalize_error_signature("timeout:") == "timeout"

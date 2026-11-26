@@ -714,6 +714,19 @@ class EvalHarness:
         return conn
 
     def _apply_patches(self) -> None:
+        """Install the patches, rolling a partial attempt back before it propagates.
+
+        A setup that raised halfway left its patches in place, so a retry
+        recorded the harness database path and a cleared backend as the values
+        to restore later.
+        """
+        try:
+            self._install_patches()
+        except BaseException:
+            self._restore_patches()
+            raise
+
+    def _install_patches(self) -> None:
         """Patch DB_PATH and tenant context so server.py functions see our DB.
 
         Mirrors the pattern in tests/test_server.py::setup_test_db.
