@@ -557,16 +557,41 @@ class TestClaudeHookIntegration:
         )
         assert result.returncode == 0, result.stderr
 
-    @pytest.mark.parametrize("base_suffix", ["/?route=blue", "/mcp?route=blue", "/mcp/?route=blue"])
+    def test_a_malformed_mcp_url_still_writes_the_local_snapshot(self, tmp_path: Path):
+        """A URL the parser rejects must not abort the hook before local capture."""
+        cache_home = tmp_path / "cache-home"
+        self._copy_hook(tmp_path)
+        result = self._run_hook(
+            "precompact",
+            {"session_id": "s7", "messages": [{"role": "user", "content": "capture me"}]},
+            "http://127.0.0.1:1",
+            tmp_path,
+            extra_env={
+                "FORESIGHT_MCP_URL": "http://[::1:8764/mcp",
+                "XDG_CACHE_HOME": str(cache_home),
+                "FORESIGHT_HOOK_MODE": "cache",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        snapshot = cache_home / "foresight" / "hook-cache.jsonl"
+        assert snapshot.exists(), "no local snapshot written"
+        assert "capture me" in snapshot.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        ("base_suffix", "expected_path"),
+        [
+            ("/?route=blue", "/ui/api/inject?route=blue"),
+            ("/mcp?route=blue", "/ui/api/inject?route=blue"),
+            ("/mcp/?route=blue", "/ui/api/inject?route=blue"),
+            ("/api/mcp?route=blue", "/api/ui/api/inject?route=blue"),
+        ],
+    )
     def test_prompt_reaches_the_endpoint_when_the_base_url_has_a_query(
-        self, stub_server, tmp_path: Path, base_suffix: str
+        self, stub_server, tmp_path: Path, base_suffix: str, expected_path: str
     ):
         base, handler = stub_server
-        handler.responses["/ui/api/inject?route=blue"] = (
-            http.HTTPStatus.OK,
-            {"formatted": "routed memory"},
-        )
-        handler.responses["/ui/api/telemetry/gating?route=blue"] = (http.HTTPStatus.OK, {})
+        handler.responses[expected_path] = (http.HTTPStatus.OK, {"formatted": "routed memory"})
+        handler.responses[expected_path.replace("/inject", "/telemetry/gating")] = (http.HTTPStatus.OK, {})
         self._copy_hook(tmp_path)
         result = self._run_hook(
             "prompt",
@@ -576,6 +601,7 @@ class TestClaudeHookIntegration:
         )
         assert result.returncode == 0, result.stderr
         assert "routed memory" in result.stdout
+        assert any(path == expected_path for path, _ in handler.requests)
 
     def test_the_sdk_path_sends_the_user_id_lane(self, stub_server, tmp_path: Path):
         base, handler = stub_server

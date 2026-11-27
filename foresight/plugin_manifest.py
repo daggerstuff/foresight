@@ -64,8 +64,10 @@ VERSION_PATTERN = re.compile(_VERSION_PATTERN_TEXT)
 # home rules keep the prefix, and the loader normalizes its Windows view with
 # ``ntpath`` before checking it. ``./x`` and ``.//x`` normalize to a plain
 # relative path and stay legal, so the POSIX-absolute rule is anchored at the
-# root instead.
-_DOT_SEGMENTS = r"^(?:\.?[/\\]+)*"
+# root instead. Every repeated group starts with a literal dot: an optional dot
+# lets one separator run be partitioned many ways, which a backtracking checker
+# pays for exponentially on something like ``.`` plus a long run of slashes.
+_DOT_SEGMENTS = r"^(?:\.[/\\]+)*"
 _FORBIDDEN_PATH_PATTERNS = (
     r"^/",  # POSIX absolute
     _DOT_SEGMENTS + r"[A-Za-z]:",  # Windows drive, absolute or relative

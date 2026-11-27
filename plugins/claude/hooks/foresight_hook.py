@@ -41,7 +41,10 @@ def _strip_terminal_mcp(value: str) -> str:
     Trimming the raw string misses ``https://h/mcp?route=blue``, whose REST
     endpoints would then be built under ``/mcp``; ``/api/mcp`` keeps ``/api``.
     """
-    parts = urllib.parse.urlsplit(value)
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return value
     path = parts.path.rstrip("/")
     if path.endswith("/mcp"):
         path = path[: -len("/mcp")]
