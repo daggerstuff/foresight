@@ -47,12 +47,21 @@ interface McpResponse {
     | Record<string, unknown>
 }
 
+/** First value that is set and not blank; a blank variable is not a setting. */
+function firstNonBlank(
+  ...values: Array<string | undefined>
+): string | undefined {
+  for (const value of values) {
+    if (value !== undefined && value.trim() !== '') return value
+  }
+  return undefined
+}
+
 export function resolveBaseUrl(
   env: Record<string, string | undefined> = process.env,
 ): string {
   return (
-    env.FORESIGHT_MCP_URL ??
-    env.FORESIGHT_URL ??
+    firstNonBlank(env.FORESIGHT_MCP_URL, env.FORESIGHT_URL) ??
     FORESIGHT_DEFAULT_URL
   )
 }
@@ -62,7 +71,7 @@ export function defaultCredentialsPath(
   homeDir?: string,
 ): string {
   const configHome =
-    env.XDG_CONFIG_HOME ?? `${homeDir ?? env.HOME ?? '~'}/.config`
+    firstNonBlank(env.XDG_CONFIG_HOME) ?? `${homeDir ?? env.HOME ?? '~'}/.config`
   return `${configHome}/foresight/credentials.env`
 }
 
@@ -112,22 +121,24 @@ export async function loadCredentials(
   }
   const identity = config?.identity || pick('FORESIGHT_IDENTITY')
   const identityLane = identity ? identity.split('@', 1)[0] : ''
-  const userId = config?.userId ?? pick('FORESIGHT_USER_ID')
+  const userId =
+    firstNonBlank(config?.userId, pick('FORESIGHT_USER_ID')) ?? ''
   return {
     baseUrl:
-      config?.baseUrl ??
-      env.FORESIGHT_MCP_URL ??
-      env.FORESIGHT_URL ??
-      file.FORESIGHT_MCP_URL ??
-      file.FORESIGHT_URL ??
-      FORESIGHT_DEFAULT_URL,
+      firstNonBlank(
+        config?.baseUrl,
+        env.FORESIGHT_MCP_URL,
+        env.FORESIGHT_URL,
+        file.FORESIGHT_MCP_URL,
+        file.FORESIGHT_URL,
+      ) ?? FORESIGHT_DEFAULT_URL,
     apiKey: config?.apiKey ?? pick('FORESIGHT_API_KEY'),
     identity,
     userId,
-    // An explicit user id outranks the identity-derived lane: a caller that
-    // passes userId is asking for that lane, and authHeaders/resolvedLane would
-    // otherwise send X-User-Id for a different identity's lane.
-    lane: config?.userId || identityLane || userId,
+    // A user id — explicit or from the environment — outranks the lane derived
+    // from the identity: the same identity can switch lanes, and authHeaders/
+    // resolvedLane would otherwise send X-User-Id for the identity's own lane.
+    lane: firstNonBlank(userId, identityLane) ?? '',
   }
 }
 
@@ -364,15 +375,18 @@ export async function mcpCall(
   toolName: string,
   args: Record<string, unknown>,
   config?: ForesightClientConfig,
+  resolvedCredentials?: ForesightCredentials,
 ): Promise<string | null> {
-  const credentials = await loadCredentials(config)
-  const mcpUrl = mcpUrlFor(credentials)
+  const credentials = resolvedCredentials ?? (await loadCredentials(config))
   const timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
+    // Built inside the try: an unusable base URL is a transport failure like
+    // any other, and this function's contract is to answer null, not throw.
+    const mcpUrl = mcpUrlFor(credentials)
     assertCredentialTransport(mcpUrl, Boolean(credentials.apiKey))
     const resp = await fetch(mcpUrl, {
       method: 'POST',
@@ -448,9 +462,10 @@ async function postPath(
   payload: unknown,
   config?: ForesightClientConfig,
   timeoutMs?: number,
+  resolvedCredentials?: ForesightCredentials,
 ): Promise<{ status: number; data: unknown } | null> {
   try {
-    const credentials = await loadCredentials(config)
+    const credentials = resolvedCredentials ?? (await loadCredentials(config))
     const { status, body } = await postJson(
       restUrlFor(credentials, path),
       payload,
@@ -475,8 +490,17 @@ export async function fetchInjectContext(
   query: string,
   config?: ForesightClientConfig,
 ): Promise<string | null> {
+  // One credential load for both attempts: each load re-reads credentials.env,
+  // and the fallback must read the identical lane the REST call used.
+  const credentials = await loadCredentials(config)
   // 1. Native REST inject endpoint first (ultra-fast single roundtrip)
-  const rest = await postPath('/ui/api/inject', { text: query }, config)
+  const rest = await postPath(
+    '/ui/api/inject',
+    { text: query },
+    config,
+    undefined,
+    credentials,
+  )
   if (rest && rest.status >= 200 && rest.status < 300) {
     const data = rest.data as { formatted?: unknown } | null
     if (data && typeof data.formatted === 'string') {
@@ -486,7 +510,6 @@ export async function fetchInjectContext(
   }
 
   // 2. Fallback to MCP tools/call inject_context
-  const credentials = await loadCredentials(config)
   return await mcpCall(
     'inject_context',
     {
@@ -496,6 +519,7 @@ export async function fetchInjectContext(
       ...laneArgs(credentials),
     },
     config,
+    credentials,
   )
 }
 
@@ -535,7 +559,8 @@ export async function postTelemetry(
 ): Promise<boolean> {
   const result = await postPath(
     '/ui/api/telemetry/gating',
-    { surface, ...payload },
+    // The surface names this call site, so a payload cannot relabel it.
+    { ...payload, surface },
     config,
     2000,
   )

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import re
 import sys
 from collections.abc import Iterator, Mapping
@@ -56,9 +57,15 @@ VERSION_PATTERN = re.compile(_VERSION_PATTERN_TEXT)
 # ``_DOT_SEGMENTS`` mirrors what ``PurePosixPath`` does to its input: a leading
 # ``./`` is dropped, so ``./~alice/x`` normalizes to ``~/alice/x`` and a
 # surface-by-surface expansion of that path would leave the plugin directory.
+#
+# It covers only the rules that stay escapes after that normalization. Windows
+# collapses ``./C:/x`` into a drive path, so the drive, UNC, and home rules keep
+# the prefix, and the loader normalizes its Windows view with ``ntpath`` before
+# checking it. ``./x`` and ``.//x`` normalize to a plain relative path and stay
+# legal, so the POSIX-absolute rule is anchored at the root instead.
 _DOT_SEGMENTS = r"^(?:\./|\.\\)*"
 _FORBIDDEN_PATH_PATTERNS = (
-    _DOT_SEGMENTS + r"/",  # POSIX absolute
+    r"^/",  # POSIX absolute
     _DOT_SEGMENTS + r"[A-Za-z]:",  # Windows drive, absolute or relative
     _DOT_SEGMENTS + r"\\",  # Windows root or UNC prefix
     _DOT_SEGMENTS + r"~",  # home-relative path such as ~/x or ~alice/x
@@ -172,9 +179,14 @@ def _check_relative_path(value: str, *, label: str = "path", base: str = "the pl
         raise ValueError(f"artifact {label} must not be empty")
     posix = PurePosixPath(value)
     windows = PureWindowsPath(value)
+    windows_normalized = PureWindowsPath(ntpath.normpath(value))
     if posix.is_absolute() or posix.root:
         raise ValueError(f"artifact {label} must be relative to {base}")
     if windows.is_absolute() or windows.drive or windows.root:
+        raise ValueError(f"artifact {label} must be relative to {base}")
+    # ``PureWindowsPath`` reports no drive for ``./C:/x``, while Windows collapses
+    # that to a drive path, so the normalized view is checked for a root too.
+    if windows_normalized.is_absolute() or windows_normalized.drive or windows_normalized.root:
         raise ValueError(f"artifact {label} must be relative to {base}")
     posix_parts = posix.parts
     windows_parts = windows.parts

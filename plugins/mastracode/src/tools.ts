@@ -14,15 +14,6 @@ function mapScope(scope?: string): string {
   return scope ?? 'arc'
 }
 
-// One resolver for tools and capture: a local copy checked config and the
-// process environment but not the credentials file, so native tools and
-// automatic capture could write to different users.
-async function lanePayload(
-  config?: ForesightClientConfig,
-): Promise<Record<string, unknown>> {
-  return laneArgs(await loadCredentials(config))
-}
-
 export function createForesightTools(config?: ForesightClientConfig) {
   const injectContextTool = createTool({
     id: 'foresight_inject_context',
@@ -39,14 +30,18 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .describe('Maximum number of memories to surface'),
     }),
     execute: async ({ query, max_memories }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'inject_context',
         {
           conversation_text: query,
           max_memories: max_memories ?? 6,
-          ...(await lanePayload(config)),
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
       if (res === null) {
         return {
@@ -81,6 +76,9 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .default('permanent'),
     }),
     execute: async ({ content, category, importance, scope, retention }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'manage_memories',
         {
@@ -90,9 +88,10 @@ export function createForesightTools(config?: ForesightClientConfig) {
           importance: importance ?? 0.9,
           scope: mapScope(scope),
           retention: retention ?? 'permanent',
-          ...(await lanePayload(config)),
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
       if (res === null) {
         return {
@@ -117,14 +116,18 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .describe('Maximum results to return'),
     }),
     execute: async ({ query, limit }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'search_memories',
         {
           query,
           limit: limit ?? 10,
-          ...(await lanePayload(config)),
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
       if (res === null) {
         return {
@@ -149,14 +152,18 @@ export function createForesightTools(config?: ForesightClientConfig) {
         ),
     }),
     execute: async ({ label }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'manage_context_blocks',
         {
           action: label ? 'get' : 'list',
           label,
-          ...(await lanePayload(config)),
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
       if (res === null) {
         return {
@@ -179,15 +186,19 @@ export function createForesightTools(config?: ForesightClientConfig) {
       content: z.string().describe('The content or rule to set or update'),
     }),
     execute: async ({ label, content }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'manage_context_blocks',
         {
           action: 'update',
           label,
           content,
-          ...(await lanePayload(config)),
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
       if (res === null) {
         return {

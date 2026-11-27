@@ -6,6 +6,7 @@ import http
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -15,9 +16,15 @@ from typing import ClassVar
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 SDK_DIR = REPO_ROOT / "plugins" / "sdk" / "python"
 HOOK_PATH = REPO_ROOT / "plugins" / "claude" / "hooks" / "foresight_hook.py"
+
+
+def _closed_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 _spec = importlib.util.spec_from_file_location("foresight_plugin_sdk", SDK_DIR / "foresight_plugin_sdk.py")
 assert _spec is not None
@@ -108,11 +115,13 @@ class TestCredentials:
 class _StubHandler(BaseHTTPRequestHandler):
     responses: ClassVar[dict[str, tuple[int, dict]]] = {}
     requests: ClassVar[list[tuple[str, dict]]] = []
+    headers: ClassVar[list[dict[str, str]]] = []
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
         type(self).requests.append((self.path, body))
+        type(self).headers.append(dict(self.headers))
         status, payload = type(self).responses.get(self.path, (404, {"error": "nf"}))
         raw = json.dumps(payload).encode()
         self.send_response(status)
@@ -127,7 +136,7 @@ class _StubHandler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def stub_server():
-    handler = type("Handler", (_StubHandler,), {"responses": {}, "requests": []})
+    handler = type("Handler", (_StubHandler,), {"responses": {}, "requests": [], "headers": []})
     server = HTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -161,8 +170,9 @@ class TestTransport:
         assert handler.requests == [("/moved", {})]
 
     def test_post_json_unreachable_raises_foresight_error(self):
+        url = f"http://127.0.0.1:{_closed_port()}/unreachable"
         with pytest.raises(sdk.ForesightError):
-            sdk.post_json("http://127.0.0.1:1/unreachable", {}, timeout=1.0)
+            sdk.post_json(url, {}, timeout=1.0)
 
     def test_post_json_invalid_url_raises_foresight_error(self):
         with pytest.raises(sdk.ForesightError):
@@ -404,7 +414,7 @@ class TestForesightClient:
 
     def test_call_tool_returns_none_on_transport_failure(self):
         client = sdk.ForesightClient(
-            credentials=sdk.Credentials(base_url="http://127.0.0.1:1"),
+            credentials=sdk.Credentials(base_url=f"http://127.0.0.1:{_closed_port()}"),
             timeout=1.0,
         )
         assert client.call_tool("search_memories", {"query": "x"}) is None
@@ -440,10 +450,17 @@ class TestClaudeHookIntegration:
         lines = [
             "import importlib.util as _iu",
             "import pathlib as _pl",
-            f"_pl.Path({str(marker)!r}).write_text('imported', encoding='utf-8')",
+            "import sys as _sys",
+            f"_marker = _pl.Path({str(marker)!r})",
             f"_spec = _iu.spec_from_file_location('_real_foresight_plugin_sdk', {str(real_sdk)!r})",
             "_real = _iu.module_from_spec(_spec)",
+            "_sys.modules[_spec.name] = _real",
             "_spec.loader.exec_module(_real)",
+            "_real_post_json = _real.post_json",
+            "def _shimmed_post_json(*args, **kwargs):",
+            "    _marker.write_text('posted', encoding='utf-8')",
+            "    return _real_post_json(*args, **kwargs)",
+            "_real.post_json = _shimmed_post_json",
             "globals().update(",
             "    {name: getattr(_real, name) for name in dir(_real) if not name.startswith('__')}",
             ")",
@@ -457,6 +474,7 @@ class TestClaudeHookIntegration:
         base_url: str,
         tmp_path: Path,
         hook_path: Path | None = None,
+        extra_env: dict[str, str] | None = None,
     ):
         env = dict(os.environ)
         env.update(
@@ -468,6 +486,8 @@ class TestClaudeHookIntegration:
         )
         env.pop("FORESIGHT_API_KEY", None)
         env.pop("FORESIGHT_IDENTITY", None)
+        env.pop("FORESIGHT_USER_ID", None)
+        env.update(extra_env or {})
         return subprocess.run(
             [sys.executable, str(hook_path or HOOK_PATH), action],
             input=json.dumps(payload),
@@ -496,9 +516,10 @@ class TestClaudeHookIntegration:
             hook_path=hook,
         )
         assert result.returncode == 0, result.stderr
-        # The shim runs only when the hook imported foresight_plugin_sdk, so the
-        # marker proves this request came from the SDK path, not the inline copy.
+        # The shim writes the marker from the SDK's own post_json, so it proves
+        # this request went through the SDK rather than merely importing it.
         assert marker.exists()
+        assert marker.read_text(encoding="utf-8") == "posted"
         assert "FORESIGHT CONTINUITY CONTEXT" in result.stdout
         assert "recalled memory" in result.stdout
         inject_calls = [b for p, b in handler.requests if p == "/ui/api/inject"]
@@ -531,7 +552,116 @@ class TestClaudeHookIntegration:
         result = self._run_hook(
             "prompt",
             {"prompt": "hello there", "session_id": "s2"},
-            "http://127.0.0.1:1",
+            f"http://127.0.0.1:{_closed_port()}",
             tmp_path,
         )
         assert result.returncode == 0, result.stderr
+
+    def test_prompt_reaches_the_endpoint_when_the_base_url_has_a_query(
+        self, stub_server, tmp_path: Path
+    ):
+        base, handler = stub_server
+        handler.responses["/ui/api/inject?route=blue"] = (
+            http.HTTPStatus.OK,
+            {"formatted": "routed memory"},
+        )
+        handler.responses["/ui/api/telemetry/gating?route=blue"] = (http.HTTPStatus.OK, {})
+        hook = self._copy_hook(tmp_path)
+        result = self._run_hook(
+            "prompt",
+            {"prompt": "route me", "session_id": "s5"},
+            f"{base}/?route=blue",
+            tmp_path,
+            hook_path=hook,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "routed memory" in result.stdout
+
+    def test_the_sdk_path_sends_the_user_id_lane(
+        self, stub_server, tmp_path: Path
+    ):
+        base, handler = stub_server
+        handler.responses["/ui/api/inject"] = (http.HTTPStatus.OK, {"formatted": "ok"})
+        handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
+        hook = self._copy_hook(tmp_path)
+        self._write_sdk_shim(hook, tmp_path / "sdk-lane")
+        result = self._run_hook(
+            "prompt",
+            {"prompt": "lane check", "session_id": "s6"},
+            base,
+            tmp_path,
+            hook_path=hook,
+            extra_env={"FORESIGHT_IDENTITY": "alice@acme", "FORESIGHT_USER_ID": "bob"},
+        )
+        assert result.returncode == 0, result.stderr
+        lanes = {h.get("X-User-Id") for h in handler.headers if h.get("X-User-Id")}
+        assert lanes == {"bob"}
+
+    def test_the_inline_path_sends_the_user_id_lane(
+        self, stub_server, tmp_path: Path
+    ):
+        base, handler = stub_server
+        handler.responses["/ui/api/inject"] = (http.HTTPStatus.OK, {"formatted": "ok"})
+        handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
+        hook = self._copy_hook(tmp_path)
+        result = self._run_hook(
+            "prompt",
+            {"prompt": "lane check", "session_id": "s7"},
+            base,
+            tmp_path,
+            hook_path=hook,
+            extra_env={"FORESIGHT_IDENTITY": "alice@acme", "FORESIGHT_USER_ID": "bob"},
+        )
+        assert result.returncode == 0, result.stderr
+        lanes = {h.get("X-User-Id") for h in handler.headers if h.get("X-User-Id")}
+        assert lanes == {"bob"}
+
+
+class TestTransportAndCredentialRobustness:
+    def test_auth_headers_use_the_user_id_over_the_identity_lane(self):
+        credentials = sdk.Credentials(
+            base_url="http://127.0.0.1:8764",
+            identity="alice@acme",
+            user_id="bob",
+        )
+        assert sdk.auth_headers(credentials)["X-User-Id"] == "bob"
+
+    def test_resolve_credentials_ignores_a_group_readable_file(self, tmp_path: Path):
+        path = tmp_path / "credentials.env"
+        path.write_text(
+            "FORESIGHT_API_KEY=file-key\nFORESIGHT_USER_ID=bob\n", encoding="utf-8"
+        )
+        path.chmod(0o644)
+        credentials = sdk.resolve_credentials(env={}, creds_path=str(path))
+        assert credentials.api_key == ""
+        assert credentials.user_id == ""
+
+    def test_resolve_credentials_reads_a_private_file(self, tmp_path: Path):
+        path = tmp_path / "credentials.env"
+        path.write_text("FORESIGHT_API_KEY=file-key\n", encoding="utf-8")
+        path.chmod(0o600)
+        assert sdk.resolve_credentials(env={}, creds_path=str(path)).api_key == "file-key"
+
+    def test_post_keeps_the_base_query_and_targets_the_path(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/ui/api/inject?route=blue"] = (
+            http.HTTPStatus.OK,
+            {"formatted": "routed"},
+        )
+        client = sdk.ForesightClient(
+            credentials=sdk.Credentials(base_url=f"{base}/?route=blue"),
+        )
+        status, data = client.post("/ui/api/inject", {"text": "hi"})
+        assert status == http.HTTPStatus.OK
+        assert data == {"formatted": "routed"}
+
+    def test_parse_sse_result_keeps_a_line_separator_inside_a_payload(self):
+        separator = chr(0x2028)
+        body = (
+            'data: {"result": {"content": [{"type": "text", "text": "a'
+            + separator
+            + 'b"}]}}\n\n'
+        )
+        parsed = sdk.parse_sse_result(body)
+        assert parsed is not None
+        assert parsed["result"]["content"][0]["text"] == "a" + separator + "b"

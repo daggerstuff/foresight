@@ -48,6 +48,14 @@ def _resolve_base_url() -> str:
 
 
 FORESIGHT_URL = _resolve_base_url()
+
+
+def _rest_url(path: str) -> str:
+    """FORESIGHT_URL with ``path`` inserted before its query string."""
+    parts = urllib.parse.urlsplit(FORESIGHT_URL)
+    base = parts.path.rstrip("/")
+    target = f"{base}/{path.lstrip('/')}"
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, target, parts.query, ""))
 DEFAULT_SESSION_ID = "claude-session"
 DEFAULT_CACHE_TTL_HOURS = 72
 DEFAULT_CACHE_MAX_BYTES = 2 * 1024 * 1024
@@ -229,6 +237,7 @@ def _headers():
             base_url=FORESIGHT_URL,
             api_key=API_KEY,
             identity=_IDENTITY,
+            user_id=_USER_ID,
         )
         return _sdk.auth_headers(credentials)
     headers = {"Content-Type": "application/json"}
@@ -528,13 +537,9 @@ def _prompt_block(formatted):
 _load_credentials()
 
 API_KEY = os.environ.get("FORESIGHT_API_KEY") or CREDS.get("FORESIGHT_API_KEY", "")
-_IDENTITY = (
-    os.environ.get("FORESIGHT_IDENTITY")
-    or CREDS.get("FORESIGHT_IDENTITY", "")
-    or os.environ.get("FORESIGHT_USER_ID")
-    or CREDS.get("FORESIGHT_USER_ID", "")
-)
-USER_LANE = _IDENTITY.split("@", 1)[0] if _IDENTITY else ""
+_IDENTITY = os.environ.get("FORESIGHT_IDENTITY") or CREDS.get("FORESIGHT_IDENTITY", "")
+_USER_ID = os.environ.get("FORESIGHT_USER_ID") or CREDS.get("FORESIGHT_USER_ID", "")
+USER_LANE = _USER_ID or (_IDENTITY.split("@", 1)[0] if _IDENTITY else "")
 
 
 def _handle_capture(hook_input: dict[str, Any]) -> None:
@@ -547,7 +552,7 @@ def _handle_capture(hook_input: dict[str, Any]) -> None:
     if MODE == "direct":
         with suppress(Exception):
             _post(
-                f"{FORESIGHT_URL}/ui/api/capture",
+                _rest_url("/ui/api/capture"),
                 {"text": text, "session_id": session_id},
                 timeout=5.0,
             )
@@ -573,7 +578,7 @@ def _handle_prompt(hook_input: dict[str, Any]) -> None:
     if MODE == "direct":
         with suppress(Exception):
             _post(
-                f"{FORESIGHT_URL}/ui/api/capture",
+                _rest_url("/ui/api/capture"),
                 {"text": prompt_text, "messages": messages, "session_id": session_id},
                 timeout=3.0,
             )
@@ -590,7 +595,7 @@ def _handle_prompt(hook_input: dict[str, Any]) -> None:
                 )
 
     with suppress(Exception):
-        status, body = _post(f"{FORESIGHT_URL}/ui/api/inject", {"text": prompt_text}, timeout=12.0)
+        status, body = _post(_rest_url("/ui/api/inject"), {"text": prompt_text}, timeout=12.0)
         if status == http.HTTPStatus.OK:
             data = json.loads(body.decode("utf-8"))
             formatted, top_score = _recall_scores(data)
@@ -599,7 +604,7 @@ def _handle_prompt(hook_input: dict[str, Any]) -> None:
 
             with suppress(Exception):
                 _post(
-                    f"{FORESIGHT_URL}/ui/api/telemetry/gating",
+                    _rest_url("/ui/api/telemetry/gating"),
                     {
                         "surface": "claude_hook",
                         "decision": decision,
@@ -640,7 +645,7 @@ def _handle_precompact(hook_input: dict[str, Any]) -> None:
     if MODE == "direct" and capture_text:
         with suppress(Exception):
             _post(
-                f"{FORESIGHT_URL}/ui/api/capture",
+                _rest_url("/ui/api/capture"),
                 {"text": capture_text, "messages": messages[-40:], "session_id": session_id},
                 timeout=5.0,
             )
@@ -649,7 +654,7 @@ def _handle_precompact(hook_input: dict[str, Any]) -> None:
             if not transcript_messages and tail:
                 transcript_messages = [{"role": "assistant", "content": text} for text in tail[-20:]]
             _post(
-                f"{FORESIGHT_URL}/session/transcript",
+                _rest_url("/session/transcript"),
                 {"session_id": session_id, "messages": transcript_messages},
                 timeout=12.0,
             )
@@ -693,7 +698,7 @@ def _handle_postcompact(hook_input: dict[str, Any]) -> None:
     static_and_safety = ""
     gated = False
     try:
-        status, body = _post(f"{FORESIGHT_URL}/ui/api/inject", {"text": query}, timeout=12.0)
+        status, body = _post(_rest_url("/ui/api/inject"), {"text": query}, timeout=12.0)
         if status == http.HTTPStatus.OK:
             data = json.loads(body.decode("utf-8"))
             formatted, top_score = _recall_scores(data)
@@ -736,7 +741,7 @@ def _handle_stop(hook_input: dict[str, Any]) -> None:
             if transcript_messages and isinstance(transcript_messages[0], str):
                 transcript_messages = [{"role": "assistant", "content": text} for text in transcript_messages]
             _post(
-                f"{FORESIGHT_URL}/session/transcript",
+                _rest_url("/session/transcript"),
                 {"session_id": session_id, "messages": transcript_messages},
                 timeout=12.0,
             )

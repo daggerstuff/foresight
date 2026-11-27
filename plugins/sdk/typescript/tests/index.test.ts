@@ -494,3 +494,63 @@ describe('REST payload and fail-safe contract', () => {
     15000,
   )
 })
+
+describe('credential and transport edge cases', () => {
+  it('skips a blank FORESIGHT_MCP_URL instead of using it as the base URL', () => {
+    expect(
+      resolveBaseUrl({ FORESIGHT_MCP_URL: '   ', FORESIGHT_URL: 'http://h:1' }),
+    ).toBe('http://h:1')
+    expect(resolveBaseUrl({ FORESIGHT_MCP_URL: '  ', FORESIGHT_URL: '' })).toBe(
+      'http://127.0.0.1:8764',
+    )
+  })
+
+  it('prefers an explicit user id over the identity-derived lane', async () => {
+    process.env.FORESIGHT_IDENTITY = 'alice@acme'
+    process.env.FORESIGHT_USER_ID = 'bob'
+    const credentials = await loadCredentials({
+      credentialsPath: '/nonexistent',
+    })
+    expect(credentials.lane).toBe('bob')
+  })
+
+  it('mcpCall resolves null instead of throwing on an invalid base URL', async () => {
+    await expect(
+      mcpCall(
+        'search_memories',
+        { query: 'x' },
+        { baseUrl: 'not a url', credentialsPath: '/nonexistent' },
+      ),
+    ).resolves.toBeNull()
+  })
+
+  it('mcpCall sends the API key in params._meta', async () => {
+    const spy = stubFetch(() => ({
+      result: { content: [{ type: 'text', text: 'ok' }] },
+    }))
+    await mcpCall(
+      'search_memories',
+      { query: 'x' },
+      { apiKey: 'sk-test', credentialsPath: '/nonexistent' },
+    )
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as {
+      params?: { _meta?: Record<string, unknown> }
+    }
+    expect(body.params?._meta?.api_key).toBe('sk-test')
+  })
+
+  it('postTelemetry cannot have its surface rewritten by the payload', async () => {
+    const spy = stubFetch(() => ({}))
+    await postTelemetry(
+      'cli',
+      { surface: 'forged', score: 1 },
+      { credentialsPath: '/nonexistent' },
+    )
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      surface: 'cli',
+      score: 1,
+    })
+  })
+})

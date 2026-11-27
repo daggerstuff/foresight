@@ -209,7 +209,7 @@ include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "plugins/sdk/python/tests"]
 # A single test that runs longer than this dumps every thread's stack, so a
 # hang names its own cause in the CI log instead of going silent for an hour.
 faulthandler_timeout = 300

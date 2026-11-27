@@ -88,7 +88,7 @@
           "not": {
             "anyOf": [
               {
-                "pattern": "^(?:\\./|\\.\\\\)*/",
+                "pattern": "^/",
                 "type": "string"
               },
               {
@@ -127,7 +127,7 @@
           "not": {
             "anyOf": [
               {
-                "pattern": "^(?:\\./|\\.\\\\)*/",
+                "pattern": "^/",
                 "type": "string"
               },
               {

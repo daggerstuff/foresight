@@ -133,7 +133,7 @@ jobs:
           # suite for 78 minutes with no output.
           FORESIGHT_EMBEDDING_PROVIDER: local-hash
         run: |
-          uv run pytest tests/ -v --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
+          uv run pytest -v --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 
       - name: Retrieval quality regression gate
         run: |

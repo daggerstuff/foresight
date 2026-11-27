@@ -72,8 +72,15 @@ def default_credentials_path(env: Mapping[str, str] | None = None) -> str:
 
 
 def load_env_file(path: str) -> dict[str, str]:
-    """Parse a KEY=VALUE env file. Missing/unreadable files yield ``{}``."""
+    """Parse a KEY=VALUE env file. Missing, unreadable or shared files yield ``{}``.
+
+    The file holds an API key, so a mode other users can read means the key is
+    already exposed; such a file is ignored instead of trusted.
+    """
     values: dict[str, str] = {}
+    with suppress(Exception):
+        if os.stat(path).st_mode & 0o077:
+            return values
     with suppress(Exception), open(path, encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -110,6 +117,22 @@ def _with_path(parts: urllib.parse.SplitResult, path: str) -> str:
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
+def rest_base(base_url: str) -> str:
+    """REST root: ``base_url`` with a terminal ``/mcp`` removed."""
+    parts = _split_base_url(base_url)
+    path = parts.path.rstrip("/")
+    if path.endswith("/mcp"):
+        path = path[: -len("/mcp")]
+    return _with_path(parts, path)
+
+
+def rest_path(base_url: str, path: str) -> str:
+    """URL for the REST ``path`` under ``base_url``, keeping the base query."""
+    parts = _split_base_url(rest_base(base_url))
+    base = parts.path.rstrip("/")
+    return _with_path(parts, f"{base}/{path.lstrip('/')}")
+
+
 @dataclass(frozen=True)
 class Credentials:
     """Resolved connection settings. Secrets are never logged or repr'd."""
@@ -141,11 +164,7 @@ class Credentials:
         the app root, so posting to ``<base>/mcp/ui/api/...`` 404s when the
         discovered URL is the MCP endpoint.
         """
-        parts = _split_base_url(self.base_url)
-        path = parts.path.rstrip("/")
-        if path.endswith("/mcp"):
-            path = path[: -len("/mcp")]
-        return _with_path(parts, path)
+        return rest_base(self.base_url)
 
 
 def resolve_base_url(env: Mapping[str, str] | None = None, creds: Mapping[str, str] | None = None) -> str:
@@ -192,7 +211,7 @@ def auth_headers(credentials: Credentials | None = None, extra: dict[str, str] |
     headers = {"Content-Type": "application/json"}
     if creds.api_key:
         headers["Authorization"] = f"Bearer {creds.api_key}"
-    lane = creds.lane or creds.user_id
+    lane = creds.user_id or creds.lane
     if lane:
         headers["X-User-Id"] = lane
     if extra:
@@ -328,10 +347,12 @@ def _iter_sse_events(body: str) -> Iterator[str]:
     several ``data:`` lines. A parser that decodes each line on its own loses a
     payload split that way, and one that requires the space in ``data: `` misses
     the equally legal ``data:{"result": 1}``. A single leading space is part of
-    the framing, not the payload; ``:`` comment lines carry no data.
+    the framing, not the payload; ``:`` comment lines carry no data. Only a real
+    newline ends a line: ``splitlines`` also splits on U+2028, which is legal
+    inside a JSON string and would cut a payload in half.
     """
     data: list[str] = []
-    for raw_line in body.splitlines():
+    for raw_line in body.split("\n"):
         line = raw_line.rstrip("\r")
         if not line:
             if data:
@@ -421,7 +442,7 @@ class ForesightClient:
     def post(self, path: str, payload: Any, timeout: float | None = None) -> tuple[int, Any]:
         """POST ``path`` (e.g. ``/ui/api/inject``); return ``(status, parsed_json)``."""
         status, raw = post_json(
-            f"{self.credentials.rest_url}{path}",
+            rest_path(self.credentials.base_url, path),
             payload,
             headers=auth_headers(self.credentials),
             timeout=timeout or self.timeout,
@@ -438,7 +459,7 @@ class ForesightClient:
             _, data = self.post("/ui/api/inject", {"text": text}, timeout=timeout)
         except ForesightError:
             arguments: dict[str, Any] = {"conversation_text": text}
-            lane = self.credentials.lane or self.credentials.user_id
+            lane = self.credentials.user_id or self.credentials.lane
             if lane:
                 # The server resolves the lane from this argument first and from
                 # the API key second, so an invented placeholder would read a

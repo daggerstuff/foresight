@@ -582,6 +582,9 @@ class TestSchemaSync:
         [
             "hooks/h.py",
             "hooks\\h.py",
+            ".//hooks/h.py",
+            "./hooks/h.py",
+            "./C:/x",
             ".claude-plugin/plugin.json",
             "docs/README.md",
             "a~b/c",
@@ -607,6 +610,8 @@ class TestSchemaSync:
         "source_value",
         [
             "plugins/sdk/python/foresight_plugin_sdk.py",
+            ".//hooks/h.py",
+            "./C:/x",
             "plugins/sdk/python/nested/dir/x.py",
             "",
             "..",
