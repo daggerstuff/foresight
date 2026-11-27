@@ -1,0 +1,532 @@
+{
+  "$defs": {
+    "AgentTarget": {
+      "description": "Agent surfaces a plugin can target. See plugins/README.md for the matrix.",
+      "enum": [
+        "claude-code",
+        "claude-desktop",
+        "gemini-cli",
+        "antigravity",
+        "codex",
+        "cursor",
+        "devin",
+        "goose",
+        "hermes",
+        "mastracode",
+        "omo",
+        "opencode",
+        "ohmypi",
+        "pi",
+        "deepseek-harness",
+        "copilot",
+        "generic-mcp",
+        "web"
+      ],
+      "title": "AgentTarget",
+      "type": "string"
+    },
+    "ArtifactType": {
+      "description": "Kind of installed artifact a manifest entry describes.",
+      "enum": [
+        "config",
+        "hook",
+        "skill",
+        "rule",
+        "extension",
+        "provider",
+        "cli",
+        "docs",
+        "native-manifest",
+        "source"
+      ],
+      "title": "ArtifactType",
+      "type": "string"
+    },
+    "ForesightCapability": {
+      "description": "Foresight capabilities a plugin may require. Mirrors server/REST surface.",
+      "enum": [
+        "context.inject",
+        "context-blocks",
+        "capture.transcript",
+        "capture.in-flight",
+        "memory.search",
+        "memory.store",
+        "memory.update",
+        "memory.delete",
+        "memory.reflect",
+        "profile.read",
+        "profile.write",
+        "status.health",
+        "status.doctor",
+        "documents.ingest",
+        "temporal.query",
+        "curation.manage",
+        "telemetry.gating"
+      ],
+      "title": "ForesightCapability",
+      "type": "string"
+    },
+    "PluginArtifact": {
+      "additionalProperties": false,
+      "description": "One artifact the plugin installs into the agent's home/config.",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "path": {
+          "description": "Path relative to the plugin directory.",
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^/"
+              },
+              {
+                "pattern": "^[A-Za-z]:"
+              },
+              {
+                "pattern": "^\\\\"
+              },
+              {
+                "pattern": "^~"
+              },
+              {
+                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)"
+              }
+            ]
+          },
+          "title": "Path",
+          "type": "string"
+        },
+        "surface": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginSurface"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Capability surface this artifact implements, if any."
+        },
+        "targets": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/AgentTarget"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Agent targets this artifact applies to; null/omitted means all targets.",
+          "title": "Targets"
+        },
+        "type": {
+          "$ref": "#/$defs/ArtifactType"
+        }
+      },
+      "required": [
+        "type",
+        "path"
+      ],
+      "title": "PluginArtifact",
+      "type": "object"
+    },
+    "PluginAuthor": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "PluginAuthor",
+      "type": "object"
+    },
+    "PluginCredentials": {
+      "additionalProperties": false,
+      "description": "Credential *references* only \u2014 manifests must never embed secrets.",
+      "properties": {
+        "envFile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Path to the env file holding secrets, e.g. ~/.config/foresight/credentials.env",
+          "title": "Envfile"
+        },
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        }
+      },
+      "title": "PluginCredentials",
+      "type": "object"
+    },
+    "PluginInstall": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "command": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        },
+        {
+          "properties": {
+            "notes": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notes"
+          ]
+        }
+      ],
+      "description": "How to install the plugin: a shell command, or notes for a UI-driven host.",
+      "properties": {
+        "command": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Shell command that installs the plugin, run from the plugin directory.",
+          "title": "Command"
+        },
+        "dryRunFlag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Flag that previews changes without applying them.",
+          "title": "Dryrunflag"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Manual install steps for hosts that install from a path or UI.",
+          "title": "Notes"
+        }
+      },
+      "title": "PluginInstall",
+      "type": "object"
+    },
+    "PluginRequires": {
+      "additionalProperties": false,
+      "description": "What the plugin needs from a Foresight deployment.",
+      "properties": {
+        "capabilities": {
+          "description": "Foresight capabilities the plugin uses; may be empty, but never omitted.",
+          "items": {
+            "$ref": "#/$defs/ForesightCapability"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "foresight": {
+          "description": "Version constraint, e.g. \">=0.19.0\". Free-form semver range.",
+          "minLength": 1,
+          "title": "Foresight",
+          "type": "string"
+        },
+        "transports": {
+          "description": "Transports the plugin can speak; may be empty, but never omitted.",
+          "items": {
+            "$ref": "#/$defs/ServerTransport"
+          },
+          "title": "Transports",
+          "type": "array"
+        }
+      },
+      "required": [
+        "foresight",
+        "transports",
+        "capabilities"
+      ],
+      "title": "PluginRequires",
+      "type": "object"
+    },
+    "PluginSurface": {
+      "description": "Capability surfaces a plugin artifact can implement.",
+      "enum": [
+        "mcp",
+        "rest",
+        "hooks",
+        "skills",
+        "rules",
+        "extension",
+        "provider",
+        "status-ui"
+      ],
+      "title": "PluginSurface",
+      "type": "string"
+    },
+    "PluginUninstall": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "title": "PluginUninstall",
+      "type": "object"
+    },
+    "ServerTransport": {
+      "enum": [
+        "http",
+        "stdio",
+        "sse"
+      ],
+      "title": "ServerTransport",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Root manifest model; one per plugin directory as ``foresight.plugin.json``.",
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/PluginArtifact"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "author": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PluginAuthor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "credentials": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PluginCredentials"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "homepage": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Homepage"
+    },
+    "id": {
+      "description": "Stable plugin id, e.g. 'claude', 'hermes', 'mastracode'.",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "install": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PluginInstall"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "keywords": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Keywords",
+      "type": "array"
+    },
+    "license": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "License"
+    },
+    "name": {
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "repository": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repository"
+    },
+    "requires": {
+      "$ref": "#/$defs/PluginRequires"
+    },
+    "specVersion": {
+      "const": 1,
+      "description": "Contract version; currently only 1.",
+      "title": "Specversion",
+      "type": "integer"
+    },
+    "surfaces": {
+      "items": {
+        "$ref": "#/$defs/PluginSurface"
+      },
+      "minItems": 1,
+      "title": "Surfaces",
+      "type": "array"
+    },
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/AgentTarget"
+      },
+      "minItems": 1,
+      "title": "Targets",
+      "type": "array"
+    },
+    "uninstall": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PluginUninstall"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "version": {
+      "description": "Plugin semver, independent of the Foresight server version.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "specVersion",
+    "id",
+    "name",
+    "version",
+    "targets",
+    "surfaces",
+    "requires"
+  ],
+  "title": "PluginManifest",
+  "type": "object"
+}

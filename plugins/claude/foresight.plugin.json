@@ -1,0 +1,95 @@
+{
+  "specVersion": 1,
+  "id": "claude",
+  "name": "Foresight for Claude Code & Desktop",
+  "version": "1.0.0",
+  "description": "Persistent memory for Claude via the Foresight MCP server — context injection, in-flight capture, and cross-session recall.",
+  "author": {
+    "name": "daggerstuff"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/daggerstuff/foresight",
+  "repository": "https://github.com/daggerstuff/foresight",
+  "targets": ["claude-code", "claude-desktop"],
+  "surfaces": ["mcp", "rest", "hooks", "skills"],
+  "requires": {
+    "foresight": ">=0.19.0",
+    "transports": ["http", "stdio"],
+    "capabilities": [
+      "context.inject",
+      "context-blocks",
+      "capture.transcript",
+      "capture.in-flight",
+      "memory.search",
+      "memory.store",
+      "memory.update",
+      "memory.delete",
+      "temporal.query",
+      "curation.manage",
+      "status.health"
+    ]
+  },
+  "artifacts": [
+    {
+      "type": "native-manifest",
+      "path": ".claude-plugin/plugin.json",
+      "targets": ["claude-code"],
+      "description": "Claude Code plugin manifest"
+    },
+    {
+      "type": "config",
+      "path": ".mcp.json",
+      "surface": "mcp",
+      "targets": ["claude-code"],
+      "description": "Registers the foresight MCP server (http://127.0.0.1:8764/mcp)"
+    },
+    {
+      "type": "hook",
+      "path": "hooks/hooks.json",
+      "surface": "hooks",
+      "targets": ["claude-code"],
+      "description": "UserPromptSubmit / PreCompact / PostCompact / Stop / SessionEnd hooks"
+    },
+    {
+      "type": "hook",
+      "path": "hooks/foresight_hook.py",
+      "surface": "hooks",
+      "targets": ["claude-code"],
+      "description": "Context injection + transcript capture hook implementation"
+    },
+    {
+      "type": "skill",
+      "path": "skills/foresight/SKILL.md",
+      "surface": "skills",
+      "targets": ["claude-code"],
+      "description": "Teaches Claude the Foresight MCP tools and best practices"
+    },
+    {
+      "type": "cli",
+      "path": "install.sh",
+      "description": "One-shot installer for Claude Code and Claude Desktop"
+    },
+    {
+      "type": "source",
+      "path": "install_support.py",
+      "description": "Config-writing helpers invoked by install.sh"
+    },
+    {
+      "type": "docs",
+      "path": "CONNECTOR.md",
+      "description": "claude.ai web/mobile custom-connector instructions (MCP-only fallback)"
+    }
+  ],
+  "credentials": {
+    "envFile": "~/.config/foresight/credentials.env",
+    "keys": ["FORESIGHT_API_KEY", "FORESIGHT_IDENTITY", "FORESIGHT_MCP_URL"]
+  },
+  "install": {
+    "command": "bash install.sh",
+    "dryRunFlag": "--dry-run"
+  },
+  "uninstall": {
+    "notes": "Re-run install.sh paths in reverse or remove the merged entries from ~/.claude.json, ~/.claude/settings.json, and claude_desktop_config.json; see README.md."
+  },
+  "keywords": ["memory", "mcp", "context", "persistence"]
+}

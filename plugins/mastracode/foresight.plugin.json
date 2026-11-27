@@ -1,0 +1,75 @@
+{
+  "specVersion": 1,
+  "id": "mastracode",
+  "name": "Foresight Persistent Memory for Mastra Code",
+  "version": "1.0.0",
+  "description": "Native TypeScript plugin for Mastra Code providing hands-off context injection, background turn distillation, and native Foresight tools.",
+  "author": {
+    "name": "daggerstuff"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/daggerstuff/foresight",
+  "repository": "https://github.com/daggerstuff/foresight",
+  "targets": ["mastracode"],
+  "surfaces": ["extension", "rest", "mcp"],
+  "requires": {
+    "foresight": ">=0.19.0",
+    "transports": ["http"],
+    "capabilities": [
+      "context.inject",
+      "context-blocks",
+      "capture.transcript",
+      "memory.search",
+      "memory.store",
+      "status.health"
+    ]
+  },
+  "artifacts": [
+    {
+      "type": "native-manifest",
+      "path": "package.json",
+      "surface": "extension",
+      "description": "Mastra Code plugin package manifest"
+    },
+    {
+      "type": "extension",
+      "path": "src/index.ts",
+      "surface": "extension",
+      "description": "Plugin entrypoint"
+    },
+    {
+      "type": "extension",
+      "path": "src/client.ts",
+      "surface": "rest",
+      "description": "Foresight REST client"
+    },
+    {
+      "type": "extension",
+      "path": "src/processor.ts",
+      "surface": "extension",
+      "description": "processInput injection + processOutputResult capture"
+    },
+    {
+      "type": "extension",
+      "path": "src/tools.ts",
+      "surface": "extension",
+      "description": "Native foresight_* tools"
+    },
+    {
+      "type": "docs",
+      "path": "README.md"
+    }
+  ],
+  "credentials": {
+    "envFile": "~/.config/foresight/credentials.env",
+    "keys": ["FORESIGHT_MCP_URL", "FORESIGHT_IDENTITY", "FORESIGHT_USER_ID"]
+  },
+  "install": {
+    "notes": "In Mastra Code open /plugins, choose Install new plugin, then Local path and point it at this directory.",
+    "dryRunFlag": null
+  },
+  "uninstall": {
+    "notes": "Remove the plugin entry from ~/.mastracode/plugins/plugins.json or the /plugins UI; see README.md."
+  },
+  "keywords": ["memory", "typescript", "mastracode", "recall"]
+}
