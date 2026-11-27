@@ -19,6 +19,7 @@ import foresight_plugin_sdk as sdk
 client = sdk.ForesightClient.from_env()
 import contextlib
 
+prompt_text = "where did we leave the plugin manifest work?"
 with contextlib.suppress(Exception):
     block = client.inject_context(prompt_text)
 ```
@@ -58,5 +59,17 @@ isn't installed).
 ## Server discovery
 
 `FORESIGHT_MCP_URL` → `FORESIGHT_URL` → credentials file →
-`http://127.0.0.1:8764`. Remote/hosted deployments set `FORESIGHT_API_KEY`
-(Bearer) and `FORESIGHT_IDENTITY`/`FORESIGHT_USER_ID` (lane).
+`http://127.0.0.1:8764`.
+
+The first two are read from the process environment, then from
+`~/.config/foresight/credentials.env`, which uses the same key names:
+
+```ini
+FORESIGHT_MCP_URL=https://foresight.example.com/mcp
+FORESIGHT_URL=https://foresight.example.com
+FORESIGHT_API_KEY=...
+FORESIGHT_IDENTITY=alice@acme
+```
+
+Remote/hosted deployments set `FORESIGHT_API_KEY` (Bearer) and
+`FORESIGHT_IDENTITY`/`FORESIGHT_USER_ID` (lane).
