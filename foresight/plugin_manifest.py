@@ -37,11 +37,13 @@ PLUGIN_MANIFEST_FILENAME = "foresight.plugin.json"
 PLUGIN_MANIFEST_SCHEMA_PATH = "plugins/manifest.schema.json"
 
 # Official SemVer 2.0.0 pattern (semver.org); the loader and the generated schema share it
-# so neither accepts a leading-zero or empty prerelease identifier.
+# so neither accepts a leading-zero or empty prerelease identifier. Digits are spelled
+# [0-9] rather than the \d shorthand, which also matches Unicode decimal digits such as
+# the Arabic-Indic U+0661 that SemVer numeric identifiers forbid.
 _VERSION_PATTERN_TEXT = (
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
-    r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
     r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
 )
 VERSION_PATTERN = re.compile(_VERSION_PATTERN_TEXT)
@@ -377,6 +379,14 @@ EXIT_OK = 0
 EXIT_INVALID_MANIFEST = 1
 EXIT_UNREADABLE_PATH = 2
 EXIT_NO_MANIFESTS = 3
+EXIT_USAGE = 64
+
+
+class _UsageErrorParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        sys.stderr.write(self.prog + ": error: " + message + chr(10))
+        raise SystemExit(EXIT_USAGE)
 
 
 def _scan_paths(paths: list[Path]) -> tuple[int, int, int, int]:
@@ -409,13 +419,14 @@ def _scan_paths(paths: list[Path]) -> tuple[int, int, int, int]:
 
 
 def _main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = _UsageErrorParser(
         prog="python -m foresight.plugin_manifest",
         description="Validate foresight.plugin.json manifests.",
         epilog=(
             "Exit codes: 0 all manifests valid; 1 at least one manifest is invalid; "
             "2 at least one path could not be read; 3 at least one path contained no "
-            "manifests. When several apply, 1 outranks 2, and 2 outranks 3."
+            "manifests; 64 the command line was invalid. When several apply, 1 outranks "
+            "2, and 2 outranks 3."
         ),
     )
     parser.add_argument(

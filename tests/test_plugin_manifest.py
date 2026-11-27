@@ -14,6 +14,7 @@ from foresight.plugin_manifest import (
     EXIT_NO_MANIFESTS,
     EXIT_OK,
     EXIT_UNREADABLE_PATH,
+    EXIT_USAGE,
     PLUGIN_MANIFEST_FILENAME,
     PLUGIN_MANIFEST_SCHEMA_PATH,
     AgentTarget,
@@ -198,6 +199,16 @@ class TestParsePluginManifest:
         manifest = parse_plugin_manifest(_minimal_manifest(version="1.2.3-rc.1+build.5"))
         assert manifest.version == "1.2.3-rc.1+build.5"
 
+    @pytest.mark.parametrize("version_value", ["1\u0661.2.3", "1.2.\u0663", "\u0661.2.3"])
+    def test_rejects_non_ascii_digits(self, version_value: str):
+        assert _version_accepts(version_value) is False
+        assert _version_schema_accepts(version_value) is False
+
+    @pytest.mark.parametrize("version_value", ["11.2.3", "1.2.3-rc.1+build.5", "0.0.0"])
+    def test_accepts_ascii_digits(self, version_value: str):
+        assert _version_accepts(version_value) is True
+        assert _version_schema_accepts(version_value) is True
+
     @pytest.mark.parametrize("bad_version", ["1.0.0-01", "1.0.0-00.1", "1.0.0-a..b", "1.0.0+build..5"])
     def test_rejects_invalid_prerelease_identifiers(self, bad_version: str):
         with pytest.raises(PluginManifestError):
@@ -378,6 +389,18 @@ class TestIterPluginManifests:
         assert code == EXIT_OK
         err = capsys.readouterr().err
         assert "no manifests" not in err
+
+    def test_cli_usage_error_exits_64(self, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            _main(["--not-a-flag"])
+        assert excinfo.value.code == EXIT_USAGE
+        assert "usage:" in capsys.readouterr().err
+
+    def test_cli_missing_paths_exit_64(self, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            _main([])
+        assert excinfo.value.code == EXIT_USAGE
+        assert "at least one path is required" in capsys.readouterr().err
 
 
 class TestSchemaSync:
