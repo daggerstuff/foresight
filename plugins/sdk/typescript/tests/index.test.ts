@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -42,9 +42,23 @@ function stubFetch(impl: (url: string, init?: RequestInit) => unknown) {
   return spy
 }
 
+const ENV_BASELINE: Partial<Record<(typeof ENV_KEYS)[number], string>> = {}
+for (const key of ENV_KEYS) {
+  const value = process.env[key]
+  if (value !== undefined) ENV_BASELINE[key] = value
+}
+
+beforeEach(() => {
+  for (const key of ENV_KEYS) delete process.env[key]
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
-  for (const key of ENV_KEYS) delete process.env[key]
+  for (const key of ENV_KEYS) {
+    const value = ENV_BASELINE[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
 })
 
 describe('env + credentials', () => {
