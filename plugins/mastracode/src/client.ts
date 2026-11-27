@@ -10,6 +10,8 @@ export {
   captureText,
   captureTranscript,
   fetchInjectContext,
+  laneArgs,
+  loadCredentials,
   mcpCall,
   parseSSEResult,
   postJson,

@@ -6,6 +6,7 @@ import {
 import {
   autoCaptureTurn,
   fetchInjectContext,
+  laneArgs,
   mcpCall,
   parseSSEResult,
   type ForesightClientConfig,
@@ -19,6 +20,7 @@ export {
   createForesightTools,
   fetchInjectContext,
   FORESIGHT_DIRECTIVES,
+  laneArgs,
   mcpCall,
   parseSSEResult,
   type ForesightClientConfig,

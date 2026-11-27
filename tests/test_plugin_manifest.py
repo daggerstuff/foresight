@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from foresight.plugin_manifest import (
@@ -519,6 +520,47 @@ class TestSchemaSync:
     )
     def test_schema_version_matches_loader(self, version_value: str):
         assert _version_schema_accepts(version_value) == _version_accepts(version_value), version_value
+
+    def test_schema_rejects_a_null_path(self):
+        manifest = _minimal_manifest(artifacts=[{"type": "hook", "path": None}])
+        assert _artifact_accepts(None) is False
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(manifest, manifest_json_schema())
+
+    def test_schema_accepts_a_null_source(self):
+        # The artifact lives inside its own plugin directory, so ``source`` is
+        # simply absent; the loader models that as ``None`` and the published
+        # schema has to agree, or a generated manifest fails its own schema.
+        manifest = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": None}])
+        parsed = parse_plugin_manifest(manifest)
+        assert parsed.artifacts[0].source is None
+        jsonschema.validate(manifest, manifest_json_schema())
+
+    @pytest.mark.parametrize(
+        "forbidden_source",
+        [
+            "/etc/passwd",
+            "~/hook.py",
+            "./~alice/hook.py",
+            "../escape.sh",
+            "C:\\hook.py",
+            "\\\\server\\share\\hook.py",
+        ],
+    )
+    def test_schema_rejects_a_forbidden_source(self, forbidden_source):
+        manifest = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": forbidden_source}])
+        assert _source_accepts(forbidden_source) is False, forbidden_source
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(manifest, manifest_json_schema())
+
+    @pytest.mark.parametrize(
+        "relative_source",
+        ["hook.py", "./hook.py", "assets/~backup/hook.py", "hooks/foresight_hook.py"],
+    )
+    def test_schema_accepts_a_relative_source(self, relative_source):
+        manifest = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": relative_source}])
+        assert _source_accepts(relative_source) is True, relative_source
+        jsonschema.validate(manifest, manifest_json_schema())
 
     def test_schema_requires_spec_version(self):
         assert "specVersion" in manifest_json_schema()["required"]

@@ -52,15 +52,25 @@ VERSION_PATTERN = re.compile(_VERSION_PATTERN_TEXT)
 # single POSIX path part, so a POSIX-only split would let it escape. The same
 # patterns are emitted into the JSON Schema so the loader and the schema cannot
 # disagree about which paths are legal.
+#
+# ``_DOT_SEGMENTS`` mirrors what ``PurePosixPath`` does to its input: a leading
+# ``./`` is dropped, so ``./~alice/x`` normalizes to ``~/alice/x`` and a
+# surface-by-surface expansion of that path would leave the plugin directory.
+_DOT_SEGMENTS = r"^(?:\./|\.\\)*"
 _FORBIDDEN_PATH_PATTERNS = (
-    r"^/",  # POSIX absolute
-    r"^[A-Za-z]:",  # Windows drive, absolute or relative
-    r"^\\",  # Windows root or UNC prefix
-    r"^~",  # leading home-relative path such as ~/x or ~alice/x
+    _DOT_SEGMENTS + r"/",  # POSIX absolute
+    _DOT_SEGMENTS + r"[A-Za-z]:",  # Windows drive, absolute or relative
+    _DOT_SEGMENTS + r"\\",  # Windows root or UNC prefix
+    _DOT_SEGMENTS + r"~",  # home-relative path such as ~/x or ~alice/x
     r"(?:^|[/\\])\.\.(?:[/\\]|$)",  # parent-directory segment
 )
 
-_PATH_SCHEMA_EXTRA: dict[str, Any] = {"not": {"anyOf": [{"pattern": pattern} for pattern in _FORBIDDEN_PATH_PATTERNS]}}
+# Every branch names ``type: string``: a bare ``pattern`` matches each non-string
+# instance, so the negated ``anyOf`` would reject the legal ``"source": null``
+# that the loader accepts for an artifact living inside its own plugin directory.
+_PATH_SCHEMA_EXTRA: dict[str, Any] = {
+    "not": {"anyOf": [{"type": "string", "pattern": pattern} for pattern in _FORBIDDEN_PATH_PATTERNS]}
+}
 
 
 class AgentTarget(StrEnum):

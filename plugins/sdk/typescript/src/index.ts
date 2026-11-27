@@ -111,7 +111,8 @@ export async function loadCredentials(
     return ''
   }
   const identity = config?.identity || pick('FORESIGHT_IDENTITY')
-  const lane = identity ? identity.split('@', 1)[0] : ''
+  const identityLane = identity ? identity.split('@', 1)[0] : ''
+  const userId = config?.userId ?? pick('FORESIGHT_USER_ID')
   return {
     baseUrl:
       config?.baseUrl ??
@@ -122,8 +123,11 @@ export async function loadCredentials(
       FORESIGHT_DEFAULT_URL,
     apiKey: config?.apiKey ?? pick('FORESIGHT_API_KEY'),
     identity,
-    userId: config?.userId ?? pick('FORESIGHT_USER_ID'),
-    lane: lane || (config?.userId ?? pick('FORESIGHT_USER_ID')),
+    userId,
+    // An explicit user id outranks the identity-derived lane: a caller that
+    // passes userId is asking for that lane, and authHeaders/resolvedLane would
+    // otherwise send X-User-Id for a different identity's lane.
+    lane: config?.userId || identityLane || userId,
   }
 }
 
@@ -141,8 +145,56 @@ export function authHeaders(
 }
 
 export function restBaseUrl(credentials: ForesightCredentials): string {
-  const base = credentials.baseUrl.replace(/\/+$/, '')
-  return base.endsWith('/mcp') ? base.slice(0, -'/mcp'.length) : base
+  const url = splitBaseUrl(credentials.baseUrl)
+  const path = url.pathname.replace(/\/+$/, '')
+  return withPath(url, path.endsWith('/mcp') ? path.slice(0, -'/mcp'.length) : path)
+}
+
+/**
+ * Split a configured base URL, refusing anything that is not http(s).
+ *
+ * Paths are rebuilt from the parsed URL rather than concatenated onto the
+ * string, because appending to a base that carries a query lands inside the
+ * query (`?route=blue/mcp`) and never reaches the endpoint.
+ */
+function splitBaseUrl(baseUrl: string): URL {
+  let parsed: URL
+  try {
+    parsed = new URL(baseUrl)
+  } catch {
+    throw new ForesightError(`invalid Foresight URL: ${baseUrl}`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new ForesightError(
+      `invalid Foresight URL: ${baseUrl} (expected http: or https:)`,
+    )
+  }
+  return parsed
+}
+
+/** Rebuild `url` with `path`, keeping its query and dropping its fragment. */
+function withPath(url: URL, path: string): string {
+  const built = new URL(url.toString())
+  built.pathname = path
+  built.hash = ''
+  return built.toString()
+}
+
+/** MCP endpoint for a base URL, with `/mcp` placed in the path. */
+function mcpUrlFor(credentials: ForesightCredentials): string {
+  const url = splitBaseUrl(credentials.baseUrl)
+  const path = url.pathname.replace(/\/+$/, '')
+  return withPath(url, path.endsWith('/mcp') ? path : `${path}/mcp`)
+}
+
+/** REST endpoint for a base URL, with any terminal `/mcp` removed. */
+function restUrlFor(credentials: ForesightCredentials, path: string): string {
+  const url = splitBaseUrl(credentials.baseUrl)
+  const basePath = url.pathname.replace(/\/+$/, '')
+  const restPath = basePath.endsWith('/mcp')
+    ? basePath.slice(0, -'/mcp'.length)
+    : basePath
+  return withPath(url, `${restPath}${path}`)
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -176,9 +228,23 @@ export function assertCredentialTransport(
   )
 }
 
-/** The lane the REST path selects, so the MCP fallbacks read the same lane. */
+/**
+ * The lane the REST path selects, so the MCP fallbacks read the same lane.
+ *
+ * Empty when neither an identity nor a user id is configured: an invented
+ * placeholder would select a lane the API key cannot see, so callers omit the
+ * argument and let the server use the key's own lane.
+ */
 export function resolvedLane(credentials: ForesightCredentials): string {
-  return credentials.lane || credentials.userId || 'default'
+  return credentials.lane || credentials.userId
+}
+
+/** The MCP `user_id` argument, omitted when no lane is configured. */
+export function laneArgs(
+  credentials: ForesightCredentials,
+): Record<string, unknown> {
+  const lane = resolvedLane(credentials)
+  return lane ? { user_id: lane } : {}
 }
 
 function carriesAuthorization(headers?: Record<string, string>): boolean {
@@ -201,23 +267,48 @@ export function parseSSEResult(body: string): Record<string, unknown> | null {
   } catch {
     // Fall through to line-by-line SSE parsing
   }
-  const lines = body.split('\n')
   let fallback: Record<string, unknown> | null = null
-  for (const line of lines) {
-    if (line.startsWith('data: ')) {
-      try {
-        const parsed: unknown = JSON.parse(line.slice(6))
-        if (parsed && typeof parsed === 'object' && parsed !== null) {
-          const frame = parsed as Record<string, unknown>
-          if ('result' in frame || 'error' in frame) return frame
-          if (fallback === null && !isNotificationFrame(frame)) fallback = frame
-        }
-      } catch {
-        // keep scanning
-      }
+  for (const event of iterSSEEvents(body)) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(event)
+    } catch {
+      continue
     }
+    if (!parsed || typeof parsed !== 'object') continue
+    const frame = parsed as Record<string, unknown>
+    if ('result' in frame || 'error' in frame) return frame
+    if (fallback === null && !isNotificationFrame(frame)) fallback = frame
   }
   return fallback
+}
+
+/**
+ * Yield each SSE event's data payload, joined across that event's lines.
+ *
+ * SSE ends an event on a blank line and allows one payload to span several
+ * `data:` lines, so decoding each line on its own drops a split payload. A
+ * single leading space after the colon is framing, not payload, and `:`
+ * comment lines carry no data.
+ */
+function* iterSSEEvents(body: string): Generator<string> {
+  let data: string[] = []
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.replace(/\r$/, '')
+    if (!line) {
+      if (data.length) {
+        yield data.join('\n')
+        data = []
+      }
+      continue
+    }
+    if (line.startsWith(':')) continue
+    if (line.startsWith('data:')) {
+      const value = line.slice('data:'.length)
+      data.push(value.startsWith(' ') ? value.slice(1) : value)
+    }
+  }
+  if (data.length) yield data.join('\n')
 }
 
 export interface PostJsonResult {
@@ -226,8 +317,9 @@ export interface PostJsonResult {
 }
 
 /**
- * POST a JSON payload with a timeout. Resolves `{status, body}` for any HTTP
- * status; rejects only on transport failure (caller decides fail-safe policy).
+ * POST a JSON payload with a timeout. Resolves `{status, body}` for a
+ * non-redirect HTTP status; rejects on transport failure, a redirect status,
+ * or an invalid/cleartext URL (the caller decides fail-safe policy).
  */
 export async function postJson(
   url: string,
@@ -248,8 +340,16 @@ export async function postJson(
       method: 'POST',
       headers: options?.headers ?? { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      // `fetch` follows a redirect by default, which would repeat the POST body
+      // against whatever host the Location header names. Refuse instead.
+      redirect: 'error',
       signal: controller.signal,
     })
+    if (resp.status >= 300 && resp.status < 400) {
+      throw new ForesightError(
+        `refusing redirect ${resp.status} from ${url}: the endpoint moved`,
+      )
+    }
     return { status: resp.status, body: await resp.text() }
   } catch (err) {
     throw new ForesightError(
@@ -266,8 +366,7 @@ export async function mcpCall(
   config?: ForesightClientConfig,
 ): Promise<string | null> {
   const credentials = await loadCredentials(config)
-  const baseUrl = credentials.baseUrl.replace(/\/+$/, '')
-  const mcpUrl = baseUrl.endsWith('/mcp') ? baseUrl : `${baseUrl}/mcp`
+  const mcpUrl = mcpUrlFor(credentials)
   const timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   const controller = new AbortController()
@@ -299,6 +398,7 @@ export async function mcpCall(
           },
         },
       }),
+      redirect: 'error',
       signal: controller.signal,
     })
 
@@ -352,7 +452,7 @@ async function postPath(
   try {
     const credentials = await loadCredentials(config)
     const { status, body } = await postJson(
-      `${restBaseUrl(credentials)}${path}`,
+      restUrlFor(credentials, path),
       payload,
       {
         headers: authHeaders(credentials),
@@ -393,7 +493,7 @@ export async function fetchInjectContext(
       conversation_text: query,
       max_memories: 6,
       min_relevance: 0.01,
-      user_id: resolvedLane(credentials),
+      ...laneArgs(credentials),
     },
     config,
   )
@@ -432,13 +532,14 @@ export async function postTelemetry(
   surface: string,
   payload: Record<string, unknown>,
   config?: ForesightClientConfig,
-): Promise<void> {
-  await postPath(
+): Promise<boolean> {
+  const result = await postPath(
     '/ui/api/telemetry/gating',
     { surface, ...payload },
     config,
     2000,
   )
+  return result !== null && result.status >= 200 && result.status < 300
 }
 
 export async function autoCaptureTurn(
@@ -466,7 +567,7 @@ export async function autoCaptureTurn(
     {
       session_id: sessionId || config?.sessionFallback || 'agent-session',
       messages,
-      user_id: resolvedLane(credentials),
+      ...laneArgs(credentials),
     },
     config,
   ).catch(() => {})

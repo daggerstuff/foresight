@@ -69,6 +69,29 @@ class TestCredentials:
         creds = sdk.resolve_credentials({}, str(env_file))
         assert creds.lane == "carol"
 
+    def test_mcp_url_appends_to_the_path_and_keeps_the_query(self):
+        creds = sdk.Credentials(base_url="https://foresight.example.com/prefix?route=blue")
+        assert creds.mcp_url == "https://foresight.example.com/prefix/mcp?route=blue"
+        assert creds.rest_url == "https://foresight.example.com/prefix?route=blue"
+
+    def test_mcp_url_does_not_double_a_terminal_mcp(self):
+        assert sdk.Credentials(base_url="https://h/mcp").mcp_url == "https://h/mcp"
+        assert sdk.Credentials(base_url="https://h/mcp/").mcp_url == "https://h/mcp"
+
+    def test_rest_url_strips_only_a_terminal_mcp(self):
+        assert sdk.Credentials(base_url="https://h/mcp").rest_url == "https://h"
+        assert sdk.Credentials(base_url="https://h/mcpx").rest_url == "https://h/mcpx"
+
+    def test_url_properties_reject_a_non_http_scheme(self):
+        # http.client falls back to a cleartext HTTPConnection for a scheme it
+        # does not recognise, which would put the API key on the wire.
+        with pytest.raises(sdk.ForesightError, match="http://"):
+            _ = sdk.Credentials(base_url="ftp://foresight.example.com/mcp").mcp_url
+
+    def test_url_properties_reject_a_missing_host(self):
+        with pytest.raises(sdk.ForesightError, match="no host"):
+            _ = sdk.Credentials(base_url="http://").rest_url
+
     def test_auth_headers_include_bearer_and_lane(self, env_file: Path):
         creds = sdk.resolve_credentials({}, str(env_file))
         headers = sdk.auth_headers(creds)
@@ -129,6 +152,14 @@ class TestTransport:
             sdk.post_json(f"{base}/bad", {})
         assert excinfo.value.status == http.HTTPStatus.INTERNAL_SERVER_ERROR
 
+    def test_post_json_refuses_redirect(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/moved"] = (http.HTTPStatus.FOUND, {"ok": True})
+        with pytest.raises(sdk.ForesightError, match="redirect"):
+            sdk.post_json(f"{base}/moved", {})
+        # The body was posted once; the redirect target was never followed.
+        assert handler.requests == [("/moved", {})]
+
     def test_post_json_unreachable_raises_foresight_error(self):
         with pytest.raises(sdk.ForesightError):
             sdk.post_json("http://127.0.0.1:1/unreachable", {}, timeout=1.0)
@@ -167,7 +198,14 @@ class TestTransport:
         assert status == http.HTTPStatus.OK
         assert json.loads(raw) == {"ok": True}
 
-    def test_post_json_allows_cleartext_credentials_to_ipv6_loopback(self):
+    def test_post_json_allows_cleartext_credentials_to_ipv6_loopback(self, monkeypatch):
+        opened: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def record(*args, **kwargs):
+            opened.append((args, kwargs))
+            raise ConnectionRefusedError("test refuses to open a socket")
+
+        monkeypatch.setattr(sdk.http.client, "HTTPConnection", record)
         with pytest.raises(sdk.ForesightError) as excinfo:
             sdk.post_json(
                 "http://[::1]:1/mcp",
@@ -175,16 +213,23 @@ class TestTransport:
                 headers={"Authorization": "Bearer k"},
                 timeout=1.0,
             )
+        assert opened, "an allowed loopback request must reach the transport"
         assert "cleartext" not in str(excinfo.value)
 
     def test_post_json_unauthenticated_cleartext_off_loopback_is_allowed(self, monkeypatch):
-        def no_connect(*_args, **_kwargs):
-            raise AssertionError("transport should be reached for an unauthenticated request")
+        attempted: list[tuple] = []
 
-        monkeypatch.setattr(sdk.http.client, "HTTPConnection", no_connect)
+        def record(*args, **kwargs):
+            attempted.append((args, kwargs))
+            raise sdk.ForesightError("stub transport")
+
+        monkeypatch.setattr(sdk.http.client, "HTTPConnection", record)
         with pytest.raises(sdk.ForesightError) as excinfo:
             sdk.post_json("http://foresight.example.com/mcp", {"a": 1})
         assert "cleartext" not in str(excinfo.value)
+        # An unauthenticated request must reach the transport, not be refused.
+        assert attempted
+        assert attempted[0][0][0] == "foresight.example.com"
 
     def test_parse_json(self):
         assert sdk.parse_json(b'{"a": 1}') == {"a": 1}
@@ -231,6 +276,20 @@ class TestHookInputAndMcp:
         body = 'data: {"jsonrpc": "2.0", "id": 1, "content": []}\n\n'
         assert sdk.parse_sse_result(body) == {"jsonrpc": "2.0", "id": 1, "content": []}
 
+    def test_parse_sse_result_skips_comments_and_joins_multiline_data(self):
+        body = ': keep-alive\n\nevent: message\ndata: {"jsonrpc": "2.0",\ndata:  "result": {"content": []}}\n\n'
+        assert sdk.parse_sse_result(body) == {
+            "jsonrpc": "2.0",
+            "result": {"content": []},
+        }
+
+    def test_parse_sse_result_accepts_data_without_a_space(self):
+        assert sdk.parse_sse_result('data:{"result": 7}\n\n') == {"result": 7}
+
+    def test_parse_sse_result_ignores_an_unparsable_event(self):
+        body = 'data: {not json}\n\ndata: {"result": 8}\n\n'
+        assert sdk.parse_sse_result(body) == {"result": 8}
+
     def test_mcp_result_text(self):
         result = {"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
         assert sdk.mcp_result_text(result) == "a\nb"
@@ -251,24 +310,55 @@ class TestForesightClient:
         assert path == "/ui/api/inject"
         assert body == {"text": "hello"}
 
+    def test_inject_context_falls_back_to_mcp_without_inventing_a_lane(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/ui/api/inject"] = (http.HTTPStatus.INTERNAL_SERVER_ERROR, {"err": "no rest"})
+        handler.responses["/mcp"] = (
+            http.HTTPStatus.OK,
+            {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": "mcp block"}]}},
+        )
+        client = sdk.ForesightClient(credentials=sdk.Credentials(base_url=base))
+        assert client.inject_context("hello") == "mcp block"
+        path, body = handler.requests[-1]
+        assert path == "/mcp"
+        arguments = body["params"]["arguments"]["params"]
+        assert arguments["conversation_text"] == "hello"
+        assert "user_id" not in arguments
+
+    def test_inject_context_fallback_sends_the_configured_lane(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/ui/api/inject"] = (http.HTTPStatus.INTERNAL_SERVER_ERROR, {"err": "no rest"})
+        handler.responses["/mcp"] = (
+            http.HTTPStatus.OK,
+            {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": "mcp block"}]}},
+        )
+        client = sdk.ForesightClient(
+            credentials=sdk.Credentials(base_url=base, identity="dana@acme"),
+        )
+        assert client.inject_context("hello") == "mcp block"
+        arguments = handler.requests[-1][1]["params"]["arguments"]["params"]
+        assert arguments["user_id"] == "dana"
+
     def test_capture_text_and_transcript(self, stub_server):
         base, handler = stub_server
         handler.responses["/ui/api/capture"] = (http.HTTPStatus.OK, {})
         handler.responses["/session/transcript"] = (http.HTTPStatus.OK, {})
         client = sdk.ForesightClient(credentials=sdk.Credentials(base_url=base))
-        client.capture_text("note", "sess1")
-        client.capture_transcript("sess1", [{"role": "user", "content": "hi"}])
+        assert client.capture_text("note", "sess1") is True
+        assert client.capture_transcript("sess1", [{"role": "user", "content": "hi"}]) is True
         paths = [p for p, _ in handler.requests]
-        assert "/ui/api/capture" in paths
-        assert "/session/transcript" in paths
-        assert handler.requests[paths.index("/ui/api/capture")][1] == {
-            "text": "note",
-            "session_id": "sess1",
-        }
-        assert handler.requests[paths.index("/session/transcript")][1] == {
+        assert paths == ["/ui/api/capture", "/session/transcript"]
+        assert handler.requests[0][1] == {"text": "note", "session_id": "sess1"}
+        assert handler.requests[1][1] == {
             "session_id": "sess1",
             "messages": [{"role": "user", "content": "hi"}],
         }
+
+    def test_capture_reports_a_rejected_post_as_false(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/ui/api/capture"] = (http.HTTPStatus.INTERNAL_SERVER_ERROR, {"err": "boom"})
+        client = sdk.ForesightClient(credentials=sdk.Credentials(base_url=base))
+        assert client.capture_text("note", "sess1") is False
 
     def test_call_tool_parses_sse(self):
         class SSEHandler(_StubHandler):
@@ -335,7 +425,39 @@ class TestForesightClient:
 class TestClaudeHookIntegration:
     """The refactored hook must keep working end-to-end via the SDK."""
 
-    def _run_hook(self, action: str, payload: dict, base_url: str, tmp_path: Path):
+    @staticmethod
+    def _copy_hook(tmp_path: Path) -> Path:
+        """Copy the hook somewhere its repo sibling SDK path does not resolve."""
+        hook = tmp_path / "hooks" / "foresight_hook.py"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_bytes(HOOK_PATH.read_bytes())
+        return hook
+
+    @staticmethod
+    def _write_sdk_shim(hook: Path, marker: Path) -> None:
+        """Point the hook at the real SDK, recording that the import happened."""
+        real_sdk = SDK_DIR / "foresight_plugin_sdk.py"
+        lines = [
+            "import importlib.util as _iu",
+            "import pathlib as _pl",
+            f"_pl.Path({str(marker)!r}).write_text('imported', encoding='utf-8')",
+            f"_spec = _iu.spec_from_file_location('_real_foresight_plugin_sdk', {str(real_sdk)!r})",
+            "_real = _iu.module_from_spec(_spec)",
+            "_spec.loader.exec_module(_real)",
+            "globals().update(",
+            "    {name: getattr(_real, name) for name in dir(_real) if not name.startswith('__')}",
+            ")",
+        ]
+        (hook.parent / "foresight_plugin_sdk.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _run_hook(
+        self,
+        action: str,
+        payload: dict,
+        base_url: str,
+        tmp_path: Path,
+        hook_path: Path | None = None,
+    ):
         env = dict(os.environ)
         env.update(
             {
@@ -347,7 +469,7 @@ class TestClaudeHookIntegration:
         env.pop("FORESIGHT_API_KEY", None)
         env.pop("FORESIGHT_IDENTITY", None)
         return subprocess.run(
-            [sys.executable, str(HOOK_PATH), action],
+            [sys.executable, str(hook_path or HOOK_PATH), action],
             input=json.dumps(payload),
             capture_output=True,
             text=True,
@@ -356,22 +478,51 @@ class TestClaudeHookIntegration:
             check=False,
         )
 
-    def test_prompt_injects_context_block(self, stub_server, tmp_path: Path):
+    def test_prompt_injects_context_block_through_the_sdk(self, stub_server, tmp_path: Path):
         base, handler = stub_server
         handler.responses["/ui/api/inject"] = (
             http.HTTPStatus.OK,
             {"formatted": "recalled memory", "top_score": 0.5},
         )
         handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
+        hook = self._copy_hook(tmp_path)
+        marker = tmp_path / "sdk-imported"
+        self._write_sdk_shim(hook, marker)
         result = self._run_hook(
             "prompt",
             {"prompt": "continue the migration", "session_id": "s1"},
             base,
             tmp_path,
+            hook_path=hook,
         )
         assert result.returncode == 0, result.stderr
+        # The shim runs only when the hook imported foresight_plugin_sdk, so the
+        # marker proves this request came from the SDK path, not the inline copy.
+        assert marker.exists()
         assert "FORESIGHT CONTINUITY CONTEXT" in result.stdout
         assert "recalled memory" in result.stdout
+        inject_calls = [b for p, b in handler.requests if p == "/ui/api/inject"]
+        assert inject_calls
+        assert inject_calls[0]["text"] == "continue the migration"
+
+    def test_prompt_still_injects_without_the_sdk(self, stub_server, tmp_path: Path):
+        """A missing SDK must not break the host session: the inline path stays."""
+        base, handler = stub_server
+        handler.responses["/ui/api/inject"] = (
+            http.HTTPStatus.OK,
+            {"formatted": "inline memory", "top_score": 0.5},
+        )
+        handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
+        hook = self._copy_hook(tmp_path)
+        result = self._run_hook(
+            "prompt",
+            {"prompt": "continue the migration", "session_id": "s1"},
+            base,
+            tmp_path,
+            hook_path=hook,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "inline memory" in result.stdout
         inject_calls = [b for p, b in handler.requests if p == "/ui/api/inject"]
         assert inject_calls
         assert inject_calls[0]["text"] == "continue the migration"

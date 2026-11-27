@@ -29,24 +29,27 @@ with contextlib.suppress(Exception):
 | --- | --- |
 | `resolve_credentials` / `Credentials` | env → `~/.config/foresight/credentials.env` resolution; `lane` derives `X-User-Id` from `FORESIGHT_IDENTITY` (`alice@acme` → `alice`) |
 | `auth_headers` | `Content-Type` + `Authorization: Bearer` + `X-User-Id` |
-| `post_json` | stdlib `http.client` POST; raises `ForesightHTTPError` (>=400) / `ForesightError` (transport) |
+| `post_json` | stdlib `http.client` POST (no redirect following); raises `ForesightHTTPError` (>=400) / `ForesightError` (transport, 3xx, invalid URL) |
 | `read_hook_input` | stdin JSON hook payload → `dict` (`{}` on failure) |
 | `parse_sse_result` / `mcp_result_text` | MCP `tools/call` response flattening |
-| `ForesightClient` | `inject_context` (`/ui/api/inject`), `capture_text` (`/ui/api/capture`), `capture_transcript` (`/session/transcript`), `post_telemetry`, `call_tool` (MCP `/mcp`) |
+| `ForesightClient` | `inject_context` (`/ui/api/inject`), `capture_text` (`/ui/api/capture`, returns `bool`), `capture_transcript` (`/session/transcript`, returns `bool`), `post_telemetry` (returns `bool`), `call_tool` (MCP `/mcp`) |
 
 ## Error contract
 
 The low-level helpers raise and never return partial data:
 `post_json` and `ForesightClient.post` raise `ForesightHTTPError` on a
-`>= 400` status and `ForesightError` on transport failure, an invalid URL, or
-a cleartext-HTTP request that would carry the API key off loopback.
+`>= 400` status and `ForesightError` on transport failure, a `3xx` redirect
+(the endpoint moved, and following it would repeat the body elsewhere), an
+invalid URL, or a cleartext-HTTP request that would carry the API key off
+loopback.
 
-The high-level helpers are fail-safe: `inject_context`, `capture_text`,
-`capture_transcript` and `post_telemetry` suppress `ForesightError` and
-return their documented `None`/empty value, and `call_tool` returns `None` on
-transport or tool failure. An unreachable Foresight server therefore cannot
-break the host agent session, and an exception handler is *not* a reliable way
-to detect a failed high-level call — check the return value. Hook callers that
+The high-level helpers are fail-safe: `inject_context` and `call_tool` return
+`None` on transport or tool failure, and `capture_text`, `capture_transcript`
+and `post_telemetry` suppress `ForesightError` and report their outcome as a
+`bool` (`True` when the server accepted the POST, `False` otherwise). An
+unreachable Foresight server therefore cannot break the host agent session,
+and an exception handler is *not* a reliable way to detect a failed
+high-level call — check the return value. Hook callers that
 call the low-level helpers directly must wrap them in
 `contextlib.suppress(Exception)`; see `plugins/claude/hooks/foresight_hook.py`
 for the reference pattern (SDK import with inline fallbacks when the file

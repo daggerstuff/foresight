@@ -18,10 +18,14 @@ Provides the pieces every Python plugin was hand-rolling:
   ``/ui/api/telemetry/gating``) plus MCP ``tools/call``
 
 Fail-safe contract: ``post_json`` and ``ForesightClient.post`` raise
-``ForesightError``/``ForesightHTTPError`` on transport or HTTP failure and never
-return partial data. The high-level ``ForesightClient`` helpers are fail-safe:
-they swallow ``ForesightError`` and return their documented ``None`` so a down
-server can never break the host agent session.
+``ForesightError``/``ForesightHTTPError`` on transport, redirect, or HTTP
+failure and never return partial data. The high-level ``ForesightClient``
+helpers never raise: ``inject_context`` and ``call_tool`` return ``None`` when
+no text comes back, and ``capture_text``, ``capture_transcript`` and
+``post_telemetry`` return ``True`` when the server accepted the write or
+``False`` when it did not. A down server can therefore never break the host
+agent session, and the return value — not an exception handler — is how a
+caller learns whether a call landed.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ import json
 import os
 import sys
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -79,6 +83,33 @@ def load_env_file(path: str) -> dict[str, str]:
     return values
 
 
+def _split_base_url(url: str) -> urllib.parse.SplitResult:
+    """Split a Foresight URL, rejecting anything that is not http(s).
+
+    ``http.client`` picks its connection class from the scheme and falls back to
+    a cleartext ``HTTPConnection`` for everything it does not recognise, so an
+    ``ftp://`` URL would silently put the request (and the API key) on an
+    unencrypted HTTP connection. Callers rebuild the URL from these parts
+    instead of concatenating strings, because appending a path to a URL that
+    carries a query lands inside the query (``?route=blue/mcp``).
+    """
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+        _ = parts.port  # a malformed port raises here, not at connection time
+    except ValueError as exc:
+        raise ForesightError(f"invalid URL {url}: {exc}") from exc
+    if parts.scheme not in ("http", "https"):
+        raise ForesightError(f"invalid URL {url}: expected an http:// or https:// scheme")
+    if not parts.hostname:
+        raise ForesightError(f"invalid URL {url}: no host")
+    return parts
+
+
+def _with_path(parts: urllib.parse.SplitResult, path: str) -> str:
+    """Rebuild ``parts`` with ``path``, keeping scheme, host, port and query."""
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+
+
 @dataclass(frozen=True)
 class Credentials:
     """Resolved connection settings. Secrets are never logged or repr'd."""
@@ -96,8 +127,10 @@ class Credentials:
 
     @property
     def mcp_url(self) -> str:
-        base = self.base_url.rstrip("/")
-        return base if base.endswith("/mcp") else f"{base}/mcp"
+        """MCP endpoint: the base URL with ``/mcp`` appended to its path."""
+        parts = _split_base_url(self.base_url)
+        path = parts.path.rstrip("/")
+        return _with_path(parts, path if path.endswith("/mcp") else f"{path}/mcp")
 
     @property
     def rest_url(self) -> str:
@@ -108,8 +141,11 @@ class Credentials:
         the app root, so posting to ``<base>/mcp/ui/api/...`` 404s when the
         discovered URL is the MCP endpoint.
         """
-        base = self.base_url.rstrip("/")
-        return base[: -len("/mcp")] if base.endswith("/mcp") else base
+        parts = _split_base_url(self.base_url)
+        path = parts.path.rstrip("/")
+        if path.endswith("/mcp"):
+            path = path[: -len("/mcp")]
+        return _with_path(parts, path)
 
 
 def resolve_base_url(env: Mapping[str, str] | None = None, creds: Mapping[str, str] | None = None) -> str:
@@ -207,16 +243,13 @@ def post_json(
 ) -> tuple[int, bytes]:
     """POST a JSON body; return ``(status, raw_body)``.
 
-    Raises ``ForesightHTTPError`` on status >= 400, and ``ForesightError`` on
-    transport failures, invalid URLs, and cleartext credential transport.
-    Callers that must never break the host agent should wrap in
-    ``contextlib.suppress(Exception)``.
+    Raises ``ForesightHTTPError`` on status >= 400, and ``ForesightError`` on a
+    redirect status, transport failure, invalid or non-HTTP URL, or cleartext
+    credential transport. Callers that must never break the host agent should
+    wrap in ``contextlib.suppress(Exception)`` or use a client helper.
     """
-    try:
-        parts = urllib.parse.urlsplit(url)
-        port = parts.port
-    except ValueError as exc:
-        raise ForesightError(f"invalid URL {url}: {exc}") from exc
+    parts = _split_base_url(url)
+    port = parts.port
     _require_secure_transport(parts, headers)
     target = parts.path or "/"
     if parts.query:
@@ -243,6 +276,11 @@ def post_json(
         raise ForesightError(f"request to {url} failed: {exc}") from exc
     finally:
         connection.close()
+    if http.HTTPStatus.MULTIPLE_CHOICES <= status < http.HTTPStatus.BAD_REQUEST:
+        # http.client never follows a redirect, so a 3xx means the endpoint
+        # moved. Reporting it as success would hand the caller an empty body
+        # from the redirect target it never fetched.
+        raise ForesightError(f"refusing redirect {status} from {url}: the endpoint moved")
     if status >= http.HTTPStatus.BAD_REQUEST:
         raise ForesightHTTPError(status, reason or "")
     return status, raw
@@ -283,6 +321,32 @@ def _is_rpc_notification(frame: dict[str, Any]) -> bool:
     return "method" in frame and "id" not in frame
 
 
+def _iter_sse_events(body: str) -> Iterator[str]:
+    """Yield each SSE event's data payload, joined across that event's lines.
+
+    SSE ends an event on a blank line and allows one event's payload to span
+    several ``data:`` lines. A parser that decodes each line on its own loses a
+    payload split that way, and one that requires the space in ``data: `` misses
+    the equally legal ``data:{"result": 1}``. A single leading space is part of
+    the framing, not the payload; ``:`` comment lines carry no data.
+    """
+    data: list[str] = []
+    for raw_line in body.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line:
+            if data:
+                yield "\n".join(data)
+                data = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            value = line[len("data:") :]
+            data.append(value[1:] if value.startswith(" ") else value)
+    if data:
+        yield "\n".join(data)
+
+
 def parse_sse_result(body: str) -> dict[str, Any] | None:
     """Extract the JSON-RPC response from a plain or SSE-framed body.
 
@@ -299,15 +363,14 @@ def parse_sse_result(body: str) -> dict[str, Any] | None:
     if isinstance(parsed, dict):
         return parsed
     fallback: dict[str, Any] | None = None
-    for line in body.split("\n"):
-        if line.startswith("data: "):
-            candidate = parse_json(line[6:])
-            if not isinstance(candidate, dict):
-                continue
-            if _is_rpc_response(candidate):
-                return candidate
-            if fallback is None and not _is_rpc_notification(candidate):
-                fallback = candidate
+    for event in _iter_sse_events(body):
+        candidate = parse_json(event)
+        if not isinstance(candidate, dict):
+            continue
+        if _is_rpc_response(candidate):
+            return candidate
+        if fallback is None and not _is_rpc_notification(candidate):
+            fallback = candidate
     return fallback
 
 
@@ -374,34 +437,42 @@ class ForesightClient:
         try:
             _, data = self.post("/ui/api/inject", {"text": text}, timeout=timeout)
         except ForesightError:
-            lane = self.credentials.lane or self.credentials.user_id or "default"
-            return self.call_tool(
-                "inject_context",
-                {"conversation_text": text, "user_id": lane},
-                timeout=timeout,
-            )
+            arguments: dict[str, Any] = {"conversation_text": text}
+            lane = self.credentials.lane or self.credentials.user_id
+            if lane:
+                # The server resolves the lane from this argument first and from
+                # the API key second, so an invented placeholder would read a
+                # lane the key cannot see. Omitting it lets the key's own lane
+                # apply.
+                arguments["user_id"] = lane
+            return self.call_tool("inject_context", arguments, timeout=timeout)
         if isinstance(data, dict):
             formatted = data.get("formatted")
             return formatted.strip() if isinstance(formatted, str) and formatted.strip() else None
         return None
 
-    def capture_text(self, text: str, session_id: str, messages: list[Any] | None = None) -> None:
-        """In-flight capture via ``/ui/api/capture``."""
+    def _post_ok(self, path: str, payload: Any, timeout: float) -> bool:
+        """POST and report delivery; ``False`` on any failure, never raises."""
+        try:
+            status, _ = self.post(path, payload, timeout=timeout)
+        except ForesightError:
+            return False
+        return http.HTTPStatus.OK <= status < http.HTTPStatus.MULTIPLE_CHOICES
+
+    def capture_text(self, text: str, session_id: str, messages: list[Any] | None = None) -> bool:
+        """In-flight capture via ``/ui/api/capture``; ``True`` when delivered."""
         payload: dict[str, Any] = {"text": text, "session_id": session_id}
         if messages:
             payload["messages"] = messages
-        with suppress(ForesightError):
-            self.post("/ui/api/capture", payload, timeout=5.0)
+        return self._post_ok("/ui/api/capture", payload, 5.0)
 
-    def capture_transcript(self, session_id: str, messages: list[Any]) -> None:
-        """Distillation transcript via ``/session/transcript``."""
-        with suppress(ForesightError):
-            self.post("/session/transcript", {"session_id": session_id, "messages": messages}, timeout=12.0)
+    def capture_transcript(self, session_id: str, messages: list[Any]) -> bool:
+        """Distillation transcript via ``/session/transcript``; ``True`` when delivered."""
+        return self._post_ok("/session/transcript", {"session_id": session_id, "messages": messages}, 12.0)
 
-    def post_telemetry(self, payload: dict[str, Any], timeout: float = 2.0) -> None:
-        """Fire-and-forget telemetry via ``/ui/api/telemetry/gating``."""
-        with suppress(ForesightError):
-            self.post("/ui/api/telemetry/gating", payload, timeout=timeout)
+    def post_telemetry(self, payload: dict[str, Any], timeout: float = 2.0) -> bool:
+        """Telemetry via ``/ui/api/telemetry/gating``; ``True`` when delivered."""
+        return self._post_ok("/ui/api/telemetry/gating", payload, timeout)
 
     def call_tool(self, name: str, arguments: dict[str, Any], timeout: float | None = None) -> str | None:
         """MCP ``tools/call`` against ``<base>/mcp``; returns joined text or None."""

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   autoCaptureTurn,
@@ -7,6 +10,7 @@ import {
   captureTranscript,
   defaultCredentialsPath,
   fetchInjectContext,
+  laneArgs,
   loadCredentials,
   mcpCall,
   parseEnvFile,
@@ -78,6 +82,41 @@ describe('env + credentials', () => {
     expect(creds.identity).toBe('alice@acme')
     expect(creds.lane).toBe('alice')
     expect(creds.baseUrl).toBe('http://127.0.0.1:8764')
+  })
+
+  it('loadCredentials derives the lane from the credentials file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'foresight-sdk-'))
+    const path = join(dir, 'credentials.env')
+    writeFileSync(
+      path,
+      'FORESIGHT_IDENTITY=dana@acme\nFORESIGHT_API_KEY=file-key\n',
+    )
+    const creds = await loadCredentials({ credentialsPath: path })
+    expect(creds.apiKey).toBe('file-key')
+    // The plugin's own resolver read config and process.env but never this
+    // file, so tools and capture travelled in different lanes.
+    expect(creds.lane).toBe('dana')
+    expect(laneArgs(creds)).toEqual({ user_id: 'dana' })
+  })
+
+  it('loadCredentials lets an explicit user id outrank the identity lane', async () => {
+    process.env.FORESIGHT_IDENTITY = 'alice@acme'
+    const creds = await loadCredentials({
+      credentialsPath: '/nonexistent/credentials.env',
+      userId: 'bob',
+    })
+    expect(creds.identity).toBe('alice@acme')
+    expect(creds.lane).toBe('bob')
+    expect(laneArgs(creds)).toEqual({ user_id: 'bob' })
+  })
+
+  it('laneArgs omits the argument instead of inventing a lane', () => {
+    expect(
+      laneArgs({ baseUrl: '', apiKey: '', identity: '', userId: '', lane: '' }),
+    ).toEqual({})
+    expect(
+      laneArgs({ baseUrl: '', apiKey: '', identity: '', userId: 'bob', lane: '' }),
+    ).toEqual({ user_id: 'bob' })
   })
 
   it('authHeaders emits Bearer + X-User-Id only when set', () => {
@@ -182,6 +221,22 @@ describe('client helpers (fail-safe)', () => {
     ).toBeNull()
   })
 
+  it('mcpCall treats a tool result marked isError as a failure', async () => {
+    stubFetch(() => ({
+      result: {
+        content: [{ type: 'text', text: 'context block is read-only' }],
+        isError: true,
+      },
+    }))
+    expect(
+      await mcpCall(
+        'update_context_block',
+        { name: 'coding_guidelines' },
+        { credentialsPath: '/nonexistent' },
+      ),
+    ).toBeNull()
+  })
+
   it('captureText posts to /ui/api/capture', async () => {
     const spy = stubFetch(() => ({}))
     const ok = await captureText('sess', 'hello', undefined, {
@@ -211,9 +266,12 @@ describe('client helpers (fail-safe)', () => {
 
   it('postTelemetry posts to gating endpoint', async () => {
     const spy = stubFetch(() => ({}))
-    await postTelemetry('test_surface', { decision: 'injected' }, {
-      credentialsPath: '/nonexistent',
-    })
+    const accepted = await postTelemetry(
+      'test_surface',
+      { decision: 'injected' },
+      { credentialsPath: '/nonexistent' },
+    )
+    expect(accepted).toBe(true)
     expect(spy.mock.calls[0]?.[0]).toBe(
       'http://127.0.0.1:8764/ui/api/telemetry/gating',
     )
@@ -258,12 +316,12 @@ describe('REST payload and fail-safe contract', () => {
     ).resolves.toBe(false)
   })
 
-  it('postTelemetry swallows a 404 instead of throwing', async () => {
+  it('postTelemetry reports a rejected post as false without throwing', async () => {
     const sdk = await import('../src/index.js')
     vi.stubGlobal('fetch', async () => new Response('nope', { status: 404 }))
     await expect(
       sdk.postTelemetry('claude_hook', { surface: 'claude_hook' }),
-    ).resolves.toBeUndefined()
+    ).resolves.toBe(false)
   })
 
   it('postJson refuses cleartext credentials off loopback', async () => {
@@ -288,6 +346,23 @@ describe('REST payload and fail-safe contract', () => {
       ),
     ).resolves.toEqual({ status: 200, body: '{}' })
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses redirects on both transports so a body credential cannot move', async () => {
+    const inits: Array<RequestInit | undefined> = []
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      inits.push(init)
+      return new Response('{}', { status: 200 })
+    })
+    await postJson('http://127.0.0.1:8764/ui/api/capture', {})
+    await mcpCall(
+      'search_memories',
+      { query: 'x' },
+      { credentialsPath: '/nonexistent' },
+    )
+    expect(inits).toHaveLength(2)
+    expect(inits[0]?.redirect).toBe('error')
+    expect(inits[1]?.redirect).toBe('error')
   })
 
   it('mcpCall refuses to send the api key over cleartext http', async () => {
@@ -327,14 +402,20 @@ describe('REST payload and fail-safe contract', () => {
     expect(urls.some((url) => url.endsWith('/mcp'))).toBe(true)
   })
 
-  it('resolvedLane resolves identity lane, then user id, then default', async () => {
+  it('resolvedLane resolves identity lane, then user id, then nothing', async () => {
     const sdk = await import('../src/index.js')
     const base = { baseUrl: '', apiKey: '', identity: '', userId: '', lane: '' }
     expect(
       sdk.resolvedLane({ ...base, identity: 'alice@acme', lane: 'alice' }),
     ).toBe('alice')
     expect(sdk.resolvedLane({ ...base, userId: 'bob' })).toBe('bob')
-    expect(sdk.resolvedLane(base)).toBe('default')
+    // An explicit lane wins over a user id it may have been derived from.
+    expect(sdk.resolvedLane({ ...base, lane: 'alice', userId: 'bob' })).toBe(
+      'alice',
+    )
+    // No placeholder: an invented lane selects a store the API key cannot see,
+    // so callers omit the argument and the server uses the key's own lane.
+    expect(sdk.resolvedLane(base)).toBe('')
   })
 
   it('fetchInjectContext sends the resolved lane in the MCP fallback', async () => {

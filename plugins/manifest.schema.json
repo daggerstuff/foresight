@@ -88,19 +88,24 @@
           "not": {
             "anyOf": [
               {
-                "pattern": "^/"
+                "pattern": "^(?:\\./|\\.\\\\)*/",
+                "type": "string"
               },
               {
-                "pattern": "^[A-Za-z]:"
+                "pattern": "^(?:\\./|\\.\\\\)*[A-Za-z]:",
+                "type": "string"
               },
               {
-                "pattern": "^\\\\"
+                "pattern": "^(?:\\./|\\.\\\\)*\\\\",
+                "type": "string"
               },
               {
-                "pattern": "^~"
+                "pattern": "^(?:\\./|\\.\\\\)*~",
+                "type": "string"
               },
               {
-                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)"
+                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)",
+                "type": "string"
               }
             ]
           },
@@ -122,19 +127,24 @@
           "not": {
             "anyOf": [
               {
-                "pattern": "^/"
+                "pattern": "^(?:\\./|\\.\\\\)*/",
+                "type": "string"
               },
               {
-                "pattern": "^[A-Za-z]:"
+                "pattern": "^(?:\\./|\\.\\\\)*[A-Za-z]:",
+                "type": "string"
               },
               {
-                "pattern": "^\\\\"
+                "pattern": "^(?:\\./|\\.\\\\)*\\\\",
+                "type": "string"
               },
               {
-                "pattern": "^~"
+                "pattern": "^(?:\\./|\\.\\\\)*~",
+                "type": "string"
               },
               {
-                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)"
+                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)",
+                "type": "string"
               }
             ]
           },
