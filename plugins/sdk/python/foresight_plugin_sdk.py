@@ -71,6 +71,16 @@ def default_credentials_path(env: Mapping[str, str] | None = None) -> str:
     return os.path.join(config_home, "foresight", "credentials.env")
 
 
+def _posix_modes_are_enforced() -> bool:
+    """Whether ``st_mode`` carries access bits.
+
+    Windows synthesizes them from the read-only flag, so every file there reads
+    as ``0o666`` whatever its ACL; the ACL is the whole gate and this check must
+    not reject the file.
+    """
+    return os.name != "nt"
+
+
 def load_env_file(path: str) -> dict[str, str]:
     """Parse a KEY=VALUE env file. Missing, unreadable or shared files yield ``{}``.
 
@@ -79,7 +89,7 @@ def load_env_file(path: str) -> dict[str, str]:
     """
     values: dict[str, str] = {}
     with suppress(Exception):
-        if os.stat(path).st_mode & 0o077:
+        if _posix_modes_are_enforced() and os.stat(path).st_mode & 0o077:
             return values
     with suppress(Exception), open(path, encoding="utf-8") as handle:
         for raw_line in handle:

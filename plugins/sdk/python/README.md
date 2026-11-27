@@ -71,5 +71,9 @@ FORESIGHT_API_KEY=...
 FORESIGHT_IDENTITY=alice@acme
 ```
 
+The file holds the API key, so keep it private: the SDK ignores a file other
+users can read. Run `chmod 600 ~/.config/foresight/credentials.env` after
+creating it.
+
 Remote/hosted deployments set `FORESIGHT_API_KEY` (Bearer) and
 `FORESIGHT_IDENTITY`/`FORESIGHT_USER_ID` (lane).

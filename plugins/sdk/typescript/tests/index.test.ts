@@ -514,6 +514,20 @@ describe('credential and transport edge cases', () => {
     expect(credentials.lane).toBe('bob')
   })
 
+  it('falls back to the credentials file when an env value is blank', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'foresight-creds-'))
+    const credentialsPath = join(dir, 'credentials.env')
+    writeFileSync(
+      credentialsPath,
+      'FORESIGHT_USER_ID=bob\nFORESIGHT_API_KEY=file-key\n',
+    )
+    process.env.FORESIGHT_USER_ID = '   '
+    process.env.FORESIGHT_API_KEY = ''
+    const credentials = await loadCredentials({ credentialsPath })
+    expect(credentials.userId).toBe('bob')
+    expect(credentials.apiKey).toBe('file-key')
+  })
+
   it('mcpCall resolves null instead of throwing on an invalid base URL', async () => {
     await expect(
       mcpCall(

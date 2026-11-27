@@ -557,7 +557,10 @@ class TestClaudeHookIntegration:
         )
         assert result.returncode == 0, result.stderr
 
-    def test_prompt_reaches_the_endpoint_when_the_base_url_has_a_query(self, stub_server, tmp_path: Path):
+    @pytest.mark.parametrize("base_suffix", ["/?route=blue", "/mcp?route=blue", "/mcp/?route=blue"])
+    def test_prompt_reaches_the_endpoint_when_the_base_url_has_a_query(
+        self, stub_server, tmp_path: Path, base_suffix: str
+    ):
         base, handler = stub_server
         handler.responses["/ui/api/inject?route=blue"] = (
             http.HTTPStatus.OK,
@@ -568,7 +571,7 @@ class TestClaudeHookIntegration:
         result = self._run_hook(
             "prompt",
             {"prompt": "route me", "session_id": "s5"},
-            f"{base}/?route=blue",
+            f"{base}{base_suffix}",
             tmp_path,
         )
         assert result.returncode == 0, result.stderr
@@ -629,6 +632,18 @@ class TestTransportAndCredentialRobustness:
         path = tmp_path / "credentials.env"
         path.write_text("FORESIGHT_API_KEY=file-key\n", encoding="utf-8")
         path.chmod(0o600)
+        assert sdk.resolve_credentials(env={}, creds_path=str(path)).api_key == "file-key"
+
+    def test_resolve_credentials_reads_a_group_readable_file_where_modes_are_synthetic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Windows derives st_mode from the read-only flag, so every file there reads
+        # as 0o666; the caller's ACL is the whole access control and this check must
+        # not reject the file.
+        path = tmp_path / "credentials.env"
+        path.write_text("FORESIGHT_API_KEY=file-key\n", encoding="utf-8")
+        path.chmod(0o644)
+        monkeypatch.setattr(sdk, "_posix_modes_are_enforced", lambda: False)
         assert sdk.resolve_credentials(env={}, creds_path=str(path)).api_key == "file-key"
 
     def test_post_keeps_the_base_query_and_targets_the_path(self, stub_server):

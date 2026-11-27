@@ -114,7 +114,9 @@ export async function loadCredentials(
   )
   const pick = (...names: string[]): string => {
     for (const name of names) {
-      const value = env[name] || file[name]
+      // Per source, not per name: an empty export such as FORESIGHT_USER_ID=
+      // must not shadow the value the credentials file carries.
+      const value = firstNonBlank(env[name], file[name])
       if (value) return value
     }
     return ''

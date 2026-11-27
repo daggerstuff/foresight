@@ -54,16 +54,18 @@ VERSION_PATTERN = re.compile(_VERSION_PATTERN_TEXT)
 # patterns are emitted into the JSON Schema so the loader and the schema cannot
 # disagree about which paths are legal.
 #
-# ``_DOT_SEGMENTS`` mirrors what ``PurePosixPath`` does to its input: a leading
-# ``./`` is dropped, so ``./~alice/x`` normalizes to ``~/alice/x`` and a
-# surface-by-surface expansion of that path would leave the plugin directory.
+# ``_DOT_SEGMENTS`` mirrors what ``PurePosixPath`` does to its input: leading
+# ``./`` segments are dropped and separator runs collapse, so ``./~alice/x`` and
+# ``.//~alice/x`` both normalize to ``~/alice/x``; a surface-by-surface expansion
+# of either would leave the plugin directory.
 #
 # It covers only the rules that stay escapes after that normalization. Windows
-# collapses ``./C:/x`` into a drive path, so the drive, UNC, and home rules keep
-# the prefix, and the loader normalizes its Windows view with ``ntpath`` before
-# checking it. ``./x`` and ``.//x`` normalize to a plain relative path and stay
-# legal, so the POSIX-absolute rule is anchored at the root instead.
-_DOT_SEGMENTS = r"^(?:\./|\.\\)*"
+# collapses ``./C:/x`` and ``.//C:/x`` into a drive path, so the drive, UNC, and
+# home rules keep the prefix, and the loader normalizes its Windows view with
+# ``ntpath`` before checking it. ``./x`` and ``.//x`` normalize to a plain
+# relative path and stay legal, so the POSIX-absolute rule is anchored at the
+# root instead.
+_DOT_SEGMENTS = r"^(?:\.?[/\\]+)*"
 _FORBIDDEN_PATH_PATTERNS = (
     r"^/",  # POSIX absolute
     _DOT_SEGMENTS + r"[A-Za-z]:",  # Windows drive, absolute or relative

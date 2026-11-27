@@ -35,6 +35,19 @@ except Exception:
     _sdk = None
 
 
+def _strip_terminal_mcp(value: str) -> str:
+    """Drop a terminal ``/mcp`` from a URL path, keeping its query and prefix.
+
+    Trimming the raw string misses ``https://h/mcp?route=blue``, whose REST
+    endpoints would then be built under ``/mcp``; ``/api/mcp`` keeps ``/api``.
+    """
+    parts = urllib.parse.urlsplit(value)
+    path = parts.path.rstrip("/")
+    if path.endswith("/mcp"):
+        path = path[: -len("/mcp")]
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+
+
 def _resolve_base_url() -> str:
     if _sdk is not None:
         with suppress(Exception):
@@ -42,8 +55,7 @@ def _resolve_base_url() -> str:
     for env_key in ("FORESIGHT_MCP_URL", "FORESIGHT_URL"):
         value = (os.environ.get(env_key) or "").strip()
         if value:
-            base = value.rstrip("/")
-            return base[: -len("/mcp")] if base.endswith("/mcp") else base
+            return _strip_terminal_mcp(value)
     return "http://127.0.0.1:8764"
 
 
