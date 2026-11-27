@@ -26,6 +26,7 @@ def _closed_port() -> int:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
+
 _spec = importlib.util.spec_from_file_location("foresight_plugin_sdk", SDK_DIR / "foresight_plugin_sdk.py")
 assert _spec is not None
 assert _spec.loader is not None
@@ -435,13 +436,15 @@ class TestForesightClient:
 class TestClaudeHookIntegration:
     """The refactored hook must keep working end-to-end via the SDK."""
 
-    @staticmethod
-    def _copy_hook(tmp_path: Path) -> Path:
+    # Tests that need a relocated copy of the hook overwrite this per instance.
+    hook_path: Path = HOOK_PATH
+
+    def _copy_hook(self, tmp_path: Path) -> None:
         """Copy the hook somewhere its repo sibling SDK path does not resolve."""
         hook = tmp_path / "hooks" / "foresight_hook.py"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_bytes(HOOK_PATH.read_bytes())
-        return hook
+        self.hook_path = hook
 
     @staticmethod
     def _write_sdk_shim(hook: Path, marker: Path) -> None:
@@ -473,7 +476,6 @@ class TestClaudeHookIntegration:
         payload: dict,
         base_url: str,
         tmp_path: Path,
-        hook_path: Path | None = None,
         extra_env: dict[str, str] | None = None,
     ):
         env = dict(os.environ)
@@ -489,7 +491,7 @@ class TestClaudeHookIntegration:
         env.pop("FORESIGHT_USER_ID", None)
         env.update(extra_env or {})
         return subprocess.run(
-            [sys.executable, str(hook_path or HOOK_PATH), action],
+            [sys.executable, str(self.hook_path), action],
             input=json.dumps(payload),
             capture_output=True,
             text=True,
@@ -505,15 +507,14 @@ class TestClaudeHookIntegration:
             {"formatted": "recalled memory", "top_score": 0.5},
         )
         handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
-        hook = self._copy_hook(tmp_path)
+        self._copy_hook(tmp_path)
         marker = tmp_path / "sdk-imported"
-        self._write_sdk_shim(hook, marker)
+        self._write_sdk_shim(self.hook_path, marker)
         result = self._run_hook(
             "prompt",
             {"prompt": "continue the migration", "session_id": "s1"},
             base,
             tmp_path,
-            hook_path=hook,
         )
         assert result.returncode == 0, result.stderr
         # The shim writes the marker from the SDK's own post_json, so it proves
@@ -534,13 +535,12 @@ class TestClaudeHookIntegration:
             {"formatted": "inline memory", "top_score": 0.5},
         )
         handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
-        hook = self._copy_hook(tmp_path)
+        self._copy_hook(tmp_path)
         result = self._run_hook(
             "prompt",
             {"prompt": "continue the migration", "session_id": "s1"},
             base,
             tmp_path,
-            hook_path=hook,
         )
         assert result.returncode == 0, result.stderr
         assert "inline memory" in result.stdout
@@ -557,59 +557,50 @@ class TestClaudeHookIntegration:
         )
         assert result.returncode == 0, result.stderr
 
-    def test_prompt_reaches_the_endpoint_when_the_base_url_has_a_query(
-        self, stub_server, tmp_path: Path
-    ):
+    def test_prompt_reaches_the_endpoint_when_the_base_url_has_a_query(self, stub_server, tmp_path: Path):
         base, handler = stub_server
         handler.responses["/ui/api/inject?route=blue"] = (
             http.HTTPStatus.OK,
             {"formatted": "routed memory"},
         )
         handler.responses["/ui/api/telemetry/gating?route=blue"] = (http.HTTPStatus.OK, {})
-        hook = self._copy_hook(tmp_path)
+        self._copy_hook(tmp_path)
         result = self._run_hook(
             "prompt",
             {"prompt": "route me", "session_id": "s5"},
             f"{base}/?route=blue",
             tmp_path,
-            hook_path=hook,
         )
         assert result.returncode == 0, result.stderr
         assert "routed memory" in result.stdout
 
-    def test_the_sdk_path_sends_the_user_id_lane(
-        self, stub_server, tmp_path: Path
-    ):
+    def test_the_sdk_path_sends_the_user_id_lane(self, stub_server, tmp_path: Path):
         base, handler = stub_server
         handler.responses["/ui/api/inject"] = (http.HTTPStatus.OK, {"formatted": "ok"})
         handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
-        hook = self._copy_hook(tmp_path)
-        self._write_sdk_shim(hook, tmp_path / "sdk-lane")
+        self._copy_hook(tmp_path)
+        self._write_sdk_shim(self.hook_path, tmp_path / "sdk-lane")
         result = self._run_hook(
             "prompt",
             {"prompt": "lane check", "session_id": "s6"},
             base,
             tmp_path,
-            hook_path=hook,
             extra_env={"FORESIGHT_IDENTITY": "alice@acme", "FORESIGHT_USER_ID": "bob"},
         )
         assert result.returncode == 0, result.stderr
         lanes = {h.get("X-User-Id") for h in handler.headers if h.get("X-User-Id")}
         assert lanes == {"bob"}
 
-    def test_the_inline_path_sends_the_user_id_lane(
-        self, stub_server, tmp_path: Path
-    ):
+    def test_the_inline_path_sends_the_user_id_lane(self, stub_server, tmp_path: Path):
         base, handler = stub_server
         handler.responses["/ui/api/inject"] = (http.HTTPStatus.OK, {"formatted": "ok"})
         handler.responses["/ui/api/telemetry/gating"] = (http.HTTPStatus.OK, {})
-        hook = self._copy_hook(tmp_path)
+        self._copy_hook(tmp_path)
         result = self._run_hook(
             "prompt",
             {"prompt": "lane check", "session_id": "s7"},
             base,
             tmp_path,
-            hook_path=hook,
             extra_env={"FORESIGHT_IDENTITY": "alice@acme", "FORESIGHT_USER_ID": "bob"},
         )
         assert result.returncode == 0, result.stderr
@@ -628,9 +619,7 @@ class TestTransportAndCredentialRobustness:
 
     def test_resolve_credentials_ignores_a_group_readable_file(self, tmp_path: Path):
         path = tmp_path / "credentials.env"
-        path.write_text(
-            "FORESIGHT_API_KEY=file-key\nFORESIGHT_USER_ID=bob\n", encoding="utf-8"
-        )
+        path.write_text("FORESIGHT_API_KEY=file-key\nFORESIGHT_USER_ID=bob\n", encoding="utf-8")
         path.chmod(0o644)
         credentials = sdk.resolve_credentials(env={}, creds_path=str(path))
         assert credentials.api_key == ""
@@ -657,11 +646,7 @@ class TestTransportAndCredentialRobustness:
 
     def test_parse_sse_result_keeps_a_line_separator_inside_a_payload(self):
         separator = chr(0x2028)
-        body = (
-            'data: {"result": {"content": [{"type": "text", "text": "a'
-            + separator
-            + 'b"}]}}\n\n'
-        )
+        body = 'data: {"result": {"content": [{"type": "text", "text": "a' + separator + 'b"}]}}\n\n'
         parsed = sdk.parse_sse_result(body)
         assert parsed is not None
         assert parsed["result"]["content"][0]["text"] == "a" + separator + "b"

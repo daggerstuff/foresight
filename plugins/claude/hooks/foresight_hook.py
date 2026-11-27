@@ -56,6 +56,8 @@ def _rest_url(path: str) -> str:
     base = parts.path.rstrip("/")
     target = f"{base}/{path.lstrip('/')}"
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, target, parts.query, ""))
+
+
 DEFAULT_SESSION_ID = "claude-session"
 DEFAULT_CACHE_TTL_HOURS = 72
 DEFAULT_CACHE_MAX_BYTES = 2 * 1024 * 1024
