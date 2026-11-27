@@ -1,0 +1,25 @@
+{
+  "name": "@foresight/plugin-sdk",
+  "version": "0.1.0",
+  "description": "Shared Foresight client SDK for agent plugins — server discovery, credentials, MCP calls, REST fallback, fail-safe error handling.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

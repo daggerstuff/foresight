@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import re
 import sys
 from collections.abc import Iterator, Mapping
@@ -52,15 +53,35 @@ VERSION_PATTERN = re.compile(_VERSION_PATTERN_TEXT)
 # single POSIX path part, so a POSIX-only split would let it escape. The same
 # patterns are emitted into the JSON Schema so the loader and the schema cannot
 # disagree about which paths are legal.
+#
+# ``_DOT_SEGMENTS`` mirrors what ``PurePosixPath`` does to its input: leading
+# ``./`` segments are dropped and separator runs collapse, so ``./~alice/x`` and
+# ``.//~alice/x`` both normalize to ``~/alice/x``; a surface-by-surface expansion
+# of either would leave the plugin directory.
+#
+# It covers only the rules that stay escapes after that normalization. Windows
+# collapses ``./C:/x`` and ``.//C:/x`` into a drive path, so the drive, UNC, and
+# home rules keep the prefix, and the loader normalizes its Windows view with
+# ``ntpath`` before checking it. ``./x`` and ``.//x`` normalize to a plain
+# relative path and stay legal, so the POSIX-absolute rule is anchored at the
+# root instead. Every repeated group starts with a literal dot: an optional dot
+# lets one separator run be partitioned many ways, which a backtracking checker
+# pays for exponentially on something like ``.`` plus a long run of slashes.
+_DOT_SEGMENTS = r"^(?:\.[/\\]+)*"
 _FORBIDDEN_PATH_PATTERNS = (
     r"^/",  # POSIX absolute
-    r"^[A-Za-z]:",  # Windows drive, absolute or relative
-    r"^\\",  # Windows root or UNC prefix
-    r"^~",  # leading home-relative path such as ~/x or ~alice/x
+    _DOT_SEGMENTS + r"[A-Za-z]:",  # Windows drive, absolute or relative
+    _DOT_SEGMENTS + r"\\",  # Windows root or UNC prefix
+    _DOT_SEGMENTS + r"~",  # home-relative path such as ~/x or ~alice/x
     r"(?:^|[/\\])\.\.(?:[/\\]|$)",  # parent-directory segment
 )
 
-_PATH_SCHEMA_EXTRA: dict[str, Any] = {"not": {"anyOf": [{"pattern": pattern} for pattern in _FORBIDDEN_PATH_PATTERNS]}}
+# Every branch names ``type: string``: a bare ``pattern`` matches each non-string
+# instance, so the negated ``anyOf`` would reject the legal ``"source": null``
+# that the loader accepts for an artifact living inside its own plugin directory.
+_PATH_SCHEMA_EXTRA: dict[str, Any] = {
+    "not": {"anyOf": [{"type": "string", "pattern": pattern} for pattern in _FORBIDDEN_PATH_PATTERNS]}
+}
 
 
 class AgentTarget(StrEnum):
@@ -150,26 +171,33 @@ class PluginManifestReadError(PluginManifestError):
     """Raised when a manifest file is missing or its bytes cannot be read."""
 
 
-def _check_relative_path(value: str) -> str:
+def _check_relative_path(value: str, *, label: str = "path", base: str = "the plugin directory") -> str:
     """Reject absolute, leading home-relative, and parent-escaping artifact paths.
 
     Only the first component is home-relative: ``~alice/hook.py`` points outside the
     plugin directory, while ``assets/~backup/hook.py`` is an ordinary nested filename.
+    ``label`` and ``base`` only shape the error text, so artifact ``source`` paths are
+    checked exactly like artifact ``path`` while naming the repository as their base.
     """
     if not value:
-        raise ValueError("artifact path must not be empty")
+        raise ValueError(f"artifact {label} must not be empty")
     posix = PurePosixPath(value)
     windows = PureWindowsPath(value)
+    windows_normalized = PureWindowsPath(ntpath.normpath(value))
     if posix.is_absolute() or posix.root:
-        raise ValueError("artifact path must be relative to the plugin directory")
+        raise ValueError(f"artifact {label} must be relative to {base}")
     if windows.is_absolute() or windows.drive or windows.root:
-        raise ValueError("artifact path must be relative to the plugin directory")
+        raise ValueError(f"artifact {label} must be relative to {base}")
+    # ``PureWindowsPath`` reports no drive for ``./C:/x``, while Windows collapses
+    # that to a drive path, so the normalized view is checked for a root too.
+    if windows_normalized.is_absolute() or windows_normalized.drive or windows_normalized.root:
+        raise ValueError(f"artifact {label} must be relative to {base}")
     posix_parts = posix.parts
     windows_parts = windows.parts
     if (posix_parts and posix_parts[0].startswith("~")) or (windows_parts and windows_parts[0].startswith("~")):
-        raise ValueError("artifact path must not be home-relative")
+        raise ValueError(f"artifact {label} must not be home-relative")
     if ".." in posix_parts or ".." in windows_parts:
-        raise ValueError("artifact path must not escape the plugin directory")
+        raise ValueError(f"artifact {label} must not escape {base}")
     return value
 
 
@@ -208,6 +236,12 @@ class PluginArtifact(_StrictModel):
         json_schema_extra=_PATH_SCHEMA_EXTRA,
         description="Path relative to the plugin directory.",
     )
+    source: str | None = Field(
+        default=None,
+        min_length=1,
+        json_schema_extra=_PATH_SCHEMA_EXTRA,
+        description=("Repo-relative path this artifact is installed from when it lives outside the plugin directory."),
+    )
     surface: PluginSurface | None = Field(
         default=None,
         description="Capability surface this artifact implements, if any.",
@@ -222,6 +256,13 @@ class PluginArtifact(_StrictModel):
     @classmethod
     def _path_is_relative(cls, value: str) -> str:
         return _check_relative_path(value)
+
+    @field_validator("source")
+    @classmethod
+    def _source_is_relative(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _check_relative_path(value, label="source", base="the repository root")
 
 
 class PluginCredentials(_StrictModel):

@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from foresight.plugin_manifest import (
@@ -92,6 +93,38 @@ def _schema_accepts(path_value: str) -> bool:
     return all(re.search(pattern, path_value) is None for pattern in forbidden)
 
 
+def _source_accepts(source_value: str) -> bool:
+    try:
+        parse_plugin_manifest(
+            _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": source_value}])
+        )
+    except PluginManifestError:
+        return False
+    return True
+
+
+def _source_schema() -> dict:
+    schema = manifest_json_schema()
+    source = schema["$defs"]["PluginArtifact"]["properties"]["source"]
+    assert source, "PluginArtifact.source missing from the generated schema"
+    return source
+
+
+def _source_schema_accepts(source_value: str) -> bool:
+    source_schema = dict(_source_schema())
+    for branch in source_schema.get("anyOf", []):
+        if branch.get("type") != "null":
+            for key, value in branch.items():
+                source_schema.setdefault(key, value)
+    if len(source_value) < source_schema.get("minLength", 0):
+        return False
+    pattern = source_schema.get("pattern")
+    if pattern is not None and re.search(pattern, source_value) is None:
+        return False
+    forbidden = [rule["pattern"] for rule in source_schema["not"]["anyOf"]]
+    return all(re.search(pattern, source_value) is None for pattern in forbidden)
+
+
 def _version_accepts(version_value: str) -> bool:
     try:
         parse_plugin_manifest(_minimal_manifest(version=version_value))
@@ -107,6 +140,17 @@ def _version_schema_accepts(version_value: str) -> bool:
 
 
 class TestParsePluginManifest:
+    def test_non_object_root_raises_manifest_error(self):
+        for data in (None, [], "x", 1):
+            with pytest.raises(PluginManifestError):
+                parse_plugin_manifest(data)
+
+    def test_null_manifest_file_raises_manifest_error(self, tmp_path):
+        manifest_path = tmp_path / PLUGIN_MANIFEST_FILENAME
+        manifest_path.write_text("null", encoding="utf-8")
+        with pytest.raises(PluginManifestError):
+            load_plugin_manifest(tmp_path)
+
     def test_minimal_valid(self):
         manifest = parse_plugin_manifest(_minimal_manifest())
         assert manifest.id == "test-plugin"
@@ -436,6 +480,33 @@ class TestIterPluginManifests:
         assert "at least one path is required" in capsys.readouterr().err
 
 
+class TestArtifactSource:
+    def test_source_rejects_windows_absolute_and_home_paths(self):
+        for bad in ("C:/x.py", "C:x.py", "\\\\server\\x.py", "~/x.py", "~alice/x.py"):
+            data = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": bad}])
+            with pytest.raises(PluginManifestError):
+                parse_plugin_manifest(data)
+
+    def test_source_rejects_absolute_and_parent_paths(self):
+        for bad in ("/etc/passwd", "../sdk/python/x.py"):
+            data = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": bad}])
+            with pytest.raises(PluginManifestError):
+                parse_plugin_manifest(data)
+
+    def test_source_accepts_a_repo_relative_path(self):
+        data = _minimal_manifest(
+            artifacts=[
+                {
+                    "type": "source",
+                    "path": "hooks/x.py",
+                    "source": "plugins/sdk/python/x.py",
+                }
+            ]
+        )
+        manifest = parse_plugin_manifest(data)
+        assert manifest.artifacts[0].source == "plugins/sdk/python/x.py"
+
+
 class TestSchemaSync:
     def test_checked_in_schema_matches_model(self):
         schema_path = REPO_ROOT / PLUGIN_MANIFEST_SCHEMA_PATH
@@ -449,6 +520,47 @@ class TestSchemaSync:
     )
     def test_schema_version_matches_loader(self, version_value: str):
         assert _version_schema_accepts(version_value) == _version_accepts(version_value), version_value
+
+    def test_schema_rejects_a_null_path(self):
+        manifest = _minimal_manifest(artifacts=[{"type": "hook", "path": None}])
+        assert _artifact_accepts(None) is False
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(manifest, manifest_json_schema())
+
+    def test_schema_accepts_a_null_source(self):
+        # The artifact lives inside its own plugin directory, so ``source`` is
+        # simply absent; the loader models that as ``None`` and the published
+        # schema has to agree, or a generated manifest fails its own schema.
+        manifest = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": None}])
+        parsed = parse_plugin_manifest(manifest)
+        assert parsed.artifacts[0].source is None
+        jsonschema.validate(manifest, manifest_json_schema())
+
+    @pytest.mark.parametrize(
+        "forbidden_source",
+        [
+            "/etc/passwd",
+            "~/hook.py",
+            "./~alice/hook.py",
+            "../escape.sh",
+            "C:\\hook.py",
+            "\\\\server\\share\\hook.py",
+        ],
+    )
+    def test_schema_rejects_a_forbidden_source(self, forbidden_source):
+        manifest = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": forbidden_source}])
+        assert _source_accepts(forbidden_source) is False, forbidden_source
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(manifest, manifest_json_schema())
+
+    @pytest.mark.parametrize(
+        "relative_source",
+        ["hook.py", "./hook.py", "assets/~backup/hook.py", "hooks/foresight_hook.py"],
+    )
+    def test_schema_accepts_a_relative_source(self, relative_source):
+        manifest = _minimal_manifest(artifacts=[{"type": "source", "path": "hooks/x.py", "source": relative_source}])
+        assert _source_accepts(relative_source) is True, relative_source
+        jsonschema.validate(manifest, manifest_json_schema())
 
     def test_schema_requires_spec_version(self):
         assert "specVersion" in manifest_json_schema()["required"]
@@ -470,6 +582,11 @@ class TestSchemaSync:
         [
             "hooks/h.py",
             "hooks\\h.py",
+            ".//hooks/h.py",
+            "./hooks/h.py",
+            "./C:/x",
+            ".//C:/x",
+            ".//~alice/hook.py",
             ".claude-plugin/plugin.json",
             "docs/README.md",
             "a~b/c",
@@ -490,6 +607,30 @@ class TestSchemaSync:
     )
     def test_schema_artifact_path_matches_loader(self, path_value: str):
         assert _schema_accepts(path_value) == _artifact_accepts(path_value), path_value
+
+    @pytest.mark.parametrize(
+        "source_value",
+        [
+            "plugins/sdk/python/foresight_plugin_sdk.py",
+            ".//hooks/h.py",
+            "./C:/x",
+            ".//C:/x",
+            ".//~alice/hook.py",
+            "plugins/sdk/python/nested/dir/x.py",
+            "",
+            "..",
+            "../outside.py",
+            "a/../b",
+            "/etc/passwd",
+            "~/x",
+            "~alice/x",
+            "C:/x",
+            "C:x",
+            "\\Windows\\x",
+        ],
+    )
+    def test_schema_artifact_source_matches_loader(self, source_value: str):
+        assert _source_schema_accepts(source_value) == _source_accepts(source_value), source_value
 
     @pytest.mark.parametrize(
         "install",
@@ -543,5 +684,13 @@ class TestRepoManifests:
         assert manifest.id == plugin_id
         # Every declared artifact path must resolve to a real file in the plugin directory.
         for artifact in manifest.artifacts:
-            artifact_path = PLUGINS_ROOT / plugin_id / artifact.path
-            assert artifact_path.is_file(), f"{plugin_id}: artifact {artifact.path} is not a file"
+            if artifact.source is not None:
+                located = REPO_ROOT / artifact.source
+            else:
+                located = PLUGINS_ROOT / plugin_id / artifact.path
+            assert located.is_file(), f"{plugin_id}: artifact {artifact.path} is not a file"
+
+    def test_claude_manifest_declares_the_shared_python_sdk(self):
+        manifest = load_plugin_manifest(PLUGINS_ROOT / "claude")
+        sources = {artifact.source for artifact in manifest.artifacts}
+        assert "plugins/sdk/python/foresight_plugin_sdk.py" in sources

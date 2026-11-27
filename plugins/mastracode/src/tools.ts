@@ -1,6 +1,11 @@
 import { createTool, z } from 'mastracode/plugin'
 
-import { mcpCall, type ForesightClientConfig } from './client.js'
+import {
+  laneArgs,
+  loadCredentials,
+  mcpCall,
+  type ForesightClientConfig,
+} from './client.js'
 
 function mapScope(scope?: string): string {
   if (scope === 'project') return 'arc'
@@ -9,18 +14,7 @@ function mapScope(scope?: string): string {
   return scope ?? 'arc'
 }
 
-function resolveUserId(config?: ForesightClientConfig): string {
-  return (
-    config?.userId ??
-    process.env.FORESIGHT_IDENTITY ??
-    process.env.FORESIGHT_USER_ID ??
-    'vivi'
-  )
-}
-
 export function createForesightTools(config?: ForesightClientConfig) {
-  const userId = resolveUserId(config)
-
   const injectContextTool = createTool({
     id: 'foresight_inject_context',
     description:
@@ -36,16 +30,26 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .describe('Maximum number of memories to surface'),
     }),
     execute: async ({ query, max_memories }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'inject_context',
         {
           conversation_text: query,
           max_memories: max_memories ?? 6,
-          user_id: userId,
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
-      return { context: res ?? 'No specific memories found for query.' }
+      if (res === null) {
+        return {
+          error:
+            'Failed to inject context: Foresight MCP server call failed or timed out.',
+        }
+      }
+      return { context: res }
     },
   })
 
@@ -72,6 +76,9 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .default('permanent'),
     }),
     execute: async ({ content, category, importance, scope, retention }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'manage_memories',
         {
@@ -81,11 +88,12 @@ export function createForesightTools(config?: ForesightClientConfig) {
           importance: importance ?? 0.9,
           scope: mapScope(scope),
           retention: retention ?? 'permanent',
-          user_id: userId,
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
-      if (!res) {
+      if (res === null) {
         return {
           error:
             'Failed to store memory: Foresight MCP server call failed or timed out.',
@@ -108,16 +116,26 @@ export function createForesightTools(config?: ForesightClientConfig) {
         .describe('Maximum results to return'),
     }),
     execute: async ({ query, limit }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'search_memories',
         {
           query,
           limit: limit ?? 10,
-          user_id: userId,
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
-      return { memories: res ?? 'No memories matched the search query.' }
+      if (res === null) {
+        return {
+          error:
+            'Failed to search memories: Foresight MCP server call failed or timed out.',
+        }
+      }
+      return { memories: res }
     },
   })
 
@@ -134,16 +152,26 @@ export function createForesightTools(config?: ForesightClientConfig) {
         ),
     }),
     execute: async ({ label }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'manage_context_blocks',
         {
           action: label ? 'get' : 'list',
           label,
-          user_id: userId,
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
-      return { blocks: res ?? 'No context blocks found.' }
+      if (res === null) {
+        return {
+          error:
+            'Failed to load context blocks: Foresight MCP server call failed or timed out.',
+        }
+      }
+      return { blocks: res }
     },
   })
 
@@ -158,17 +186,27 @@ export function createForesightTools(config?: ForesightClientConfig) {
       content: z.string().describe('The content or rule to set or update'),
     }),
     execute: async ({ label, content }) => {
+      // One load per call: laneArgs and the MCP request must read the same
+      // credentials, and mcpCall must not resolve them a second time.
+      const credentials = await loadCredentials(config)
       const res = await mcpCall(
         'manage_context_blocks',
         {
           action: 'update',
           label,
           content,
-          user_id: userId,
+          ...laneArgs(credentials),
         },
         config,
+        credentials,
       )
-      return { result: res ?? `Context block '${label}' updated.` }
+      if (res === null) {
+        return {
+          error:
+            'Failed to update context block: Foresight MCP server call failed or timed out.',
+        }
+      }
+      return { result: res }
     },
   })
 
@@ -179,7 +217,13 @@ export function createForesightTools(config?: ForesightClientConfig) {
     inputSchema: z.object({}),
     execute: async () => {
       const res = await mcpCall('get_system_status', {}, config)
-      return { status: res ?? 'Foresight server online.' }
+      if (res === null) {
+        return {
+          error:
+            'Failed to read system status: Foresight MCP server call failed or timed out.',
+        }
+      }
+      return { status: res }
     },
   })
 

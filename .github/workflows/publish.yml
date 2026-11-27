@@ -139,7 +139,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          uv run pytest tests/ --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
+          uv run pytest --cov=foresight --cov-report=lcov --cov-report=term --cov-fail-under=60
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v7

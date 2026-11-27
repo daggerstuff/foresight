@@ -88,24 +88,67 @@
           "not": {
             "anyOf": [
               {
-                "pattern": "^/"
+                "pattern": "^/",
+                "type": "string"
               },
               {
-                "pattern": "^[A-Za-z]:"
+                "pattern": "^(?:\\.[/\\\\]+)*[A-Za-z]:",
+                "type": "string"
               },
               {
-                "pattern": "^\\\\"
+                "pattern": "^(?:\\.[/\\\\]+)*\\\\",
+                "type": "string"
               },
               {
-                "pattern": "^~"
+                "pattern": "^(?:\\.[/\\\\]+)*~",
+                "type": "string"
               },
               {
-                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)"
+                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)",
+                "type": "string"
               }
             ]
           },
           "title": "Path",
           "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Repo-relative path this artifact is installed from when it lives outside the plugin directory.",
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^/",
+                "type": "string"
+              },
+              {
+                "pattern": "^(?:\\.[/\\\\]+)*[A-Za-z]:",
+                "type": "string"
+              },
+              {
+                "pattern": "^(?:\\.[/\\\\]+)*\\\\",
+                "type": "string"
+              },
+              {
+                "pattern": "^(?:\\.[/\\\\]+)*~",
+                "type": "string"
+              },
+              {
+                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)",
+                "type": "string"
+              }
+            ]
+          },
+          "title": "Source"
         },
         "surface": {
           "anyOf": [
