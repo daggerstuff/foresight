@@ -363,14 +363,60 @@ _INSTALL_SCHEMA_ANY_OF: list[dict[str, Any]] = [
 def manifest_json_schema() -> dict[str, Any]:
     """Return the JSON Schema for the manifest contract (canonical: plugins/manifest.schema.json)."""
     schema = PluginManifest.model_json_schema()
-    schema["$defs"]["PluginInstall"]["anyOf"] = _INSTALL_SCHEMA_ANY_OF
+    schema["$defs"]["PluginInstall"]["anyOf"] = [
+        {
+            "required": list(branch["required"]),
+            "properties": {key: dict(value) for key, value in branch["properties"].items()},
+        }
+        for branch in _INSTALL_SCHEMA_ANY_OF
+    ]
     return schema
+
+
+EXIT_OK = 0
+EXIT_INVALID_MANIFEST = 1
+EXIT_UNREADABLE_PATH = 2
+EXIT_NO_MANIFESTS = 3
+
+
+def _scan_paths(paths: list[Path]) -> tuple[int, int, int, int]:
+    unreadable_paths = 0
+    empty_paths = 0
+    invalid_manifests = 0
+    checked = 0
+    for path in paths:
+        try:
+            manifest_paths = list(iter_plugin_manifests(path))
+        except PluginManifestError as exc:
+            unreadable_paths += 1
+            sys.stderr.write(f"FAIL {exc}\n")
+            continue
+        if not manifest_paths:
+            empty_paths += 1
+            sys.stderr.write(f"FAIL {path}: no foresight.plugin.json files found\n")
+            continue
+        for manifest_path in manifest_paths:
+            checked += 1
+            try:
+                manifest = load_plugin_manifest(manifest_path)
+            except PluginManifestError as exc:
+                invalid_manifests += 1
+                sys.stderr.write(f"FAIL {manifest_path}: {exc}\n")
+                continue
+            summary = f"({manifest.id} v{manifest.version}, targets={len(manifest.targets)})"
+            sys.stdout.write(f"OK   {manifest_path}  {summary}\n")
+    return unreadable_paths, empty_paths, invalid_manifests, checked
 
 
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m foresight.plugin_manifest",
         description="Validate foresight.plugin.json manifests.",
+        epilog=(
+            "Exit codes: 0 all manifests valid; 1 at least one manifest is invalid; "
+            "2 at least one path could not be read; 3 at least one path contained no "
+            "manifests. When several apply, 1 outranks 2, and 2 outranks 3."
+        ),
     )
     parser.add_argument(
         "paths",
@@ -391,44 +437,25 @@ def _main(argv: list[str] | None = None) -> int:
         args.write_schema.parent.mkdir(parents=True, exist_ok=True)
         args.write_schema.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n")
         sys.stdout.write(f"wrote {args.write_schema}\n")
-        return 0
+        return EXIT_OK
 
     if not args.paths:
         parser.error("at least one path is required unless --write-schema is used")
 
-    unreadable_paths = 0
-    empty_paths = 0
-    invalid_manifests = 0
-    checked = 0
-    for path in args.paths:
-        try:
-            manifest_paths = list(iter_plugin_manifests(path))
-        except PluginManifestError as exc:
-            unreadable_paths += 1
-            sys.stderr.write(f"FAIL {exc}\n")
-            continue
-        if not manifest_paths:
-            empty_paths += 1
-            sys.stderr.write(f"FAIL {path}: no foresight.plugin.json files found\n")
-            continue
-        for manifest_path in manifest_paths:
-            checked += 1
-            try:
-                manifest = load_plugin_manifest(manifest_path)
-            except PluginManifestError as exc:
-                invalid_manifests += 1
-                sys.stderr.write(f"FAIL {manifest_path}: {exc}\n")
-                continue
-            sys.stdout.write(
-                f"OK   {manifest_path}  ({manifest.id} v{manifest.version}, targets={len(manifest.targets)})\n"
-            )
+    unreadable_paths, empty_paths, invalid_manifests, checked = _scan_paths(args.paths)
     if unreadable_paths:
         sys.stderr.write(f"{unreadable_paths} path(s) could not be read\n")
     if empty_paths:
         sys.stderr.write(f"{empty_paths} path(s) contained no manifests\n")
     if invalid_manifests:
         sys.stderr.write(f"{invalid_manifests}/{checked} manifest(s) invalid\n")
-    return 1 if invalid_manifests or unreadable_paths or empty_paths else 0
+    if invalid_manifests:
+        return EXIT_INVALID_MANIFEST
+    if unreadable_paths:
+        return EXIT_UNREADABLE_PATH
+    if empty_paths:
+        return EXIT_NO_MANIFESTS
+    return EXIT_OK
 
 
 if __name__ == "__main__":

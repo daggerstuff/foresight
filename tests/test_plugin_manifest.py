@@ -10,6 +10,10 @@ from pathlib import Path
 import pytest
 
 from foresight.plugin_manifest import (
+    EXIT_INVALID_MANIFEST,
+    EXIT_NO_MANIFESTS,
+    EXIT_OK,
+    EXIT_UNREADABLE_PATH,
     PLUGIN_MANIFEST_FILENAME,
     PLUGIN_MANIFEST_SCHEMA_PATH,
     AgentTarget,
@@ -315,16 +319,19 @@ class TestIterPluginManifests:
             list(iter_plugin_manifests(tmp_path / "does-not-exist"))
 
     def test_cli_fails_on_missing_path(self, tmp_path: Path):
-        assert _main([str(PLUGINS_ROOT / "claude"), str(tmp_path / "does-not-exist")]) == 1
+        code = _main([str(PLUGINS_ROOT / "claude"), str(tmp_path / "does-not-exist")])
+        assert code == EXIT_UNREADABLE_PATH
 
     def test_cli_does_not_count_missing_path_as_manifest(self, tmp_path: Path, capsys):
-        assert _main([str(PLUGINS_ROOT / "claude"), str(tmp_path / "does-not-exist")]) == 1
+        code = _main([str(PLUGINS_ROOT / "claude"), str(tmp_path / "does-not-exist")])
+        assert code == EXIT_UNREADABLE_PATH
         err = capsys.readouterr().err
         assert "1 path(s) could not be read" in err
         assert "manifest(s) invalid" not in err
 
     def test_cli_missing_paths_only(self, tmp_path: Path, capsys):
-        assert _main([str(tmp_path / "does-not-exist")]) == 1
+        code = _main([str(tmp_path / "does-not-exist")])
+        assert code == EXIT_UNREADABLE_PATH
         err = capsys.readouterr().err
         assert "1 path(s) could not be read" in err
         assert "no foresight.plugin.json files found" not in err
@@ -332,7 +339,8 @@ class TestIterPluginManifests:
     def test_cli_fails_on_empty_directory(self, tmp_path: Path, capsys):
         empty = tmp_path / "empty"
         empty.mkdir()
-        assert _main([str(PLUGINS_ROOT / "claude"), str(empty)]) == 1
+        code = _main([str(PLUGINS_ROOT / "claude"), str(empty)])
+        assert code == EXIT_NO_MANIFESTS
         err = capsys.readouterr().err
         assert f"FAIL {empty}: no foresight.plugin.json files found" in err
         assert "manifest(s) invalid" not in err
@@ -340,12 +348,34 @@ class TestIterPluginManifests:
     def test_cli_empty_directory_only(self, tmp_path: Path, capsys):
         empty = tmp_path / "empty"
         empty.mkdir()
-        assert _main([str(empty)]) == 1
+        code = _main([str(empty)])
+        assert code == EXIT_NO_MANIFESTS
         err = capsys.readouterr().err
         assert "1 path(s) contained no manifests" in err
 
+    def test_cli_invalid_manifest_exits_1(self, tmp_path: Path):
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        (bad / PLUGIN_MANIFEST_FILENAME).write_text(json.dumps(_minimal_manifest(version="nope")))
+        code = _main([str(bad)])
+        assert code == EXIT_INVALID_MANIFEST
+
+    def test_cli_validation_outranks_discovery_failures(self, tmp_path: Path):
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        (bad / PLUGIN_MANIFEST_FILENAME).write_text(json.dumps(_minimal_manifest(version="nope")))
+        code = _main([str(bad), str(tmp_path / "does-not-exist")])
+        assert code == EXIT_INVALID_MANIFEST
+
+    def test_cli_unreadable_path_outranks_empty_directory(self, tmp_path: Path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        code = _main([str(empty), str(tmp_path / "does-not-exist")])
+        assert code == EXIT_UNREADABLE_PATH
+
     def test_cli_every_requested_path_has_manifests(self, capsys):
-        assert _main([str(PLUGINS_ROOT / "claude"), str(PLUGINS_ROOT / "hermes")]) == 0
+        code = _main([str(PLUGINS_ROOT / "claude"), str(PLUGINS_ROOT / "hermes")])
+        assert code == EXIT_OK
         err = capsys.readouterr().err
         assert "no manifests" not in err
 
@@ -369,6 +399,15 @@ class TestSchemaSync:
 
     def test_schema_spec_version_is_const_one(self):
         assert manifest_json_schema()["properties"]["specVersion"]["const"] == 1
+
+    def test_schema_install_branches_are_not_shared(self):
+        schema = manifest_json_schema()
+        branch = schema["$defs"]["PluginInstall"]["anyOf"][0]
+        branch["required"].append("injected")
+        branch["properties"]["command"]["type"] = "number"
+        fresh = manifest_json_schema()["$defs"]["PluginInstall"]["anyOf"][0]
+        assert fresh["required"] == ["command"]
+        assert fresh["properties"]["command"]["type"] == "string"
 
     @pytest.mark.parametrize(
         "path_value",
@@ -418,6 +457,19 @@ class TestDumpRoundTrip:
         assert dumped["specVersion"] == 1
         assert "spec_version" not in dumped
         assert parse_plugin_manifest(dumped).install is not None
+
+    def test_model_dump_emits_nested_aliases(self):
+        manifest = parse_plugin_manifest(
+            _minimal_manifest(
+                credentials={"envFile": "~/.config/foresight/credentials.env"},
+                install={"command": "bash install.sh", "dryRunFlag": "--dry-run"},
+            )
+        )
+        dumped = manifest.model_dump()
+        assert dumped["credentials"]["envFile"] == "~/.config/foresight/credentials.env"
+        assert "env_file" not in dumped["credentials"]
+        assert dumped["install"]["dryRunFlag"] == "--dry-run"
+        assert "dry_run_flag" not in dumped["install"]
 
     def test_model_dump_json_round_trips(self):
         manifest = parse_plugin_manifest(_minimal_manifest(version="1.2.3"))
