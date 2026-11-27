@@ -22,7 +22,7 @@ import sys
 from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Literal
+from typing import Any, Literal, Never
 
 from pydantic import (
     BaseModel,
@@ -144,6 +144,10 @@ class ForesightCapability(StrEnum):
 
 class PluginManifestError(ValueError):
     """Raised when a foresight.plugin.json fails contract validation."""
+
+
+class PluginManifestReadError(PluginManifestError):
+    """Raised when a manifest path exists but its bytes cannot be read."""
 
 
 def _check_relative_path(value: str) -> str:
@@ -327,11 +331,11 @@ def load_plugin_manifest(path: str | Path) -> PluginManifest:
     try:
         text = manifest_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
-        raise PluginManifestError(f"{manifest_path}: file not found") from exc
+        raise PluginManifestReadError(f"{manifest_path}: file not found") from exc
     except UnicodeDecodeError as exc:
         raise PluginManifestError(f"{manifest_path}: not valid UTF-8 text: {exc}") from exc
     except OSError as exc:
-        raise PluginManifestError(f"{manifest_path}: cannot read file: {exc}") from exc
+        raise PluginManifestReadError(f"{manifest_path}: cannot read file: {exc}") from exc
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -383,7 +387,7 @@ EXIT_USAGE = 64
 
 
 class _UsageErrorParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> Never:
         self.print_usage(sys.stderr)
         sys.stderr.write(self.prog + ": error: " + message + chr(10))
         raise SystemExit(EXIT_USAGE)
@@ -409,6 +413,10 @@ def _scan_paths(paths: list[Path]) -> tuple[int, int, int, int]:
             checked += 1
             try:
                 manifest = load_plugin_manifest(manifest_path)
+            except PluginManifestReadError as exc:
+                unreadable_paths += 1
+                sys.stderr.write(f"FAIL {exc}\n")
+                continue
             except PluginManifestError as exc:
                 invalid_manifests += 1
                 sys.stderr.write(f"FAIL {manifest_path}: {exc}\n")

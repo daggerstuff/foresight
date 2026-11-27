@@ -19,6 +19,7 @@ from foresight.plugin_manifest import (
     PLUGIN_MANIFEST_SCHEMA_PATH,
     AgentTarget,
     PluginManifestError,
+    PluginManifestReadError,
     PluginSurface,
     _main,
     iter_plugin_manifests,
@@ -377,6 +378,28 @@ class TestIterPluginManifests:
         (bad / PLUGIN_MANIFEST_FILENAME).write_text(json.dumps(_minimal_manifest(version="nope")))
         code = _main([str(bad), str(tmp_path / "does-not-exist")])
         assert code == EXIT_INVALID_MANIFEST
+
+    def test_load_manifest_reports_read_error(self, tmp_path: Path):
+        plugin = tmp_path / "unreadable"
+        plugin.mkdir()
+        (plugin / "foresight.plugin.json").mkdir()
+        with pytest.raises(PluginManifestReadError, match="cannot read"):
+            load_plugin_manifest(plugin)
+
+    def test_cli_unreadable_manifest_exits_2(self, tmp_path: Path):
+        plugin = tmp_path / "unreadable"
+        plugin.mkdir()
+        (plugin / "foresight.plugin.json").mkdir()
+        assert _main([str(plugin)]) == EXIT_UNREADABLE_PATH
+
+    def test_cli_invalid_outranks_unreadable_manifest(self, tmp_path: Path):
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        (broken / "foresight.plugin.json").write_text("{", encoding="utf-8")
+        unreadable = tmp_path / "unreadable"
+        unreadable.mkdir()
+        (unreadable / "foresight.plugin.json").mkdir()
+        assert _main([str(broken), str(unreadable)]) == EXIT_INVALID_MANIFEST
 
     def test_cli_unreadable_path_outranks_empty_directory(self, tmp_path: Path):
         empty = tmp_path / "empty"
