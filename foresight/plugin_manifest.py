@@ -147,7 +147,7 @@ class PluginManifestError(ValueError):
 
 
 class PluginManifestReadError(PluginManifestError):
-    """Raised when a manifest path exists but its bytes cannot be read."""
+    """Raised when a manifest file is missing or its bytes cannot be read."""
 
 
 def _check_relative_path(value: str) -> str:

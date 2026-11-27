@@ -386,6 +386,12 @@ class TestIterPluginManifests:
         with pytest.raises(PluginManifestReadError, match="cannot read"):
             load_plugin_manifest(plugin)
 
+    def test_load_manifest_missing_file_raises_read_error(self, tmp_path: Path):
+        plugin = tmp_path / "empty"
+        plugin.mkdir()
+        with pytest.raises(PluginManifestReadError, match="file not found"):
+            load_plugin_manifest(plugin)
+
     def test_cli_unreadable_manifest_exits_2(self, tmp_path: Path):
         plugin = tmp_path / "unreadable"
         plugin.mkdir()
