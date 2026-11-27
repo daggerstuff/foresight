@@ -133,6 +133,59 @@ class TestTransport:
         with pytest.raises(sdk.ForesightError):
             sdk.post_json("http://127.0.0.1:1/unreachable", {}, timeout=1.0)
 
+    def test_post_json_invalid_url_raises_foresight_error(self):
+        with pytest.raises(sdk.ForesightError):
+            sdk.post_json("http://127.0.0.1:99999/x", {})
+
+    def test_post_json_refuses_cleartext_credentials_off_loopback(self, monkeypatch):
+        def no_connect(*_args, **_kwargs):
+            raise AssertionError("a refused cleartext request must not open a connection")
+
+        monkeypatch.setattr(sdk.http.client, "HTTPConnection", no_connect)
+        monkeypatch.setattr(sdk.http.client, "HTTPSConnection", no_connect)
+        with pytest.raises(sdk.ForesightError) as excinfo:
+            sdk.post_json(
+                "http://foresight.example.com/mcp",
+                {"a": 1},
+                headers={"Authorization": "Bearer k"},
+            )
+        assert "cleartext" in str(excinfo.value)
+
+    def test_post_json_refuses_cleartext_credentials_case_insensitively(self):
+        with pytest.raises(sdk.ForesightError) as excinfo:
+            sdk.post_json(
+                "http://foresight.example.com/mcp",
+                {"a": 1},
+                headers={"authorization": "Bearer k"},
+            )
+        assert "cleartext" in str(excinfo.value)
+
+    def test_post_json_allows_cleartext_credentials_on_loopback(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/auth"] = (http.HTTPStatus.OK, {"ok": True})
+        status, raw = sdk.post_json(f"{base}/auth", {}, headers={"Authorization": "Bearer k"})
+        assert status == http.HTTPStatus.OK
+        assert json.loads(raw) == {"ok": True}
+
+    def test_post_json_allows_cleartext_credentials_to_ipv6_loopback(self):
+        with pytest.raises(sdk.ForesightError) as excinfo:
+            sdk.post_json(
+                "http://[::1]:1/mcp",
+                {},
+                headers={"Authorization": "Bearer k"},
+                timeout=1.0,
+            )
+        assert "cleartext" not in str(excinfo.value)
+
+    def test_post_json_unauthenticated_cleartext_off_loopback_is_allowed(self, monkeypatch):
+        def no_connect(*_args, **_kwargs):
+            raise AssertionError("transport should be reached for an unauthenticated request")
+
+        monkeypatch.setattr(sdk.http.client, "HTTPConnection", no_connect)
+        with pytest.raises(sdk.ForesightError) as excinfo:
+            sdk.post_json("http://foresight.example.com/mcp", {"a": 1})
+        assert "cleartext" not in str(excinfo.value)
+
     def test_parse_json(self):
         assert sdk.parse_json(b'{"a": 1}') == {"a": 1}
         assert sdk.parse_json("not json") is None
@@ -162,11 +215,28 @@ class TestHookInputAndMcp:
         assert sdk.parse_sse_result('data: {"result": 2}\n\n') == {"result": 2}
         assert sdk.parse_sse_result("garbage") is None
 
+    def test_parse_sse_result_skips_notification_frames(self):
+        body = (
+            'data: {"jsonrpc": "2.0", "method": "notifications/message", '
+            '"params": {"level": "info"}}\n\n'
+            'data: {"jsonrpc": "2.0", "id": 4, "result": {"content": []}}\n\n'
+        )
+        assert sdk.parse_sse_result(body) == {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "result": {"content": []},
+        }
+
+    def test_parse_sse_result_falls_back_to_first_plain_frame(self):
+        body = 'data: {"jsonrpc": "2.0", "id": 1, "content": []}\n\n'
+        assert sdk.parse_sse_result(body) == {"jsonrpc": "2.0", "id": 1, "content": []}
+
     def test_mcp_result_text(self):
         result = {"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
         assert sdk.mcp_result_text(result) == "a\nb"
         assert sdk.mcp_result_text("raw") == "raw"
         assert sdk.mcp_result_text(None) is None
+        assert sdk.mcp_result_text({"content": []}) == ""
 
 
 class TestForesightClient:
@@ -191,6 +261,14 @@ class TestForesightClient:
         paths = [p for p, _ in handler.requests]
         assert "/ui/api/capture" in paths
         assert "/session/transcript" in paths
+        assert handler.requests[paths.index("/ui/api/capture")][1] == {
+            "text": "note",
+            "session_id": "sess1",
+        }
+        assert handler.requests[paths.index("/session/transcript")][1] == {
+            "session_id": "sess1",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
 
     def test_call_tool_parses_sse(self):
         class SSEHandler(_StubHandler):
@@ -218,6 +296,40 @@ class TestForesightClient:
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+    def test_call_tool_plain_json_response(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/mcp"] = (
+            http.HTTPStatus.OK,
+            {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": "plain hi"}]}},
+        )
+        client = sdk.ForesightClient(credentials=sdk.Credentials(base_url=base, api_key="k"))
+        assert client.call_tool("search_memories", {"query": "x"}) == "plain hi"
+        path, body = handler.requests[-1]
+        assert path == "/mcp"
+        assert body["method"] == "tools/call"
+        assert body["params"]["name"] == "search_memories"
+        assert body["params"]["arguments"] == {"params": {"query": "x"}}
+        assert body["params"]["_meta"]["api_key"] == "k"
+
+    def test_call_tool_returns_none_on_transport_failure(self):
+        client = sdk.ForesightClient(
+            credentials=sdk.Credentials(base_url="http://127.0.0.1:1"),
+            timeout=1.0,
+        )
+        assert client.call_tool("search_memories", {"query": "x"}) is None
+
+    def test_call_tool_returns_none_on_tool_error(self, stub_server):
+        base, handler = stub_server
+        handler.responses["/mcp"] = (
+            http.HTTPStatus.OK,
+            {
+                "jsonrpc": "2.0",
+                "result": {"isError": True, "content": [{"type": "text", "text": "boom"}]},
+            },
+        )
+        client = sdk.ForesightClient(credentials=sdk.Credentials(base_url=base))
+        assert client.call_tool("search_memories", {"query": "x"}) is None
 
 
 class TestClaudeHookIntegration:

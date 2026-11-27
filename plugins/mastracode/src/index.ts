@@ -36,15 +36,15 @@ export default defineMastraCodePlugin({
       type: 'string',
       label: 'Foresight Server URL',
       description:
-        'Base URL for the Foresight server or MCP endpoint (e.g. http://127.0.0.1:8764)',
-      default: 'http://127.0.0.1:8764',
+        'Base URL for the Foresight server or MCP endpoint (e.g. http://127.0.0.1:8764). ' +
+        'Leave empty to use FORESIGHT_MCP_URL, FORESIGHT_URL or the credentials file.',
     },
     userId: {
       type: 'string',
       label: 'User ID',
       description:
-        'User identifier for tenant/user isolation (e.g. default or your username)',
-      default: 'default',
+        'User identifier for tenant/user isolation (e.g. default or your username). ' +
+        'Leave empty to use FORESIGHT_USER_ID or the credentials file.',
     },
     autoInject: {
       type: 'boolean',
@@ -74,9 +74,9 @@ export default defineMastraCodePlugin({
         ? context.config.userId
         : undefined
     const clientConfig: ForesightClientConfig = {
-      baseUrl:
-        serverUrl ?? process.env.FORESIGHT_MCP_URL ?? 'http://127.0.0.1:8764',
-      userId: userId ?? 'default',
+      ...(serverUrl ? { baseUrl: serverUrl } : {}),
+      ...(userId ? { userId } : {}),
+      sessionFallback: 'mastracode-session',
     }
     return createForesightTools(clientConfig)
   },
@@ -98,9 +98,9 @@ export default defineMastraCodePlugin({
         ? context.config.userId
         : undefined
     const clientConfig: ForesightClientConfig = {
-      baseUrl:
-        serverUrl ?? process.env.FORESIGHT_MCP_URL ?? 'http://127.0.0.1:8764',
-      userId: userId ?? 'default',
+      ...(serverUrl ? { baseUrl: serverUrl } : {}),
+      ...(userId ? { userId } : {}),
+      sessionFallback: 'mastracode-session',
     }
 
     return [createForesightProcessor(clientConfig)]

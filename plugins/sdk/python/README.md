@@ -17,6 +17,8 @@ The module is `foresight_plugin_sdk.py`. Two consumption patterns:
 import foresight_plugin_sdk as sdk
 
 client = sdk.ForesightClient.from_env()
+import contextlib
+
 with contextlib.suppress(Exception):
     block = client.inject_context(prompt_text)
 ```
@@ -32,13 +34,23 @@ with contextlib.suppress(Exception):
 | `parse_sse_result` / `mcp_result_text` | MCP `tools/call` response flattening |
 | `ForesightClient` | `inject_context` (`/ui/api/inject`), `capture_text` (`/ui/api/capture`), `capture_transcript` (`/session/transcript`), `post_telemetry`, `call_tool` (MCP `/mcp`) |
 
-## Fail-safe contract
+## Error contract
 
-All helpers raise `ForesightError` subclasses on failure and never return
-partial data. Hook callers must wrap calls in `contextlib.suppress(Exception)`
-so an unreachable Foresight server can never break the host agent session —
-see `plugins/claude/hooks/foresight_hook.py` for the reference pattern
-(SDK import with inline fallbacks when the file isn't installed).
+The low-level helpers raise and never return partial data:
+`post_json` and `ForesightClient.post` raise `ForesightHTTPError` on a
+`>= 400` status and `ForesightError` on transport failure, an invalid URL, or
+a cleartext-HTTP request that would carry the API key off loopback.
+
+The high-level helpers are fail-safe: `inject_context`, `capture_text`,
+`capture_transcript` and `post_telemetry` suppress `ForesightError` and
+return their documented `None`/empty value, and `call_tool` returns `None` on
+transport or tool failure. An unreachable Foresight server therefore cannot
+break the host agent session, and an exception handler is *not* a reliable way
+to detect a failed high-level call — check the return value. Hook callers that
+call the low-level helpers directly must wrap them in
+`contextlib.suppress(Exception)`; see `plugins/claude/hooks/foresight_hook.py`
+for the reference pattern (SDK import with inline fallbacks when the file
+isn't installed).
 
 ## Server discovery
 

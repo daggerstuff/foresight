@@ -34,7 +34,20 @@ try:
 except Exception:
     _sdk = None
 
-FORESIGHT_URL = os.environ.get("FORESIGHT_MCP_URL") or "http://127.0.0.1:8764"
+
+def _resolve_base_url() -> str:
+    if _sdk is not None:
+        with suppress(Exception):
+            return _sdk.resolve_credentials().rest_url
+    for env_key in ("FORESIGHT_MCP_URL", "FORESIGHT_URL"):
+        value = (os.environ.get(env_key) or "").strip()
+        if value:
+            base = value.rstrip("/")
+            return base[: -len("/mcp")] if base.endswith("/mcp") else base
+    return "http://127.0.0.1:8764"
+
+
+FORESIGHT_URL = _resolve_base_url()
 DEFAULT_SESSION_ID = "claude-session"
 DEFAULT_CACHE_TTL_HOURS = 72
 DEFAULT_CACHE_MAX_BYTES = 2 * 1024 * 1024

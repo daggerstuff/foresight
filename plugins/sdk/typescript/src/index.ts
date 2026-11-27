@@ -26,6 +26,7 @@ export interface ForesightClientConfig {
   apiKey?: string
   identity?: string
   userId?: string
+  sessionFallback?: string
   timeoutMs?: number
   /** Override credentials.env location (default ~/.config/foresight/credentials.env). */
   credentialsPath?: string
@@ -109,7 +110,7 @@ export async function loadCredentials(
     }
     return ''
   }
-  const identity = pick('FORESIGHT_IDENTITY')
+  const identity = config?.identity || pick('FORESIGHT_IDENTITY')
   const lane = identity ? identity.split('@', 1)[0] : ''
   return {
     baseUrl:
@@ -139,6 +140,57 @@ export function authHeaders(
   return headers
 }
 
+export function restBaseUrl(credentials: ForesightCredentials): string {
+  const base = credentials.baseUrl.replace(/\/+$/, '')
+  return base.endsWith('/mcp') ? base.slice(0, -'/mcp'.length) : base
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (!host) return false
+  if (host === 'localhost' || host.endsWith('.localhost')) return true
+  return /^127(?:\.\d{1,3}){3}$/.test(host) || host === '::1'
+}
+
+/**
+ * Refuse to put credentials on the wire in cleartext off loopback: a
+ * configured `http://` base URL would otherwise expose the API key to any
+ * network observer. Loopback development stays supported.
+ */
+export function assertCredentialTransport(
+  url: string,
+  hasCredentials: boolean,
+): void {
+  if (!hasCredentials) return
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new ForesightError(`invalid Foresight URL: ${url}`)
+  }
+  if (parsed.protocol === 'https:') return
+  if (parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname)) return
+  throw new ForesightError(
+    `refusing to send credentials over cleartext HTTP to ${parsed.hostname}; ` +
+      'use https:// or a loopback address',
+  )
+}
+
+/** The lane the REST path selects, so the MCP fallbacks read the same lane. */
+export function resolvedLane(credentials: ForesightCredentials): string {
+  return credentials.lane || credentials.userId || 'default'
+}
+
+function carriesAuthorization(headers?: Record<string, string>): boolean {
+  return Object.keys(headers ?? {}).some(
+    (name) => name.toLowerCase() === 'authorization',
+  )
+}
+
+function isNotificationFrame(frame: Record<string, unknown>): boolean {
+  return 'method' in frame && !('id' in frame)
+}
+
 export function parseSSEResult(body: string): Record<string, unknown> | null {
   if (!body) return null
   try {
@@ -150,19 +202,22 @@ export function parseSSEResult(body: string): Record<string, unknown> | null {
     // Fall through to line-by-line SSE parsing
   }
   const lines = body.split('\n')
+  let fallback: Record<string, unknown> | null = null
   for (const line of lines) {
     if (line.startsWith('data: ')) {
       try {
         const parsed: unknown = JSON.parse(line.slice(6))
-        if (parsed && typeof parsed === 'object') {
-          return parsed as Record<string, unknown>
+        if (parsed && typeof parsed === 'object' && parsed !== null) {
+          const frame = parsed as Record<string, unknown>
+          if ('result' in frame || 'error' in frame) return frame
+          if (fallback === null && !isNotificationFrame(frame)) fallback = frame
         }
       } catch {
         // keep scanning
       }
     }
   }
-  return null
+  return fallback
 }
 
 export interface PostJsonResult {
@@ -182,6 +237,7 @@ export async function postJson(
     timeoutMs?: number
   },
 ): Promise<PostJsonResult> {
+  assertCredentialTransport(url, carriesAuthorization(options?.headers))
   const controller = new AbortController()
   const timer = setTimeout(
     () => controller.abort(),
@@ -195,6 +251,10 @@ export async function postJson(
       signal: controller.signal,
     })
     return { status: resp.status, body: await resp.text() }
+  } catch (err) {
+    throw new ForesightError(
+      err instanceof Error ? err.message : 'Foresight transport failure',
+    )
   } finally {
     clearTimeout(timer)
   }
@@ -214,6 +274,7 @@ export async function mcpCall(
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
+    assertCredentialTransport(mcpUrl, Boolean(credentials.apiKey))
     const resp = await fetch(mcpUrl, {
       method: 'POST',
       headers: {
@@ -229,11 +290,12 @@ export async function mcpCall(
         method: 'tools/call',
         params: {
           name: toolName,
-          arguments: args,
+          arguments: { params: args },
           _meta: {
             'io.modelcontextprotocol/protocolVersion':
               FORESIGHT_MCP_PROTOCOL_VERSION,
             'io.modelcontextprotocol/clientCapabilities': {},
+            ...(credentials.apiKey ? { api_key: credentials.apiKey } : {}),
           },
         },
       }),
@@ -244,6 +306,12 @@ export async function mcpCall(
     const text = await resp.text()
     const parsed = parseSSEResult(text) as McpResponse | null
     if (!parsed || parsed.error || !parsed.result) return null
+    if (
+      typeof parsed.result === 'object' &&
+      (parsed.result as { isError?: unknown }).isError
+    ) {
+      return null
+    }
 
     if (
       typeof parsed.result === 'object' &&
@@ -284,11 +352,11 @@ async function postPath(
   try {
     const credentials = await loadCredentials(config)
     const { status, body } = await postJson(
-      `${credentials.baseUrl.replace(/\/+$/, '')}${path}`,
+      `${restBaseUrl(credentials)}${path}`,
       payload,
       {
         headers: authHeaders(credentials),
-        timeoutMs: timeoutMs ?? config?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        timeoutMs: config?.timeoutMs ?? timeoutMs ?? DEFAULT_TIMEOUT_MS,
       },
     )
     let data: unknown = null
@@ -325,7 +393,7 @@ export async function fetchInjectContext(
       conversation_text: query,
       max_memories: 6,
       min_relevance: 0.01,
-      user_id: credentials.userId || 'default',
+      user_id: resolvedLane(credentials),
     },
     config,
   )
@@ -391,13 +459,14 @@ export async function autoCaptureTurn(
     })
   }
 
+  const credentials = await loadCredentials(config)
   // Fire-and-forget background capture via MCP distillation
   void mcpCall(
     'process_session_transcript',
     {
-      session_id: sessionId || 'agent-session',
+      session_id: sessionId || config?.sessionFallback || 'agent-session',
       messages,
-      user_id: (await loadCredentials(config)).userId || 'default',
+      user_id: resolvedLane(credentials),
     },
     config,
   ).catch(() => {})

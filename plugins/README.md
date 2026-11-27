@@ -38,9 +38,16 @@ uv run python -m foresight.plugin_manifest plugins/
 
 - `artifacts[]` — every file the plugin installs: `type` (`config`, `hook`,
   `skill`, `rule`, `extension`, `provider`, `cli`, `docs`, `native-manifest`,
-  `source`), plugin-directory-relative `path` (no absolute, home-relative,
-  or `..` segments), optional `surface`, per-`targets` overrides, and
-  `description`.
+  `source`), `path`, optional `source`, optional `surface`, per-`targets`
+  overrides, and `description`.
+  - `path` is **plugin-directory-relative**: `hooks/foresight_hook.py` resolves
+    to `plugins/<id>/hooks/foresight_hook.py`, not `plugins/<id>/plugins/<id>/…`.
+  - `source` is **repository-root-relative** and only names where a file is
+    installed *from* when it lives outside the plugin directory, e.g.
+    `plugins/sdk/python/foresight_plugin_sdk.py`. Omit it for files that live
+    inside the plugin directory.
+  - Both reject absolute paths (`/etc/passwd`, `C:\\x`), a leading `~`, and any
+    `..` segment; the loader and `manifest.schema.json` enforce the same rules.
 - `credentials` — **references only**: `envFile` (e.g.
   `~/.config/foresight/credentials.env`, mode 600) and `keys` (env var names).
   Never embed secrets.
@@ -73,6 +80,7 @@ parsing — use the shared SDKs in `plugins/sdk/`:
   contract: `sdk/typescript/README.md`.
 
 Both resolve server discovery (`FORESIGHT_MCP_URL` → `FORESIGHT_URL` →
+`FORESIGHT_MCP_URL`/`FORESIGHT_URL` in `~/.config/foresight/credentials.env` →
 `http://127.0.0.1:8764`), credentials (`~/.config/foresight/credentials.env`,
 mode 600, env-first precedence), and auth headers (Bearer + `X-User-Id`
 lane). All high-level helpers are fail-safe: an unreachable server must

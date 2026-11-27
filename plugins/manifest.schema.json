@@ -107,6 +107,39 @@
           "title": "Path",
           "type": "string"
         },
+        "source": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Repo-relative path this artifact is installed from when it lives outside the plugin directory.",
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^/"
+              },
+              {
+                "pattern": "^[A-Za-z]:"
+              },
+              {
+                "pattern": "^\\\\"
+              },
+              {
+                "pattern": "^~"
+              },
+              {
+                "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)"
+              }
+            ]
+          },
+          "title": "Source"
+        },
         "surface": {
           "anyOf": [
             {

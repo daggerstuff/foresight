@@ -227,3 +227,175 @@ describe('client helpers (fail-safe)', () => {
     expect(spy).not.toHaveBeenCalled()
   })
 })
+
+describe('REST payload and fail-safe contract', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('captureTranscript posts session_id and messages', async () => {
+    const sdk = await import('../src/index.js')
+    const sent: Array<{ url: string; body: unknown }> = []
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return new Response('{}', { status: 200 })
+    })
+    await expect(
+      sdk.captureTranscript('sess-1', [{ role: 'user', content: 'hi' }]),
+    ).resolves.toBe(true)
+    expect(sent[0]?.body).toEqual({
+      session_id: 'sess-1',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+  })
+
+  it('captureText and captureTranscript return false on 5xx', async () => {
+    const sdk = await import('../src/index.js')
+    vi.stubGlobal('fetch', async () => new Response('boom', { status: 500 }))
+    await expect(sdk.captureText('s', 'hello')).resolves.toBe(false)
+    await expect(
+      sdk.captureTranscript('s', [{ role: 'user', content: 'hi' }]),
+    ).resolves.toBe(false)
+  })
+
+  it('postTelemetry swallows a 404 instead of throwing', async () => {
+    const sdk = await import('../src/index.js')
+    vi.stubGlobal('fetch', async () => new Response('nope', { status: 404 }))
+    await expect(
+      sdk.postTelemetry('claude_hook', { surface: 'claude_hook' }),
+    ).resolves.toBeUndefined()
+  })
+
+  it('postJson refuses cleartext credentials off loopback', async () => {
+    const spy = stubFetch(() => new Response('{}', { status: 200 }))
+    await expect(
+      postJson(
+        'http://foresight.example.com/mcp',
+        {},
+        { headers: { Authorization: 'Bearer k' } },
+      ),
+    ).rejects.toThrow(/cleartext/)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('postJson still sends credentials to loopback over http', async () => {
+    const spy = stubFetch(() => new Response('{}', { status: 200 }))
+    await expect(
+      postJson(
+        'http://127.0.0.1:8764/mcp',
+        {},
+        { headers: { Authorization: 'Bearer k' } },
+      ),
+    ).resolves.toEqual({ status: 200, body: '{}' })
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('mcpCall refuses to send the api key over cleartext http', async () => {
+    const spy = stubFetch(() => new Response('{}', { status: 200 }))
+    await expect(
+      mcpCall(
+        'search_memories',
+        { query: 'x' },
+        { baseUrl: 'http://foresight.example.com', apiKey: 'secret' },
+      ),
+    ).resolves.toBeNull()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('parseSSEResult skips notification frames before the response', () => {
+    const body = [
+      'data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"}}',
+      '',
+      'data: {"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"hi"}]}}',
+      '',
+    ].join('\n')
+    expect(parseSSEResult(body)).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      result: { content: [{ type: 'text', text: 'hi' }] },
+    })
+  })
+
+  it('fetchInjectContext falls back to MCP and returns null when both fail', async () => {
+    const sdk = await import('../src/index.js')
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(String(url))
+      return new Response('down', { status: 503 })
+    })
+    await expect(sdk.fetchInjectContext('q')).resolves.toBeNull()
+    expect(urls.some((url) => url.endsWith('/mcp'))).toBe(true)
+  })
+
+  it('resolvedLane resolves identity lane, then user id, then default', async () => {
+    const sdk = await import('../src/index.js')
+    const base = { baseUrl: '', apiKey: '', identity: '', userId: '', lane: '' }
+    expect(
+      sdk.resolvedLane({ ...base, identity: 'alice@acme', lane: 'alice' }),
+    ).toBe('alice')
+    expect(sdk.resolvedLane({ ...base, userId: 'bob' })).toBe('bob')
+    expect(sdk.resolvedLane(base)).toBe('default')
+  })
+
+  it('fetchInjectContext sends the resolved lane in the MCP fallback', async () => {
+    const bodies: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith('/ui/api/inject')) {
+          return new Response('down', { status: 503 })
+        }
+        bodies.push(String(init?.body ?? ''))
+        return new Response(
+          JSON.stringify({
+            result: { content: [{ type: 'text', text: 'mcp memories' }] },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    )
+    const out = await fetchInjectContext('hello', {
+      credentialsPath: '/nonexistent',
+      identity: 'alice@acme',
+    })
+    expect(out).toBe('mcp memories')
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toContain('"user_id":"alice"')
+  })
+
+  it(
+    'captureText honors a configured timeoutMs over the 5000 ms default',
+    async () => {
+      const delays: unknown[] = []
+      const realSetTimeout = globalThis.setTimeout
+      const timerSpy = vi.spyOn(globalThis, 'setTimeout')
+      timerSpy.mockImplementation(((cb: () => void, ms?: number) => {
+        delays.push(ms)
+        return realSetTimeout(cb, ms)
+      }) as never)
+      const fetchMock = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(new Error('aborted'))
+            })
+          }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+      try {
+        await expect(
+          captureText('session-1', 'hello', undefined, {
+            timeoutMs: 40,
+            credentialsPath: '/nonexistent',
+          }),
+        ).resolves.toBe(false)
+      } finally {
+        timerSpy.mockRestore()
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(delays).toContain(40)
+      expect(delays).not.toContain(5000)
+    },
+    15000,
+  )
+})

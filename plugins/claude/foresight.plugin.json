@@ -75,6 +75,13 @@
       "description": "Config-writing helpers invoked by install.sh"
     },
     {
+      "type": "source",
+      "path": "hooks/foresight_plugin_sdk.py",
+      "surface": "hooks",
+      "source": "plugins/sdk/python/foresight_plugin_sdk.py",
+      "description": "Shared Python SDK that install.sh copies next to the hook"
+    },
+    {
       "type": "docs",
       "path": "CONNECTOR.md",
       "description": "claude.ai web/mobile custom-connector instructions (MCP-only fallback)"

@@ -150,26 +150,28 @@ class PluginManifestReadError(PluginManifestError):
     """Raised when a manifest file is missing or its bytes cannot be read."""
 
 
-def _check_relative_path(value: str) -> str:
+def _check_relative_path(value: str, *, label: str = "path", base: str = "the plugin directory") -> str:
     """Reject absolute, leading home-relative, and parent-escaping artifact paths.
 
     Only the first component is home-relative: ``~alice/hook.py`` points outside the
     plugin directory, while ``assets/~backup/hook.py`` is an ordinary nested filename.
+    ``label`` and ``base`` only shape the error text, so artifact ``source`` paths are
+    checked exactly like artifact ``path`` while naming the repository as their base.
     """
     if not value:
-        raise ValueError("artifact path must not be empty")
+        raise ValueError(f"artifact {label} must not be empty")
     posix = PurePosixPath(value)
     windows = PureWindowsPath(value)
     if posix.is_absolute() or posix.root:
-        raise ValueError("artifact path must be relative to the plugin directory")
+        raise ValueError(f"artifact {label} must be relative to {base}")
     if windows.is_absolute() or windows.drive or windows.root:
-        raise ValueError("artifact path must be relative to the plugin directory")
+        raise ValueError(f"artifact {label} must be relative to {base}")
     posix_parts = posix.parts
     windows_parts = windows.parts
     if (posix_parts and posix_parts[0].startswith("~")) or (windows_parts and windows_parts[0].startswith("~")):
-        raise ValueError("artifact path must not be home-relative")
+        raise ValueError(f"artifact {label} must not be home-relative")
     if ".." in posix_parts or ".." in windows_parts:
-        raise ValueError("artifact path must not escape the plugin directory")
+        raise ValueError(f"artifact {label} must not escape {base}")
     return value
 
 
@@ -208,6 +210,12 @@ class PluginArtifact(_StrictModel):
         json_schema_extra=_PATH_SCHEMA_EXTRA,
         description="Path relative to the plugin directory.",
     )
+    source: str | None = Field(
+        default=None,
+        min_length=1,
+        json_schema_extra=_PATH_SCHEMA_EXTRA,
+        description=("Repo-relative path this artifact is installed from when it lives outside the plugin directory."),
+    )
     surface: PluginSurface | None = Field(
         default=None,
         description="Capability surface this artifact implements, if any.",
@@ -222,6 +230,13 @@ class PluginArtifact(_StrictModel):
     @classmethod
     def _path_is_relative(cls, value: str) -> str:
         return _check_relative_path(value)
+
+    @field_validator("source")
+    @classmethod
+    def _source_is_relative(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _check_relative_path(value, label="source", base="the repository root")
 
 
 class PluginCredentials(_StrictModel):
