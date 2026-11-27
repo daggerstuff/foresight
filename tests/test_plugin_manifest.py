@@ -398,14 +398,18 @@ class TestIterPluginManifests:
         (plugin / "foresight.plugin.json").mkdir()
         assert _main([str(plugin)]) == EXIT_UNREADABLE_PATH
 
-    def test_cli_invalid_outranks_unreadable_manifest(self, tmp_path: Path):
+    def test_cli_invalid_outranks_unreadable_manifest(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
         broken = tmp_path / "broken"
         broken.mkdir()
         (broken / "foresight.plugin.json").write_text("{", encoding="utf-8")
         unreadable = tmp_path / "unreadable"
         unreadable.mkdir()
         (unreadable / "foresight.plugin.json").mkdir()
-        assert _main([str(broken), str(unreadable)]) == EXIT_INVALID_MANIFEST
+        code = _main([str(broken), str(unreadable)])
+        captured = capsys.readouterr()
+        assert code == EXIT_INVALID_MANIFEST
+        assert "1 path(s) could not be read" in captured.err
+        assert "1/2 manifest(s) invalid" in captured.err
 
     def test_cli_unreadable_path_outranks_empty_directory(self, tmp_path: Path):
         empty = tmp_path / "empty"
