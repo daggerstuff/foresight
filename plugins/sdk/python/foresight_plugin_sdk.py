@@ -310,6 +310,28 @@ class ForesightClient:
         """Fire-and-forget telemetry via ``/ui/api/telemetry/gating``."""
         self.post("/ui/api/telemetry/gating", payload, timeout=timeout)
 
+    def track_event(
+        self,
+        event: str,
+        *,
+        plugin: str = "unknown",
+        surface: str = "unknown",
+        latency_ms: float | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a plugin benefit/health event via ``/ui/api/telemetry/event`` (FOR-70).
+
+        ``fields`` must contain only small scalar values (counts, scores,
+        booleans) — never memory content, titles, or bodies. See
+        ``plugins/telemetry/README.md`` for the event catalog and privacy rules.
+        """
+        payload: dict[str, Any] = {"event": event, "plugin": plugin, "surface": surface}
+        if latency_ms is not None:
+            payload["latency_ms"] = latency_ms
+        if fields:
+            payload["fields"] = fields
+        self.post("/ui/api/telemetry/event", payload, timeout=2.0)
+
     def call_tool(self, name: str, arguments: dict[str, Any], timeout: float | None = None) -> str | None:
         """MCP ``tools/call`` against ``<base>/mcp``; returns joined text or None."""
         payload = {

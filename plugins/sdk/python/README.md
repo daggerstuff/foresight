@@ -30,7 +30,7 @@ with contextlib.suppress(Exception):
 | `post_json` | stdlib `http.client` POST; raises `ForesightHTTPError` (>=400) / `ForesightError` (transport) |
 | `read_hook_input` | stdin JSON hook payload → `dict` (`{}` on failure) |
 | `parse_sse_result` / `mcp_result_text` | MCP `tools/call` response flattening |
-| `ForesightClient` | `inject_context` (`/ui/api/inject`), `capture_text` (`/ui/api/capture`), `capture_transcript` (`/session/transcript`), `post_telemetry`, `call_tool` (MCP `/mcp`) |
+| `ForesightClient` | `inject_context` (`/ui/api/inject`), `capture_text` (`/ui/api/capture`), `capture_transcript` (`/session/transcript`), `post_telemetry`, `track_event` (`/ui/api/telemetry/event`, FOR-70), `call_tool` (MCP `/mcp`) |
 
 ## Fail-safe contract
 

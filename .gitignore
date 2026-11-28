@@ -37,7 +37,7 @@ pyrightconfig.json
 
 # Coverage reports
 packages/*/coverage/
-plugins/*/coverage/
+plugins/**/coverage/
 packages/*/src/test/
 coverage.lcov
 

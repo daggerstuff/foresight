@@ -1,0 +1,6 @@
+{
+  "badge": "FORESIGHT",
+  "label": "memory active",
+  "detail": "12 memories this session · last recall 2m ago",
+  "telemetryEvent": "plugin.health"
+}

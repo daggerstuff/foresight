@@ -24,6 +24,10 @@ logger = logging.getLogger("foresight_telemetry")
 # Rolling window of latency samples kept for percentile reporting.
 LATENCY_WINDOW_SIZE = 100
 MAX_RECENT_GATING_DECISIONS = 50
+MAX_RECENT_PLUGIN_EVENTS = 100
+MAX_PLUGIN_EVENT_FIELDS = 12
+PLUGIN_EVENT_FIELD_VALUE_MAX = 128
+PLUGIN_EVENT_ID_MAX = 64
 
 DEFAULT_TELEMETRY_PATH = Path(
     os.environ.get("FORESIGHT_TELEMETRY_PATH", Path.home() / ".config" / "foresight" / "telemetry.json")
@@ -60,6 +64,8 @@ class TelemetryData:
     reflect_calls: int = 0
     reflect_cache_hits: int = 0
     reflect_cache_misses: int = 0
+    plugin_event_counts: dict[str, int] = field(default_factory=dict)
+    plugin_events_recent: list[dict[str, Any]] = field(default_factory=list)
 
 
 class TelemetryStore:
@@ -93,6 +99,8 @@ class TelemetryStore:
                         reflect_calls=raw.get("reflect_calls", 0),
                         reflect_cache_hits=raw.get("reflect_cache_hits", 0),
                         reflect_cache_misses=raw.get("reflect_cache_misses", 0),
+                        plugin_event_counts=raw.get("plugin_event_counts", {}),
+                        plugin_events_recent=raw.get("plugin_events_recent", []),
                     )
         except Exception as e:
             logger.warning("Failed to load telemetry file: %s", e)
@@ -218,6 +226,59 @@ class TelemetryStore:
                 recent.pop(0)
             self._save_locked()
 
+    @staticmethod
+    def _sanitize_plugin_event_fields(fields: Any) -> dict[str, Any]:
+        """Keep only small scalar field values — never nested or free text."""
+        if not isinstance(fields, dict):
+            return {}
+        clean: dict[str, Any] = {}
+        for key, value in list(fields.items())[:MAX_PLUGIN_EVENT_FIELDS]:
+            if not isinstance(key, str) or not key or len(key) > PLUGIN_EVENT_ID_MAX:
+                continue
+            if isinstance(value, bool) or value is None:
+                clean[key] = value
+            elif isinstance(value, (int, float)) and math.isfinite(value):
+                clean[key] = round(value, 4)
+            elif isinstance(value, str):
+                clean[key] = value[:PLUGIN_EVENT_FIELD_VALUE_MAX]
+        return clean
+
+    def record_plugin_event(
+        self,
+        event: str,
+        *,
+        plugin: str = "unknown",
+        surface: str = "unknown",
+        latency_ms: float | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a plugin benefit/health telemetry event (FOR-70).
+
+        Only the event name, plugin/surface ids, latency, and sanitized
+        scalar ``fields`` are persisted — never memory content or bodies.
+        """
+        name = (event or "").strip()
+        if not name or len(name) > PLUGIN_EVENT_ID_MAX:
+            raise ValueError(f"plugin event name must be 1-{PLUGIN_EVENT_ID_MAX} characters")
+        entry: dict[str, Any] = {
+            "event": name,
+            "plugin": (plugin or "unknown").strip()[:PLUGIN_EVENT_ID_MAX] or "unknown",
+            "surface": (surface or "unknown").strip()[:PLUGIN_EVENT_ID_MAX] or "unknown",
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if latency_ms is not None and math.isfinite(latency_ms):
+            entry["latency_ms"] = round(latency_ms, 2)
+        clean_fields = self._sanitize_plugin_event_fields(fields)
+        if clean_fields:
+            entry["fields"] = clean_fields
+        with self._lock:
+            self._data.last_updated = entry["ts"]
+            self._data.plugin_event_counts[name] = self._data.plugin_event_counts.get(name, 0) + 1
+            self._data.plugin_events_recent.append(entry)
+            if len(self._data.plugin_events_recent) > MAX_RECENT_PLUGIN_EVENTS:
+                self._data.plugin_events_recent.pop(0)
+            self._save_locked()
+
     def get_summary(self) -> dict[str, Any]:
         """Return structured telemetry dashboard data."""
         with self._lock:
@@ -255,6 +316,10 @@ class TelemetryStore:
                 "reflect_calls": self._data.reflect_calls,
                 "reflect_cache_hits": self._data.reflect_cache_hits,
                 "reflect_cache_misses": self._data.reflect_cache_misses,
+                "plugin_events": {
+                    "counts": dict(self._data.plugin_event_counts),
+                    "recent": list(self._data.plugin_events_recent),
+                },
             }
 
 

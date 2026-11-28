@@ -10297,6 +10297,38 @@ async def ui_api_telemetry_gating(request: Any) -> Any:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
+@mcp.custom_route("/ui/api/telemetry/event", methods=["POST"])
+@_ui_protected
+async def ui_api_telemetry_event(request: Any) -> Any:
+    """Record a plugin benefit/health telemetry event (FOR-70).
+
+    Payload: {"event": str, "plugin"?: str, "surface"?: str,
+              "latency_ms"?: number, "fields"?: {scalar: scalar}}.
+    Only sanitized scalar fields are persisted — never memory content.
+    """
+    try:
+        body = await request.json()
+        event = str(body.get("event") or "")
+        plugin = str(body.get("plugin") or "unknown")
+        surface = str(body.get("surface") or "unknown")
+        latency_raw = body.get("latency_ms")
+        latency_ms = float(latency_raw) if isinstance(latency_raw, (int, float)) else None
+        fields = body.get("fields") if isinstance(body.get("fields"), dict) else {}
+        get_telemetry_store().record_plugin_event(
+            event,
+            plugin=plugin,
+            surface=surface,
+            latency_ms=latency_ms,
+            fields=fields,
+        )
+        return JSONResponse({"ok": True, "recorded": event})
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.warning("Telemetry event recording failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
 @mcp.custom_route("/ui/api/capture", methods=["POST"])
 @_ui_protected
 async def ui_api_capture(request: Any) -> Any:

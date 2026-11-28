@@ -78,6 +78,14 @@ never break the host agent session.
 Current consumers: `plugins/claude/hooks/foresight_hook.py` (Python) and
 `plugins/mastracode/src/client.ts` (TypeScript re-export shim).
 
+## Benefit markers & telemetry
+
+How plugins show the user that Foresight helped — marker conventions,
+telemetry event schema (`POST /ui/api/telemetry/event`), event catalog, and
+privacy rules — is specified in [`telemetry/README.md`](telemetry/README.md)
+with the JSON Schema at `telemetry/event.schema.json` and sample artifacts
+in `telemetry/samples/`. SDK helpers: `track_event` / `trackEvent`.
+
 ## Capability matrix
 
 Status: ✅ native plugin · 🔌 MCP/REST wiring only · 📋 planned (P-FOR-58) ·

@@ -360,6 +360,35 @@ export async function captureTranscript(
   return result !== null && result.status >= 200 && result.status < 300
 }
 
+export interface PluginEventOptions {
+  plugin?: string
+  surface?: string
+  latencyMs?: number
+  /** Scalar-only fields (counts, scores, booleans) — never memory content. */
+  fields?: Record<string, string | number | boolean | null>
+}
+
+/**
+ * Record a plugin benefit/health event via `/ui/api/telemetry/event` (FOR-70).
+ * Fail-safe: resolves `false` on any failure. Event catalog + privacy rules:
+ * `plugins/telemetry/README.md`.
+ */
+export async function trackEvent(
+  event: string,
+  options?: PluginEventOptions,
+  config?: ForesightClientConfig,
+): Promise<boolean> {
+  const payload: Record<string, unknown> = {
+    event,
+    plugin: options?.plugin ?? 'unknown',
+    surface: options?.surface ?? 'unknown',
+  }
+  if (options?.latencyMs !== undefined) payload.latency_ms = options.latencyMs
+  if (options?.fields) payload.fields = options.fields
+  const result = await postPath('/ui/api/telemetry/event', payload, config, 2000)
+  return result !== null && result.status >= 200 && result.status < 300
+}
+
 export async function postTelemetry(
   surface: string,
   payload: Record<string, unknown>,

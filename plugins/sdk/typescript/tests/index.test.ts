@@ -14,6 +14,7 @@ import {
   postJson,
   postTelemetry,
   resolveBaseUrl,
+  trackEvent,
 } from '../src/index.js'
 
 const ENV_KEYS = [
@@ -217,6 +218,42 @@ describe('client helpers (fail-safe)', () => {
     expect(spy.mock.calls[0]?.[0]).toBe(
       'http://127.0.0.1:8764/ui/api/telemetry/gating',
     )
+  })
+
+  it('trackEvent posts schema-shaped payload and returns true', async () => {
+    const spy = stubFetch(() => ({}))
+    const ok = await trackEvent(
+      'recall.injected',
+      {
+        plugin: 'mastracode',
+        surface: 'extension',
+        latencyMs: 12.5,
+        fields: { memories_injected: 2 },
+      },
+      { credentialsPath: '/nonexistent' },
+    )
+    expect(ok).toBe(true)
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('http://127.0.0.1:8764/ui/api/telemetry/event')
+    expect(JSON.parse(String(init.body))).toEqual({
+      event: 'recall.injected',
+      plugin: 'mastracode',
+      surface: 'extension',
+      latency_ms: 12.5,
+      fields: { memories_injected: 2 },
+    })
+  })
+
+  it('trackEvent returns false when server is down', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('down')
+      }),
+    )
+    expect(
+      await trackEvent('x.y', undefined, { credentialsPath: '/nonexistent' }),
+    ).toBe(false)
   })
 
   it('autoCaptureTurn skips short user messages', async () => {

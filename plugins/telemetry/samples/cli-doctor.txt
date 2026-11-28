@@ -1,0 +1,5 @@
+foresight doctor
+  server:        ok (v0.19.2, postgres, 12ms)
+  plugin claude: ok — events_24h=41, last_error=none
+  plugin hermes: ok — events_24h=18, last_error=none
+  telemetry:     1,204 turns augmented · 88.2% token reduction · $3.41 saved

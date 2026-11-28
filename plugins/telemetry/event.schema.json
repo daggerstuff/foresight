@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/daggerstuff/foresight/plugins/telemetry/event.schema.json",
+  "title": "Foresight plugin telemetry event",
+  "description": "Payload for POST /ui/api/telemetry/event. Privacy contract: scalar fields only — never memory content, titles (unless opted in), or bodies. See plugins/telemetry/README.md.",
+  "type": "object",
+  "required": ["event"],
+  "additionalProperties": false,
+  "properties": {
+    "event": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.]{0,63}$",
+      "description": "Event name from the catalog, e.g. recall.injected, capture.stored, plugin.health"
+    },
+    "plugin": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Plugin id from foresight.plugin.json, e.g. 'claude'"
+    },
+    "surface": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Agent surface the event came from, e.g. 'claude-code', 'hooks'"
+    },
+    "latency_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "End-to-end latency of the action being reported, when known"
+    },
+    "fields": {
+      "type": "object",
+      "maxProperties": 12,
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "null"]
+      },
+      "description": "Sanitized scalar extras only. Strings truncated server-side to 128 chars; nested objects are dropped. Suggested keys: memories_injected, memories_stored, blocks_injected, gated, top_score, threshold, error_kind, tokens_est."
+    }
+  }
+}

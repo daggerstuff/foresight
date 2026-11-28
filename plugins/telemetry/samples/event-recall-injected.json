@@ -1,0 +1,12 @@
+{
+  "event": "recall.injected",
+  "plugin": "claude",
+  "surface": "claude-code",
+  "latency_ms": 42.5,
+  "fields": {
+    "memories_injected": 3,
+    "blocks_injected": 1,
+    "top_score": 0.62,
+    "gated": false
+  }
+}

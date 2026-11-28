@@ -30,6 +30,7 @@ see FOR-90 (unified installer/distribution).
 | `fetchInjectContext` | `/ui/api/inject` REST first, MCP `inject_context` fallback |
 | `captureText` / `captureTranscript` | `/ui/api/capture` + `/session/transcript` |
 | `postTelemetry` | `/ui/api/telemetry/gating` |
+| `trackEvent` | `/ui/api/telemetry/event` plugin benefit/health events (FOR-70); scalar `fields` only |
 | `autoCaptureTurn` | fire-and-forget `process_session_transcript` distillation |
 | `ForesightError` | thrown only by low-level `postJson` transport failures |
 
