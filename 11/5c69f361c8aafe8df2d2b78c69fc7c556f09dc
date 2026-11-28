@@ -1,0 +1,32 @@
+tests/test_plugin_conformance.py
+  s_a501fa1cdfdd22::t_c73e88c1489a1d 1-65,67-92,94-100
+  s_a501fa1cdfdd22::t_087e2bcb941a30 93
+  s_a501fa1cdfdd22::t_559ed2a21227da 66
+foresight/plugin_conformance.py
+  s_a501fa1cdfdd22::t_afa72f2497a9bb 1-39,41-93,95,97-122,124-148,150,152-197,200-263,265-279,281,283-308
+  s_a501fa1cdfdd22::t_e0f199cdc4c0dc 40
+  s_a501fa1cdfdd22::t_7897abdc0dfce2 264
+  s_a501fa1cdfdd22::t_b91eacaa5e01fd 198-199
+  s_a501fa1cdfdd22::t_667a8105b90e57 94,96
+  s_a501fa1cdfdd22::t_0b62a2034cf51a 123
+  s_a501fa1cdfdd22::t_e63af4931c2278 280
+  s_a501fa1cdfdd22::t_e669ecc06995cb 149,151,282
+.github/workflows/ci.yml
+  s_a501fa1cdfdd22::t_53772e8b4b6030 153-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "115c69f361c8aafe8df2d2b78c69fc7c556f09dc",
+  "prompts": {},
+  "sessions": {
+    "s_a501fa1cdfdd22": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "thoracic-coneflower",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
