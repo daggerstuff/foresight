@@ -1,0 +1,68 @@
+foresight/server.py
+  s_a501fa1cdfdd22::t_aa07cb1e110f59 10300-10331
+plugins/telemetry/event.schema.json
+  s_a501fa1cdfdd22::t_074004ea6324ab 1-39
+tests/test_plugin_telemetry.py
+  s_a501fa1cdfdd22::t_9f85a83df1bc00 18-23
+  s_a501fa1cdfdd22::t_30dc476dda6c32 88,90
+  s_a501fa1cdfdd22::t_f9dd1d56708a0b 84
+  s_a501fa1cdfdd22::t_bf9c790a6e5a86 102-105,107-108
+  s_a501fa1cdfdd22::t_aeb06f62ef94b7 1-17,24-56,59-73,75-77,79-83,85-87,89,91-101,106,109-141,144-164,166-198
+  s_a501fa1cdfdd22::t_cbcb4d8a7d6823 142-143
+  s_a501fa1cdfdd22::t_043f54e87dffe4 57-58
+  s_a501fa1cdfdd22::t_dab7df120a26d8 74,78
+  s_a501fa1cdfdd22::t_5e3a7b5d6c46c9 165
+foresight/telemetry.py
+  s_a501fa1cdfdd22::t_9efc02408e2ba6 261-262,265-266
+  s_a501fa1cdfdd22::t_48c65701229e29 27-29
+  s_a501fa1cdfdd22::t_c57e025891b74c 319-322
+  s_a501fa1cdfdd22::t_60fd807d5d1f97 67-68
+  s_a501fa1cdfdd22::t_9839fbfbca4737 229-235,237-260,263-264,267-281
+  s_a501fa1cdfdd22::t_7f73100d6b09d2 236
+  s_a501fa1cdfdd22::t_126e9cc4a9c4be 102-103
+  s_a501fa1cdfdd22::t_7ad793f5632eb1 30
+plugins/sdk/python/README.md
+  s_a501fa1cdfdd22::t_2a02fd29f8a270 33
+plugins/README.md
+  s_a501fa1cdfdd22::t_ef1b1b6c645ff4 81-88
+plugins/sdk/typescript/src/index.ts
+  s_a501fa1cdfdd22::t_090c1e7131d08a 363-391
+plugins/telemetry/samples/cli-doctor.txt
+  s_a501fa1cdfdd22::t_594a904e70fc5e 1-5
+.gitignore
+  s_a501fa1cdfdd22::t_df620896e80439 40
+plugins/sdk/typescript/README.md
+  s_a501fa1cdfdd22::t_7561d75bcb6d9f 33
+plugins/telemetry/README.md
+  s_a501fa1cdfdd22::t_da137859ca5dda 1-91
+plugins/telemetry/samples/hook-status-line.txt
+  s_a501fa1cdfdd22::t_f9ee18dd2560ef 1
+plugins/sdk/python/foresight_plugin_sdk.py
+  s_a501fa1cdfdd22::t_c2288893b850a5 333
+  s_a501fa1cdfdd22::t_756e33192e6013 313-332,334
+plugins/telemetry/samples/plugin-ui-badge.json
+  s_a501fa1cdfdd22::t_95da582a6a107d 1-6
+plugins/telemetry/samples/event-recall-injected.json
+  s_a501fa1cdfdd22::t_e6b4b82bb889c0 1-12
+plugins/sdk/typescript/tests/index.test.ts
+  s_a501fa1cdfdd22::t_fe4d7596500a9f 223-258
+  s_a501fa1cdfdd22::t_7cad1b89779d13 17
+plugins/telemetry/samples/hook-system-message.json
+  s_a501fa1cdfdd22::t_9b64ac88bd02f5 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d85e67fb28da9bf3728b500a07764b6e7feb9475",
+  "prompts": {},
+  "sessions": {
+    "s_a501fa1cdfdd22": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "thoracic-coneflower",
+        "model": "unknown"
+      },
+      "human_author": "Dagger <dagger@pixelated.love>"
+    }
+  }
+}
