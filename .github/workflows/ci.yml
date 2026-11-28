@@ -150,6 +150,34 @@ jobs:
           path: coverage.lcov
           retention-days: 7
 
+  plugin-conformance:
+    runs-on: ubuntu-latest
+    # FOR-71: proves plugins function (manifest contract, artifact presence,
+    # SDK adoption, live hook probe against a stub server, server-down
+    # fail-safe) rather than checking file existence alone. No DB needed.
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Plugin conformance harness
+        run: uv run python -m foresight.plugin_conformance plugins/
+
+      - name: Plugin conformance tests
+        run: uv run pytest tests/test_plugin_conformance.py -v
+
   security:
     runs-on: ubuntu-latest
     permissions:
